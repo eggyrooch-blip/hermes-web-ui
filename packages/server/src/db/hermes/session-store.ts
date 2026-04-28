@@ -47,6 +47,11 @@ export interface HermesMessageRow {
   reasoning_content?: string | null
 }
 
+export interface HermesSessionSearchRow extends HermesSessionRow {
+  snippet: string
+  matched_message_id: number | null
+}
+
 export interface HermesSessionDetailRow extends HermesSessionRow {
   messages: HermesMessageRow[]
   thread_session_count: number
@@ -260,18 +265,63 @@ export function listSessions(profile: string, source?: string, limit = 2000): He
   return rows.map(mapSessionRow)
 }
 
-export function searchSessions(profile: string, query: string, limit = 20): HermesSessionRow[] {
+export function searchSessions(profile: string, query: string, limit = 20): HermesSessionSearchRow[] {
   if (!isSqliteAvailable()) return []
   const trimmed = query.trim()
-  if (!trimmed) return listSessions(profile, undefined, limit)
+  if (!trimmed) {
+    return listSessions(profile, undefined, limit).map(s => ({ ...s, snippet: s.preview || '', matched_message_id: null }))
+  }
   const db = getDb()!
-  const pattern = `%${trimmed}%`
-  const rows = db.prepare(
+  const lowered = trimmed.toLowerCase()
+  const pattern = `%${lowered}%`
+
+  // Step 1: Find matching sessions
+  const sessionRows = db.prepare(
     `SELECT * FROM ${SESSIONS_TABLE}
-     WHERE profile = ? AND (title LIKE ? ESCAPE '\\' OR preview LIKE ? ESCAPE '\\')
+     WHERE profile = ? AND (
+       LOWER(title) LIKE ? OR LOWER(preview) LIKE ?
+       OR id IN (SELECT DISTINCT session_id FROM ${MESSAGES_TABLE} WHERE LOWER(content) LIKE ? OR LOWER(COALESCE(tool_name, '')) LIKE ?)
+     )
      ORDER BY last_active DESC LIMIT ?`,
-  ).all(profile, pattern, pattern, limit) as Record<string, unknown>[]
-  return rows.map(mapSessionRow)
+  ).all(profile, pattern, pattern, pattern, pattern, limit) as Record<string, unknown>[]
+
+  if (sessionRows.length === 0) return []
+
+  // Step 2: For each session, find first matching message id + snippet
+  const msgQuery = db.prepare(
+    `SELECT id, content, tool_name FROM ${MESSAGES_TABLE}
+     WHERE session_id = ? AND (LOWER(content) LIKE ? OR LOWER(COALESCE(tool_name, '')) LIKE ?)
+     ORDER BY timestamp, id LIMIT 1`,
+  )
+
+  return sessionRows.map(row => {
+    const session = mapSessionRow(row)
+    let snippet = ''
+    let matched_message_id: number | null = null
+
+    // Check if session title or preview matches
+    const titleLower = (session.title || '').toLowerCase()
+    const previewLower = (session.preview || '').toLowerCase()
+    const titleIdx = titleLower.indexOf(lowered)
+    const previewIdx = previewLower.indexOf(lowered)
+
+    if (titleIdx >= 0) {
+      snippet = session.title!.substring(Math.max(0, titleIdx - 20), titleIdx + lowered.length + 60)
+    } else if (previewIdx >= 0) {
+      snippet = session.preview.substring(Math.max(0, previewIdx - 20), previewIdx + lowered.length + 60)
+    } else {
+      // Get snippet from matching message
+      const msg = msgQuery.get(session.id, pattern, pattern) as { id: number; content: string; tool_name: string | null } | undefined
+      if (msg) {
+        matched_message_id = msg.id
+        const contentLower = msg.content.toLowerCase()
+        const idx = contentLower.indexOf(lowered)
+        snippet = msg.content.substring(Math.max(0, idx - 20), idx + lowered.length + 60)
+      }
+    }
+
+    return { ...session, snippet, matched_message_id }
+  })
 }
 
 export function getSessionDetail(id: string): HermesSessionDetailRow | null {

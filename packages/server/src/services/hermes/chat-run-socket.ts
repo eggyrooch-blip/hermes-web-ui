@@ -124,21 +124,21 @@ export class ChatRunSocket {
             : await getSessionDetailFromDb(sid)
           const messages = detail?.messages?.length
             ? detail.messages
-                .filter(m => (m.role === 'user' || m.role === 'assistant' || m.role === 'tool') && m.content !== undefined)
-                .map(m => {
-                  const msg: any = {
-                    id: m.id,
-                    session_id: sid,
-                    role: m.role,
-                    content: m.content || '',
-                    timestamp: m.timestamp,
-                  }
-                  if (m.tool_calls?.length) msg.tool_calls = m.tool_calls
-                  if (m.tool_call_id) msg.tool_call_id = m.tool_call_id
-                  if (m.tool_name) msg.tool_name = m.tool_name
-                  if (m.reasoning) msg.reasoning = m.reasoning
-                  return msg
-                })
+              .filter(m => (m.role === 'user' || m.role === 'assistant' || m.role === 'tool') && m.content !== undefined)
+              .map(m => {
+                const msg: any = {
+                  id: m.id,
+                  session_id: sid,
+                  role: m.role,
+                  content: m.content || '',
+                  timestamp: m.timestamp,
+                }
+                if (m.tool_calls?.length) msg.tool_calls = m.tool_calls
+                if (m.tool_call_id) msg.tool_call_id = m.tool_call_id
+                if (m.tool_name) msg.tool_name = m.tool_name
+                if (m.reasoning) msg.reasoning = m.reasoning
+                return msg
+              })
             : []
 
           // Calculate context tokens — aware of compression snapshot
@@ -282,54 +282,53 @@ export class ChatRunSocket {
             // Context compression with snapshot awareness
             const contextLength = getModelContextLength(profile)
             const triggerTokens = Math.floor(contextLength / 2)
+            const cState = this.getOrCreateSession(session_id)
 
+            // Calculate inputTokens + outputTokens from DB (unified method)
+            const assembledTokens = await this.calcAndUpdateUsage(session_id, cState, emit)
+            const totalTokens = assembledTokens.inputTokens + assembledTokens.outputTokens
             // Step 1: Check existing snapshot — if present, assemble summary + new messages
             const snapshot = session_id ? getCompressionSnapshot(session_id) : null
             if (snapshot) {
               const newMessages = history.slice(snapshot.lastMessageIndex + 1)
-              const summaryTokens = countTokens(SUMMARY_PREFIX + snapshot.summary)
-              const newTokens = newMessages.reduce((sum, m) => sum + countTokens(m.content), 0)
-              const assembledTokens = summaryTokens + newTokens
               logger.info('[context-compress] session=%s: snapshot at %d, %d new messages, assembled ~%d tokens (threshold %d)',
-                session_id, snapshot.lastMessageIndex, newMessages.length, assembledTokens, triggerTokens)
-              if (assembledTokens <= triggerTokens) {
+                session_id, snapshot.lastMessageIndex, newMessages.length, totalTokens, triggerTokens)
+              if (totalTokens <= triggerTokens) {
                 // Under threshold — use assembled context directly, no LLM call needed
                 history = [
                   { role: 'user', content: SUMMARY_PREFIX + '\n\n' + snapshot.summary },
                   ...newMessages,
                 ]
               } else {
-                // Over threshold — needs incremental LLM compression
-                const beforeTokens = assembledTokens
                 this.pushState(session_id, 'compression.started', {
                   event: 'compression.started',
                   message_count: newMessages.length,
-                  token_count: beforeTokens,
+                  token_count: totalTokens,
                 })
                 emit('compression.started', {
                   event: 'compression.started',
                   message_count: newMessages.length,
-                  token_count: beforeTokens,
+                  token_count: totalTokens,
                 })
 
                 try {
                   const result = await compressor.compress(
                     history, upstream, apiKey, session_id, contextLength,
                   )
-
+                  const afterTokens = await this.calcAndUpdateUsage(session_id, cState, emit)
                   this.replaceState(session_id, 'compression.completed', {
                     event: 'compression.completed',
                     compressed: result.meta.compressed,
                     llmCompressed: result.meta.llmCompressed,
                     totalMessages: result.meta.totalMessages,
                     resultMessages: result.messages.length,
-                    beforeTokens,
-                    afterTokens: result.messages.reduce((sum, m) => sum + countTokens(m.content), 0),
+                    beforeTokens: totalTokens,
+                    afterTokens: afterTokens.inputTokens + afterTokens.outputTokens,
                     summaryTokens: result.meta.summaryTokenEstimate,
                     verbatimCount: result.meta.verbatimCount,
                     compressedStartIndex: result.meta.compressedStartIndex,
                   })
-                  logger.info('[context-compress] AFTER  session=%s: %d messages, ~%d tokens (was %d)', session_id, result.messages.length, result.messages.reduce((sum, m) => sum + countTokens(m.content), 0), beforeTokens)
+                  logger.info('[context-compress] AFTER  session=%s: %d messages, ~%d tokens (was %d)', session_id, result.messages.length, afterTokens.inputTokens + afterTokens.outputTokens, totalTokens)
 
                   emit('compression.completed', {
                     event: 'compression.completed',
@@ -337,8 +336,8 @@ export class ChatRunSocket {
                     llmCompressed: result.meta.llmCompressed,
                     totalMessages: result.meta.totalMessages,
                     resultMessages: result.messages.length,
-                    beforeTokens,
-                    afterTokens: result.messages.reduce((sum, m) => sum + countTokens(m.content), 0),
+                    beforeTokens: totalTokens,
+                    afterTokens: afterTokens.inputTokens + afterTokens.outputTokens,
                     summaryTokens: result.meta.summaryTokenEstimate,
                     verbatimCount: result.meta.verbatimCount,
                     compressedStartIndex: result.meta.compressedStartIndex,
@@ -351,14 +350,16 @@ export class ChatRunSocket {
                     tool_call_id: m.tool_call_id,
                     name: m.name,
                   }))
+                  // Update usage from DB (snapshot now updated by compressor)
+                  await this.calcAndUpdateUsage(session_id, cState, emit)
                 } catch (err: any) {
                   this.replaceState(session_id, 'compression.completed', {
                     event: 'compression.completed',
                     compressed: false,
                     totalMessages: newMessages.length,
                     resultMessages: newMessages.length,
-                    beforeTokens,
-                    afterTokens: beforeTokens,
+                    beforeTokens: totalTokens,
+                    afterTokens: totalTokens,
                     summaryTokens: 0,
                     verbatimCount: newMessages.length,
                     compressedStartIndex: -1,
@@ -370,8 +371,8 @@ export class ChatRunSocket {
                     compressed: false,
                     totalMessages: newMessages.length,
                     resultMessages: newMessages.length,
-                    beforeTokens,
-                    afterTokens: beforeTokens,
+                    beforeTokens: totalTokens,
+                    afterTokens: totalTokens,
                     summaryTokens: 0,
                     verbatimCount: newMessages.length,
                     compressedStartIndex: -1,
@@ -381,44 +382,44 @@ export class ChatRunSocket {
               }
             } else if (history.length > 4) {
               // No snapshot — check if raw history exceeds threshold
-              const beforeTokens = history.reduce((sum, m) => sum + countTokens(m.content), 0)
 
-              if (beforeTokens <= triggerTokens) {
+              if (totalTokens <= triggerTokens) {
                 // Under threshold — use raw history as-is
-                logger.info('[context-compress] session=%s: %d messages, ~%d tokens — under threshold, skip', session_id, history.length, beforeTokens)
+                logger.info('[context-compress] session=%s: %d messages, ~%d tokens — under threshold, skip', session_id, history.length, totalTokens)
               } else {
                 // Over threshold — full LLM compression
-                logger.info('[context-compress] BEFORE session=%s: %d messages, ~%d tokens (threshold %d)', session_id, history.length, beforeTokens, triggerTokens)
+                logger.info('[context-compress] BEFORE session=%s: %d messages, ~%d tokens (threshold %d)', session_id, history.length, totalTokens, triggerTokens)
 
                 this.pushState(session_id, 'compression.started', {
                   event: 'compression.started',
                   message_count: history.length,
-                  token_count: beforeTokens,
+                  token_count: assembledTokens,
                 })
                 emit('compression.started', {
                   event: 'compression.started',
                   message_count: history.length,
-                  token_count: beforeTokens,
+                  token_count: assembledTokens,
                 })
 
                 try {
                   const result = await compressor.compress(
                     history, upstream, apiKey, session_id, contextLength,
                   )
-
+                  const cState = this.getOrCreateSession(session_id)
+                  const afterTokens = await this.calcAndUpdateUsage(session_id, cState, emit)
                   this.replaceState(session_id, 'compression.completed', {
                     event: 'compression.completed',
                     compressed: result.meta.compressed,
                     llmCompressed: result.meta.llmCompressed,
                     totalMessages: result.meta.totalMessages,
                     resultMessages: result.messages.length,
-                    beforeTokens,
-                    afterTokens: result.messages.reduce((sum, m) => sum + countTokens(m.content), 0),
+                    beforeTokens: totalTokens,
+                    afterTokens: afterTokens.inputTokens + afterTokens.outputTokens,
                     summaryTokens: result.meta.summaryTokenEstimate,
                     verbatimCount: result.meta.verbatimCount,
                     compressedStartIndex: result.meta.compressedStartIndex,
                   })
-                  logger.info('[context-compress] AFTER  session=%s: %d messages, ~%d tokens (was %d)', session_id, result.messages.length, result.messages.reduce((sum, m) => sum + countTokens(m.content), 0), beforeTokens)
+                  logger.info('[context-compress] AFTER  session=%s: %d messages, ~%d tokens (was %d)', session_id, result.messages.length, afterTokens.inputTokens + afterTokens.outputTokens, totalTokens)
 
                   emit('compression.completed', {
                     event: 'compression.completed',
@@ -426,8 +427,8 @@ export class ChatRunSocket {
                     llmCompressed: result.meta.llmCompressed,
                     totalMessages: result.meta.totalMessages,
                     resultMessages: result.messages.length,
-                    beforeTokens,
-                    afterTokens: result.messages.reduce((sum, m) => sum + countTokens(m.content), 0),
+                    beforeTokens: totalTokens,
+                    afterTokens: afterTokens.inputTokens + afterTokens.outputTokens,
                     summaryTokens: result.meta.summaryTokenEstimate,
                     verbatimCount: result.meta.verbatimCount,
                     compressedStartIndex: result.meta.compressedStartIndex,
@@ -440,14 +441,15 @@ export class ChatRunSocket {
                     tool_call_id: m.tool_call_id,
                     name: m.name,
                   }))
+                  await this.calcAndUpdateUsage(session_id, cState, emit)
                 } catch (err: any) {
                   this.replaceState(session_id, 'compression.completed', {
                     event: 'compression.completed',
                     compressed: false,
                     totalMessages: history.length,
                     resultMessages: history.length,
-                    beforeTokens,
-                    afterTokens: beforeTokens,
+                    beforeTokens: totalTokens,
+                    afterTokens: totalTokens,
                     summaryTokens: 0,
                     verbatimCount: history.length,
                     compressedStartIndex: -1,
@@ -459,8 +461,8 @@ export class ChatRunSocket {
                     compressed: false,
                     totalMessages: history.length,
                     resultMessages: history.length,
-                    beforeTokens,
-                    afterTokens: beforeTokens,
+                    beforeTokens: totalTokens,
+                    afterTokens: totalTokens,
                     summaryTokens: 0,
                     verbatimCount: history.length,
                     compressedStartIndex: -1,
@@ -610,37 +612,7 @@ export class ChatRunSocket {
             }
           }
 
-          // Track usage — self-calculate with countTokens + snapshot
-          if (parsed.event === 'run.completed') {
-            const sid = session_id
-            if (sid) {
-              const state = this.sessionMap.get(sid)
-              if (state) {
-                const snapshot = getCompressionSnapshot(sid)
-                let inputTokens: number
-                if (snapshot) {
-                  const newMessages = state.messages.slice(snapshot.lastMessageIndex + 1)
-                  inputTokens = countTokens(SUMMARY_PREFIX + snapshot.summary) +
-                    newMessages.reduce((sum, m) => sum + countTokens(m.content || ''), 0)
-                } else {
-                  inputTokens = state.messages.reduce((sum, m) => sum + countTokens(m.content || ''), 0)
-                }
-                const outputTokens = state.messages
-                  .filter(m => m.role === 'assistant')
-                  .reduce((sum, m) => sum + countTokens(m.content || ''), 0)
-                state.inputTokens = inputTokens
-                state.outputTokens = outputTokens
-                updateUsage(sid, inputTokens, outputTokens)
-                // Emit updated usage to all clients in the room
-                emit('usage.updated', {
-                  event: 'usage.updated',
-                  session_id: sid,
-                  inputTokens,
-                  outputTokens,
-                })
-              }
-            }
-          }
+          // Usage will be calculated after syncFromHermes completes (in markCompleted)
 
           emit(parsed.event || 'message', parsed)
 
@@ -689,6 +661,49 @@ export class ChatRunSocket {
         state.profile = undefined
         this.syncFromHermes(sessionId, hermesId, prof)
       }
+    }
+  }
+
+  /**
+   * Calculate usage from DB and update state + emit to clients.
+   * @returns { inputTokens, outputTokens } for the caller to use
+   */
+  private async calcAndUpdateUsage(
+    sid: string, state: SessionState, emit: (event: string, payload: any) => void,
+  ): Promise<{ inputTokens: number; outputTokens: number }> {
+    try {
+      const detail = useLocalSessionStore()
+        ? getSessionDetail(sid)
+        : await getSessionDetailFromDb(sid)
+      const msgs = detail?.messages
+        ?.filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool') || []
+
+      const snapshot = getCompressionSnapshot(sid)
+      let inputTokens: number
+      if (snapshot && msgs.length) {
+        const newMessages = msgs.slice(snapshot.lastMessageIndex + 1)
+        inputTokens = countTokens(SUMMARY_PREFIX + snapshot.summary) +
+          newMessages.reduce((sum, m) => sum + countTokens(m.content || ''), 0)
+      } else {
+        inputTokens = msgs.reduce((sum, m) => sum + countTokens(m.content || ''), 0)
+      }
+
+      const outputTokens = msgs
+        .filter(m => m.role === 'assistant')
+        .reduce((sum, m) => sum + countTokens(m.content || ''), 0)
+      state.inputTokens = inputTokens
+      state.outputTokens = outputTokens
+      updateUsage(sid, inputTokens, outputTokens)
+      emit('usage.updated', {
+        event: 'usage.updated',
+        session_id: sid,
+        inputTokens,
+        outputTokens,
+      })
+      return { inputTokens, outputTokens }
+    } catch (err: any) {
+      logger.warn(err, '[chat-run-socket] failed to calculate usage for session %s', sid)
+      return { inputTokens: 0, outputTokens: 0 }
     }
   }
 
@@ -748,6 +763,16 @@ export class ChatRunSocket {
         }
 
         updateSessionStats(localSessionId)
+
+        // Calculate usage from DB now that data is complete
+        // Use inputTokens already set by compression path if available
+        const state = this.sessionMap.get(localSessionId)
+        if (state) {
+          const emit = (event: string, payload: any) => {
+            this.nsp.to(`session:${localSessionId}`).emit(event, { ...payload, session_id: localSessionId })
+          }
+          this.calcAndUpdateUsage(localSessionId, state, emit)
+        }
 
         // Enqueue ephemeral session for deferred deletion
         this.enqueueEphemeralDelete(hermesSessionId, profile)
