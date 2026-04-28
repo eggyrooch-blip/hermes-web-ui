@@ -9,6 +9,7 @@ const props = defineProps<{
   active: boolean
   pinned: boolean
   canDelete: boolean
+  streaming?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -37,7 +38,10 @@ const { t } = useI18n()
             <path d="M8 3l8 0 0 5 3 5-14 0 3-5z" />
           </svg>
         </span>
-        <span class="session-item-title">{{ session.title }}</span>
+        <span class="session-item-title">
+          <svg v-if="streaming" class="session-item-streaming" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+          {{ session.title }}
+        </span>
       </span>
       <span class="session-item-meta">
         <span v-if="session.model" class="session-item-model">{{ session.model }}</span>

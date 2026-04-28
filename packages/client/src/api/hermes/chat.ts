@@ -94,7 +94,7 @@ export function disconnectChatRun(): void {
  */
 export function resumeSession(
   sessionId: string,
-  onResumed: (data: { session_id: string; messages: any[]; isWorking: boolean; events: any[] }) => void,
+  onResumed: (data: { session_id: string; messages: any[]; isWorking: boolean; events: any[]; inputTokens?: number; outputTokens?: number }) => void,
 ): Socket {
   const socket = connectChatRun()
 

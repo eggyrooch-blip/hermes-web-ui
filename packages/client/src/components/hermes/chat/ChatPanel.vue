@@ -28,24 +28,12 @@ const currentMode = ref<'chat' | 'live'>('chat')
 const showSessions = ref(
   typeof window === 'undefined' || !window.matchMedia('(max-width: 768px)').matches,
 )
-const lastChatSessionsVisibility = ref(showSessions.value)
 let mobileQuery: MediaQueryList | null = null
 const isMobile = ref(false)
 
 function handleSessionClick(sessionId: string) {
   chatStore.switchSession(sessionId)
   if (mobileQuery?.matches) showSessions.value = false
-}
-
-function handleModeChange(mode: 'chat' | 'live') {
-  if (mode === currentMode.value) return
-  if (mode === 'live') {
-    lastChatSessionsVisibility.value = showSessions.value
-    showSessions.value = false
-  } else {
-    showSessions.value = mobileQuery?.matches ? false : lastChatSessionsVisibility.value
-  }
-  currentMode.value = mode
 }
 
 function handleMobileChange(e: MediaQueryListEvent | MediaQueryList) {
@@ -284,6 +272,7 @@ async function handleRenameConfirm() {
             :active="s.id === chatStore.activeSessionId"
             :pinned="true"
             :can-delete="s.id !== chatStore.activeSessionId || chatStore.sessions.length > 1"
+            :streaming="chatStore.isSessionLive(s.id)"
             @select="handleSessionClick(s.id)"
             @contextmenu="handleContextMenu($event, s.id)"
             @delete="handleDeleteSession(s.id)"
@@ -304,6 +293,7 @@ async function handleRenameConfirm() {
               :active="s.id === chatStore.activeSessionId"
               :pinned="false"
               :can-delete="s.id !== chatStore.activeSessionId || chatStore.sessions.length > 1"
+              :streaming="chatStore.isSessionLive(s.id)"
               @select="handleSessionClick(s.id)"
               @contextmenu="handleContextMenu($event, s.id)"
               @delete="handleDeleteSession(s.id)"
@@ -352,20 +342,7 @@ async function handleRenameConfirm() {
           <span v-if="activeSessionSource" class="source-badge">{{ getSourceLabel(activeSessionSource) }}</span>
         </div>
         <div class="header-actions">
-          <div class="chat-mode-toggle">
-            <NButton
-              size="small"
-              :type="currentMode === 'chat' ? 'primary' : 'default'"
-              :aria-pressed="currentMode === 'chat'"
-              @click="handleModeChange('chat')"
-            >{{ t('chat.chatMode') }}</NButton>
-            <NButton
-              size="small"
-              :type="currentMode === 'live' ? 'primary' : 'default'"
-              :aria-pressed="currentMode === 'live'"
-              @click="handleModeChange('live')"
-            >{{ t('chat.liveMode') }}</NButton>
-          </div>
+          <!-- chat/live mode toggle hidden -->
           <template v-if="currentMode === 'chat'">
             <NTooltip trigger="hover">
               <template #trigger>
@@ -601,6 +578,20 @@ async function handleRenameConfirm() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+:deep(.session-item-streaming) {
+  display: inline-block;
+  flex-shrink: 0;
+  margin-right: 4px;
+  vertical-align: middle;
+  animation: spin 1.2s linear infinite;
+  color: $accent-primary;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 :deep(.session-item-pin) {

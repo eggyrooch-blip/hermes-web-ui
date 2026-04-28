@@ -1,5 +1,5 @@
 import { startRunViaSocket, connectChatRun, resumeSession, type RunEvent } from '@/api/hermes/chat'
-import { deleteSession as deleteSessionApi, fetchSession, fetchSessions, fetchSessionUsageSingle, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
+import { deleteSession as deleteSessionApi, fetchSession, fetchSessions, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
 import { getApiKey } from '@/api/client'
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
@@ -172,7 +172,6 @@ function mapHermesSession(s: SessionSummary): Session {
 
 const STORAGE_KEY_PREFIX = 'hermes_active_session_'
 const LEGACY_STORAGE_KEY = 'hermes_active_session'
-const LIVE_BADGE_WINDOW_MS = 5 * 60 * 1000
 const IN_FLIGHT_TTL_MS = 15 * 60 * 1000 // Give up after 15 minutes
 
 // 获取当前 profile 名称，用于隔离缓存。
@@ -324,11 +323,7 @@ export const useChatStore = defineStore('chat', () => {
   const messages = computed<Message[]>(() => activeSession.value?.messages || [])
 
   function isSessionLive(sessionId: string): boolean {
-    if (streamStates.value.has(sessionId)) return true
-
-    const session = sessions.value.find(candidate => candidate.id === sessionId)
-    if (!session?.lastActiveAt || session.endedAt != null) return false
-    return Date.now() - session.lastActiveAt <= LIVE_BADGE_WINDOW_MS
+    return streamStates.value.has(sessionId) || serverWorking.value.has(sessionId)
   }
 
   function markInFlight(sid: string, runId: string) {
