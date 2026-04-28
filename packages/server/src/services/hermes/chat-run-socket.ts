@@ -393,12 +393,12 @@ export class ChatRunSocket {
                 this.pushState(session_id, 'compression.started', {
                   event: 'compression.started',
                   message_count: history.length,
-                  token_count: assembledTokens,
+                  token_count: totalTokens,
                 })
                 emit('compression.started', {
                   event: 'compression.started',
                   message_count: history.length,
-                  token_count: assembledTokens,
+                  token_count: totalTokens,
                 })
 
                 try {
