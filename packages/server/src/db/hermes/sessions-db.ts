@@ -242,7 +242,7 @@ function runLiteralContentSearch(
         ${SESSION_SELECT},
         s.parent_session_id AS parent_session_id
       FROM sessions s
-      WHERE s.source != 'tool'
+      WHERE s.source != 'tool' AND s.id NOT LIKE 'compress_%'
         ${sourceClause}
     )
     SELECT
@@ -411,7 +411,7 @@ function loadAllSessions(db: { prepare: (sql: string) => { all: (...params: any[
       ${SESSION_SELECT},
       s.parent_session_id AS parent_session_id
     FROM sessions s
-    WHERE s.source != 'tool'
+    WHERE s.source != 'tool' AND s.id NOT LIKE 'compress_%'
   `).all() as Record<string, unknown>[]
   const sessions = rows.map(mapInternalSessionRow)
   const byId = new Map(sessions.map(s => [s.id, s]))
@@ -623,7 +623,7 @@ export async function listSessionSummaries(source?: string, limit = 2000): Promi
   const db = new DatabaseSync(sessionDbPath(), { open: true, readOnly: true })
 
   try {
-    const clauses = ["s.parent_session_id IS NULL", "s.source != 'tool'"]
+    const clauses = ["s.parent_session_id IS NULL", "s.source != 'tool'", "s.id NOT LIKE 'compress_%'"]
     const params: any[] = []
     if (source) {
       clauses.push('s.source = ?')
@@ -689,7 +689,7 @@ export async function searchSessionSummaries(
         ${SESSION_SELECT},
         s.parent_session_id AS parent_session_id
       FROM sessions s
-      WHERE s.source != 'tool'
+      WHERE s.source != 'tool' AND s.id NOT LIKE 'compress_%'
         ${sourceClause}
     `
 

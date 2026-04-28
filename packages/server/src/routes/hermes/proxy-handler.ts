@@ -15,7 +15,7 @@ export function setRunSession(runId: string, sessionId: string): void {
   setTimeout(() => runSessionMap.delete(runId), 30 * 60 * 1000)
 }
 
-function getSessionForRun(runId: string): string | undefined {
+export function getSessionForRun(runId: string): string | undefined {
   return runSessionMap.get(runId)
 }
 

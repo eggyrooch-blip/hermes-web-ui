@@ -15,7 +15,9 @@ import { setupTerminalWebSocket } from './routes/hermes/terminal'
 import { startVersionCheck } from './routes/health'
 import { registerRoutes } from './routes'
 import { setGroupChatServer } from './routes/hermes/group-chat'
+import { setChatRunServer } from './routes/hermes/chat-run'
 import { GroupChatServer } from './services/hermes/group-chat'
+import { ChatRunSocket } from './services/hermes/chat-run-socket'
 import { logger } from './services/logger'
 
 // Injected by esbuild at build time; fallback to reading package.json in dev mode
@@ -51,6 +53,10 @@ export async function bootstrap() {
   const { initUsageStore } = await import('./db/hermes/usage-store')
   initUsageStore()
   console.log('[bootstrap] usage store initialized')
+
+  const { initCompressionSnapshotStore } = await import('./db/hermes/compression-snapshot')
+  initCompressionSnapshotStore()
+  console.log('[bootstrap] compression snapshot store initialized')
 
   app.use(cors({ origin: config.corsOrigins }))
   app.use(bodyParser())
@@ -91,6 +97,11 @@ export async function bootstrap() {
   const groupChatServer = new GroupChatServer(server)
   setGroupChatServer(groupChatServer)
   groupChatServer.setGatewayManager(getGatewayManagerInstance())
+
+  // Chat run Socket.IO — shares the same Server instance, just adds /chat-run namespace
+  const chatRunServer = new ChatRunSocket(groupChatServer.getIO(), getGatewayManagerInstance())
+  setChatRunServer(chatRunServer)
+  chatRunServer.init()
 
   // Catch-all: destroy upgrade requests not handled by terminal or Socket.IO
   server.on('upgrade', (req: any, socket: any) => {

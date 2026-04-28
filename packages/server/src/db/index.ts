@@ -3,7 +3,10 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import { homedir } from 'os'
 
-const DB_DIR = resolve(homedir(), '.hermes-web-ui')
+const isDev = process.env.NODE_ENV !== 'production'
+const DB_DIR = isDev
+  ? resolve(process.cwd(), 'packages/server/data')
+  : resolve(homedir(), '.hermes-web-ui')
 const DB_PATH = resolve(DB_DIR, 'hermes-web-ui.db')
 const JSON_PATH = resolve(DB_DIR, 'hermes-web-ui.json')
 
@@ -27,7 +30,7 @@ export function getDb(): DatabaseSync | null {
   if (!_db) {
     mkdirSync(DB_DIR, { recursive: true })
     _db = new DatabaseSync(DB_PATH)
-    _db.exec('PRAGMA journal_mode=WAL')
+    _db.exec('PRAGMA journal_mode=DELETE')
     _db.exec('PRAGMA foreign_keys=ON')
   }
   return _db
