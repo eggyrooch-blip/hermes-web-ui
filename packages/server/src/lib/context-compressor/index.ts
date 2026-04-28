@@ -21,6 +21,7 @@ import {
   saveCompressionSnapshot,
   deleteCompressionSnapshot,
 } from '../../db/hermes/compression-snapshot'
+import { getDb } from '../../db/index'
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -275,6 +276,7 @@ async function callSummarizer(
   history: Array<{ role: string; content: string }>,
   timeoutMs: number,
   previousSummary?: string,
+  profile?: string,
 ): Promise<string> {
   const sessionId = `compress_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 
@@ -324,7 +326,7 @@ async function callSummarizer(
         if (parsed.event === 'run.completed') {
           clearTimeout(timer)
           source.close()
-          deleteCompressSession(upstream, apiKey, sessionId).catch(() => {})
+          deleteCompressSession(sessionId, profile).catch(() => {})
           const output = parsed.output
           if (!output || typeof output !== 'string' || output.trim() === '') {
             reject(new Error('Empty summarization response'))
@@ -334,7 +336,7 @@ async function callSummarizer(
         } else if (parsed.event === 'run.failed') {
           clearTimeout(timer)
           source.close()
-          deleteCompressSession(upstream, apiKey, sessionId).catch(() => {})
+          deleteCompressSession(sessionId, profile).catch(() => {})
           reject(new Error(parsed.error || 'Summarization run failed'))
         }
       } catch { /* ignore parse errors */ }
@@ -343,22 +345,23 @@ async function callSummarizer(
     source.onerror = () => {
       clearTimeout(timer)
       source.close()
-      deleteCompressSession(upstream, apiKey, sessionId).catch(() => {})
+      deleteCompressSession(sessionId, profile).catch(() => {})
       reject(new Error('Summarization SSE connection error'))
     }
   })
 }
 
-/** Best-effort delete the temporary compression session from the gateway */
-async function deleteCompressSession(upstream: string, apiKey: string | undefined, sessionId: string): Promise<void> {
+/** Enqueue compression session for later deletion instead of deleting immediately */
+async function deleteCompressSession(sessionId: string, profile?: string): Promise<void> {
   try {
-    const headers: Record<string, string> = {}
-    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
-    await fetch(`${upstream}/api/sessions/${sessionId}`, {
-      method: 'DELETE',
-      headers,
-      signal: AbortSignal.timeout(5000),
-    })
+    const db = getDb()
+    if (!db) return
+    const now = Date.now()
+    db.prepare(
+      `INSERT INTO gc_pending_session_deletes (session_id, profile_name, status, attempt_count, last_error, created_at, updated_at, next_attempt_at)
+       VALUES (?, ?, 'pending', 0, NULL, ?, ?, 0)
+       ON CONFLICT(session_id) DO NOTHING`,
+    ).run(sessionId, profile || 'default', now, now)
   } catch { /* best-effort */ }
 }
 
@@ -389,6 +392,7 @@ export class ChatContextCompressor {
     apiKey: string | undefined,
     sessionId?: string,
     contextLength?: number,
+    profile?: string,
   ): Promise<CompressedResult> {
     const cl = contextLength || 200_000
     const triggerTokens = Math.floor(cl / 2)
@@ -439,7 +443,7 @@ export class ChatContextCompressor {
 
       // Over threshold → incremental LLM compress
       return this.incrementalCompress(
-        messages, snapshot, upstream, apiKey, sessionId!, makeMeta(),
+        messages, snapshot, upstream, apiKey, sessionId!, makeMeta(), profile,
       )
     }
 
@@ -456,7 +460,7 @@ export class ChatContextCompressor {
     }
 
     // Over threshold → full LLM compress
-    return this.fullCompress(messages, upstream, apiKey, sessionId!, makeMeta())
+    return this.fullCompress(messages, upstream, apiKey, sessionId!, makeMeta(), profile)
   }
 
   private async incrementalCompress(
@@ -466,6 +470,7 @@ export class ChatContextCompressor {
     apiKey: string | undefined,
     sessionId: string,
     meta: CompressedResult['meta'],
+    profile?: string,
   ): Promise<CompressedResult> {
     const { summary: previousSummary, lastMessageIndex } = snapshot
     const total = messages.length
@@ -492,7 +497,7 @@ export class ChatContextCompressor {
         .map(m => ({ role: m.role, content: m.content }))
 
       const t0 = Date.now()
-      summary = await callSummarizer(upstream, apiKey, prompt, history, this.config.summarizationTimeoutMs, previousSummary)
+      summary = await callSummarizer(upstream, apiKey, prompt, history, this.config.summarizationTimeoutMs, previousSummary, profile)
       logger.info('[context-compressor] incremental-llm done in %dms, %d chars', Date.now() - t0, summary.length)
     } catch (err: any) {
       logger.warn('[context-compressor] incremental-llm failed: %s — reusing previous summary', err.message)
@@ -528,6 +533,7 @@ export class ChatContextCompressor {
     apiKey: string | undefined,
     sessionId: string,
     meta: CompressedResult['meta'],
+    profile?: string,
   ): Promise<CompressedResult> {
     const total = messages.length
     const cleaned = pruneOldToolResults(messages, this.config.tailMessageCount)
@@ -555,7 +561,7 @@ export class ChatContextCompressor {
     let summary: string | null = null
     try {
       const t0 = Date.now()
-      summary = await callSummarizer(upstream, apiKey, prompt, history, this.config.summarizationTimeoutMs)
+      summary = await callSummarizer(upstream, apiKey, prompt, history, this.config.summarizationTimeoutMs, undefined, profile)
       logger.info('[context-compressor] full-llm done in %dms, %d chars', Date.now() - t0, summary.length)
     } catch (err: any) {
       logger.warn('[context-compressor] full-llm failed: %s', err.message)

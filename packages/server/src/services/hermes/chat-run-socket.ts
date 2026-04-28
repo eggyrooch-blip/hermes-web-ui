@@ -12,6 +12,14 @@ import type { Server, Socket } from 'socket.io'
 import { EventSource } from 'eventsource'
 import { setRunSession } from '../../routes/hermes/proxy-handler'
 import { updateUsage } from '../../db/hermes/usage-store'
+import {
+  getSession,
+  getSessionDetail,
+  createSession,
+  addMessage,
+  updateSessionStats,
+  useLocalSessionStore,
+} from '../../db/hermes/session-store'
 import { getSessionDetailFromDb } from '../../db/hermes/sessions-db'
 import { getModelContextLength } from './model-context'
 import { ChatContextCompressor, countTokens, SUMMARY_PREFIX } from '../../lib/context-compressor'
@@ -31,7 +39,12 @@ interface SessionMessage {
   tool_calls?: any[] | null
   tool_name?: string | null
   timestamp: number
+  token_count?: number | null
+  finish_reason?: string | null
   reasoning?: string | null
+  reasoning_details?: string | null
+  reasoning_content?: string | null
+  codex_reasoning_items?: string | null
 }
 
 interface SessionState {
@@ -102,7 +115,9 @@ export class ChatRunSocket {
       // Not in memory — load from DB
       if (!state) {
         try {
-          const detail = await getSessionDetailFromDb(sid)
+          const detail = useLocalSessionStore()
+            ? getSessionDetail(sid)
+            : await getSessionDetailFromDb(sid)
           const messages = detail?.messages?.length
             ? detail.messages
                 .filter(m => (m.role === 'user' || m.role === 'assistant' || m.role === 'tool') && m.content !== undefined)
@@ -187,13 +202,28 @@ export class ChatRunSocket {
     if (session_id) {
       const state = this.getOrCreateSession(session_id)
       state.isWorking = true
+      const now = Math.floor(Date.now() / 1000)
       state.messages.push({
         id: state.messages.length + 1,
         session_id,
         role: 'user',
         content: input,
-        timestamp: Math.floor(Date.now() / 1000),
+        timestamp: now,
       })
+
+      // Create session in local DB if it doesn't exist (local store only)
+      if (useLocalSessionStore()) {
+        if (!getSession(session_id)) {
+          createSession({ id: session_id, profile, model })
+        }
+        addMessage({
+          session_id,
+          role: 'user',
+          content: input,
+          timestamp: now,
+        })
+      }
+
       socket.join(`session:${session_id}`)
     }
 
@@ -217,7 +247,9 @@ export class ChatRunSocket {
       // Build conversation_history from DB if session_id is provided
       if (session_id) {
         try {
-          const detail = await getSessionDetailFromDb(session_id)
+          const detail = useLocalSessionStore()
+            ? getSessionDetail(session_id)
+            : await getSessionDetailFromDb(session_id)
           if (detail?.messages?.length) {
             let history: Array<{
               role: string
@@ -489,7 +521,7 @@ export class ChatRunSocket {
 
               switch (parsed.event) {
                 case 'message.delta': {
-                  if (last?.role === 'assistant') {
+                  if (last?.role === 'assistant' && last.finish_reason == null) {
                     last.content += (parsed.delta || '')
                   } else {
                     msgs.push({
@@ -506,7 +538,7 @@ export class ChatRunSocket {
                 case 'thinking.delta': {
                   const text = parsed.text || parsed.delta || ''
                   if (!text) break
-                  if (last?.role === 'assistant') {
+                  if (last?.role === 'assistant' && last.finish_reason == null) {
                     last.reasoning = (last.reasoning || '') + text
                   } else {
                     msgs.push({
@@ -521,24 +553,31 @@ export class ChatRunSocket {
                   break
                 }
                 case 'tool.started': {
+                  if (last?.role === 'assistant' && last.finish_reason == null) {
+                    last.finish_reason = 'tool_calls'
+                  }
                   msgs.push({
                     id: msgs.length + 1,
                     session_id,
                     role: 'tool',
                     content: '',
+                    tool_call_id: parsed.tool_call_id || null,
                     tool_name: parsed.tool || parsed.name || null,
                     timestamp: Math.floor(Date.now() / 1000),
                   })
                   break
                 }
                 case 'tool.completed': {
-                  const toolMsg = [...msgs].reverse().find(m => m.role === 'tool')
-                  if (toolMsg) {
-                    // tool_name already set by tool.started
+                  const toolMsg = [...msgs].reverse().find(m => m.role === 'tool' && !m.content)
+                  if (toolMsg && parsed.output) {
+                    toolMsg.content = typeof parsed.output === 'string' ? parsed.output : JSON.stringify(parsed.output)
                   }
                   break
                 }
                 case 'run.completed': {
+                  if (last?.role === 'assistant' && last.finish_reason == null) {
+                    last.finish_reason = parsed.finish_reason || 'stop'
+                  }
                   // Finalize assistant message — if no content was streamed, use output
                   if (parsed.output && !runProducedAssistantText(msgs)) {
                     if (last?.role === 'assistant') {
@@ -629,6 +668,43 @@ export class ChatRunSocket {
       state.abortController = undefined
       state.runId = undefined
       state.events = []
+
+      // Persist messages to local DB only if using local store
+      if (useLocalSessionStore()) {
+        this.persistSessionMessages(sessionId, state)
+      }
+    }
+  }
+
+  /** Write in-memory messages to local DB and update session stats */
+  private persistSessionMessages(sessionId: string, state: SessionState) {
+    try {
+      const dbDetail = getSessionDetail(sessionId)
+      const existingCount = dbDetail?.messages?.length || 0
+      const newMessages = state.messages.slice(existingCount)
+
+      if (newMessages.length > 0) {
+        for (const msg of newMessages) {
+          addMessage({
+            session_id: msg.session_id,
+            role: msg.role,
+            content: msg.content || '',
+            tool_call_id: msg.tool_call_id ?? null,
+            tool_calls: msg.tool_calls ?? null,
+            tool_name: msg.tool_name ?? null,
+            timestamp: msg.timestamp,
+            finish_reason: msg.finish_reason ?? null,
+            reasoning: msg.reasoning ?? null,
+            reasoning_details: msg.reasoning_details ?? null,
+            reasoning_content: msg.reasoning_content ?? null,
+            codex_reasoning_items: msg.codex_reasoning_items ?? null,
+          })
+        }
+      }
+
+      updateSessionStats(sessionId)
+    } catch (err: any) {
+      logger.warn(err, '[chat-run-socket] failed to persist messages for session %s', sessionId)
     }
   }
 

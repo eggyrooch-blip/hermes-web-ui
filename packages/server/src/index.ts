@@ -54,6 +54,10 @@ export async function bootstrap() {
   initUsageStore()
   console.log('[bootstrap] usage store initialized')
 
+  const { initSessionStore } = await import('./db/hermes/session-store')
+  initSessionStore()
+  console.log('[bootstrap] session store initialized')
+
   const { initCompressionSnapshotStore } = await import('./db/hermes/compression-snapshot')
   initCompressionSnapshotStore()
   console.log('[bootstrap] compression snapshot store initialized')
@@ -102,6 +106,13 @@ export async function bootstrap() {
   const chatRunServer = new ChatRunSocket(groupChatServer.getIO(), getGatewayManagerInstance())
   setChatRunServer(chatRunServer)
   chatRunServer.init()
+
+  // Session deleter — periodically drain pending session deletes
+  const { SessionDeleter } = await import('./services/hermes/session-deleter')
+  const sessionDeleter = SessionDeleter.getInstance()
+  const activeProfile = process.env.PROFILE || 'default'
+  sessionDeleter.start(activeProfile)
+  console.log('[bootstrap] session deleter started, profile=%s', activeProfile)
 
   // Catch-all: destroy upgrade requests not handled by terminal or Socket.IO
   server.on('upgrade', (req: any, socket: any) => {
