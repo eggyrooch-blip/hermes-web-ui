@@ -7,6 +7,7 @@ import {
 } from './prompt'
 import { updateUsage } from '../../../db/hermes/usage-store'
 import { getActiveProfileName } from '../../hermes/hermes-profile'
+import { getSessionDetailFromDb } from '../../../db/hermes/sessions-db'
 import { logger } from '../../logger'
 
 /**
@@ -96,23 +97,30 @@ export class GatewaySummarizer implements GatewayCaller {
                         clearTimeout(timer)
                         source.close()
 
-                        // Record usage data from run.completed event
-                        try {
-                            const profile = getActiveProfileName()
-                            // Extract usage from parsed (may be in different fields)
-                            updateUsage(sessionId, {
-                                inputTokens: parsed.input_tokens || 0,
-                                outputTokens: parsed.output_tokens || 0,
-                                cacheReadTokens: parsed.cache_read_tokens || 0,
-                                cacheWriteTokens: parsed.cache_write_tokens || 0,
-                                reasoningTokens: parsed.reasoning_tokens || 0,
-                                model: parsed.model || '',
-                                profile,
-                            })
-                            logger.debug(`[GatewaySummarizer] Recorded usage for session ${sessionId}: input=${parsed.input_tokens}, output=${parsed.output_tokens}`)
-                        } catch (err: any) {
-                            logger.warn(err, '[GatewaySummarizer] Failed to record usage')
-                        }
+                        // Record usage data from Hermes state.db
+                        // Wait a bit for Hermes to write to database, then fetch accurate usage
+                        setTimeout(async () => {
+                            try {
+                                const profile = getActiveProfileName()
+                                const detail = await getSessionDetailFromDb(sessionId)
+                                if (detail) {
+                                    updateUsage(sessionId, {
+                                        inputTokens: detail.input_tokens,
+                                        outputTokens: detail.output_tokens,
+                                        cacheReadTokens: detail.cache_read_tokens,
+                                        cacheWriteTokens: detail.cache_write_tokens,
+                                        reasoningTokens: detail.reasoning_tokens,
+                                        model: detail.model,
+                                        profile,
+                                    })
+                                    logger.debug(`[GatewaySummarizer] Recorded usage for compression session ${sessionId}: input=${detail.input_tokens}, output=${detail.output_tokens}`)
+                                } else {
+                                    logger.warn(`[GatewaySummarizer] Failed to get session detail for ${sessionId}`)
+                                }
+                            } catch (err: any) {
+                                logger.warn(err, '[GatewaySummarizer] Failed to record usage from DB')
+                            }
+                        }, 500)
 
                         const output = parsed.output
                         if (!output || typeof output !== 'string' || output.trim() === '') {
