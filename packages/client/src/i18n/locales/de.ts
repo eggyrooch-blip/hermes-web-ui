@@ -550,6 +550,12 @@ export default {
 
   // Anderungsprotokoll
   changelog: {
+    new_0_5_0_1: 'Multi-profile support: filter usage stats by active profile',
+    new_0_5_0_2: 'Group chat context compression with multi-profile support',
+    new_0_5_0_3: 'Fixed token estimation overestimation (removed senderName, use charsPerToken config)',
+    new_0_5_0_4: 'Improved WSL compatibility with auto-detection and WAL mode',
+    new_0_5_0_5: 'Enhanced error logging for Hermes session synchronization',
+    new_0_5_0_6: 'Automatic ephemeral session cleanup after sync',
     new_0_4_8_1: 'Safe Mermaid diagram rendering with async render and timeout fallback',
     new_0_4_8_2: 'Fix nested markdown fence rendering truncation',
     new_0_4_8_3: 'Fix compressed session lineage projection and search',
