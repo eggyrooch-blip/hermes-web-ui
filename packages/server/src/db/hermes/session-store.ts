@@ -224,14 +224,25 @@ export function updateSession(id: string, data: Partial<Omit<HermesSessionRow, '
   const values: any[] = []
   for (const [key, val] of Object.entries(data)) {
     if (key === 'id' || key === 'profile') continue
+    // Skip last_active and ended_at - handle them separately below
+    if (key === 'last_active' || key === 'ended_at') continue
     fields.push(`"${key}" = ?`)
     values.push(val)
   }
+
+  // Handle ended_at - only update if provided, otherwise keep existing value
+  if (data.ended_at !== undefined) {
+    fields.push(`"ended_at" = ?`)
+    values.push(data.ended_at)
+  }
+
+  // Handle last_active - use provided value or current time
+  if (data.last_active !== undefined) {
+    fields.push(`"last_active" = ?`)
+    values.push(data.last_active)
+  }
+
   if (fields.length === 0) return
-  fields.push(`"ended_at" = COALESCE(ended_at, ?)`)
-  values.push(data.ended_at ?? null)
-  fields.push(`"last_active" = COALESCE(last_active, ?)`)
-  values.push(data.last_active ?? Math.floor(Date.now() / 1000))
   db.prepare(`UPDATE ${SESSIONS_TABLE} SET ${fields.join(', ')} WHERE id = ?`).run(...values, id)
 }
 
@@ -253,14 +264,35 @@ export function renameSession(id: string, title: string): boolean {
 export function listSessions(profile: string, source?: string, limit = 2000): HermesSessionRow[] {
   if (!isSqliteAvailable()) return []
   const db = getDb()!
-  let sql = `SELECT * FROM ${SESSIONS_TABLE} WHERE profile = ?`
+
+  // Use a subquery to generate preview from first user message if not set
+  const sql = `
+    SELECT
+      s.*,
+      COALESCE(
+        s.preview,
+        (
+          SELECT SUBSTR(REPLACE(REPLACE(m.content, CHAR(10), ' '), CHAR(13), ' '), 1, 63)
+          FROM ${MESSAGES_TABLE} m
+          WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+          ORDER BY m.timestamp, m.id
+          LIMIT 1
+        ),
+        ''
+      ) AS preview
+    FROM ${SESSIONS_TABLE} s
+    WHERE s.profile = ?
+      ${source ? 'AND s.source = ?' : ''}
+    ORDER BY s.last_active DESC
+    LIMIT ?
+  `
+
   const params: any[] = [profile]
   if (source) {
-    sql += ' AND source = ?'
     params.push(source)
   }
-  sql += ` ORDER BY last_active DESC LIMIT ?`
   params.push(limit)
+
   const rows = db.prepare(sql).all(...params) as Record<string, unknown>[]
   return rows.map(mapSessionRow)
 }

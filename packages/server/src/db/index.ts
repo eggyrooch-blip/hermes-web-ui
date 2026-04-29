@@ -4,10 +4,9 @@ import { resolve } from 'path'
 import { homedir } from 'os'
 
 const isDev = process.env.NODE_ENV !== 'production'
-const isInWSL = existsSync('/proc/version') && readFileSync('/proc/version', 'utf-8').includes('microsoft')
 
 // In WSL, always use home directory to avoid cross-filesystem issues
-const DB_DIR = (isDev && !isInWSL)
+const DB_DIR = isDev
   ? resolve(process.cwd(), 'packages/server/data')
   : resolve(homedir(), '.hermes-web-ui')
 const DB_PATH = resolve(DB_DIR, 'hermes-web-ui.db')

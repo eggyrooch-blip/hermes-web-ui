@@ -8,14 +8,7 @@ export const changelog: ChangelogEntry[] = [
   {
     version: '0.5.0',
     date: '2025-04-29',
-    changes: [
-      'changelog.new_0_5_0_1',
-      'changelog.new_0_5_0_2',
-      'changelog.new_0_5_0_3',
-      'changelog.new_0_5_0_4',
-      'changelog.new_0_5_0_5',
-      'changelog.new_0_5_0_6',
-    ],
+    changes: ['changelog.new_0_5_0_1', 'changelog.new_0_5_0_2'],
   },
   {
     version: '0.4.9',

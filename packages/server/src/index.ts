@@ -54,6 +54,11 @@ export async function bootstrap() {
   await initAllStores()
   console.log('[bootstrap] all stores initialized')
 
+  // Sync Hermes sessions from all profiles (only if local DB is empty)
+  const { syncAllHermesSessionsOnStartup } = await import('./services/hermes/session-sync')
+  await syncAllHermesSessionsOnStartup()
+  console.log('[bootstrap] Hermes session sync completed')
+
   app.use(cors({ origin: config.corsOrigins }))
   app.use(bodyParser())
   console.log('[bootstrap] cors + bodyParser registered')
