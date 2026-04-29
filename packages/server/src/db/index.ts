@@ -4,7 +4,10 @@ import { resolve } from 'path'
 import { homedir } from 'os'
 
 const isDev = process.env.NODE_ENV !== 'production'
-const DB_DIR = isDev
+const isInWSL = existsSync('/proc/version') && readFileSync('/proc/version', 'utf-8').includes('microsoft')
+
+// In WSL, always use home directory to avoid cross-filesystem issues
+const DB_DIR = (isDev && !isInWSL)
   ? resolve(process.cwd(), 'packages/server/data')
   : resolve(homedir(), '.hermes-web-ui')
 const DB_PATH = resolve(DB_DIR, 'hermes-web-ui.db')
@@ -30,7 +33,10 @@ export function getDb(): DatabaseSync | null {
   if (!_db) {
     mkdirSync(DB_DIR, { recursive: true })
     _db = new DatabaseSync(DB_PATH)
-    _db.exec('PRAGMA journal_mode=DELETE')
+    // Use WAL mode for better concurrency and WSL compatibility
+    _db.exec('PRAGMA journal_mode=WAL')
+    _db.exec('PRAGMA synchronous=NORMAL')
+    _db.exec('PRAGMA busy_timeout=5000')
     _db.exec('PRAGMA foreign_keys=ON')
   }
   return _db
