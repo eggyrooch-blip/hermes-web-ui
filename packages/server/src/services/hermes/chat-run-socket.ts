@@ -154,10 +154,12 @@ interface SessionState {
   isWorking: boolean
   events: Array<{ event: string; data: any }>
   abortController?: AbortController
+  eventSource?: EventSource
   runId?: string
   profile?: string
   inputTokens?: number
   outputTokens?: number
+  isAborting?: boolean
 }
 
 // --- ChatRunSocket ---
@@ -815,6 +817,7 @@ export class ChatRunSocket {
       if (!res.ok) {
         const text = await res.text().catch(() => '')
         emit('run.failed', { event: 'run.failed', error: `Upstream ${res.status}: ${text}` })
+        if (session_id) this.markCompleted(socket, session_id, { event: 'run.failed' })
         return
       }
 
@@ -822,6 +825,7 @@ export class ChatRunSocket {
       const runId = runData.run_id
       if (!runId) {
         emit('run.failed', { event: 'run.failed', error: 'No run_id in upstream response' })
+        if (session_id) this.markCompleted(socket, session_id, { event: 'run.failed' })
         return
       }
 
@@ -855,6 +859,10 @@ export class ChatRunSocket {
 
       // @ts-ignore - eventsource library types are too strict
       const source = new EventSource(eventsUrl.toString(), eventSourceInit)
+      if (session_id) {
+        const state = this.getOrCreateSession(session_id)
+        state.eventSource = source
+      }
 
       source.onmessage = (event: MessageEvent) => {
         try {
@@ -1046,19 +1054,31 @@ export class ChatRunSocket {
             }
           }
 
+          if (parsed.event === 'run.completed' || parsed.event === 'run.failed') {
+            source.close()
+            if (session_id && this.sessionMap.get(session_id)?.isAborting) {
+              console.log('[chat-run-socket][abort] suppressing upstream terminal event during abort', {
+                sessionId: session_id,
+                runId: parsed.run_id,
+                event: parsed.event,
+              })
+              return
+            }
+            if (session_id) this.markCompleted(socket, session_id, { event: parsed.event, run_id: parsed.run_id })
+          }
+
           // Usage will be calculated after syncFromHermes completes (in markCompleted)
 
           emit(parsed.event || 'message', parsed)
-
-          if (parsed.event === 'run.completed' || parsed.event === 'run.failed') {
-            source.close()
-            if (session_id) this.markCompleted(socket, session_id, { event: parsed.event, run_id: parsed.run_id })
-          }
         } catch { /* not JSON, skip */ }
       }
 
       source.onerror = () => {
         source.close()
+        if (session_id && this.sessionMap.get(session_id)?.isAborting) {
+          console.log('[chat-run-socket][abort] event source closed during abort', { sessionId: session_id })
+          return
+        }
         emit('run.failed', { event: 'run.failed', error: 'EventSource connection lost' })
         if (session_id) this.markCompleted(socket, session_id, { event: 'run.failed' })
       }
@@ -1073,8 +1093,23 @@ export class ChatRunSocket {
   private async handleAbort(socket: Socket, sessionId: string) {
     const state = this.sessionMap.get(sessionId)
     if (!state?.isWorking || !state.runId) {
+      console.log('[chat-run-socket][abort] ignored: no active run', { sessionId })
       return
     }
+
+    const runId = state.runId
+    state.isAborting = true
+    this.replaceState(sessionId, 'abort.started', {
+      event: 'abort.started',
+      run_id: runId,
+      graceMs: 5000,
+    })
+    this.emitToSession(socket, sessionId, 'abort.started', {
+      event: 'abort.started',
+      run_id: runId,
+      graceMs: 5000,
+    })
+    console.log('[chat-run-socket][abort] started', { sessionId, runId })
 
     // Call upstream stop endpoint
     const profile = state.profile || 'default'
@@ -1085,32 +1120,48 @@ export class ChatRunSocket {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
 
-      await fetch(`${upstream}/v1/runs/${state.runId}/stop`, {
+      console.log('[chat-run-socket][abort] calling upstream stop', { sessionId, runId, upstream })
+      await fetch(`${upstream}/v1/runs/${runId}/stop`, {
         method: 'POST',
         headers,
       })
-      logger.info('[chat-run-socket] called upstream stop for run %s (session: %s)', state.runId, sessionId)
+      logger.info('[chat-run-socket] called upstream stop for run %s (session: %s)', runId, sessionId)
+      console.log('[chat-run-socket][abort] upstream stop accepted, waiting for graceful exit', { sessionId, runId, graceMs: 5000 })
 
       // Wait for upstream to process the stop request
       await new Promise(resolve => setTimeout(resolve, 5000))
     } catch (err: any) {
-      logger.warn(err, '[chat-run-socket] failed to call upstream stop for run %s (session: %s)', state.runId, sessionId)
+      logger.warn(err, '[chat-run-socket] failed to call upstream stop for run %s (session: %s)', runId, sessionId)
+      console.log('[chat-run-socket][abort] upstream stop failed, continuing local completion', { sessionId, runId, error: err?.message })
     }
 
-    // Abort local EventSource connection
+    // Close local EventSource connection after the upstream grace period.
+    if (state.eventSource) {
+      state.eventSource.close()
+      state.eventSource = undefined
+      console.log('[chat-run-socket][abort] event source closed', { sessionId, runId })
+    }
     if (state.abortController) {
       state.abortController.abort()
     }
 
-    this.markCompleted(socket, sessionId, { event: 'run.failed', run_id: state.runId })
+    await this.markAbortCompleted(socket, sessionId, runId)
   }
 
   /** Mark a session run as completed/failed so reconnecting clients get notified */
   private markCompleted(socket: Socket, sessionId: string, _info: { event: string; run_id?: string }) {
     const state = this.sessionMap.get(sessionId)
     if (state) {
+      if (state.isAborting) {
+        console.log('[chat-run-socket][abort] terminal upstream event observed; abort handler will finish cleanup', {
+          sessionId,
+          runId: state.runId,
+        })
+        return
+      }
       state.isWorking = false
       state.abortController = undefined
+      state.eventSource = undefined
       state.runId = undefined
       state.events = []
       // Sync messages from Hermes ephemeral session to local DB
@@ -1119,9 +1170,45 @@ export class ChatRunSocket {
         const prof = state.profile
         this.hermesSessionIds.delete(sessionId)
         state.profile = undefined
-        this.syncFromHermes(socket, sessionId, hermesId, prof)
+        void this.syncFromHermes(socket, sessionId, hermesId, prof)
       }
     }
+  }
+
+  private async markAbortCompleted(socket: Socket, sessionId: string, runId: string) {
+    const state = this.sessionMap.get(sessionId)
+    if (!state) return
+
+    const hermesId = this.hermesSessionIds.get(sessionId)
+    const profile = state.profile
+    let synced = false
+    if (useLocalSessionStore() && hermesId) {
+      this.hermesSessionIds.delete(sessionId)
+      console.log('[chat-run-socket][abort] syncing stopped run from Hermes', { sessionId, hermesId, profile: profile || 'default' })
+      synced = await this.syncFromHermes(socket, sessionId, hermesId, profile, {
+        maxAttempts: 10,
+        delayMs: 1000,
+      })
+    }
+
+    state.isWorking = false
+    state.isAborting = false
+    state.profile = undefined
+    state.abortController = undefined
+    state.eventSource = undefined
+    state.runId = undefined
+    this.replaceState(sessionId, 'abort.completed', {
+      event: 'abort.completed',
+      run_id: runId,
+      synced,
+    })
+    this.emitToSession(socket, sessionId, 'abort.completed', {
+      event: 'abort.completed',
+      run_id: runId,
+      synced,
+    })
+    state.events = []
+    console.log('[chat-run-socket][abort] completed', { sessionId, runId, synced })
   }
 
   /**
@@ -1174,13 +1261,33 @@ export class ChatRunSocket {
    * and write to local DB. This gives us tool results that SSE events don't include.
    * After sync, enqueues the ephemeral session for deletion.
    */
-  private syncFromHermes(socket: Socket, localSessionId: string, hermesSessionId: string, profile?: string) {
-    getSessionDetailFromDb(hermesSessionId)
-      .then((detail) => {
+  private async syncFromHermes(
+    socket: Socket,
+    localSessionId: string,
+    hermesSessionId: string,
+    profile?: string,
+    options?: { maxAttempts?: number; delayMs?: number },
+  ): Promise<boolean> {
+    const maxAttempts = options?.maxAttempts || 1
+    const delayMs = options?.delayMs || 0
+    try {
+      let detail: Awaited<ReturnType<typeof getSessionDetailFromDb>> | null = null
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        detail = await getSessionDetailFromDb(hermesSessionId)
         if (!detail || !detail.messages?.length) {
-          logger.warn('[chat-run-socket] syncFromHermes: no data for Hermes session %s', hermesSessionId)
-          return
+          logger.warn('[chat-run-socket] syncFromHermes: no data for Hermes session %s (attempt %d/%d)', hermesSessionId, attempt, maxAttempts)
+          console.log('[chat-run-socket][abort] sync waiting for Hermes data', { localSessionId, hermesSessionId, attempt, maxAttempts })
+          if (attempt < maxAttempts && delayMs > 0) {
+            await new Promise(resolve => setTimeout(resolve, delayMs))
+            continue
+          }
+          this.enqueueEphemeralDelete(hermesSessionId, profile)
+          return false
         }
+        break
+      }
+      if (!detail) return false
+
         // Skip user messages — already written to local DB in handleRun
         const toInsert = detail.messages.filter(m => m.role !== 'user')
 
@@ -1293,10 +1400,11 @@ export class ChatRunSocket {
 
         // Enqueue ephemeral session for deferred deletion
         this.enqueueEphemeralDelete(hermesSessionId, profile)
-      })
-      .catch((err: any) => {
-        logger.warn(err, '[chat-run-socket] syncFromHermes failed for session %s (hermesId: %s, profile: %s)', localSessionId, hermesSessionId, profile || 'default')
-      })
+        return true
+    } catch (err: any) {
+      logger.warn(err, '[chat-run-socket] syncFromHermes failed for session %s (hermesId: %s, profile: %s)', localSessionId, hermesSessionId, profile || 'default')
+      return false
+    }
   }
   private replaceByHermesSessionId(session_id: string, hermesSessionId: string, newItems: SessionMessage[]) {
     let start = -1
@@ -1362,6 +1470,30 @@ export class ChatRunSocket {
       }
     }
     this.pushState(sessionId, event, data)
+  }
+
+  private emitToSession(socket: Socket, sessionId: string, event: string, payload: any) {
+    const tagged = { ...payload, session_id: sessionId }
+    this.nsp.to(`session:${sessionId}`).emit(event, tagged)
+    if (!this.nsp.adapter.rooms.get(`session:${sessionId}`)?.size && socket.connected) {
+      socket.emit(event, tagged)
+    }
+  }
+
+  /** Close all active EventSource connections and abort controllers */
+  close() {
+    for (const [sessionId, state] of this.sessionMap.entries()) {
+      if (state.abortController) {
+        try {
+          state.abortController.abort()
+        } catch (e) {
+          logger.warn(e, '[chat-run-socket] failed to abort controller for session %s', sessionId)
+        }
+      }
+    }
+    this.sessionMap.clear()
+    this.hermesSessionIds.clear()
+    logger.info('[chat-run-socket] closed all connections and cleared state')
   }
 }
 
