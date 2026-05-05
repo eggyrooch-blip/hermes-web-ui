@@ -218,7 +218,7 @@ export class ChatRunSocket {
 
     socket.on('abort', (data: { session_id?: string }) => {
       if (data.session_id) {
-        this.handleAbort(socket, data.session_id)
+        void this.handleAbort(socket, data.session_id)
       }
     })
   }
@@ -1070,12 +1070,39 @@ export class ChatRunSocket {
 
   // --- Abort handler ---
 
-  private handleAbort(socket: Socket, sessionId: string) {
+  private async handleAbort(socket: Socket, sessionId: string) {
     const state = this.sessionMap.get(sessionId)
-    if (state?.isWorking && state.abortController) {
-      state.abortController.abort()
-      this.markCompleted(socket, sessionId, { event: 'run.failed', run_id: state.runId })
+    if (!state?.isWorking || !state.runId) {
+      return
     }
+
+    // Call upstream stop endpoint
+    const profile = state.profile || 'default'
+    const upstream = this.gatewayManager.getUpstream(profile).replace(/\/$/, '')
+    const apiKey = this.gatewayManager.getApiKey(profile) || undefined
+
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+
+      await fetch(`${upstream}/v1/runs/${state.runId}/stop`, {
+        method: 'POST',
+        headers,
+      })
+      logger.info('[chat-run-socket] called upstream stop for run %s (session: %s)', state.runId, sessionId)
+
+      // Wait for upstream to process the stop request
+      await new Promise(resolve => setTimeout(resolve, 5000))
+    } catch (err: any) {
+      logger.warn(err, '[chat-run-socket] failed to call upstream stop for run %s (session: %s)', state.runId, sessionId)
+    }
+
+    // Abort local EventSource connection
+    if (state.abortController) {
+      state.abortController.abort()
+    }
+
+    this.markCompleted(socket, sessionId, { event: 'run.failed', run_id: state.runId })
   }
 
   /** Mark a session run as completed/failed so reconnecting clients get notified */
