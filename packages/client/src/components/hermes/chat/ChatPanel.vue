@@ -844,17 +844,21 @@ async function handleWorkspaceConfirm() {
   justify-content: space-between;
   padding: 12px;
   flex-shrink: 0;
+  min-height: 0;
 }
 
 .session-list-actions {
   display: flex;
   align-items: center;
   gap: 4px;
+  height: 22px;
 
   .n-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    height: 22px;
+    min-height: 22px;
   }
 }
 
@@ -866,6 +870,10 @@ async function handleWorkspaceConfirm() {
   color: $text-secondary;
   padding: 4px;
   border-radius: $radius-sm;
+  height: 22px;
+  min-height: 22px;
+  align-items: center;
+  justify-content: center;
 
   &:hover {
     background: rgba($accent-primary, 0.06);
@@ -878,6 +886,7 @@ async function handleWorkspaceConfirm() {
   color: $text-muted;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  line-height: 22px;
 }
 
 .session-scope-note {
