@@ -5,12 +5,13 @@ import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { fetchContextLength } from '@/api/hermes/sessions'
 import { setModelContext } from '@/api/hermes/model-context'
-import { NButton, NTooltip, NSwitch, NModal, NInputNumber, NMessage } from 'naive-ui'
+import { NButton, NTooltip, NSwitch, NModal, NInputNumber, useMessage } from 'naive-ui'
 import { computed, ref, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const chatStore = useChatStore()
 const { t } = useI18n()
+const message = useMessage()
 const inputText = ref('')
 const textareaRef = ref<HTMLTextAreaElement>()
 const fileInputRef = ref<HTMLInputElement>()
@@ -58,7 +59,7 @@ async function handleEditContextLimit() {
 
 async function saveContextLimit() {
   if (!editingContextLimit.value || editingContextLimit.value <= 0) {
-    window.$message?.error(t('chat.contextEditInvalid'))
+    message.error(t('chat.contextEditInvalid'))
     return
   }
 
@@ -69,16 +70,16 @@ async function saveContextLimit() {
     const model = appStore.selectedModel || ''
 
     if (!provider || !model) {
-      window.$message?.error(t('chat.contextEditFailed'))
+      message.error(t('chat.contextEditFailed'))
       return
     }
 
     await setModelContext(provider, model, editingContextLimit.value)
     contextLength.value = editingContextLimit.value
     showContextEditModal.value = false
-    window.$message?.success(t('chat.contextEditSuccess'))
+    message.success(t('chat.contextEditSuccess'))
   } catch (err: any) {
-    window.$message?.error(`${t('chat.contextEditFailed')}: ${err.message || ''}`)
+    message.error(`${t('chat.contextEditFailed')}: ${err.message || ''}`)
   } finally {
     isSavingContextLimit.value = false
   }
