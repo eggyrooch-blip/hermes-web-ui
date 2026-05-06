@@ -850,6 +850,12 @@ async function handleWorkspaceConfirm() {
   display: flex;
   align-items: center;
   gap: 4px;
+
+  .n-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
 }
 
 .session-close-btn {
