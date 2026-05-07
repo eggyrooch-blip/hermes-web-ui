@@ -4,7 +4,7 @@ import { mount } from '@vue/test-utils'
 
 const mockSettingsStore = vi.hoisted(() => ({
   sessionReset: { mode: 'both', idle_minutes: 60, at_hour: 0 },
-  approvals: { mode: 'auto' },
+  approvals: { mode: 'manual' },
   saveSection: vi.fn(),
 }))
 
@@ -54,6 +54,7 @@ describe('SessionSettings', () => {
   })
 
   it('surfaces the human-only preference in the Session tab', async () => {
+    let emittedValue: boolean | undefined
     const wrapper = mount(SessionSettings, {
       global: {
         stubs: {
@@ -63,6 +64,19 @@ describe('SessionSettings', () => {
           },
           NSelect: true,
           NInputNumber: true,
+          NSwitch: {
+            props: ['value'],
+            emits: ['update:value'],
+            template: '<div class="n-switch" @click="$emit(\'update:value\', !value)"></div>',
+            setup(props: any, { emit }: any) {
+              return {
+                onClick: () => {
+                  emittedValue = !props.value
+                  emit('update:value', emittedValue)
+                },
+              }
+            },
+          },
         },
       },
     })

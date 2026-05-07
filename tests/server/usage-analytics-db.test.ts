@@ -221,6 +221,7 @@ describe('native-style Hermes usage analytics DB aggregation', () => {
       cache_read_tokens: 15,
       cache_write_tokens: 3,
       sessions: 3,
+      errors: 0,
     })
     expect(result.by_day[1].cost).toBeCloseTo(0.038)
   })
