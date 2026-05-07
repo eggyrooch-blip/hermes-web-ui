@@ -39,6 +39,7 @@ export interface Message {
   //   2) 流式：由 reasoning.delta / thinking.delta / reasoning.available 事件累加
   // 不含 <think> 包裹标签；内容自身可以为多段纯文本。
   reasoning?: string
+  queued?: boolean
 }
 
 export interface Session {
@@ -323,6 +324,10 @@ export const useChatStore = defineStore('chat', () => {
   const streamStates = ref<Map<string, { abort: () => void }>>(new Map())
   /** sessionId → server-reported isWorking status */
   const serverWorking = ref<Set<string>>(new Set())
+  /** sessionId → queued message count */
+  const queueLengths = ref<Map<string, number>>(new Map())
+  /** sessionId → queued user messages not yet visible in the transcript */
+  const queuedUserMessages = ref<Map<string, Message[]>>(new Map())
 
   // 自动播放语音开关
   const autoPlaySpeechEnabled = ref(false)
@@ -467,6 +472,11 @@ export const useChatStore = defineStore('chat', () => {
           } else {
             serverWorking.value.delete(sessionId)
           }
+          if (data.queueLength && data.queueLength > 0) {
+            queueLengths.value.set(sessionId, data.queueLength)
+          } else {
+            queueLengths.value.delete(sessionId)
+          }
           if ((data as any).isAborting) {
             setAbortState({ aborting: true, synced: null })
           } else if (!data.isWorking) {
@@ -590,6 +600,41 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function enqueueUserMessage(sessionId: string, message: Message) {
+    const queue = queuedUserMessages.value.get(sessionId) || []
+    queue.push({ ...message, queued: true })
+    queuedUserMessages.value.set(sessionId, queue)
+  }
+
+  function removeQueuedMessage(sessionId: string, messageId: string) {
+    const queue = queuedUserMessages.value.get(sessionId)
+    if (!queue?.length) return
+    const next = queue.filter(message => message.id !== messageId)
+    if (next.length > 0) {
+      queuedUserMessages.value.set(sessionId, next)
+    } else {
+      queuedUserMessages.value.delete(sessionId)
+    }
+    queueLengths.value.set(sessionId, next.length)
+    getChatRunSocket()?.emit('cancel_queued_run', {
+      session_id: sessionId,
+      queue_id: messageId,
+    })
+  }
+
+  function showNextQueuedUserMessage(sessionId: string) {
+    const queue = queuedUserMessages.value.get(sessionId)
+    if (!queue?.length) return
+    const next = queue.shift()!
+    if (queue.length > 0) {
+      queuedUserMessages.value.set(sessionId, queue)
+    } else {
+      queuedUserMessages.value.delete(sessionId)
+    }
+    addMessage(sessionId, { ...next, queued: false })
+    updateSessionTitle(sessionId)
+  }
+
   function updateSessionTitle(sessionId: string) {
     const target = sessions.value.find(s => s.id === sessionId)
     if (!target) return
@@ -618,7 +663,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function sendMessage(content: string, attachments?: Attachment[]) {
-    if ((!content.trim() && !(attachments && attachments.length > 0)) || isStreaming.value) return
+    if ((!content.trim() && !(attachments && attachments.length > 0))) return
 
     primeCompletionBellIfEnabled()
 
@@ -629,6 +674,7 @@ export const useChatStore = defineStore('chat', () => {
 
     // Capture session ID at send time — all callbacks use this, not activeSessionId
     const sid = activeSessionId.value!
+    const shouldQueue = isSessionLive(sid)
 
     const userMsg: Message = {
       id: uid(),
@@ -636,12 +682,13 @@ export const useChatStore = defineStore('chat', () => {
       content: content.trim(),
       timestamp: Date.now(),
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
+      queued: shouldQueue,
     }
 
-    addMessage(sid, userMsg)
-
-
-    updateSessionTitle(sid)
+    if (!shouldQueue) {
+      addMessage(sid, userMsg)
+      updateSessionTitle(sid)
+    }
 
     try {
 
@@ -657,13 +704,20 @@ export const useChatStore = defineStore('chat', () => {
           const base = `/api/hermes/download?path=${encodeURIComponent(f.path)}&name=${encodeURIComponent(f.name)}`
           return [f.name, token ? `${base}&token=${encodeURIComponent(token)}` : base]
         }))
-        const msgs = getSessionMsgs(sid)
-        const lastUser = msgs.findLast(m => m.id === userMsg.id)
-        if (lastUser?.attachments) {
-          lastUser.attachments = lastUser.attachments.map(a => {
+        if (shouldQueue && userMsg.attachments) {
+          userMsg.attachments = userMsg.attachments.map(a => {
             const dl = urlMap.get(a.name)
             return dl ? { ...a, url: dl } : a
           })
+        } else {
+          const msgs = getSessionMsgs(sid)
+          const lastUser = msgs.findLast(m => m.id === userMsg.id)
+          if (lastUser?.attachments) {
+            lastUser.attachments = lastUser.attachments.map(a => {
+              const dl = urlMap.get(a.name)
+              return dl ? { ...a, url: dl } : a
+            })
+          }
         }
 
         // Build content blocks with uploaded file paths
@@ -681,6 +735,11 @@ export const useChatStore = defineStore('chat', () => {
         session_id: sid,
         model: sessionModel || undefined,
         provider: sessionProvider || undefined,
+        queue_id: userMsg.id,
+      }
+
+      if (shouldQueue) {
+        enqueueUserMessage(sid, userMsg)
       }
 
       // Helper to clean up this session's stream state
@@ -689,15 +748,29 @@ export const useChatStore = defineStore('chat', () => {
         serverWorking.value.delete(sid)
       }
 
-      // Per-run flags used to detect silently-swallowed errors at run.completed.
+      // Per-active-run flags used to detect silently-swallowed errors at run.completed.
       // hermes-agent occasionally emits run.completed with empty output and no
       // usage when the agent layer caught an upstream error (e.g. invalid API
       // key). We need to distinguish: (a) run with assistant text produced,
       // (b) run with only tool activity, (c) run with truly nothing visible.
-      // Reset per send() call — closures captured by Socket.IO callbacks are scoped
-      // to this run, so there is no cross-run contamination.
+      // Reset on every run.started because one handler may span multiple queued runs.
       let runProducedAssistantText = false
       let runHadToolActivity = false
+      let activeAssistantMessageId: string | null = null
+
+      const startNextQueuedUser = () => {
+        showNextQueuedUserMessage(sid)
+      }
+
+      const closeStreamingAssistant = () => {
+        const msgs = getSessionMsgs(sid)
+        msgs.forEach(m => {
+          if (m.role === 'assistant' && m.isStreaming) {
+            updateMessage(sid, m.id, { isStreaming: false })
+          }
+        })
+        activeAssistantMessageId = null
+      }
 
       // Send run via Socket.IO and listen to streamed events — all closures capture `sid`
       const ctrl = startRunViaSocket(
@@ -706,7 +779,22 @@ export const useChatStore = defineStore('chat', () => {
         (evt: RunEvent) => {
           switch (evt.event) {
             case 'run.started':
+              setAbortState(null)
+              runProducedAssistantText = false
+              runHadToolActivity = false
+              closeStreamingAssistant()
+              startNextQueuedUser()
+              if ((evt as any).queue_length > 0) {
+                queueLengths.value.set(sid, (evt as any).queue_length)
+              } else {
+                queueLengths.value.delete(sid)
+              }
               break
+
+            case 'run.queued': {
+              queueLengths.value.set(sid, (evt as any).queue_length || 0)
+              break
+            }
 
             case 'compression.started': {
               setCompressionState({
@@ -744,6 +832,11 @@ export const useChatStore = defineStore('chat', () => {
 
             case 'abort.completed': {
               setAbortState({ aborting: false, synced: (evt as any).synced ?? false })
+              if ((evt as any).queue_length > 0) {
+                queueLengths.value.set(sid, (evt as any).queue_length)
+                setAbortState(null)
+                break
+              }
               const msgs = getSessionMsgs(sid)
               const lastMsg = msgs[msgs.length - 1]
               if (lastMsg?.isStreaming) {
@@ -768,7 +861,9 @@ export const useChatStore = defineStore('chat', () => {
               if (!text) break
               runProducedAssistantText = true
               const msgs = getSessionMsgs(sid)
-              const last = msgs[msgs.length - 1]
+              const last = activeAssistantMessageId
+                ? msgs.find(m => m.id === activeAssistantMessageId)
+                : null
               if (last?.role === 'assistant' && last.isStreaming) {
                 last.reasoning = (last.reasoning || '') + text
                 noteReasoningStart(last.id)
@@ -782,6 +877,7 @@ export const useChatStore = defineStore('chat', () => {
                   isStreaming: true,
                   reasoning: text,
                 })
+                activeAssistantMessageId = newId
                 noteReasoningStart(newId)
               }
 
@@ -808,7 +904,9 @@ export const useChatStore = defineStore('chat', () => {
             case 'message.delta': {
               if (evt.delta) runProducedAssistantText = true
               const msgs = getSessionMsgs(sid)
-              const last = msgs[msgs.length - 1]
+              const last = activeAssistantMessageId
+                ? msgs.find(m => m.id === activeAssistantMessageId)
+                : null
               if (last?.role === 'assistant' && last.isStreaming) {
                 const prev = last.content
                 const next = prev + (evt.delta || '')
@@ -827,6 +925,7 @@ export const useChatStore = defineStore('chat', () => {
                   timestamp: Date.now(),
                   isStreaming: true,
                 })
+                activeAssistantMessageId = newId
               }
 
               break
@@ -835,10 +934,13 @@ export const useChatStore = defineStore('chat', () => {
             case 'tool.started': {
               runHadToolActivity = true
               const msgs = getSessionMsgs(sid)
-              const last = msgs[msgs.length - 1]
+              const last = activeAssistantMessageId
+                ? msgs.find(m => m.id === activeAssistantMessageId)
+                : msgs[msgs.length - 1]
               if (last?.isStreaming) {
                 updateMessage(sid, last.id, { isStreaming: false })
               }
+              activeAssistantMessageId = null
               addMessage(sid, {
                 id: uid(),
                 role: 'tool',
@@ -874,7 +976,9 @@ export const useChatStore = defineStore('chat', () => {
 
             case 'run.completed': {
               const msgs = getSessionMsgs(sid)
-              const lastMsg = msgs[msgs.length - 1]
+              const lastMsg = activeAssistantMessageId
+                ? msgs.find(m => m.id === activeAssistantMessageId)
+                : msgs[msgs.length - 1]
               if (lastMsg?.isStreaming) {
                 updateMessage(sid, lastMsg.id, { isStreaming: false })
               }
@@ -897,7 +1001,9 @@ export const useChatStore = defineStore('chat', () => {
               if ((evt as any).parsed_content !== undefined) {
                 // Backend has parsed stringified array format, update last assistant message
                 const msgs = getSessionMsgs(sid)
-                const lastAssistant = [...msgs].reverse().find(m => m.role === 'assistant')
+                const lastAssistant = activeAssistantMessageId
+                  ? msgs.find(m => m.id === activeAssistantMessageId)
+                  : [...msgs].reverse().find(m => m.role === 'assistant')
                 if (lastAssistant) {
                   updateMessage(sid, lastAssistant.id, {
                     content: (evt as any).parsed_content || '',
@@ -961,7 +1067,12 @@ export const useChatStore = defineStore('chat', () => {
                 }
               }
 
-              cleanup()
+              if ((evt as any).queue_remaining > 0) {
+                queueLengths.value.set(sid, (evt as any).queue_remaining)
+              } else {
+                cleanup()
+              }
+              activeAssistantMessageId = null
               updateSessionTitle(sid)
               break
             }
@@ -988,7 +1099,11 @@ export const useChatStore = defineStore('chat', () => {
                   msgs[i] = { ...m, toolStatus: 'error' }
                 }
               })
-              cleanup()
+              if ((evt as any).queue_remaining > 0) {
+                queueLengths.value.set(sid, (evt as any).queue_remaining)
+              } else {
+                cleanup()
+              }
               break
             }
 
@@ -1058,6 +1173,7 @@ export const useChatStore = defineStore('chat', () => {
     let closed = false
     let runProducedAssistantText = false
     let runHadToolActivity = false
+    let activeAssistantMessageId: string | null = null
 
     const cleanup = () => {
       if (closed) return
@@ -1068,13 +1184,42 @@ export const useChatStore = defineStore('chat', () => {
       unregisterSessionHandlers(sid)
     }
 
+    const startNextQueuedUser = () => {
+      showNextQueuedUserMessage(sid)
+    }
+
+    const closeStreamingAssistant = () => {
+      const msgs = getSessionMsgs(sid)
+      msgs.forEach(m => {
+        if (m.role === 'assistant' && m.isStreaming) {
+          updateMessage(sid, m.id, { isStreaming: false })
+        }
+      })
+      activeAssistantMessageId = null
+    }
+
     // Shared event handler — filters by session_id tag
     function handleEvent(evt: RunEvent) {
       if (closed) return
       // Filter events for this session (server tags all events with session_id)
       if (evt.session_id && evt.session_id !== sid) return
       switch (evt.event) {
+        case 'run.queued': {
+          queueLengths.value.set(sid, (evt as any).queue_length || 0)
+          break
+        }
+
         case 'run.started':
+          setAbortState(null)
+          runProducedAssistantText = false
+          runHadToolActivity = false
+          closeStreamingAssistant()
+          startNextQueuedUser()
+          if ((evt as any).queue_length > 0) {
+            queueLengths.value.set(sid, (evt as any).queue_length)
+          } else {
+            queueLengths.value.delete(sid)
+          }
           break
 
         case 'compression.started': {
@@ -1112,6 +1257,11 @@ export const useChatStore = defineStore('chat', () => {
 
         case 'abort.completed': {
           setAbortState({ aborting: false, synced: (evt as any).synced ?? false })
+          if ((evt as any).queue_length > 0) {
+            queueLengths.value.set(sid, (evt as any).queue_length)
+            setAbortState(null)
+            break
+          }
           const msgs = getSessionMsgs(sid)
           const lastMsg = msgs[msgs.length - 1]
           if (lastMsg?.isStreaming) {
@@ -1136,7 +1286,9 @@ export const useChatStore = defineStore('chat', () => {
           if (!text) break
           runProducedAssistantText = true
           const msgs = getSessionMsgs(sid)
-          const last = msgs[msgs.length - 1]
+          const last = activeAssistantMessageId
+            ? msgs.find(m => m.id === activeAssistantMessageId)
+            : null
           if (last?.role === 'assistant' && last.isStreaming) {
             last.reasoning = (last.reasoning || '') + text
             noteReasoningStart(last.id)
@@ -1150,6 +1302,7 @@ export const useChatStore = defineStore('chat', () => {
               isStreaming: true,
               reasoning: text,
             })
+            activeAssistantMessageId = newId
             noteReasoningStart(newId)
           }
 
@@ -1169,7 +1322,9 @@ export const useChatStore = defineStore('chat', () => {
         case 'message.delta': {
           if (evt.delta) runProducedAssistantText = true
           const msgs = getSessionMsgs(sid)
-          const last = msgs[msgs.length - 1]
+          const last = activeAssistantMessageId
+            ? msgs.find(m => m.id === activeAssistantMessageId)
+            : null
           if (last?.role === 'assistant' && last.isStreaming) {
             const prev = last.content
             const next = prev + (evt.delta || '')
@@ -1187,6 +1342,7 @@ export const useChatStore = defineStore('chat', () => {
               timestamp: Date.now(),
               isStreaming: true,
             })
+            activeAssistantMessageId = newId
           }
 
           break
@@ -1195,10 +1351,13 @@ export const useChatStore = defineStore('chat', () => {
         case 'tool.started': {
           runHadToolActivity = true
           const msgs = getSessionMsgs(sid)
-          const last = msgs[msgs.length - 1]
+          const last = activeAssistantMessageId
+            ? msgs.find(m => m.id === activeAssistantMessageId)
+            : msgs[msgs.length - 1]
           if (last?.isStreaming) {
             updateMessage(sid, last.id, { isStreaming: false })
           }
+          activeAssistantMessageId = null
           addMessage(sid, {
             id: uid(),
             role: 'tool',
@@ -1228,8 +1387,16 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         case 'run.completed': {
+          const hasQueue = (evt as any).queue_remaining > 0
+          if (hasQueue) {
+            queueLengths.value.set(sid, (evt as any).queue_remaining)
+          } else {
+            queueLengths.value.delete(sid)
+          }
           const msgs = getSessionMsgs(sid)
-          const lastMsg = msgs[msgs.length - 1]
+          const lastMsg = activeAssistantMessageId
+            ? msgs.find(m => m.id === activeAssistantMessageId)
+            : msgs[msgs.length - 1]
           if (lastMsg?.isStreaming) {
             updateMessage(sid, lastMsg.id, { isStreaming: false })
           }
@@ -1246,7 +1413,9 @@ export const useChatStore = defineStore('chat', () => {
           if ((evt as any).parsed_content !== undefined) {
             // Backend has parsed stringified array format, update last assistant message
             const msgs = getSessionMsgs(sid)
-            const lastAssistant = [...msgs].reverse().find(m => m.role === 'assistant')
+            const lastAssistant = activeAssistantMessageId
+              ? msgs.find(m => m.id === activeAssistantMessageId)
+              : [...msgs].reverse().find(m => m.role === 'assistant')
             if (lastAssistant) {
               updateMessage(sid, lastAssistant.id, {
                 content: (evt as any).parsed_content || '',
@@ -1285,12 +1454,35 @@ export const useChatStore = defineStore('chat', () => {
             playCompletionBellIfEnabled()
           }
 
-          cleanup()
+          // Auto-play speech for every completed assistant message
+          if (autoPlaySpeechEnabled.value) {
+            const msgs = getSessionMsgs(sid)
+            const lastAssistant = [...msgs].reverse().find(m => m.role === 'assistant')
+            if (lastAssistant?.content) {
+              setTimeout(() => {
+                playMessageSpeech(lastAssistant.id, lastAssistant.content)
+              }, 300)
+            }
+          }
+
+          if (!hasQueue) {
+            cleanup()
+            activeAssistantMessageId = null
+          } else {
+            // More runs pending — reset for next run but don't cleanup
+            activeAssistantMessageId = null
+          }
           updateSessionTitle(sid)
           break
         }
 
         case 'run.failed': {
+          const hasQueue = (evt as any).queue_remaining > 0
+          if (hasQueue) {
+            queueLengths.value.set(sid, (evt as any).queue_remaining)
+          } else {
+            queueLengths.value.delete(sid)
+          }
           const msgs = getSessionMsgs(sid)
           const lastErr = msgs[msgs.length - 1]
           if (lastErr?.isStreaming) {
@@ -1312,7 +1504,9 @@ export const useChatStore = defineStore('chat', () => {
               msgs[i] = { ...m, toolStatus: 'error' }
             }
           })
-          cleanup()
+          if (!hasQueue) {
+            cleanup()
+          }
           break
         }
 
@@ -1343,6 +1537,7 @@ export const useChatStore = defineStore('chat', () => {
       onAbortStarted: (evt) => handleEvent(evt),
       onAbortCompleted: (evt) => handleEvent(evt),
       onUsageUpdated: (evt) => handleEvent(evt),
+      onRunQueued: (evt) => handleEvent(evt),
     })
 
     // No need to emit resume here — switchSession already did it.
@@ -1370,6 +1565,13 @@ export const useChatStore = defineStore('chat', () => {
       if (lastMsg?.isStreaming) {
         updateMessage(sid, lastMsg.id, { isStreaming: false })
       }
+      window.setTimeout(() => {
+        if (activeSessionId.value === sid && abortState.value?.aborting) {
+          streamStates.value.delete(sid)
+          serverWorking.value.delete(sid)
+          setAbortState(null)
+        }
+      }, 20_000)
     }
   }
 
@@ -1479,6 +1681,9 @@ export const useChatStore = defineStore('chat', () => {
     compressionState,
     abortState,
     isAborting,
+    queueLengths,
+    queuedUserMessages,
+    removeQueuedMessage,
     isLoadingSessions,
     sessionsLoaded,
     sessionsError,
