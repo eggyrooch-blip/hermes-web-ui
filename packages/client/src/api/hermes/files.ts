@@ -40,9 +40,10 @@ export async function writeFile(path: string, content: string): Promise<void> {
 }
 
 export async function deleteFile(path: string, recursive: boolean = false): Promise<void> {
-  await request<{ ok: boolean }>('/api/hermes/files/delete', {
+  const params = new URLSearchParams({ path })
+  if (recursive) params.set('recursive', 'true')
+  await request<{ ok: boolean }>(`/api/hermes/files/delete?${params.toString()}`, {
     method: 'DELETE',
-    body: JSON.stringify({ path, recursive }),
   })
 }
 

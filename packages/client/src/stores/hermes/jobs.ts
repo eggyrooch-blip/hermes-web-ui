@@ -10,13 +10,23 @@ function matchId(job: Job, id: string): boolean {
 export const useJobsStore = defineStore('jobs', () => {
   const jobs = ref<Job[]>([])
   const loading = ref(false)
+  const error = ref<string | null>(null)
+  const gatewayUnavailable = ref(false)
 
   async function fetchJobs() {
     loading.value = true
+    error.value = null
+    gatewayUnavailable.value = false
     try {
-      jobs.value = await jobsApi.listJobs()
+      const result = await jobsApi.listJobs()
+      jobs.value = result.jobs
+      gatewayUnavailable.value = !!result.gatewayUnavailable
+      error.value = result.gatewayUnavailable
+        ? (result.errorMessage || 'Gateway unavailable')
+        : null
     } catch (err) {
       console.error('Failed to fetch jobs:', err)
+      error.value = err instanceof Error ? err.message : String(err)
     } finally {
       loading.value = false
     }
@@ -61,6 +71,8 @@ export const useJobsStore = defineStore('jobs', () => {
   return {
     jobs,
     loading,
+    error,
+    gatewayUnavailable,
     fetchJobs,
     createJob,
     updateJob,

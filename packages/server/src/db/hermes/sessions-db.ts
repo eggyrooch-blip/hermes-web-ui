@@ -567,12 +567,12 @@ function aggregateSessionDetail(
   }
 }
 
-async function openSessionDb() {
+async function openSessionDb(profile?: string) {
   if (!SQLITE_AVAILABLE) {
     throw new Error(`node:sqlite requires Node >= 22.5, current: ${process.versions.node}`)
   }
   const { DatabaseSync } = await import('node:sqlite')
-  const dbPath = sessionDbPath()
+  const dbPath = profile ? `${getProfileDir(profile)}/state.db` : sessionDbPath()
   try {
     return new DatabaseSync(dbPath, { open: true, readOnly: true })
   } catch (err: any) {
@@ -616,8 +616,8 @@ export async function getSessionMessagesFromDb(sessionId: string): Promise<{
   }
 }
 
-export async function getSessionDetailFromDb(sessionId: string): Promise<HermesSessionDetailRow | null> {
-  const db = await openSessionDb()
+export async function getSessionDetailFromDb(sessionId: string, profile?: string): Promise<HermesSessionDetailRow | null> {
+  const db = await openSessionDb(profile)
   try {
     const idx = loadAllSessions(db)
     const requested = idx.byId.get(sessionId) || null
@@ -656,44 +656,7 @@ export async function getSessionDetailFromDb(sessionId: string): Promise<HermesS
 }
 
 export async function getSessionDetailFromDbWithProfile(sessionId: string, profile: string): Promise<HermesSessionDetailRow | null> {
-  const { DatabaseSync } = await import('node:sqlite')
-  const dbPath = `${getProfileDir(profile)}/state.db`
-  const db = new DatabaseSync(dbPath, { open: true, readOnly: true })
-  try {
-    const idx = loadAllSessions(db)
-    const requested = idx.byId.get(sessionId) || null
-    if (!requested) return null
-
-    const chain = collectSessionChainForMatchedSession(requested, idx)
-    if (!chain.length) return null
-
-    const ids = chain.map(session => session.id)
-    const placeholders = ids.map(() => '?').join(', ')
-    const messageRows = db.prepare(`
-      SELECT
-        id,
-        session_id,
-        role,
-        content,
-        tool_call_id,
-        tool_calls,
-        tool_name,
-        timestamp,
-        token_count,
-        finish_reason,
-        reasoning,
-        reasoning_details,
-        codex_reasoning_items,
-        reasoning_content
-      FROM messages
-      WHERE session_id IN (${placeholders})
-      ORDER BY timestamp, id
-    `).all(...ids) as Record<string, unknown>[]
-    const messages = messageRows.map(mapMessageRow)
-    return aggregateSessionDetail(chain, messages, sessionId)
-  } finally {
-    db.close()
-  }
+  return getSessionDetailFromDb(sessionId, profile)
 }
 
 export interface HermesUsageStats extends LocalUsageStats {
@@ -713,6 +676,8 @@ function tableHasColumn(
 export async function getUsageStatsFromDb(
   days = 30,
   nowSeconds = Math.floor(Date.now() / 1000),
+  profile?: string,
+  includeApiServer = false,
 ): Promise<HermesUsageStats> {
   const empty: HermesUsageStats = {
     input_tokens: 0,
@@ -730,13 +695,13 @@ export async function getUsageStatsFromDb(
   const normalizedDays = Number.isFinite(days) ? days : 30
   const safeDays = Math.max(1, Math.floor(normalizedDays))
   const since = nowSeconds - safeDays * 24 * 60 * 60
-  const db = await openSessionDb()
+  const db = await openSessionDb(profile)
 
   try {
     const apiCallsExpr = tableHasColumn(db, 'sessions', 'api_call_count')
       ? 'COALESCE(SUM(api_call_count), 0)'
       : '0'
-    const sourceFilter = tableHasColumn(db, 'sessions', 'source')
+    const sourceFilter = !includeApiServer && tableHasColumn(db, 'sessions', 'source')
       ? " AND COALESCE(source, '') != 'api_server'"
       : ''
 
@@ -863,6 +828,7 @@ export async function searchSessionSummaries(
   query: string,
   source?: string,
   limit = 20,
+  profile?: string,
 ): Promise<HermesSessionSearchRow[]> {
   if (!SQLITE_AVAILABLE) {
     throw new Error(`node:sqlite requires Node >= 22.5, current: ${process.versions.node}`)
@@ -870,7 +836,7 @@ export async function searchSessionSummaries(
 
   const trimmed = query.trim()
   if (!trimmed) {
-    const recent = await listSessionSummaries(source, limit)
+    const recent = await listSessionSummaries(source, limit, profile)
     return recent.map(row => ({
       ...row,
       matched_message_id: null,
@@ -880,7 +846,8 @@ export async function searchSessionSummaries(
   }
 
   const { DatabaseSync } = await import('node:sqlite')
-  const db = new DatabaseSync(sessionDbPath(), { open: true, readOnly: true })
+  const dbPath = profile ? `${getProfileDir(profile)}/state.db` : sessionDbPath()
+  const db = new DatabaseSync(dbPath, { open: true, readOnly: true })
   const normalized = sanitizeFtsQuery(trimmed)
   const prefixQuery = toPrefixQuery(normalized)
   const titlePattern = buildLikePattern(normalizeTitleLikeQuery(trimmed).toLowerCase())

@@ -16,6 +16,72 @@ function resolveHermesBin(): string {
 
 const HERMES_BIN = resolveHermesBin()
 
+// ─── Argument validators ───────────────────────────────────────
+//
+// SECURITY: even though we use execFile (no shell), the Hermes CLI itself
+// parses argv. A user-supplied value starting with '-' would be picked up as
+// a flag (e.g. `--source --exec=…`), letting an attacker reach hidden
+// subcommands or change behaviour. Validate every user-controlled string
+// before it reaches argv, and use POSIX `--` as a positional terminator
+// where the CLI accepts it.
+
+function rejectControlChars(value: string, label: string): void {
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(value)) {
+    throw Object.assign(new Error(`${label} contains control characters`), { code: 'invalid_argument' })
+  }
+}
+
+function rejectFlagPrefix(value: string, label: string): void {
+  if (value.startsWith('-')) {
+    throw Object.assign(new Error(`${label} must not start with '-'`), { code: 'invalid_argument' })
+  }
+}
+
+/** Session id: stored as UUID-like or hex string, reasonable to lock down hard. */
+export function validateSessionId(id: string): string {
+  if (!id || typeof id !== 'string') throw Object.assign(new Error('session id is required'), { code: 'invalid_argument' })
+  rejectFlagPrefix(id, 'session id')
+  rejectControlChars(id, 'session id')
+  if (!/^[A-Za-z0-9_.-]{1,128}$/.test(id)) {
+    throw Object.assign(new Error('session id contains disallowed characters'), { code: 'invalid_argument' })
+  }
+  return id
+}
+
+/** Profile name: filesystem-friendly, no path separators, no leading dash. */
+export function validateProfileName(name: string): string {
+  if (!name || typeof name !== 'string') throw Object.assign(new Error('profile name is required'), { code: 'invalid_argument' })
+  rejectFlagPrefix(name, 'profile name')
+  rejectControlChars(name, 'profile name')
+  if (name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
+    throw Object.assign(new Error('profile name contains disallowed characters'), { code: 'invalid_argument' })
+  }
+  if (name.length > 128) {
+    throw Object.assign(new Error('profile name too long'), { code: 'invalid_argument' })
+  }
+  return name
+}
+
+/** Skill name: alphanumeric + underscore + dash. */
+export function validateSkillName(name: string): string {
+  if (!name || typeof name !== 'string') throw Object.assign(new Error('skill name is required'), { code: 'invalid_argument' })
+  rejectFlagPrefix(name, 'skill name')
+  rejectControlChars(name, 'skill name')
+  if (!/^[A-Za-z0-9_.:/-]{1,128}$/.test(name)) {
+    throw Object.assign(new Error('skill name contains disallowed characters'), { code: 'invalid_argument' })
+  }
+  return name
+}
+
+/** Free-form text (e.g. session title). Reject control chars + size cap. */
+export function validateText(value: string, label: string, max = 512): string {
+  if (typeof value !== 'string') throw Object.assign(new Error(`${label} must be a string`), { code: 'invalid_argument' })
+  rejectControlChars(value, label)
+  if (value.length > max) throw Object.assign(new Error(`${label} too long`), { code: 'invalid_argument' })
+  return value
+}
+
 export interface HermesSession {
   id: string
   source: string
@@ -83,7 +149,11 @@ function parseSessionExport(stdout: string): HermesSessionFull[] {
 
 export async function exportSessionsRaw(source?: string): Promise<HermesSessionFull[]> {
   const args = ['sessions', 'export', '-']
-  if (source) args.push('--source', source)
+  if (source) {
+    rejectFlagPrefix(source, 'source')
+    rejectControlChars(source, 'source')
+    args.push('--source', source)
+  }
 
   try {
     const { stdout } = await execFileAsync(HERMES_BIN, args, {
@@ -150,6 +220,7 @@ export async function listSessions(source?: string, limit?: number): Promise<Her
  * Get a single session with messages from Hermes CLI
  */
 export async function getSession(id: string): Promise<HermesSession | null> {
+  validateSessionId(id)
   const args = ['sessions', 'export', '-', '--session-id', id]
 
   try {
@@ -197,7 +268,8 @@ export async function getSession(id: string): Promise<HermesSession | null> {
  */
 export async function deleteSession(id: string): Promise<boolean> {
   try {
-    await execFileAsync(HERMES_BIN, ['sessions', 'delete', id, '--yes'], {
+    validateSessionId(id)
+    await execFileAsync(HERMES_BIN, ['sessions', 'delete', '--yes', '--', id], {
       timeout: 10000,
       ...execOpts,
     })
@@ -213,7 +285,9 @@ export async function deleteSession(id: string): Promise<boolean> {
  */
 export async function renameSession(id: string, title: string): Promise<boolean> {
   try {
-    await execFileAsync(HERMES_BIN, ['sessions', 'rename', id, title], {
+    validateSessionId(id)
+    validateText(title, 'session title', 256)
+    await execFileAsync(HERMES_BIN, ['sessions', 'rename', '--', id, title], {
       timeout: 10000,
       ...execOpts,
     })
@@ -338,10 +412,29 @@ export async function readLogs(
   session?: string,
   since?: string,
 ): Promise<string> {
-  const args = ['logs', logName, '-n', String(lines)]
+  // SECURITY: every user-controlled argv slot must be validated before it
+  // reaches the Hermes CLI parser, otherwise a value starting with '-' is
+  // interpreted as a flag and lets an attacker reach unintended sub-commands.
+  rejectFlagPrefix(logName, 'log name')
+  rejectControlChars(logName, 'log name')
+  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(logName)) {
+    throw Object.assign(new Error('log name contains disallowed characters'), { code: 'invalid_argument' })
+  }
+  const safeLines = Number.isInteger(lines) && lines > 0 && lines <= 100000 ? lines : 100
+  if (level) {
+    rejectFlagPrefix(level, 'log level')
+    rejectControlChars(level, 'log level')
+  }
+  if (session) validateSessionId(session)
+  if (since) {
+    rejectFlagPrefix(since, 'since')
+    rejectControlChars(since, 'since')
+  }
+  const args = ['logs', '-n', String(safeLines)]
   if (level) args.push('--level', level)
   if (session) args.push('--session', session)
   if (since) args.push('--since', since)
+  args.push('--', logName)
 
   try {
     const { stdout } = await execFileAsync(HERMES_BIN, args, {
@@ -418,7 +511,8 @@ export async function listProfiles(): Promise<HermesProfile[]> {
  */
 export async function getProfile(name: string): Promise<HermesProfileDetail> {
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, ['profile', 'show', name], {
+    validateProfileName(name)
+    const { stdout } = await execFileAsync(HERMES_BIN, ['profile', 'show', '--', name], {
       timeout: 10000,
       ...execOpts,
     })
@@ -458,8 +552,10 @@ export async function getProfile(name: string): Promise<HermesProfileDetail> {
  * Create a new profile
  */
 export async function createProfile(name: string, clone?: boolean): Promise<string> {
-  const args = ['profile', 'create', name]
+  validateProfileName(name)
+  const args = ['profile', 'create']
   if (clone) args.push('--clone')
+  args.push('--', name)
 
   try {
     const { stdout, stderr } = await execFileAsync(HERMES_BIN, args, {
@@ -478,7 +574,8 @@ export async function createProfile(name: string, clone?: boolean): Promise<stri
  */
 export async function deleteProfile(name: string): Promise<boolean> {
   try {
-    await execFileAsync(HERMES_BIN, ['profile', 'delete', name, '--yes'], {
+    validateProfileName(name)
+    await execFileAsync(HERMES_BIN, ['profile', 'delete', '--yes', '--', name], {
       timeout: 10000,
       ...execOpts,
     })
@@ -494,7 +591,9 @@ export async function deleteProfile(name: string): Promise<boolean> {
  */
 export async function renameProfile(oldName: string, newName: string): Promise<boolean> {
   try {
-    await execFileAsync(HERMES_BIN, ['profile', 'rename', oldName, newName], {
+    validateProfileName(oldName)
+    validateProfileName(newName)
+    await execFileAsync(HERMES_BIN, ['profile', 'rename', '--', oldName, newName], {
       timeout: 10000,
       ...execOpts,
     })
@@ -510,7 +609,8 @@ export async function renameProfile(oldName: string, newName: string): Promise<b
  */
 export async function useProfile(name: string): Promise<string> {
   try {
-    const { stdout, stderr } = await execFileAsync(HERMES_BIN, ['profile', 'use', name], {
+    validateProfileName(name)
+    const { stdout, stderr } = await execFileAsync(HERMES_BIN, ['profile', 'use', '--', name], {
       timeout: 10000,
       ...execOpts,
     })
@@ -525,8 +625,10 @@ export async function useProfile(name: string): Promise<string> {
  * Export profile to archive
  */
 export async function exportProfile(name: string, outputPath?: string): Promise<string> {
-  const args = ['profile', 'export', name]
+  validateProfileName(name)
+  const args = ['profile', 'export']
   if (outputPath) args.push('--output', outputPath)
+  args.push('--', name)
 
   try {
     const { stdout, stderr } = await execFileAsync(HERMES_BIN, args, {
@@ -560,8 +662,12 @@ export async function setupReset(): Promise<string> {
  * Import profile from archive
  */
 export async function importProfile(archivePath: string, name?: string): Promise<string> {
-  const args = ['profile', 'import', archivePath]
+  // archivePath is generated server-side (random hex name in tmpdir, see
+  // controllers/hermes/profiles.ts importProfile), so it is trusted here.
+  if (name) validateProfileName(name)
+  const args = ['profile', 'import']
   if (name) args.push('--name', name)
+  args.push('--', archivePath)
 
   try {
     const { stdout, stderr } = await execFileAsync(HERMES_BIN, args, {
@@ -579,9 +685,10 @@ export async function importProfile(archivePath: string, name?: string): Promise
  * Pin or unpin a skill via hermes curator
  */
 export async function pinSkill(name: string, pinned: boolean): Promise<string> {
+  validateSkillName(name)
   const subcmd = pinned ? 'pin' : 'unpin'
   try {
-    const { stdout, stderr } = await execFileAsync(HERMES_BIN, ['curator', subcmd, name], {
+    const { stdout, stderr } = await execFileAsync(HERMES_BIN, ['curator', subcmd, '--', name], {
       timeout: 15000,
       ...execOpts,
     })

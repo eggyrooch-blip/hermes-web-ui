@@ -1,6 +1,9 @@
 import router from '@/router'
 
 const DEFAULT_BASE_URL = ''
+const AUTH_MODE_STORAGE_KEY = 'hermes_auth_mode'
+const PLANE_STORAGE_KEY = 'hermes_web_plane'
+const CURRENT_USER_STORAGE_KEY = 'hermes_current_user'
 
 function getBaseUrl(): string {
   return localStorage.getItem('hermes_server_url') || DEFAULT_BASE_URL
@@ -8,6 +11,23 @@ function getBaseUrl(): string {
 
 export function getApiKey(): string {
   return localStorage.getItem('hermes_api_key') || ''
+}
+
+export function getAuthMode(): string {
+  return localStorage.getItem(AUTH_MODE_STORAGE_KEY) || 'token'
+}
+
+export function getWebPlane(): string {
+  return localStorage.getItem(PLANE_STORAGE_KEY) || 'both'
+}
+
+export function isUserMode(): boolean {
+  return getWebPlane() === 'chat' || !!localStorage.getItem(CURRENT_USER_STORAGE_KEY)
+}
+
+export function setRuntimeMode(authMode?: string, plane?: string) {
+  if (authMode) localStorage.setItem(AUTH_MODE_STORAGE_KEY, authMode)
+  if (plane) localStorage.setItem(PLANE_STORAGE_KEY, plane)
 }
 
 export function setServerUrl(url: string) {
@@ -23,7 +43,18 @@ export function clearApiKey() {
 }
 
 export function hasApiKey(): boolean {
+  if (getAuthMode() === 'trusted-feishu') return true
   return !!getApiKey()
+}
+
+export function shouldSkipLoginPage(): boolean {
+  return hasApiKey()
+}
+
+export function canAccessProtectedRoutes(): boolean {
+  const authMode = getAuthMode()
+  if (authMode === 'feishu-oauth-dev') return true
+  return hasApiKey()
 }
 
 /**
@@ -58,11 +89,16 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
 
   // Inject active profile header for proxied gateway requests
   const profileName = getActiveProfileName()
-  if (profileName && profileName !== 'default') {
+  const authMode = getAuthMode()
+  if (authMode !== 'trusted-feishu' && authMode !== 'feishu-oauth-dev' && getWebPlane() !== 'chat' && profileName && profileName !== 'default') {
     headers['X-Hermes-Profile'] = profileName
   }
 
-  const res = await fetch(url, { ...options, headers })
+  // Send the HermesSession HttpOnly cookie alongside the bearer header. The
+  // server prefers the cookie when both are present (services/auth.ts), so
+  // this is the migration foothold for the v0.7.0 retirement of the
+  // localStorage Bearer token. Cookie path: same-origin only.
+  const res = await fetch(url, { ...options, headers, credentials: 'same-origin' })
 
   // Global 401 handler — only redirect to login for local BFF endpoints
   // Proxied gateway requests should not trigger logout

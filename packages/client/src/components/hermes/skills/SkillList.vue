@@ -3,20 +3,25 @@ import { ref, computed } from 'vue'
 import { NSwitch, useMessage } from 'naive-ui'
 import type { SkillCategory, SkillSource, SkillInfo } from '@/api/hermes/skills'
 import { toggleSkill } from '@/api/hermes/skills'
+import { isUserMode } from '@/api/client'
 import { useI18n } from 'vue-i18n'
 
 type SourceFilter = SkillSource | 'modified'
 
 const { t } = useI18n()
 const message = useMessage()
+const readonlyMode = computed(() => isUserMode())
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
     categories: SkillCategory[]
     archived: SkillInfo[]
     selectedSkill: string | null
     searchQuery: string
     sourceFilter: SourceFilter | null
-}>()
+    showSourceMarkers?: boolean
+}>(), {
+    showSourceMarkers: true,
+})
 
 const emit = defineEmits<{
     select: [category: string, skill: string]
@@ -126,15 +131,15 @@ async function handleToggle(category: string, skillName: string, newEnabled: boo
                 ]" @click="handleSelect(cat.name, skill.name)">
                     <div class="skill-info">
                         <span class="skill-name">
-                            <span class="source-dot" :class="`dot-${skill.source || 'local'}`"
+                            <span v-if="showSourceMarkers" class="source-dot" :class="`dot-${skill.source || 'local'}`"
                                 :title="t(`skills.source.${skill.source || 'local'}`)" />
                             {{ skill.name }}
-                            <span v-if="skill.modified" class="modified-badge"
+                            <span v-if="showSourceMarkers && skill.modified" class="modified-badge"
                                 :title="t('skills.modified')">✎</span>
                         </span>
                         <span v-if="skill.description" class="skill-desc">{{ skill.description }}</span>
                     </div>
-                    <NSwitch size="small" :value="skill.enabled !== false" :loading="togglingSkills.has(skill.name)"
+                    <NSwitch v-if="!readonlyMode" size="small" :value="skill.enabled !== false" :loading="togglingSkills.has(skill.name)"
                         @update:value="handleToggle(cat.name, skill.name, $event)" @click.stop />
                 </button>
             </div>
@@ -156,7 +161,7 @@ async function handleToggle(category: string, skillName: string, newEnabled: boo
                     @click="handleSelect('.archive', skill.name)">
                     <div class="skill-info">
                         <span class="skill-name">
-                            <span class="source-dot" :class="`dot-${skill.source || 'local'}`"
+                            <span v-if="showSourceMarkers" class="source-dot" :class="`dot-${skill.source || 'local'}`"
                                 :title="t(`skills.source.${skill.source || 'local'}`)" />
                             {{ skill.name }}
                         </span>

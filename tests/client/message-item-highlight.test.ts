@@ -34,6 +34,18 @@ describe('MessageItem tool details', () => {
         writeText: vi.fn().mockResolvedValue(undefined),
       },
     })
+    Object.defineProperty(window, 'speechSynthesis', {
+      configurable: true,
+      value: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        getVoices: vi.fn(() => []),
+        speak: vi.fn(),
+        cancel: vi.fn(),
+        pause: vi.fn(),
+        resume: vi.fn(),
+      },
+    })
   })
 
   it('renders highlighted code blocks for tool arguments and tool results', async () => {
@@ -171,5 +183,24 @@ describe('MessageItem tool details', () => {
 
     await wrapper.find('.tool-details [data-copy-code="true"]').trigger('click')
     expect(writeText).toHaveBeenCalledWith(fullResult)
+  })
+
+  it('marks sandbox file tool calls as profile-scoped', () => {
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: {
+          id: 'tool-sandbox-file',
+          role: 'tool',
+          content: '',
+          timestamp: Date.now(),
+          toolName: 'read_file',
+          toolArgs: '{"path":"/sandbox/production/workspace/incidents/api-rate-limit.md"}',
+          toolStatus: 'done',
+        } satisfies Message,
+      },
+    })
+
+    expect(wrapper.find('.tool-scope').text()).toBe('profile sandbox')
+    expect(wrapper.find('.tool-status-badge').text()).toBe('chat.toolDone')
   })
 })

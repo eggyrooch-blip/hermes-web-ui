@@ -2,19 +2,57 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as profilesApi from '@/api/hermes/profiles'
 import type { HermesProfile, HermesProfileDetail } from '@/api/hermes/profiles'
+import type { CurrentUser } from '@/api/auth'
 
 const ACTIVE_PROFILE_STORAGE_KEY = 'hermes_active_profile_name'
+const CURRENT_USER_STORAGE_KEY = 'hermes_current_user'
+const PLANE_STORAGE_KEY = 'hermes_web_plane'
+
+function loadCurrentUser(): CurrentUser | null {
+  try {
+    const raw = localStorage.getItem(CURRENT_USER_STORAGE_KEY)
+    return raw ? JSON.parse(raw) as CurrentUser : null
+  } catch {
+    return null
+  }
+}
 
 export const useProfilesStore = defineStore('profiles', () => {
   const profiles = ref<HermesProfile[]>([])
   // 初始化时同步读 localStorage，确保其他 store（如 chat）在启动时能拿到 profile name
   const activeProfileName = ref<string | null>(localStorage.getItem(ACTIVE_PROFILE_STORAGE_KEY))
   const activeProfile = ref<HermesProfile | null>(null)
+  const currentUser = ref<CurrentUser | null>(loadCurrentUser())
   const detailMap = ref<Record<string, HermesProfileDetail>>({})
   const loading = ref(false)
   const switching = ref(false)
 
+  function shouldUseBoundProfileOnly(): boolean {
+    return localStorage.getItem(PLANE_STORAGE_KEY) === 'chat' || !!currentUser.value
+  }
+
+  function ensureBoundProfile() {
+    const name = currentUser.value?.profile || activeProfileName.value
+    if (!name) return
+
+    activeProfileName.value = name
+    activeProfile.value = profiles.value.find(p => p.name === name) ?? {
+      name,
+      active: true,
+      model: '',
+      gateway: '',
+      alias: '',
+    }
+    profiles.value = [activeProfile.value]
+    localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, name)
+  }
+
   async function fetchProfiles() {
+    if (shouldUseBoundProfileOnly()) {
+      ensureBoundProfile()
+      return
+    }
+
     loading.value = true
     try {
       profiles.value = await profilesApi.fetchProfiles()
@@ -31,6 +69,28 @@ export const useProfilesStore = defineStore('profiles', () => {
     } finally {
       loading.value = false
     }
+  }
+
+  function setCurrentUser(user: CurrentUser | null) {
+    currentUser.value = user
+    if (user) {
+      localStorage.setItem(CURRENT_USER_STORAGE_KEY, JSON.stringify(user))
+    } else {
+      localStorage.removeItem(CURRENT_USER_STORAGE_KEY)
+    }
+  }
+
+  function setBoundProfile(name: string, user?: CurrentUser) {
+    activeProfileName.value = name
+    activeProfile.value = profiles.value.find(p => p.name === name) ?? {
+      name,
+      active: true,
+      model: '',
+      gateway: '',
+      alias: '',
+    }
+    localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, name)
+    if (user) setCurrentUser(user)
   }
 
   async function fetchProfileDetail(name: string) {
@@ -135,6 +195,7 @@ export const useProfilesStore = defineStore('profiles', () => {
     profiles,
     activeProfile,
     activeProfileName,
+    currentUser,
     detailMap,
     loading,
     switching,
@@ -147,5 +208,7 @@ export const useProfilesStore = defineStore('profiles', () => {
     exportProfile,
     importProfile,
     clearAllSessionCaches,
+    setBoundProfile,
+    setCurrentUser,
   }
 })

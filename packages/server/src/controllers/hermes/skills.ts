@@ -1,11 +1,13 @@
 import { readdir, readFile } from 'fs/promises'
 import { join, resolve } from 'path'
 import { createHash } from 'crypto'
+import YAML from 'js-yaml'
 import {
   readConfigYaml, writeConfigYaml,
   safeReadFile, extractDescription, listFilesRecursive, getHermesDir,
 } from '../../services/config-helpers'
 import { pinSkill } from '../../services/hermes/hermes-cli'
+import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 
 /** Read bundled manifest as a name→hash map from ~/.hermes/skills/.bundled_manifest */
 function readBundledManifest(manifestContent: string | null): Map<string, string> {
@@ -82,10 +84,22 @@ function readUsageStats(usageContent: string | null): Map<string, UsageStats> {
   return map
 }
 
+function requestHermesDir(ctx: any): string {
+  return isChatPlaneRequest(ctx) ? getRequestProfileDir(ctx) : getHermesDir()
+}
+
+async function readRequestConfig(ctx: any): Promise<Record<string, any>> {
+  if (!isChatPlaneRequest(ctx)) return readConfigYaml()
+  const raw = await safeReadFile(join(getRequestProfileDir(ctx), 'config.yaml'))
+  if (!raw) return {}
+  return (YAML.load(raw) as Record<string, any>) || {}
+}
+
 export async function list(ctx: any) {
-  const skillsDir = join(getHermesDir(), 'skills')
+  const chatPlane = isChatPlaneRequest(ctx)
+  const skillsDir = join(requestHermesDir(ctx), 'skills')
   try {
-    const config = await readConfigYaml()
+    const config = await readRequestConfig(ctx)
     const disabledList: string[] = config.skills?.disabled || []
 
     // Read provenance sources
@@ -110,7 +124,7 @@ export async function list(ctx: any) {
 
           // Check if builtin skill has been user-modified
           let modified = false
-          if (source === 'builtin') {
+          if (source === 'builtin' && !chatPlane) {
             const manifestHash = bundledManifest.get(se.name)
             if (manifestHash) {
               const currentHash = await dirHash(join(catDir, se.name))
@@ -194,7 +208,7 @@ export async function toggle(ctx: any) {
 
 export async function listFiles(ctx: any) {
   const { category, skill } = ctx.params
-  const skillDir = join(getHermesDir(), 'skills', category, skill)
+  const skillDir = join(requestHermesDir(ctx), 'skills', category, skill)
   try {
     const allFiles = await listFilesRecursive(skillDir, '')
     const files = allFiles.filter(f => f.path !== 'SKILL.md')
@@ -207,7 +221,7 @@ export async function listFiles(ctx: any) {
 
 export async function readFile_(ctx: any) {
   const filePath = (ctx.params as any).path
-  const hd = getHermesDir()
+  const hd = requestHermesDir(ctx)
   const fullPath = resolve(join(hd, 'skills', filePath))
   if (!fullPath.startsWith(join(hd, 'skills'))) {
     ctx.status = 403

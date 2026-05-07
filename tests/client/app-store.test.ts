@@ -6,7 +6,6 @@ const mockSystemApi = vi.hoisted(() => ({
   checkHealth: vi.fn(),
   fetchAvailableModels: vi.fn(),
   updateDefaultModel: vi.fn(),
-  triggerUpdate: vi.fn(),
 }))
 
 vi.mock('@/api/hermes/system', () => mockSystemApi)
@@ -32,5 +31,11 @@ describe('App Store', () => {
     store.toggleSidebarCollapsed()
     expect(store.sidebarCollapsed).toBe(false)
     expect(window.localStorage.getItem('hermes_sidebar_collapsed')).toBe('0')
+  })
+
+  it('does not expose a browser-triggered self-update action', () => {
+    const store = useAppStore()
+
+    expect('doUpdate' in store).toBe(false)
   })
 })

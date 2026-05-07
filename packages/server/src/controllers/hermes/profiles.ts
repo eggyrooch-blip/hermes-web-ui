@@ -1,7 +1,14 @@
-import { createReadStream, existsSync, unlinkSync, writeFileSync } from 'fs'
-import { mkdir, writeFile } from 'fs/promises'
-import { basename, join } from 'path'
+import { createReadStream, createWriteStream, existsSync, unlinkSync, writeFileSync } from 'fs'
+import { mkdir, unlink } from 'fs/promises'
+import { basename, extname, join } from 'path'
 import { tmpdir } from 'os'
+import { randomBytes } from 'crypto'
+import { pipeline } from 'stream/promises'
+import busboy from 'busboy'
+
+const MAX_PROFILE_IMPORT_SIZE = 50 * 1024 * 1024 // 50MB
+const PROFILE_IMPORT_TIMEOUT_MS = 120_000
+const ALLOWED_PROFILE_IMPORT_EXTS = new Set(['.gz', '.zip', '.tgz'])
 import * as hermesCli from '../../services/hermes/hermes-cli'
 import { SessionDeleter } from '../../services/hermes/session-deleter'
 import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
@@ -247,34 +254,76 @@ export async function importProfile(ctx: any) {
     ctx.body = { error: 'Expected multipart/form-data' }
     return
   }
-  const boundary = '--' + contentType.split('boundary=')[1]
-  if (!boundary || boundary === '--undefined') {
-    ctx.status = 400
-    ctx.body = { error: 'Missing boundary' }
+
+  const declaredLen = parseInt(ctx.get('content-length') || '0', 10)
+  if (declaredLen > MAX_PROFILE_IMPORT_SIZE) {
+    ctx.status = 413
+    ctx.body = { error: `Profile archive too large (max ${MAX_PROFILE_IMPORT_SIZE / 1024 / 1024}MB)` }
     return
   }
+
   const tmpDir = join(tmpdir(), 'hermes-import')
   await mkdir(tmpDir, { recursive: true })
-  const chunks: Buffer[] = []
-  for await (const chunk of ctx.req) chunks.push(chunk)
-  const body = Buffer.concat(chunks).toString('latin1')
-  const parts = body.split(boundary).slice(1, -1)
+
   let archivePath = ''
-  for (const part of parts) {
-    const headerEnd = part.indexOf('\r\n\r\n')
-    if (headerEnd === -1) continue
-    const header = part.substring(0, headerEnd)
-    const data = part.substring(headerEnd + 4, part.length - 2)
-    const filenameMatch = header.match(/filename="([^"]+)"/)
-    if (!filenameMatch) continue
-    const filename = filenameMatch[1]
-    const ext = filename.includes('.') ? '.' + filename.split('.').pop() : ''
-    if (!['.gz', '.tar.gz', '.zip', '.tgz'].includes(ext)) continue
-    archivePath = join(tmpDir, filename)
-    await writeFile(archivePath, Buffer.from(data, 'binary'))
-    break
+  let limitExceeded = false
+  let unsupportedExt = false
+  let timedOut = false
+
+  const abortTimer = setTimeout(() => {
+    timedOut = true
+    try { ctx.req.destroy(new Error('Profile import deadline exceeded')) } catch { /* socket already gone */ }
+  }, PROFILE_IMPORT_TIMEOUT_MS)
+
+  const bb = busboy({
+    headers: ctx.req.headers,
+    limits: { fileSize: MAX_PROFILE_IMPORT_SIZE, files: 1, fieldSize: 1024 * 64 },
+  })
+
+  const done = new Promise<void>((resolve, reject) => {
+    bb.on('file', async (_field, fileStream, info) => {
+      try {
+        const original = info.filename || 'archive'
+        const ext = extname(original).toLowerCase()
+        if (!ALLOWED_PROFILE_IMPORT_EXTS.has(ext)) {
+          unsupportedExt = true
+          fileStream.resume()
+          return
+        }
+        // SECURITY: ignore the user-supplied filename for the filesystem path.
+        // Random hex + allow-listed extension means a crafted "../../etc/x.gz"
+        // cannot escape tmpDir.
+        const safeName = randomBytes(16).toString('hex') + ext
+        archivePath = join(tmpDir, safeName)
+        fileStream.on('limit', () => { limitExceeded = true })
+        await pipeline(fileStream, createWriteStream(archivePath))
+      } catch (err) {
+        reject(err)
+      }
+    })
+    bb.on('error', err => reject(err))
+    bb.on('close', () => resolve())
+    bb.on('finish', () => resolve())
+  })
+
+  try {
+    ctx.req.pipe(bb)
+    await done
+  } catch (err) {
+    clearTimeout(abortTimer)
+    if (archivePath) { try { await unlink(archivePath) } catch { /* best-effort */ } }
+    if (timedOut) { ctx.status = 408; ctx.body = { error: 'Upload timed out' }; return }
+    throw err
   }
-  if (!archivePath) {
+  clearTimeout(abortTimer)
+
+  if (limitExceeded) {
+    if (archivePath) { try { await unlink(archivePath) } catch { /* best-effort */ } }
+    ctx.status = 413
+    ctx.body = { error: `Profile archive too large (max ${MAX_PROFILE_IMPORT_SIZE / 1024 / 1024}MB)` }
+    return
+  }
+  if (unsupportedExt || !archivePath) {
     ctx.status = 400
     ctx.body = { error: 'No archive file found (.gz, .zip, .tgz)' }
     return

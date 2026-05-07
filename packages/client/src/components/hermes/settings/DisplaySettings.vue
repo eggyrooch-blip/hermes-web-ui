@@ -4,11 +4,14 @@ import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import { useTheme, type ThemeMode } from '@/composables/useTheme'
 import SettingRow from './SettingRow.vue'
+import { isUserMode } from '@/api/client'
 
 const settingsStore = useSettingsStore()
 const message = useMessage()
 const { t } = useI18n()
 const { mode, setMode } = useTheme()
+const showCostLabel = () => isUserMode() ? t('settings.display.showTokenUsage') : t('settings.display.showCost')
+const showCostHint = () => isUserMode() ? t('settings.display.showTokenUsageHint') : t('settings.display.showCostHint')
 
 const themeOptions = [
   { label: t('settings.display.themeLight'), value: 'light' },
@@ -46,7 +49,7 @@ function handleThemeChange(val: string) {
     <SettingRow :label="t('settings.display.showReasoning')" :hint="t('settings.display.showReasoningHint')">
       <NSwitch :value="settingsStore.display.show_reasoning" @update:value="v => save({ show_reasoning: v })" />
     </SettingRow>
-    <SettingRow :label="t('settings.display.showCost')" :hint="t('settings.display.showCostHint')">
+    <SettingRow :label="showCostLabel()" :hint="showCostHint()">
       <NSwitch :value="settingsStore.display.show_cost" @update:value="v => save({ show_cost: v })" />
     </SettingRow>
     <SettingRow :label="t('settings.display.inlineDiffs')" :hint="t('settings.display.inlineDiffsHint')">

@@ -62,6 +62,20 @@ export interface Job {
   last_delivery_error: string | null
 }
 
+export interface JobListResult {
+  jobs: Job[]
+  gatewayUnavailable?: boolean
+  errorMessage?: string
+}
+
+export interface JobWakeResult {
+  profile: string
+  running: boolean
+  status: 'ready' | 'starting' | 'stopped' | 'not_api_only' | 'failed' | 'unavailable'
+  url?: string
+  error?: { message?: string }
+}
+
 export interface CreateJobRequest {
   name: string
   schedule: string
@@ -146,9 +160,17 @@ export function buildJobUpdateRequest(original: Job, form: JobFormValues): Updat
   return payload
 }
 
-export async function listJobs(): Promise<Job[]> {
-  const res = await request<{ jobs: Job[] }>('/api/hermes/jobs?include_disabled=true')
-  return res.jobs
+export async function listJobs(): Promise<JobListResult> {
+  const res = await request<{
+    jobs: Job[]
+    gateway_unavailable?: boolean
+    error?: { message?: string }
+  }>('/api/hermes/jobs?include_disabled=true')
+  return {
+    jobs: res.jobs,
+    gatewayUnavailable: !!res.gateway_unavailable,
+    errorMessage: res.error?.message,
+  }
 }
 
 export async function getJob(jobId: string): Promise<Job> {

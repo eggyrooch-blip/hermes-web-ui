@@ -262,6 +262,30 @@ The frontend is designed with **multi-agent extensibility** — all Hermes-speci
 
 The BFF layer handles API proxy (with path rewriting), SSE streaming, file upload and download (multi-backend: local/Docker/SSH/Singularity), session CRUD via CLI, config/credential management, WeChat QR login, model discovery, skills/memory management, log reading, and static file serving.
 
+## Operations
+
+`hermes-web-ui` exits with code 1 on any uncaught exception so a process supervisor can restart it into a known-good state. Run it under one of:
+
+- **Docker / docker-compose** — the bundled `docker-compose.yml` already sets `restart: unless-stopped` and a `/health` healthcheck on the `hermes-webui` service. The same `HEALTHCHECK` is baked into the `Dockerfile`, so swarm/k8s deployments get it for free.
+- **systemd** — use `Restart=always` plus `RestartSec=2`. Point `StandardOutput`/`StandardError` at the journal; the BFF's own log file already lives at `~/.hermes-web-ui/logs/server.log`.
+- **launchd (macOS)** — set `KeepAlive=true` on the LaunchAgent plist.
+- **pm2** — `pm2 start dist/server/index.js --name hermes-web-ui --max-memory-restart 1G`.
+
+Health endpoint: `GET /health` returns 200 once the HTTP listener is up. It is registered before the auth middleware so probes don't need a token.
+
+Logs: pino sync destination at `~/.hermes-web-ui/logs/server.log`, auto-rotated at 3 MB. The pino redact configuration strips `Authorization` headers, `?token=` query strings, and any `*.access_token` / `*.refresh_token` / `*.api_key` field from log entries.
+
+Security knobs (default values shown):
+
+- `AUTH_DISABLED=` — leave empty in production. Only `1` / `true` / `yes` / `on` disable auth; `false` / `0` / any other value keeps auth on.
+- `HERMES_TERMINAL_ENABLED=` — set to `1` to opt in to the WebSocket terminal. Default is off because anyone reaching the upgrade endpoint with a valid auth context gets an interactive shell with the BFF process's privileges.
+- `CORS_ORIGINS=` — empty defaults to same-origin. Set to a comma-separated allowlist (`https://app.example.com,https://admin.example.com`) or `*` (legacy, opt-in) to relax.
+- `HERMES_UPSTREAM_HOSTS=` — comma-separated extension to the proxy host allowlist. The default `127.0.0.1`, `::1`, `localhost` is enough for the bundled docker-compose setup.
+
+## Localization
+
+8 locales live under `packages/client/src/i18n/locales/`: `en`, `zh`, `de`, `es`, `fr`, `ja`, `ko`, `pt`. Run `npm run i18n:check` to compare every locale's leaf-key set against `en.ts` (the reference) and exit non-zero on divergence. Wire it into your CI once the existing baseline drift is reconciled — the script ships immediately so contributors can verify their patches do not introduce new divergence.
+
 ## Tech Stack
 
 **Frontend:** Vue 3 + TypeScript + Vite + Naive UI + Pinia + Vue Router + vue-i18n + SCSS + markdown-it + highlight.js

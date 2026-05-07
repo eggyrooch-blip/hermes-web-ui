@@ -16,6 +16,7 @@ export interface StartRunRequest {
   instructions?: string
   session_id?: string
   model?: string
+  provider?: string
 }
 
 export interface StartRunResponse {
@@ -28,6 +29,9 @@ export interface RunEvent {
   event: string
   run_id?: string
   delta?: string
+  profile?: string
+  status?: string
+  url?: string
   /** Payload text for `reasoning.delta` / `thinking.delta` / `reasoning.available` events. */
   text?: string
   tool?: string
@@ -361,7 +365,6 @@ export function connectChatRun(): Socket {
     chatRunSocket.on('run.started', globalRunStartedHandler)
     chatRunSocket.on('run.failed', globalRunFailedHandler)
     chatRunSocket.on('run.completed', globalRunCompletedHandler)
-
     // Compression events
     chatRunSocket.on('compression.started', globalCompressionStartedHandler)
     chatRunSocket.on('compression.completed', globalCompressionCompletedHandler)

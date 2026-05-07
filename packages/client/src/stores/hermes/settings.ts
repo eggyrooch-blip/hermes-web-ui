@@ -2,6 +2,9 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as configApi from '@/api/hermes/config'
 import type { DisplayConfig, AgentConfig, MemoryConfig, SessionResetConfig, PrivacyConfig, ApprovalConfig } from '@/api/hermes/config'
+import { isUserMode } from '@/api/client'
+
+const USER_MODE_SECTIONS = ['display', 'agent', 'memory', 'session_reset', 'privacy', 'approvals']
 
 export const useSettingsStore = defineStore('settings', () => {
   const loading = ref(false)
@@ -27,7 +30,7 @@ export const useSettingsStore = defineStore('settings', () => {
   async function fetchSettings() {
     loading.value = true
     try {
-      const data = await configApi.fetchConfig()
+      const data = await configApi.fetchConfig(isUserMode() ? USER_MODE_SECTIONS : undefined)
       display.value = data.display || {}
       agent.value = data.agent || {}
       memory.value = data.memory || {}

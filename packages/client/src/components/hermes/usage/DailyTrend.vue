@@ -2,9 +2,11 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useUsageStore } from '@/stores/hermes/usage'
+import { isUserMode } from '@/api/client'
 
 const { t } = useI18n()
 const usageStore = useUsageStore()
+const showCost = computed(() => !isUserMode())
 
 function formatTokens(n: number): string {
   if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M'
@@ -56,7 +58,7 @@ const maxTokens = computed(() =>
           <div class="tooltip-row">{{ t('usage.cacheWrite') }}: {{ formatTokens(d.cache_write_tokens) }}</div>
           <div class="tooltip-row">{{ t('usage.cacheHitRate') }}: {{ cacheHitRate(d) }}</div>
           <div class="tooltip-row">{{ t('usage.sessions') }}: {{ d.sessions }}</div>
-          <div class="tooltip-row">{{ t('usage.cost') }}: {{ formatCost(d.cost) }}</div>
+          <div v-if="showCost" class="tooltip-row">{{ t('usage.cost') }}: {{ formatCost(d.cost) }}</div>
         </div>
       </div>
     </div>
@@ -76,7 +78,7 @@ const maxTokens = computed(() =>
             <th>{{ t('usage.cacheWrite') }}</th>
             <th>{{ t('usage.cacheHitRate') }}</th>
             <th>{{ t('usage.sessions') }}</th>
-            <th>{{ t('usage.cost') }}</th>
+            <th v-if="showCost">{{ t('usage.cost') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -88,7 +90,7 @@ const maxTokens = computed(() =>
             <td>{{ formatTokens(d.cache_write_tokens) }}</td>
             <td>{{ cacheHitRate(d) }}</td>
             <td>{{ d.sessions }}</td>
-            <td>{{ formatCost(d.cost) }}</td>
+            <td v-if="showCost">{{ formatCost(d.cost) }}</td>
           </tr>
         </tbody>
       </table>

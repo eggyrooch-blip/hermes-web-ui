@@ -21,6 +21,7 @@ function createMockCtx(overrides: Record<string, any> = {}) {
     query: {},
     search: '',
     headers: {},
+    state: {},
     status: 200,
     set: vi.fn(),
     body: null,

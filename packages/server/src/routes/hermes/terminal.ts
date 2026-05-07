@@ -1,9 +1,116 @@
 import { WebSocketServer } from 'ws'
-import type { Server as HttpServer } from 'http'
-import { accessSync, chmodSync, constants as fsConstants, existsSync } from 'fs'
+import type { Server as HttpServer, IncomingMessage } from 'http'
+import { accessSync, chmodSync, constants as fsConstants, existsSync, mkdirSync } from 'fs'
 import { dirname, join } from 'path'
 import { getToken } from '../../services/auth'
 import { logger } from '../../services/logger'
+import { config, parseBool } from '../../config'
+import {
+  verifyTrustedFeishuHeaders,
+  resolveProfileForOpenId,
+} from '../../services/request-context'
+import {
+  parseFeishuSessionCookie,
+  getFeishuSessionSecret,
+  FEISHU_SESSION_COOKIE,
+} from '../../services/feishu-oauth'
+import { getActiveProfileDir } from '../../services/hermes/hermes-profile'
+
+/**
+ * Terminal feature is OFF by default. Set HERMES_TERMINAL_ENABLED=1 to opt in.
+ *
+ * Risk: opening this WebSocket grants the connecting client an interactive
+ * shell with the same OS privileges as the BFF process. Anyone who can reach
+ * the upgrade endpoint with a valid auth context (token / Feishu session) can
+ * execute arbitrary commands. Enable only on trusted, single-user, localhost
+ * deployments — never on internet-exposed admin planes.
+ */
+function isTerminalEnabled(): boolean {
+  return parseBool(process.env.HERMES_TERMINAL_ENABLED)
+}
+
+interface TerminalAuthResult {
+  ok: boolean
+  status?: number
+  reason?: string
+  /** A short token suffix or principal id for audit logs. Never the full token. */
+  principal?: string
+}
+
+function denyUpgrade(socket: any, status: number, message: string): void {
+  socket.write(`HTTP/1.1 ${status} ${message}\r\n\r\n`)
+  socket.destroy()
+}
+
+function parseCookieHeader(header: string | undefined, name: string): string | undefined {
+  if (!header) return undefined
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq === -1) continue
+    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim()
+  }
+  return undefined
+}
+
+async function authenticateUpgrade(req: IncomingMessage, url: URL): Promise<TerminalAuthResult> {
+  if (config.authMode === 'trusted-feishu') {
+    // Build a minimal ctx with the headers our verifier needs.
+    const ctx: any = {
+      get(name: string): string {
+        const value = req.headers[name.toLowerCase()]
+        if (Array.isArray(value)) return value[0] || ''
+        return value || ''
+      },
+    }
+    const verified = verifyTrustedFeishuHeaders(ctx)
+    if (!verified.ok) {
+      return { ok: false, status: verified.status, reason: verified.error }
+    }
+    const profile = resolveProfileForOpenId(verified.openid)
+    if (!profile) {
+      return { ok: false, status: 403, reason: 'No Hermes profile bound to Feishu user' }
+    }
+    return { ok: true, principal: `feishu:${verified.openid}` }
+  }
+
+  if (config.authMode === 'feishu-oauth-dev') {
+    const cookieHeader = req.headers['cookie']
+    const cookie = parseCookieHeader(typeof cookieHeader === 'string' ? cookieHeader : undefined, FEISHU_SESSION_COOKIE)
+    const user = parseFeishuSessionCookie(cookie, { secret: getFeishuSessionSecret() })
+    if (!user) {
+      return { ok: false, status: 401, reason: 'Missing or invalid Feishu session' }
+    }
+    return { ok: true, principal: `feishu:${user.openid}` }
+  }
+
+  // Default token mode
+  const authToken = await getToken()
+  if (!authToken) {
+    // Auth disabled — still allow, but log explicitly so the gap is auditable.
+    return { ok: true, principal: 'auth-disabled' }
+  }
+  // Prefer Sec-WebSocket-Protocol over query string to keep the token out of URLs.
+  const protoHeader = req.headers['sec-websocket-protocol']
+  const protoToken = typeof protoHeader === 'string'
+    ? protoHeader.split(',').map(s => s.trim()).find(s => s.startsWith('hermes-token.'))?.slice('hermes-token.'.length)
+    : undefined
+  const queryToken = url.searchParams.get('token') || ''
+  const provided = protoToken || queryToken
+  if (!provided || provided !== authToken) {
+    return { ok: false, status: 401, reason: 'Invalid or missing token' }
+  }
+  return { ok: true, principal: `token:****${authToken.slice(-4)}` }
+}
+
+function resolveTerminalCwd(): string {
+  // Sandbox the shell into <profile-dir>/terminal so it cannot read $HOME
+  // dotfiles by default. Caller can still cd elsewhere — this is only the
+  // initial working directory. If we cannot create the sandbox we fail closed:
+  // a degraded "/tmp" fallback would silently weaken the C1 sandbox claim.
+  const dir = join(getActiveProfileDir(), 'terminal')
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
 
 let pty: any = null
 
@@ -83,7 +190,7 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
 }
 
-function createSession(shell: string): PtySession {
+function createSession(shell: string, cwd: string): PtySession {
   const id = generateId()
   let ptyProcess: PtySession['pty']
   try {
@@ -91,7 +198,7 @@ function createSession(shell: string): PtySession {
       name: 'xterm-color',
       cols: 80,
       rows: 24,
-      cwd: process.env.HOME || undefined,
+      cwd,
     })
   } catch (err: any) {
     throw new Error(`Failed to spawn shell "${shell}": ${err.message}`)
@@ -116,6 +223,17 @@ export function setupTerminalWebSocket(httpServer: HttpServer) {
     return
   }
 
+  if (!isTerminalEnabled()) {
+    logger.info('Terminal disabled (set HERMES_TERMINAL_ENABLED=1 to opt in)')
+    httpServer.on('upgrade', (req, socket) => {
+      const url = new URL(req.url || '', `http://${req.headers.host}`)
+      if (url.pathname === '/api/hermes/terminal') {
+        denyUpgrade(socket, 404, 'Not Found')
+      }
+    })
+    return
+  }
+
   const wss = new WebSocketServer({ noServer: true })
   const defaultShell = findShell()
 
@@ -125,16 +243,19 @@ export function setupTerminalWebSocket(httpServer: HttpServer) {
       return
     }
 
-    // Auth check
-    const authToken = await getToken()
-    if (authToken) {
-      const token = url.searchParams.get('token') || ''
-      if (token !== authToken) {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
-        socket.destroy()
-        return
-      }
+    if (config.webPlane === 'chat') {
+      denyUpgrade(socket, 403, 'Forbidden')
+      return
     }
+
+    const auth = await authenticateUpgrade(req, url)
+    if (!auth.ok) {
+      logger.warn('Terminal upgrade denied: %s (status=%d)', auth.reason, auth.status || 401)
+      denyUpgrade(socket, auth.status || 401, auth.reason || 'Unauthorized')
+      return
+    }
+
+    logger.warn('Terminal upgrade granted to principal=%s remote=%s', auth.principal, req.socket.remoteAddress)
 
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit('connection', ws, req)
@@ -213,7 +334,7 @@ export function setupTerminalWebSocket(httpServer: HttpServer) {
           const shell = parsed.shell || defaultShell
           let session: PtySession
           try {
-            session = createSession(shell)
+            session = createSession(shell, resolveTerminalCwd())
           } catch (err: any) {
             ws.send(JSON.stringify({ type: 'error', message: err.message }))
             return
@@ -304,7 +425,7 @@ export function setupTerminalWebSocket(httpServer: HttpServer) {
 
     let firstSession: PtySession
     try {
-      firstSession = createSession(defaultShell)
+      firstSession = createSession(defaultShell, resolveTerminalCwd())
     } catch (err: any) {
       ws.send(JSON.stringify({ type: 'error', message: err.message }))
       logger.error(err, 'Failed to create session')

@@ -1,5 +1,7 @@
 import Router from '@koa/router'
-import { basename, extname } from 'path'
+import type { Context } from 'koa'
+import { mkdir } from 'fs/promises'
+import { basename, extname, join } from 'path'
 import {
   createFileProvider,
   localProvider,
@@ -7,6 +9,18 @@ import {
   validatePath,
   resolveHermesPath,
 } from '../../services/hermes/file-provider'
+import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
+import { getActiveProfileDir } from '../../services/hermes/hermes-profile'
+import { config } from '../../config'
+
+/**
+ * Roots that are legal targets for absolute-path downloads.
+ * Without this whitelist, `validatePath` only checks absoluteness, which
+ * historically allowed any reachable file (e.g. /etc/passwd) to be served.
+ */
+function downloadAllowedRoots(ctx: Context): string[] {
+  return [config.uploadDir, getRequestProfileDir(ctx), getActiveProfileDir()]
+}
 
 export const downloadRoutes = new Router()
 
@@ -62,6 +76,36 @@ function getMimeType(fileName: string): string {
   return MIME_MAP[ext] || 'application/octet-stream'
 }
 
+async function getDownloadTarget(ctx: Context, filePath: string): Promise<{
+  validPath: string
+  forceLocalRoot?: string
+  useLocalUploadProvider: boolean
+}> {
+  if (!isChatPlaneRequest(ctx)) {
+    const validPath = filePath.startsWith('/')
+      ? validatePath(filePath, downloadAllowedRoots(ctx))
+      : resolveHermesPath(filePath)
+    return { validPath, useLocalUploadProvider: isInUploadDir(validPath) }
+  }
+
+  if (filePath.startsWith('/')) {
+    // Chat plane only allows absolute paths inside the upload dir.
+    const validPath = validatePath(filePath, [config.uploadDir])
+    if (!isInUploadDir(validPath)) {
+      throw Object.assign(new Error('Absolute downloads are not available in chat plane'), { code: 'invalid_path' })
+    }
+    return { validPath, useLocalUploadProvider: true }
+  }
+
+  const workspaceDir = join(getRequestProfileDir(ctx), 'workspace')
+  await mkdir(workspaceDir, { recursive: true })
+  return {
+    validPath: resolveHermesPath(filePath, workspaceDir),
+    forceLocalRoot: workspaceDir,
+    useLocalUploadProvider: false,
+  }
+}
+
 downloadRoutes.get('/api/hermes/download', async (ctx) => {
   const filePath = ctx.query.path as string | undefined
   const fileName = ctx.query.name as string | undefined
@@ -73,21 +117,21 @@ downloadRoutes.get('/api/hermes/download', async (ctx) => {
   }
 
   try {
-    // Validate the path first
-    // Support both absolute and relative paths
-    const validPath = filePath.startsWith('/') ? validatePath(filePath) : resolveHermesPath(filePath)
+    const target = await getDownloadTarget(ctx, filePath)
 
     // Choose provider: always use local for upload directory files
     let data: Buffer
-    if (isInUploadDir(validPath)) {
-      data = await localProvider.readFile(validPath)
+    if (target.useLocalUploadProvider) {
+      data = await localProvider.readFile(target.validPath)
     } else {
-      const provider = await createFileProvider()
-      data = await provider.readFile(validPath)
+      const provider = target.forceLocalRoot
+        ? await createFileProvider({ rootDir: target.forceLocalRoot, forceLocal: true })
+        : await createFileProvider()
+      data = await provider.readFile(target.validPath)
     }
 
     // Determine filename and MIME type
-    const name = fileName || basename(validPath)
+    const name = fileName || basename(target.validPath)
     const mime = getMimeType(name)
 
     // Set response headers

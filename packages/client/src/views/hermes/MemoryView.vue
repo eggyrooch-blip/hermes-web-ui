@@ -66,7 +66,6 @@ function formatTime(ts: number | null): string {
 const memoryEmpty = computed(() => !data.value?.memory?.trim())
 const userEmpty = computed(() => !data.value?.user?.trim())
 const soulEmpty = computed(() => !data.value?.soul?.trim())
-
 const displayMemory = computed(() => (data.value?.memory || '').replace(/§/g, '\n\n'))
 const displayUser = computed(() => (data.value?.user || '').replace(/§/g, '\n\n'))
 const displaySoul = computed(() => (data.value?.soul || '').replace(/§/g, '\n\n'))

@@ -4,6 +4,7 @@ import { mount } from '@vue/test-utils'
 
 const mockSettingsStore = vi.hoisted(() => ({
   sessionReset: { mode: 'both', idle_minutes: 60, at_hour: 0 },
+  approvals: { mode: 'auto' },
   saveSection: vi.fn(),
 }))
 
@@ -32,6 +33,11 @@ vi.mock('naive-ui', async () => {
   const actual = await vi.importActual<any>('naive-ui')
   return {
     ...actual,
+    NSwitch: {
+      props: ['value'],
+      emits: ['update:value'],
+      template: '<button class="n-switch" @click="$emit(\'update:value\', !value)"></button>',
+    },
     useMessage: () => ({
       success: vi.fn(),
       error: vi.fn(),
@@ -63,10 +69,10 @@ describe('SessionSettings', () => {
 
     expect(wrapper.text()).toContain('settings.session.liveMonitorHumanOnly')
 
-    const toggle = wrapper.find('.n-switch')
-    expect(toggle.exists()).toBe(true)
+    const toggle = wrapper.findAll('.n-switch').at(-1)
+    expect(toggle).toBeTruthy()
 
-    await toggle.trigger('click')
+    await toggle!.trigger('click')
     await Promise.resolve()
 
     expect(mockPrefsStore.setHumanOnly).toHaveBeenCalledWith(false)

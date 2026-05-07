@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { useUsageStore } from '@/stores/hermes/usage'
+import { computed } from 'vue'
+import { isUserMode } from '@/api/client'
 
 const { t } = useI18n()
 const usageStore = useUsageStore()
+const showCost = computed(() => !isUserMode())
 
 function formatTokens(n: number): string {
   if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M'
@@ -33,7 +36,7 @@ function formatCost(n: number): string {
       <div class="stat-value">{{ usageStore.totalSessions }}</div>
       <div class="stat-sub">{{ t('usage.avgPerDay', { n: usageStore.avgSessionsPerDay.toFixed(1) }) }}</div>
     </div>
-    <div class="stat-card">
+    <div v-if="showCost" class="stat-card">
       <div class="stat-label">{{ t('usage.estimatedCost') }}</div>
       <div class="stat-value">{{ formatCost(usageStore.estimatedCost) }}</div>
     </div>

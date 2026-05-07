@@ -23,9 +23,11 @@
   --accent-muted: #888888;
 
   // Text
+  // a11y: text-muted needs ≥4.5:1 against --bg-primary (#fafafa) for WCAG AA.
+  // #999 was ~3.0:1 (fail). #6b6b6b is ~4.7:1 — body-text safe.
   --text-primary: #1a1a1a;
   --text-secondary: #666666;
-  --text-muted: #999999;
+  --text-muted: #6b6b6b;
 
   // Status
   --success: #2e7d32;
@@ -49,7 +51,9 @@
   --accent-primary-rgb: 51, 51, 51;
   --accent-hover-rgb: 26, 26, 26;
   --text-primary-rgb: 26, 26, 26;
-  --text-muted-rgb: 153, 153, 153;
+  // Mirrors --text-muted (#6b6b6b). Update both together so alpha-composed
+  // surfaces using rgba(var(--text-muted-rgb), …) match the solid colour.
+  --text-muted-rgb: 107, 107, 107;
   --success-rgb: 46, 125, 50;
   --error-rgb: 198, 40, 40;
   --warning-rgb: 245, 127, 23;

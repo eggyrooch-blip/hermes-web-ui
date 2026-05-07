@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { checkHealth, fetchAvailableModels, updateDefaultModel, triggerUpdate, type AvailableModelGroup } from '@/api/hermes/system'
+import { checkHealth, fetchAvailableModels, updateDefaultModel, type AvailableModelGroup } from '@/api/hermes/system'
+import { setRuntimeMode } from '@/api/client'
 
 const WEB_UI_VERSION = __APP_VERSION__
 
@@ -13,43 +14,31 @@ export const useAppStore = defineStore('app', () => {
 
   const connected = ref(false)
   const serverVersion = ref(WEB_UI_VERSION)
-  const latestVersion = ref('')
-  const updateAvailable = ref(false)
-  const updating = ref(false)
   const modelGroups = ref<AvailableModelGroup[]>([])
   const selectedModel = ref('')
   const selectedProvider = ref('')
   const customModels = ref<Record<string, string[]>>({})
   const healthPollTimer = ref<ReturnType<typeof setInterval>>()
   const nodeVersion = ref('')
+  const plane = ref(localStorage.getItem('hermes_web_plane') || 'both')
+  const authMode = ref(localStorage.getItem('hermes_auth_mode') || 'token')
+  const chatPlane = ref(plane.value === 'chat')
 
   // Settings
   const streamEnabled = ref(true)
   const sessionPersistence = ref(true)
   const maxTokens = ref(4096)
 
-  async function doUpdate(): Promise<boolean> {
-    updating.value = true
-    try {
-      const res = await triggerUpdate()
-      if (res.success) {
-        updateAvailable.value = false
-        await checkConnection()
-      }
-      return res.success
-    } finally {
-      updating.value = false
-    }
-  }
-
   async function checkConnection() {
     try {
       const res = await checkHealth()
       connected.value = res.status === 'ok'
       if (res.webui_version) serverVersion.value = res.webui_version
-      if (res.webui_latest) latestVersion.value = res.webui_latest
-      updateAvailable.value = !!res.webui_update_available
       if (res.node_version) nodeVersion.value = res.node_version
+      if (res.plane) plane.value = res.plane
+      if (res.auth_mode) authMode.value = res.auth_mode
+      chatPlane.value = plane.value === 'chat'
+      setRuntimeMode(authMode.value, plane.value)
     } catch {
       connected.value = false
     }
@@ -124,11 +113,10 @@ export const useAppStore = defineStore('app', () => {
     toggleSidebarCollapsed,
     connected,
     serverVersion,
-    latestVersion,
     nodeVersion,
-    updateAvailable,
-    updating,
-    doUpdate,
+    plane,
+    authMode,
+    chatPlane,
     modelGroups,
     customModels,
     selectedModel,

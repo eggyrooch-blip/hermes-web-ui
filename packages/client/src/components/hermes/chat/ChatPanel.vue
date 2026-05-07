@@ -15,6 +15,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { getSourceLabel } from "@/shared/session-display";
 import { copyToClipboard } from "@/utils/clipboard";
+import { isUserMode } from "@/api/client";
 import FolderPicker from "./FolderPicker.vue";
 import ChatInput from "./ChatInput.vue";
 import ConversationMonitorPane from "./ConversationMonitorPane.vue";
@@ -29,6 +30,7 @@ const { t } = useI18n();
 
 const showDrawer = ref(false);
 const drawerActiveTab = ref<"terminal" | "files">("files");
+const userModeChrome = computed(() => isUserMode());
 
 const currentMode = ref<"chat" | "live">("chat");
 
@@ -399,7 +401,7 @@ async function handleWorkspaceConfirm() {
 </script>
 
 <template>
-  <div class="chat-panel">
+  <div class="chat-panel" :class="{ 'user-mode-chat': userModeChrome }">
     <div
       v-if="currentMode === 'chat'"
       class="session-backdrop"
@@ -500,6 +502,8 @@ async function handleWorkspaceConfirm() {
             quaternary
             size="tiny"
             @click="toggleBatchMode"
+            :aria-label="t('chat.exitBatchMode')"
+            :title="t('chat.exitBatchMode')"
           >
             <template #icon>
               <svg
@@ -515,7 +519,14 @@ async function handleWorkspaceConfirm() {
               </svg>
             </template>
           </NButton>
-          <NButton quaternary size="tiny" @click="handleNewChat" circle>
+          <NButton
+            quaternary
+            size="tiny"
+            @click="handleNewChat"
+            circle
+            :aria-label="t('chat.newChat')"
+            :title="t('chat.newChat')"
+          >
             <template #icon>
               <svg
                 width="14"
@@ -544,6 +555,19 @@ async function handleWorkspaceConfirm() {
           class="session-loading"
         >
           {{ t("common.loading") }}
+        </div>
+        <div
+          v-else-if="!chatStore.isLoadingSessions && chatStore.sessionsError && chatStore.sessions.length === 0"
+          class="session-error"
+        >
+          <div class="session-error-text">{{ t("chat.loadSessionsFailed") }}</div>
+          <button
+            class="session-error-retry"
+            type="button"
+            @click="chatStore.loadSessions()"
+          >
+            {{ t("chat.retrySessions") }}
+          </button>
         </div>
         <div v-else-if="chatStore.sessions.length === 0" class="session-empty">
           {{ t("chat.noSessions") }}
@@ -784,6 +808,206 @@ async function handleWorkspaceConfirm() {
   display: flex;
   height: 100%;
   position: relative;
+}
+
+.chat-panel.user-mode-chat {
+  background:
+    linear-gradient(180deg, rgba(247, 249, 251, 0.98), rgba(241, 245, 249, 0.96)),
+    $bg-primary;
+
+  .dark & {
+    background:
+      linear-gradient(180deg, rgba(18, 22, 28, 0.98), rgba(15, 17, 21, 0.98)),
+      $bg-primary;
+  }
+
+  .session-list {
+    width: 254px;
+    background: rgba(255, 255, 255, 0.62);
+    border-right-color: rgba(15, 23, 42, 0.08);
+    backdrop-filter: blur(18px);
+
+    &.collapsed {
+      width: 0;
+    }
+
+    .dark & {
+      background: rgba(20, 24, 31, 0.74);
+      border-right-color: rgba(148, 163, 184, 0.12);
+    }
+  }
+
+  .session-list-header {
+    padding: 14px 14px 10px;
+  }
+
+  .session-list-title,
+  .session-group-label {
+    letter-spacing: 0.04em;
+  }
+
+  .session-scope-note {
+    margin: 0 14px 12px;
+    border-color: rgba(37, 99, 235, 0.16);
+    background: rgba(37, 99, 235, 0.06);
+  }
+
+  .chat-main {
+    background: transparent;
+  }
+
+  .chat-header {
+    min-height: 64px;
+    padding: 14px 24px;
+    background: rgba(255, 255, 255, 0.68);
+    border-bottom-color: rgba(15, 23, 42, 0.08);
+    backdrop-filter: blur(18px);
+    gap: 14px;
+
+    .dark & {
+      background: rgba(19, 23, 30, 0.72);
+      border-bottom-color: rgba(148, 163, 184, 0.12);
+    }
+  }
+
+  .header-session-title {
+    font-size: 15px;
+    font-weight: 650;
+  }
+
+  .source-badge,
+  .workspace-badge {
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    background: rgba(255, 255, 255, 0.72);
+    color: $text-secondary;
+
+    .dark & {
+      border-color: rgba(148, 163, 184, 0.14);
+      background: rgba(15, 23, 42, 0.56);
+    }
+  }
+
+  :deep(.message-list) {
+    padding: 22px min(5vw, 48px);
+    gap: 18px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(226, 232, 240, 0.16));
+
+    .dark & {
+      background: linear-gradient(180deg, rgba(30, 41, 59, 0.22), rgba(15, 23, 42, 0.12));
+    }
+  }
+
+  :deep(.empty-state) {
+    color: $text-secondary;
+  }
+
+  :deep(.empty-logo) {
+    border-radius: 12px;
+    opacity: 0.42;
+    filter: grayscale(0.2);
+  }
+
+  :deep(.tool-line) {
+    background: rgba(255, 255, 255, 0.72);
+    border-color: rgba(15, 23, 42, 0.08);
+
+    .dark & {
+      background: rgba(20, 24, 31, 0.78);
+      border-color: rgba(148, 163, 184, 0.12);
+    }
+  }
+
+  :deep(.chat-input-area) {
+    padding: 12px min(5vw, 48px) 18px;
+    border-top-color: rgba(15, 23, 42, 0.08);
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: blur(18px);
+
+    .dark & {
+      background: rgba(19, 23, 30, 0.74);
+      border-top-color: rgba(148, 163, 184, 0.12);
+    }
+  }
+
+  :deep(.input-wrapper) {
+    border-radius: 8px;
+    border-color: rgba(15, 23, 42, 0.1);
+    background: rgba(255, 255, 255, 0.86);
+    box-shadow: 0 10px 26px rgba(15, 23, 42, 0.07);
+
+    &:focus-within {
+      border-color: rgba(37, 99, 235, 0.38);
+      box-shadow:
+        0 0 0 3px rgba(37, 99, 235, 0.08),
+        0 12px 30px rgba(15, 23, 42, 0.09);
+    }
+
+    .dark & {
+      border-color: rgba(148, 163, 184, 0.16);
+      background: rgba(15, 23, 42, 0.76);
+      box-shadow: 0 12px 34px rgba(0, 0, 0, 0.26);
+
+      &:focus-within {
+        border-color: rgba(96, 165, 250, 0.42);
+        box-shadow:
+          0 0 0 3px rgba(96, 165, 250, 0.12),
+          0 12px 34px rgba(0, 0, 0, 0.3);
+      }
+    }
+  }
+
+  .drawer-button-wrapper {
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+    animation: none;
+
+    &:hover {
+      box-shadow: 0 14px 34px rgba(15, 23, 42, 0.18);
+    }
+  }
+
+  .drawer-button {
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(37, 99, 235, 0.16);
+
+    svg {
+      color: #2563eb;
+    }
+
+    .dark & {
+      background: rgba(20, 24, 31, 0.92);
+      border-color: rgba(96, 165, 250, 0.22);
+
+      svg {
+        color: #93c5fd;
+      }
+    }
+  }
+
+  @media (max-width: $breakpoint-mobile) {
+    .session-list {
+      width: min(86vw, 320px);
+    }
+
+    .chat-header {
+      padding: 14px 12px 14px 52px;
+      min-height: 60px;
+      flex-wrap: wrap;
+    }
+
+    :deep(.message-list) {
+      padding: 16px 12px;
+      gap: 14px;
+    }
+
+    :deep(.chat-input-area) {
+      padding: 10px 12px 14px;
+    }
+
+    .drawer-button-wrapper {
+      display: none;
+    }
+  }
 }
 
 .session-list {

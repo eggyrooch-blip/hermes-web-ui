@@ -31,3 +31,11 @@ hermes-dependencies.md
 *.sln
 *.sw?
 .superpowers/
+.ace-tool/
+# Local tooling state — Claude Code / OMC plugin / Playwright workspace / scratch
+.claude/
+.omc/
+.playwright-cli/
+.tmp/
+# Local-only review and planning notes (never tracked historically)
+Plans/

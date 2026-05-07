@@ -8,6 +8,7 @@ import { setModelContext } from '@/api/hermes/model-context'
 import { NButton, NTooltip, NSwitch, NModal, NInputNumber, useMessage } from 'naive-ui'
 import { computed, ref, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import ModelSelector from '@/components/layout/ModelSelector.vue'
 
 const chatStore = useChatStore()
 const { t } = useI18n()
@@ -286,6 +287,8 @@ function isImage(type: string): boolean {
         />
       </div>
 
+      <ModelSelector variant="compact" />
+
       <span v-if="totalTokens > 0" class="context-info" :class="{ 'context-warning': usagePercent > 80 }">
         {{ formatTokens(totalTokens) }} /
         <NTooltip trigger="hover">
@@ -440,6 +443,7 @@ function isImage(type: string): boolean {
 .input-top-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 0 0 6px;
 }
@@ -639,5 +643,47 @@ function isImage(type: string): boolean {
   border-color: var(--accent-info);
   border-style: dashed;
   background-color: rgba(var(--accent-info-rgb), 0.04);
+}
+
+@media (max-width: $breakpoint-mobile) {
+  .chat-input-area {
+    padding: 10px 12px 14px;
+  }
+
+  .input-top-bar {
+    gap: 6px;
+  }
+
+  .auto-play-speech-switch {
+    margin-left: 0;
+    padding-left: 6px;
+    padding-right: 4px;
+  }
+
+  .context-info {
+    width: 100%;
+    line-height: 1.4;
+  }
+
+  .context-bar {
+    width: 100%;
+  }
+
+  .input-wrapper {
+    align-items: flex-end;
+    gap: 8px;
+    padding: 9px 10px;
+  }
+
+  .input-textarea {
+    min-width: 0;
+    font-size: 16px;
+  }
+
+  .input-actions {
+    :deep(.n-button__content) {
+      display: none;
+    }
+  }
 }
 </style>

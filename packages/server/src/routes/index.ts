@@ -27,6 +27,7 @@ import { jobRoutes } from './hermes/jobs'
 import { cronHistoryRoutes } from './hermes/cron-history'
 import { proxyRoutes, proxyMiddleware } from './hermes/proxy'
 import { groupChatRoutes, setGroupChatServer } from './hermes/group-chat'
+import { enforcePlaneAccess } from '../services/request-context'
 
 /**
  * Register all routes on the Koa app.
@@ -41,6 +42,7 @@ export function registerRoutes(app: any, requireAuth: (ctx: Context, next: Next)
 
   // --- Auth middleware: all routes below require authentication ---
   app.use(requireAuth)
+  app.use(enforcePlaneAccess)
 
   // --- Protected routes (auth required) ---
   app.use(authProtectedRoutes.routes())

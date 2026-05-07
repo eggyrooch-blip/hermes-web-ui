@@ -10,6 +10,8 @@
  */
 import type { Server, Socket } from 'socket.io'
 import { EventSource } from 'eventsource'
+import { readFile } from 'fs/promises'
+import { extname, resolve, sep } from 'path'
 import { setRunSession } from '../../routes/hermes/proxy-handler'
 import { updateUsage } from '../../db/hermes/usage-store'
 import { getSystemPrompt } from '../../lib/llm-prompt'
@@ -30,6 +32,7 @@ import { ChatContextCompressor, countTokens, SUMMARY_PREFIX } from '../../lib/co
 import { getCompressionSnapshot } from '../../db/hermes/compression-snapshot'
 import { parseLLMJSON, parseToolArguments, parseAnthropicContentArray } from '../../lib/llm-json'
 import { logger } from '../logger'
+import { getProfileDir } from './hermes-profile'
 
 /**
  * Content block types for Anthropic-compatible message format
@@ -74,16 +77,83 @@ function isContentBlockArray(input: any): input is ContentBlock[] {
  * Converts images to base64 data URLs for Anthropic/OpenAI API compatibility.
  * File attachments are converted to text mentions.
  */
-async function convertContentBlocks(blocks: ContentBlock[]): Promise<string> {
+const MAX_INLINE_FILE_BYTES = 512 * 1024
+const INLINE_TEXT_EXTENSIONS = new Set([
+  '.c',
+  '.cc',
+  '.conf',
+  '.cpp',
+  '.cs',
+  '.css',
+  '.csv',
+  '.go',
+  '.h',
+  '.hpp',
+  '.html',
+  '.ini',
+  '.java',
+  '.js',
+  '.json',
+  '.jsx',
+  '.log',
+  '.md',
+  '.mjs',
+  '.py',
+  '.rb',
+  '.rs',
+  '.scss',
+  '.sh',
+  '.sql',
+  '.toml',
+  '.ts',
+  '.tsx',
+  '.txt',
+  '.xml',
+  '.yaml',
+  '.yml',
+])
+
+function isInlineTextFile(block: Extract<ContentBlock, { type: 'file' }>): boolean {
+  const mediaType = block.media_type?.toLowerCase() || ''
+  if (mediaType.startsWith('text/')) return true
+  if (['application/json', 'application/xml', 'application/yaml', 'application/x-yaml'].includes(mediaType)) return true
+  return INLINE_TEXT_EXTENSIONS.has(extname(block.name || block.path).toLowerCase())
+}
+
+async function readProfileWorkspaceFile(profile: string, relativePath: string): Promise<{ text: string; truncated: boolean } | null> {
+  if (!relativePath || relativePath.startsWith('/') || relativePath.includes('\0')) return null
+
+  const workspaceDir = resolve(getProfileDir(profile), 'workspace')
+  const resolvedPath = resolve(workspaceDir, relativePath)
+  if (resolvedPath !== workspaceDir && !resolvedPath.startsWith(`${workspaceDir}${sep}`)) return null
+
+  const data = await readFile(resolvedPath)
+  const truncated = data.length > MAX_INLINE_FILE_BYTES
+  const slice = truncated ? data.subarray(0, MAX_INLINE_FILE_BYTES) : data
+  return { text: slice.toString('utf-8'), truncated }
+}
+
+async function convertContentBlocks(blocks: ContentBlock[], profile?: string): Promise<string> {
   let contentStr = ''
 
   for (const block of blocks) {
     if (block.type === 'text') {
       contentStr += block.text
     } else if (block.type === 'image') {
-      contentStr += `[Image: ${block.path}]`
+      contentStr += `\n\n[Image: ${block.path}]`
     } else if (block.type === 'file') {
-      contentStr += `[File: ${block.path}]`
+      if (profile && isInlineTextFile(block)) {
+        try {
+          const file = await readProfileWorkspaceFile(profile, block.path)
+          if (file) {
+            contentStr += `\n\n<file name="${block.name}" path="${block.path}">\n${file.text}${file.truncated ? '\n[File truncated]' : ''}\n</file>`
+            continue
+          }
+        } catch (err) {
+          logger.warn(err, '[chat-run-socket] failed to inline uploaded file %s for profile %s', block.path, profile)
+        }
+      }
+      contentStr += `\n\n[File: ${block.path}]`
     }
   }
 
@@ -93,7 +163,7 @@ async function convertContentBlocks(blocks: ContentBlock[]): Promise<string> {
 const compressor = new ChatContextCompressor()
 
 // --- Helper: Convert OpenAI format to Anthropic format ---
-function convertHistoryFormat(messages: any[]): any[] {
+async function convertHistoryFormat(messages: any[], profile?: string): Promise<any[]> {
   const result: any[] = []
 
   for (const m of messages) {
@@ -117,7 +187,7 @@ function convertHistoryFormat(messages: any[]): any[] {
         result.push({ role: 'user', content: content })
       } else if (Array.isArray(content)) {
         // Already in array format, assume it's correct
-        result.push({ role: 'user', content: convertContentBlocks(content) })
+        result.push({ role: 'user', content: await convertContentBlocks(content, profile) })
       }
       continue
     }
@@ -170,6 +240,7 @@ export class ChatRunSocket {
   /** sessionId → session state (messages, working status, events, run tracking) */
   private sessionMap = new Map<string, SessionState>()
   private hermesSessionIds = new Map<string, any>()
+  private gatewayStartPromises = new Map<string, Promise<void>>()
 
   constructor(io: Server, gatewayManager: any) {
     this.nsp = io.of('/chat-run')
@@ -186,7 +257,38 @@ export class ChatRunSocket {
 
   private async authMiddleware(socket: Socket, next: (err?: Error) => void) {
     const token = socket.handshake.auth?.token as string | undefined
-    if (!process.env.AUTH_DISABLED && process.env.AUTH_DISABLED !== '1') {
+    const { config, isAuthDisabled } = await import('../../config')
+
+    if (config.authMode === 'trusted-feishu') {
+      const { verifyTrustedFeishuHeaders, resolveProfileForOpenId } = await import('../request-context')
+      const fakeCtx = {
+        get: (name: string) => {
+          const value = socket.handshake.headers[name.toLowerCase()]
+          return Array.isArray(value) ? value[0] || '' : value || ''
+        },
+      } as any
+      const verified = verifyTrustedFeishuHeaders(fakeCtx)
+      if (!verified.ok) return next(new Error('Authentication failed'))
+      const profile = resolveProfileForOpenId(verified.openid)
+      if (!profile) return next(new Error('Profile not found'))
+      socket.data.profile = profile
+      return next()
+    }
+
+    if (config.authMode === 'feishu-oauth-dev') {
+      // SECURITY: without this branch the fall-through to `if (!isAuthDisabled())`
+      // would let the socket through unchecked: getToken() returns null in
+      // Feishu modes, so `serverToken` is falsy and the equality test is
+      // skipped. Verify the signed Feishu session cookie ourselves.
+      const { parseFeishuSessionCookie, getFeishuSessionSecret, extractFeishuSessionFromCookieHeader } = await import('../feishu-oauth')
+      const sessionCookie = extractFeishuSessionFromCookieHeader(socket.handshake.headers['cookie'])
+      const user = parseFeishuSessionCookie(sessionCookie, { secret: getFeishuSessionSecret() })
+      if (!user) return next(new Error('Authentication failed'))
+      socket.data.profile = user.profile
+      return next()
+    }
+
+    if (!isAuthDisabled()) {
       const { getToken } = await import('../auth')
       const serverToken = await getToken()
       if (serverToken && token !== serverToken) {
@@ -199,12 +301,13 @@ export class ChatRunSocket {
   // --- Connection handler ---
 
   private onConnection(socket: Socket) {
-    const profile = (socket.handshake.query?.profile as string) || 'default'
+    const profile = (socket.data.profile as string | undefined) || (socket.handshake.query?.profile as string) || 'default'
 
     socket.on('run', async (data: {
       input: string
       session_id?: string
       model?: string
+      provider?: string
       instructions?: string
     }) => {
       await this.handleRun(socket, data, profile)
@@ -421,12 +524,10 @@ export class ChatRunSocket {
 
   private async handleRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; session_id?: string; model?: string; instructions?: string },
+    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string },
     profile: string,
   ) {
-    const { input, session_id, model, instructions } = data
-    const upstream = this.gatewayManager.getUpstream(profile).replace(/\/$/, '')
-    const apiKey = this.gatewayManager.getApiKey(profile) || undefined
+    const { input, session_id, model, provider, instructions } = data
 
     // Generate ephemeral session ID for Hermes (fresh session per run)
     const hermesSessionId = session_id
@@ -479,10 +580,16 @@ export class ChatRunSocket {
       }
     }
     try {
+      await this.ensureGatewayReady(profile, emit)
+
+      const upstream = this.gatewayManager.getUpstream(profile).replace(/\/$/, '')
+      const apiKey = this.gatewayManager.getApiKey(profile) || undefined
+
       // Build upstream request body
       const body: Record<string, any> = { input }
       if (hermesSessionId) body.session_id = hermesSessionId
       if (model) body.model = model
+      if (provider) body.provider = provider
       if (instructions) {
         body.instructions = `${getSystemPrompt()}\n${instructions}`
       } else {
@@ -800,14 +907,14 @@ export class ChatRunSocket {
       if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
       // Convert input from ContentBlock[] to Anthropic format (with base64 images)
       if (isContentBlockArray(input)) {
-        body.input = await convertContentBlocks(input)
+        body.input = await convertContentBlocks(input, profile)
       }
 
       // Debug: write history to JSON file for analysis (before conversion)
 
       // Convert conversation_history from OpenAI format to Anthropic format
       if (body.conversation_history && Array.isArray(body.conversation_history)) {
-        body.conversation_history = convertHistoryFormat(body.conversation_history)
+        body.conversation_history = await convertHistoryFormat(body.conversation_history, profile)
       }
       const res = await fetch(`${upstream}/v1/runs`, {
         method: 'POST',
@@ -1089,6 +1196,62 @@ export class ChatRunSocket {
     }
   }
 
+  private async ensureGatewayReady(profile: string, emit: (event: string, payload: any) => void): Promise<void> {
+    if (!this.gatewayManager?.detectStatus) return
+    const startGateway = this.gatewayManager.startApiOnly?.bind(this.gatewayManager)
+      || this.gatewayManager.start?.bind(this.gatewayManager)
+    if (!startGateway) return
+
+    const status = await this.gatewayManager.detectStatus(profile)
+    if (status?.running) return
+
+    let startPromise = this.gatewayStartPromises.get(profile)
+    if (!startPromise) {
+      emit('gateway.waking', {
+        event: 'gateway.waking',
+        profile,
+        status: 'starting',
+        message: 'Waking Hermes gateway',
+      })
+      startPromise = Promise.resolve()
+        .then(() => startGateway(profile))
+        .then(() => undefined)
+        .finally(() => {
+          this.gatewayStartPromises.delete(profile)
+        })
+      this.gatewayStartPromises.set(profile, startPromise)
+    } else {
+      emit('gateway.waking', {
+        event: 'gateway.waking',
+        profile,
+        status: 'waiting',
+        message: 'Waiting for Hermes gateway',
+      })
+    }
+
+    try {
+      await startPromise
+      const ready = await this.gatewayManager.detectStatus(profile)
+      if (!ready?.running) {
+        throw new Error('Gateway did not report healthy after startup')
+      }
+      emit('gateway.ready', {
+        event: 'gateway.ready',
+        profile,
+        status: 'ready',
+        url: ready.url,
+      })
+    } catch (err: any) {
+      emit('gateway.failed', {
+        event: 'gateway.failed',
+        profile,
+        status: 'failed',
+        error: err?.message || 'Gateway startup failed',
+      })
+      throw new Error(`Gateway for profile "${profile}" is not running and could not be started: ${err?.message || 'unknown error'}`)
+    }
+  }
+
   // --- Abort handler ---
 
   private async handleAbort(socket: Socket, sessionId: string) {
@@ -1171,7 +1334,10 @@ export class ChatRunSocket {
         const prof = state.profile
         this.hermesSessionIds.delete(sessionId)
         state.profile = undefined
-        void this.syncFromHermes(socket, sessionId, hermesId, prof)
+        void this.syncFromHermes(socket, sessionId, hermesId, prof, {
+          maxAttempts: 10,
+          delayMs: 500,
+        })
       }
     }
   }

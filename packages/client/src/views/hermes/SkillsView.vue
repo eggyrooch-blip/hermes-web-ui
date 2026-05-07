@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { NInput } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import SkillList from '@/components/hermes/skills/SkillList.vue'
 import SkillDetail from '@/components/hermes/skills/SkillDetail.vue'
 import { fetchSkills, type SkillCategory, type SkillSource, type SkillInfo } from '@/api/hermes/skills'
+import { isUserMode } from '@/api/client'
 
 type SourceFilter = SkillSource | 'modified'
 
@@ -17,7 +18,40 @@ const selectedSkill = ref('')
 const searchQuery = ref('')
 const showSidebar = ref(true)
 const sourceFilter = ref<SourceFilter | null>(null)
+const showAdminSkillFilters = computed(() => !isUserMode())
 let mobileQuery: MediaQueryList | null = null
+
+interface SelectableSkill {
+  category: string
+  skill: string
+}
+
+function matchesSourceFilter(skill: SkillInfo): boolean {
+  if (!sourceFilter.value) return true
+  if (sourceFilter.value === 'modified') return !!skill.modified
+  return (skill.source || 'local') === sourceFilter.value
+}
+
+function matchesSearch(skill: SkillInfo): boolean {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return true
+  return skill.name.toLowerCase().includes(q) || skill.description.toLowerCase().includes(q)
+}
+
+const visibleSkillEntries = computed<SelectableSkill[]>(() => {
+  const entries: SelectableSkill[] = []
+  for (const category of categories.value) {
+    for (const skill of category.skills) {
+      if (!matchesSourceFilter(skill) || !matchesSearch(skill)) continue
+      entries.push({ category: category.name, skill: skill.name })
+    }
+  }
+  for (const skill of archived.value) {
+    if (!matchesSourceFilter(skill) || !matchesSearch(skill)) continue
+    entries.push({ category: '.archive', skill: skill.name })
+  }
+  return entries
+})
 
 const selectedSkillData = computed(() => {
   if (!selectedCategory.value || !selectedSkill.value) return null
@@ -27,6 +61,15 @@ const selectedSkillData = computed(() => {
   const cat = categories.value.find(c => c.name === selectedCategory.value)
   return cat?.skills.find(s => s.name === selectedSkill.value) ?? null
 })
+
+function syncSelectedSkill() {
+  const current = `${selectedCategory.value}/${selectedSkill.value}`
+  if (visibleSkillEntries.value.some(entry => `${entry.category}/${entry.skill}` === current)) return
+
+  const next = visibleSkillEntries.value[0]
+  selectedCategory.value = next?.category || ''
+  selectedSkill.value = next?.skill || ''
+}
 
 function handleMobileChange(e: MediaQueryListEvent | MediaQueryList) {
   showSidebar.value = !e.matches
@@ -49,6 +92,7 @@ async function loadSkills() {
     const data = await fetchSkills()
     categories.value = data.categories
     archived.value = data.archived
+    syncSelectedSkill()
   } catch (err: any) {
     console.error('Failed to load skills:', err)
   } finally {
@@ -79,6 +123,8 @@ function handlePinToggled(name: string, pinned: boolean) {
     if (skill) skill.pinned = pinned
   }
 }
+
+watch(visibleSkillEntries, syncSelectedSkill)
 </script>
 
 <template>
@@ -90,7 +136,7 @@ function handlePinToggled(name: string, pinned: boolean) {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
       </div>
-      <div class="source-legend">
+      <div v-if="showAdminSkillFilters" class="source-legend">
         <button class="legend-item" :class="{ active: sourceFilter === 'builtin' }" @click="toggleFilter('builtin')">
           <span class="legend-dot dot-builtin" />{{ t('skills.source.builtin') }}
         </button>
@@ -124,6 +170,7 @@ function handlePinToggled(name: string, pinned: boolean) {
               :selected-skill="selectedCategory && selectedSkill ? `${selectedCategory}/${selectedSkill}` : null"
               :search-query="searchQuery"
               :source-filter="sourceFilter"
+              :show-source-markers="showAdminSkillFilters"
               @select="handleSelect"
             />
           </div>

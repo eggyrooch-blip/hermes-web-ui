@@ -15,6 +15,7 @@ import {
   renderMermaidPlaceholder,
 } from './mermaidRenderer'
 import { downloadFile, getDownloadUrl } from '@/api/hermes/download'
+import { sanitizeHtml } from '@/utils/sanitizeHtml'
 
 const props = withDefaults(defineProps<{
     content: string
@@ -56,28 +57,58 @@ const previewUrl = ref<string | null>(null)
 let renderGeneration = 0
 let unmounted = false
 
+function isDownloadableLocalPath(path: string): boolean {
+  if (!path || path.startsWith('#') || path.startsWith('//')) return false
+  return !/^[a-z][a-z0-9+.-]*:/i.test(path)
+}
+
+function getPathExtension(path: string): string {
+  return path.split('?')[0].split('#')[0].split('.').pop()?.toLowerCase() || ''
+}
+
+function isImageArtifactPath(path: string): boolean {
+  return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif'].includes(getPathExtension(path))
+}
+
 const renderedHtml = computed(() => {
   let html = md.render(repairNestedMarkdownFences(props.content))
 
-  // Replace image src paths with download URLs
-  // Replace both src="/path" and src='/path' formats
-  html = html.replace(/src="\/([^"]+)"/g, (_match, path) => {
-    const originalPath = '/' + path
-    const downloadUrl = getDownloadUrl(originalPath)
-    return `src="${downloadUrl}"`
+  const renderFileCard = (path: string, fileName: string) => `<div class="markdown-file-card" data-path="${path}" data-filename="${fileName}" title="${t('download.downloadFile')}">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <polyline points="14 2 14 8 20 8" />
+      </svg>
+      <span class="att-name">${fileName}</span>
+      <svg class="att-download-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <polyline points="7 10 12 15 17 10" />
+        <line x1="12" y1="15" x2="12" y2="3" />
+      </svg>
+    </div>`
+
+  html = html.replace(/<img src="([^"]+)" alt="([^"]*)">/g, (match, path, alt) => {
+    if (!isDownloadableLocalPath(path) || isImageArtifactPath(path)) return match
+    const fileName = (alt || path.split('/').pop() || path).trim()
+    return renderFileCard(path, fileName)
   })
 
-  html = html.replace(/src='\/([^']+)'/g, (_match, path) => {
-    const originalPath = '/' + path
-    const downloadUrl = getDownloadUrl(originalPath)
-    return `src='${downloadUrl}'`
+  // Replace local image src paths with download URLs. Supports both legacy
+  // absolute paths (`/tmp/a.png`) and workspace-relative artifact paths (`a.png`).
+  html = html.replace(/src="([^"]+)"/g, (match, path) => {
+    if (!isDownloadableLocalPath(path)) return match
+    return `src="${getDownloadUrl(path)}"`
+  })
+
+  html = html.replace(/src='([^']+)'/g, (match, path) => {
+    if (!isDownloadableLocalPath(path)) return match
+    return `src='${getDownloadUrl(path)}'`
   })
 
   // Replace local file links with file card UI or video player
-  // Match <a href="/tmp/file.pdf">filename</a> or <a href="/tmp/video.mp4">filename</a>
-  html = html.replace(/<a href="(\/[^"]+)">([^<]+)<\/a>/g, (match, path, filename) => {
-    // Only replace local file paths (starting with /)
-    if (!path.startsWith('/')) return match
+  // Match <a href="/tmp/file.pdf">filename</a>, <a href="file.pdf">filename</a>,
+  // or video equivalents.
+  html = html.replace(/<a href="([^"]+)">([^<]+)<\/a>/g, (match, path, filename) => {
+    if (!isDownloadableLocalPath(path)) return match
 
     const fileName = filename.trim()
     const ext = path.split('.').pop()?.toLowerCase()
@@ -97,18 +128,7 @@ const renderedHtml = computed(() => {
     }
 
     // Other files: render as file card
-    return `<div class="markdown-file-card" data-path="${path}" data-filename="${fileName}" title="${t('download.downloadFile')}">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-        <polyline points="14 2 14 8 20 8" />
-      </svg>
-      <span class="att-name">${fileName}</span>
-      <svg class="att-download-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-        <polyline points="7 10 12 15 17 10" />
-        <line x1="12" y1="15" x2="12" y2="3" />
-      </svg>
-    </div>`
+    return renderFileCard(path, fileName)
   })
 
   if (props.mentionNames && props.mentionNames.length > 0) {
@@ -116,7 +136,12 @@ const renderedHtml = computed(() => {
     const re = new RegExp(`(?<=[\\s>]|^)@(${escaped.join('|')})(?=\\s|$)`, 'gi')
     html = html.replace(re, '<span class="mention-highlight">@$1</span>')
   }
-  return html
+  // SECURITY: sanitize after all string-level rewrites. The earlier replacements
+  // splice user-controlled text (filenames, mention names) directly into HTML,
+  // so we cannot rely on markdown-it's html: false alone — DOMPurify is the
+  // last-line defence against attribute-breakout payloads like
+  //   [name" onmouseover="alert(1) x="](/path).
+  return sanitizeHtml(html)
 })
 
 function renderMermaidFallback(element: HTMLElement, source: string): void {

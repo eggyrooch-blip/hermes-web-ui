@@ -12,7 +12,16 @@ vi.mock('@/router', () => ({
   },
 }))
 
-import { getApiKey, setApiKey, clearApiKey, hasApiKey, request } from '../../packages/client/src/api/client'
+import {
+  canAccessProtectedRoutes,
+  getApiKey,
+  setApiKey,
+  clearApiKey,
+  hasApiKey,
+  isUserMode,
+  shouldSkipLoginPage,
+  request,
+} from '../../packages/client/src/api/client'
 import router from '@/router'
 
 describe('API Client', () => {
@@ -29,6 +38,30 @@ describe('API Client', () => {
     it('hasApiKey returns true after setApiKey', () => {
       setApiKey('test-token')
       expect(hasApiKey()).toBe(true)
+    })
+
+    it('does not treat Feishu OAuth dev mode as a local API key', () => {
+      localStorage.setItem('hermes_auth_mode', 'feishu-oauth-dev')
+
+      expect(hasApiKey()).toBe(false)
+    })
+
+    it('allows Feishu OAuth dev mode to access protected routes without skipping the login page', () => {
+      localStorage.setItem('hermes_auth_mode', 'feishu-oauth-dev')
+
+      expect(shouldSkipLoginPage()).toBe(false)
+      expect(canAccessProtectedRoutes()).toBe(true)
+    })
+
+    it('treats chat plane or cached bound users as user mode', () => {
+      expect(isUserMode()).toBe(false)
+
+      localStorage.setItem('hermes_web_plane', 'chat')
+      expect(isUserMode()).toBe(true)
+
+      localStorage.setItem('hermes_web_plane', 'both')
+      localStorage.setItem('hermes_current_user', '{"profile":"g41a5b5g"}')
+      expect(isUserMode()).toBe(true)
     })
 
     it('getApiKey returns the stored token', () => {

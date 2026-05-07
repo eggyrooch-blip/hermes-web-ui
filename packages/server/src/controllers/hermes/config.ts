@@ -1,8 +1,10 @@
 import { readFile, writeFile, copyFile } from 'fs/promises'
+import { join } from 'path'
 import YAML from 'js-yaml'
 import { restartGateway } from '../../services/hermes/hermes-cli'
 import { getActiveConfigPath, getActiveEnvPath } from '../../services/hermes/hermes-profile'
 import { saveEnvValue } from '../../services/config-helpers'
+import { CHAT_PLANE_CONFIG_SECTIONS, getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 
 const PLATFORM_SECTIONS = new Set([
   'telegram', 'discord', 'slack', 'whatsapp', 'matrix',
@@ -10,8 +12,8 @@ const PLATFORM_SECTIONS = new Set([
   'approvals',
 ])
 
-const configPath = () => getActiveConfigPath()
-const envPath = () => getActiveEnvPath()
+const configPath = (ctx?: any) => ctx ? join(getRequestProfileDir(ctx), 'config.yaml') : getActiveConfigPath()
+const envPath = (ctx?: any) => ctx ? join(getRequestProfileDir(ctx), '.env') : getActiveEnvPath()
 
 const envPlatformMap: Record<string, [string, string]> = {
   TELEGRAM_BOT_TOKEN: ['telegram', 'token'],
@@ -71,9 +73,9 @@ function deepMerge(target: Record<string, any>, source: Record<string, any>): Re
   return target
 }
 
-async function readEnvPlatforms(): Promise<Record<string, any>> {
+async function readEnvPlatforms(ctx?: any): Promise<Record<string, any>> {
   try {
-    const raw = await readFile(envPath(), 'utf-8')
+    const raw = await readFile(envPath(ctx), 'utf-8')
     const env = parseEnv(raw)
     const platforms: Record<string, any> = {}
     for (const [envKey, [platform, cfgPath]] of Object.entries(envPlatformMap)) {
@@ -88,13 +90,13 @@ async function readEnvPlatforms(): Promise<Record<string, any>> {
   } catch { return {} }
 }
 
-async function readConfig(): Promise<Record<string, any>> {
-  const raw = await readFile(configPath(), 'utf-8')
+async function readConfig(ctx?: any): Promise<Record<string, any>> {
+  const raw = await readFile(configPath(ctx), 'utf-8')
   return (YAML.load(raw) as Record<string, any>) || {}
 }
 
-async function writeConfig(data: Record<string, any>): Promise<void> {
-  const cp = configPath()
+async function writeConfig(data: Record<string, any>, ctx?: any): Promise<void> {
+  const cp = configPath(ctx)
   await copyFile(cp, cp + '.bak')
   const yamlStr = YAML.dump(data, {
     lineWidth: -1,
@@ -105,11 +107,20 @@ async function writeConfig(data: Record<string, any>): Promise<void> {
   await writeFile(cp, yamlStr, 'utf-8')
 }
 
+function safeConfigSections(config: Record<string, any>): Record<string, any> {
+  const result: Record<string, any> = {}
+  for (const section of CHAT_PLANE_CONFIG_SECTIONS) {
+    result[section] = config[section] || {}
+  }
+  return result
+}
+
 export async function getConfig(ctx: any) {
   try {
-    const config = await readConfig()
-    const envPlatforms = await readEnvPlatforms()
-    if (Object.keys(envPlatforms).length > 0) {
+    const config = await readConfig(ctx)
+    const chatPlane = isChatPlaneRequest(ctx)
+    const envPlatforms = chatPlane ? {} : await readEnvPlatforms(ctx)
+    if (!chatPlane && Object.keys(envPlatforms).length > 0) {
       const existing = config.platforms || {}
       for (const [platform, vals] of Object.entries(envPlatforms)) {
         existing[platform] = { ...(existing[platform] || {}), ...(vals as Record<string, any>) }
@@ -117,6 +128,33 @@ export async function getConfig(ctx: any) {
       config.platforms = existing
     }
     const { section, sections } = ctx.query
+    if (chatPlane) {
+      if (section) {
+        const key = String(section).trim()
+        if (!CHAT_PLANE_CONFIG_SECTIONS.has(key)) {
+          ctx.status = 403
+          ctx.body = { error: 'This settings section is not available in chat plane' }
+          return
+        }
+        ctx.body = { [key]: config[key] || {} }
+        return
+      }
+      if (sections) {
+        const keys = (sections as string).split(',').map(key => key.trim()).filter(Boolean)
+        const unsafe = keys.find(key => !CHAT_PLANE_CONFIG_SECTIONS.has(key))
+        if (unsafe) {
+          ctx.status = 403
+          ctx.body = { error: 'This settings section is not available in chat plane' }
+          return
+        }
+        const result: Record<string, any> = {}
+        for (const key of keys) { result[key] = config[key] || {} }
+        ctx.body = result
+        return
+      }
+      ctx.body = safeConfigSections(config)
+      return
+    }
     if (section) {
       ctx.body = { [section as string]: config[section as string] || {} }
     } else if (sections) {
@@ -137,11 +175,16 @@ export async function updateConfig(ctx: any) {
   if (!section || !values) {
     ctx.status = 400; ctx.body = { error: 'Missing section or values' }; return
   }
+  if (isChatPlaneRequest(ctx) && !CHAT_PLANE_CONFIG_SECTIONS.has(section)) {
+    ctx.status = 403
+    ctx.body = { error: 'This settings section is not available in chat plane' }
+    return
+  }
   try {
-    const config = await readConfig()
+    const config = await readConfig(ctx)
     config[section] = deepMerge(config[section] || {}, values)
-    await writeConfig(config)
-    if (PLATFORM_SECTIONS.has(section)) { await restartGateway() }
+    await writeConfig(config, ctx)
+    if (!isChatPlaneRequest(ctx) && PLATFORM_SECTIONS.has(section)) { await restartGateway() }
     ctx.body = { success: true }
   } catch (err: any) {
     ctx.status = 500; ctx.body = { error: err.message }
@@ -153,12 +196,17 @@ export async function updateCredentials(ctx: any) {
   if (!platform || !values) {
     ctx.status = 400; ctx.body = { error: 'Missing platform or values' }; return
   }
+  if (isChatPlaneRequest(ctx)) {
+    ctx.status = 403
+    ctx.body = { error: 'Credentials are not available in chat plane' }
+    return
+  }
   try {
     const envMap = platformEnvMap[platform]
     if (!envMap) {
       ctx.status = 400; ctx.body = { error: `Unknown platform: ${platform}` }; return
     }
-    const config = await readConfig()
+    const config = await readConfig(ctx)
     let configChanged = false
     const flatValues: Record<string, any> = {}
     for (const [key, val] of Object.entries(values)) {
@@ -188,7 +236,7 @@ export async function updateCredentials(ctx: any) {
         await saveEnvValue(envVar, String(val))
       }
     }
-    if (configChanged) { await writeConfig(config) }
+    if (configChanged) { await writeConfig(config, ctx) }
     await restartGateway()
     ctx.body = { success: true }
   } catch (err: any) {

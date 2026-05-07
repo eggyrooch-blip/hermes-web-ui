@@ -6,6 +6,7 @@ import { useMessage } from "naive-ui";
 import { downloadFile } from "@/api/hermes/download";
 	import { getApiKey } from "@/api/client";
 import { copyToClipboard } from "@/utils/clipboard";
+import { sanitizeHtml } from "@/utils/sanitizeHtml";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import { parseThinking, countThinkingChars } from "@/utils/thinking-parser";
 import { useChatStore } from "@/stores/hermes/chat";
@@ -284,9 +285,13 @@ function formatToolPayload(raw?: string): ToolPayload {
 }
 
 function renderToolPayload(content: string, language?: string): string {
-  return renderHighlightedCodeBlock(content, language, t("common.copy"), {
-    maxHighlightLength: TOOL_PAYLOAD_DISPLAY_LIMIT,
-  });
+  // SECURITY: tool args/result come from upstream LLM/CLI responses. They are
+  // displayed via v-html to keep highlight.js markup, so we must sanitize.
+  return sanitizeHtml(
+    renderHighlightedCodeBlock(content, language, t("common.copy"), {
+      maxHighlightLength: TOOL_PAYLOAD_DISPLAY_LIMIT,
+    }),
+  );
 }
 
 async function handleToolDetailClick(event: MouseEvent): Promise<void> {
@@ -324,6 +329,28 @@ const hasAttachments = computed(
 const hasToolDetails = computed(
   () => !!(props.message.toolArgs || props.message.toolResult),
 );
+
+function extractToolPath(raw?: string): string {
+  if (!raw) return "";
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && typeof parsed.path === "string") {
+      return parsed.path;
+    }
+  } catch {
+    // Plain previews still help identify sandbox paths.
+  }
+  const match = raw.match(/\/sandbox\/[^\s"')]+/);
+  return match?.[0] ?? "";
+}
+
+const toolPath = computed(() => extractToolPath(props.message.toolArgs || props.message.toolPreview));
+const isProfileSandboxTool = computed(() => toolPath.value.startsWith("/sandbox/"));
+const toolStatusKey = computed(() => {
+  if (props.message.toolStatus === "running") return "chat.toolRunning";
+  if (props.message.toolStatus === "error") return "chat.toolError";
+  return "chat.toolDone";
+});
 
 const toolArgsPayload = computed(() => formatToolPayload(props.message.toolArgs));
 const toolResultPayload = computed(() => formatToolPayload(props.message.toolResult));
@@ -466,6 +493,11 @@ onBeforeUnmount(() => {
         </svg>
         <span class="tool-name">{{ message.toolName }}</span>
         <span
+          class="tool-status-badge"
+          :class="message.toolStatus || 'done'"
+        >{{ t(toolStatusKey) }}</span>
+        <span v-if="isProfileSandboxTool" class="tool-scope">profile sandbox</span>
+        <span
           v-if="message.toolPreview && !toolExpanded"
           class="tool-preview"
           >{{ message.toolPreview }}</span
@@ -474,9 +506,6 @@ onBeforeUnmount(() => {
           v-if="message.toolStatus === 'running'"
           class="tool-spinner"
         ></span>
-        <span v-if="message.toolStatus === 'error'" class="tool-error-badge">{{
-          t("chat.error")
-        }}</span>
       </div>
       <div v-if="toolExpanded && hasToolDetails" class="tool-details" @click="handleToolDetailClick">
         <div v-if="formattedToolArgs" class="tool-detail-section" data-copy-source="tool-args">
@@ -640,6 +669,7 @@ onBeforeUnmount(() => {
               :class="{ playing: isPlayingThisMessage, paused: isPausedThisMessage }"
               @click="handleSpeechToggle"
               :title="isPlayingThisMessage ? (isPausedThisMessage ? t('chat.resumeSpeech') : t('chat.pauseSpeech')) : t('chat.playSpeech')"
+              :aria-label="isPlayingThisMessage ? (isPausedThisMessage ? t('chat.resumeSpeech') : t('chat.pauseSpeech')) : t('chat.playSpeech')"
             >
               <svg v-if="!isPlayingThisMessage || isPausedThisMessage" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polygon points="5 3 19 12 5 21 5 3"/>
@@ -654,6 +684,7 @@ onBeforeUnmount(() => {
               class="copy-bubble-btn"
               @click="copyBubbleContent"
               :title="t('chat.copyBubble')"
+              :aria-label="t('chat.copyBubble')"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
@@ -1023,22 +1054,29 @@ onBeforeUnmount(() => {
 .tool-line {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  max-width: min(720px, 100%);
   font-size: 11px;
-  color: $text-muted;
-  padding: 2px 4px;
-  border-radius: $radius-sm;
+  color: $text-secondary;
+  padding: 7px 9px;
+  border: 1px solid $border-light;
+  border-radius: $radius-md;
+  background: $bg-card;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 
   &.expandable {
     cursor: pointer;
 
     &:hover {
-      background: rgba(0, 0, 0, 0.03);
+      border-color: rgba(var(--accent-primary-rgb), 0.22);
+      background: rgba(var(--accent-primary-rgb), 0.04);
     }
   }
 
   .tool-name {
     font-family: $font-code;
+    color: $text-primary;
+    font-weight: 600;
     flex-shrink: 0;
   }
 
@@ -1048,6 +1086,40 @@ onBeforeUnmount(() => {
     white-space: nowrap;
     max-width: 400px;
   }
+}
+
+.tool-status-badge,
+.tool-scope {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 16px;
+  border: 1px solid transparent;
+}
+
+.tool-status-badge {
+  color: $success;
+  background: rgba(var(--success-rgb), 0.08);
+  border-color: rgba(var(--success-rgb), 0.16);
+
+  &.running {
+    color: $warning;
+    background: rgba(var(--warning-rgb), 0.08);
+    border-color: rgba(var(--warning-rgb), 0.18);
+  }
+
+  &.error {
+    color: $error;
+    background: rgba(var(--error-rgb), 0.08);
+    border-color: rgba(var(--error-rgb), 0.16);
+  }
+}
+
+.tool-scope {
+  color: $accent-primary;
+  background: rgba(var(--accent-primary-rgb), 0.08);
+  border-color: rgba(var(--accent-primary-rgb), 0.16);
 }
 
 .tool-chevron {
@@ -1069,21 +1141,12 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
-.tool-error-badge {
-  font-size: 9px;
-  color: $error;
-  background: rgba(var(--error-rgb), 0.08);
-  padding: 0 4px;
-  border-radius: 3px;
-  line-height: 14px;
-  margin-left: 4px;
-}
-
 .tool-details {
-  margin-left: 16px;
-  margin-top: 2px;
-  border-left: 2px solid $border-light;
-  padding-left: 10px;
+  width: min(720px, 100%);
+  margin-top: 6px;
+  margin-left: 18px;
+  border-left: 2px solid rgba(var(--accent-primary-rgb), 0.16);
+  padding-left: 12px;
 }
 
 .tool-detail-section {

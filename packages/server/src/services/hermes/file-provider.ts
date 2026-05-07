@@ -1,5 +1,5 @@
 import { readFile, stat as fsStat, readdir, mkdir, rm, rename, copyFile as fsCopyFile, writeFile as fsWriteFile } from 'fs/promises'
-import { resolve, normalize, isAbsolute, basename } from 'path'
+import { resolve, normalize, isAbsolute, basename, relative, sep } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { existsSync, readFileSync } from 'fs'
@@ -62,17 +62,34 @@ export interface TerminalConfig {
 }
 
 /**
- * Validate a file path: must be absolute and not contain '..' traversal.
+ * Validate a file path.
+ *
+ * - Requires the path to be absolute after `resolve` + `normalize`.
+ * - When `allowedRoots` is provided, the resolved path MUST live under one of
+ *   those roots (or equal a root). Without `allowedRoots` the function only
+ *   guarantees absoluteness — callers that expose this to user input MUST
+ *   pass `allowedRoots` to avoid arbitrary file reads. The legacy `..`
+ *   substring check is intentionally dropped because `resolve` already
+ *   consumes traversal segments, making it both ineffective and misleading.
  */
-export function validatePath(filePath: string): string {
+export function validatePath(filePath: string, allowedRoots?: string[]): string {
   if (!filePath) throw Object.assign(new Error('Missing file path'), { code: 'missing_path' })
   const resolved = resolve(filePath)
   const normalized = normalize(resolved)
-  if (normalized.includes('..')) {
-    throw Object.assign(new Error('Invalid file path'), { code: 'invalid_path' })
-  }
   if (!isAbsolute(normalized)) {
     throw Object.assign(new Error('Path must be absolute'), { code: 'invalid_path' })
+  }
+  if (allowedRoots && allowedRoots.length > 0) {
+    const ok = allowedRoots.some(root => {
+      const r = normalize(resolve(root))
+      return normalized === r
+        || normalized.startsWith(r + sep)
+        || normalized.startsWith(r + '/')
+        || normalized.startsWith(r + '\\')
+    })
+    if (!ok) {
+      throw Object.assign(new Error('Path is outside allowed roots'), { code: 'invalid_path' })
+    }
   }
   return normalized
 }
@@ -101,8 +118,8 @@ export function isSensitivePath(relativePath: string): boolean {
  * Resolve a relative path to an absolute path under the hermes home directory.
  * Validates path safety (no traversal).
  */
-export function resolveHermesPath(relativePath: string): string {
-  const homeDir = getActiveProfileDir()
+export function resolveHermesPath(relativePath: string, rootDir = getActiveProfileDir()): string {
+  const homeDir = resolve(rootDir)
   if (!relativePath || relativePath === '.' || relativePath === '/') {
     return homeDir
   }
@@ -111,7 +128,8 @@ export function resolveHermesPath(relativePath: string): string {
     throw Object.assign(new Error('Invalid file path'), { code: 'invalid_path' })
   }
   const resolved = resolve(homeDir, normalized)
-  if (!resolved.startsWith(homeDir)) {
+  const rel = relative(homeDir, resolved)
+  if (rel.startsWith('..') || isAbsolute(rel)) {
     throw Object.assign(new Error('Path traversal detected'), { code: 'invalid_path' })
   }
   return resolved
@@ -121,6 +139,12 @@ export function resolveHermesPath(relativePath: string): string {
 
 export class LocalFileProvider implements FileProvider {
   type: BackendType = 'local'
+
+  constructor(private rootDir?: string) {}
+
+  private getRootDir(): string {
+    return resolve(this.rootDir || getActiveProfileDir())
+  }
 
   async readFile(filePath: string): Promise<Buffer> {
     const p = validatePath(filePath)
@@ -144,7 +168,7 @@ export class LocalFileProvider implements FileProvider {
 
   async listDir(dirPath: string): Promise<FileEntry[]> {
     const p = validatePath(dirPath)
-    const homeDir = getActiveProfileDir()
+    const homeDir = this.getRootDir()
     const entries = await readdir(p, { withFileTypes: true })
     const results: FileEntry[] = []
     for (const entry of entries) {
@@ -170,7 +194,7 @@ export class LocalFileProvider implements FileProvider {
 
   async stat(filePath: string): Promise<FileStat> {
     const p = validatePath(filePath)
-    const homeDir = getActiveProfileDir()
+    const homeDir = this.getRootDir()
     const s = await fsStat(p)
     const relPath = p.startsWith(homeDir)
       ? p.slice(homeDir.length + 1)
@@ -796,7 +820,16 @@ export function _resetFileProviderCache() {
  * Create a FileProvider based on the active hermes terminal config.
  * Defaults to LocalFileProvider if config cannot be read or backend is unknown.
  */
-export async function createFileProvider(): Promise<FileProvider> {
+export interface CreateFileProviderOptions {
+  rootDir?: string
+  forceLocal?: boolean
+}
+
+export async function createFileProvider(options: CreateFileProviderOptions = {}): Promise<FileProvider> {
+  if (options.forceLocal || options.rootDir) {
+    return new LocalFileProvider(options.rootDir)
+  }
+
   const now = Date.now()
   if (cachedProvider && now - cachedAt < CACHE_TTL) return cachedProvider
 

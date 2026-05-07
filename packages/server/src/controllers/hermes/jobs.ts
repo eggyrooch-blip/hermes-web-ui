@@ -1,6 +1,7 @@
 import type { Context } from 'koa'
 import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
 import { config } from '../../config'
+import { getRequestProfile, isChatPlaneRequest } from '../../services/request-context'
 
 function getUpstream(profile: string): string {
   const mgr = getGatewayManagerInstance()
@@ -13,20 +14,7 @@ function getApiKey(profile: string): string | null {
 }
 
 function resolveProfile(ctx: Context): string {
-  // Use header/query from request first, then fall back to authoritative source
-  const requestedProfile = ctx.get('x-hermes-profile') || (ctx.query.profile as string)
-
-  if (requestedProfile) {
-    return requestedProfile
-  }
-
-  // Fallback: read from authoritative source (active_profile file)
-  try {
-    const { getActiveProfileName } = require('../../services/hermes/hermes-profile')
-    return getActiveProfileName()
-  } catch {
-    return 'default'
-  }
+  return getRequestProfile(ctx)
 }
 
 function buildHeaders(profile: string): Record<string, string> {
@@ -37,6 +25,27 @@ function buildHeaders(profile: string): Record<string, string> {
 }
 
 const TIMEOUT_MS = 30_000
+const CHAT_PLANE_BODY_BLOCKLIST = new Set([
+  'profile',
+  'x-hermes-profile',
+  'token',
+  'provider',
+  'base_url',
+  'api_key',
+  'apiKey',
+  'authorization',
+])
+
+function sanitizeChatPlaneBody(value: unknown): unknown {
+  if (!isChatPlaneRequest() || !value || typeof value !== 'object' || Array.isArray(value)) return value
+
+  const sanitized: Record<string, unknown> = {}
+  for (const [key, fieldValue] of Object.entries(value as Record<string, unknown>)) {
+    if (CHAT_PLANE_BODY_BLOCKLIST.has(key)) continue
+    sanitized[key] = fieldValue
+  }
+  return sanitized
+}
 
 async function readUpstreamError(res: Response): Promise<unknown> {
   const contentType = res.headers.get('content-type') || ''
@@ -52,17 +61,26 @@ async function readUpstreamError(res: Response): Promise<unknown> {
   return { error: { message: text || `Upstream error: ${res.status} ${res.statusText}` } }
 }
 
-async function proxyRequest(ctx: Context, upstreamPath: string, method?: string): Promise<void> {
+async function proxyRequest(
+  ctx: Context,
+  upstreamPath: string,
+  method?: string,
+  options: { fallbackUnavailableJobList?: boolean } = {},
+): Promise<void> {
   const profile = resolveProfile(ctx)
   const upstream = getUpstream(profile)
   const params = new URLSearchParams(ctx.search || '')
   params.delete('token')
+  if (isChatPlaneRequest(ctx)) {
+    params.delete('profile')
+    params.delete('x-hermes-profile')
+  }
   const search = params.toString()
   const url = `${upstream}${upstreamPath}${search ? `?${search}` : ''}`
 
   const headers = buildHeaders(profile)
   const body = ctx.req.method !== 'GET' && ctx.req.method !== 'HEAD'
-    ? JSON.stringify(ctx.request.body || {})
+    ? JSON.stringify(sanitizeChatPlaneBody(ctx.request.body || {}))
     : undefined
 
   let res: Response
@@ -74,6 +92,16 @@ async function proxyRequest(ctx: Context, upstreamPath: string, method?: string)
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
   } catch (e: any) {
+    if (options.fallbackUnavailableJobList && isChatPlaneRequest(ctx)) {
+      ctx.status = 200
+      ctx.set('Content-Type', 'application/json')
+      ctx.body = {
+        jobs: [],
+        gateway_unavailable: true,
+        error: { message: `Proxy error: ${e.message}` },
+      }
+      return
+    }
     ctx.status = 502
     ctx.set('Content-Type', 'application/json')
     ctx.body = { error: { message: `Proxy error: ${e.message}` } }
@@ -93,7 +121,84 @@ async function proxyRequest(ctx: Context, upstreamPath: string, method?: string)
 }
 
 export async function list(ctx: Context) {
-  await proxyRequest(ctx, '/api/jobs')
+  await proxyRequest(ctx, '/api/jobs', undefined, { fallbackUnavailableJobList: true })
+}
+
+export async function wake(ctx: Context) {
+  const profile = resolveProfile(ctx)
+  const mgr = getGatewayManagerInstance()
+  if (!mgr?.detectStatus || !mgr?.startApiOnly) {
+    ctx.status = 503
+    ctx.body = {
+      profile,
+      running: false,
+      status: 'unavailable',
+      error: { message: 'API-only gateway wake is not available' },
+    }
+    return
+  }
+
+  try {
+    const current = await mgr.detectStatus(profile)
+    if (current?.running) {
+      ctx.body = {
+        profile,
+        running: true,
+        status: 'ready',
+        url: current.url,
+      }
+      return
+    }
+
+    const status = await mgr.startApiOnly(profile)
+    ctx.body = {
+      profile,
+      running: !!status?.running,
+      status: status?.running ? 'ready' : 'starting',
+      url: status?.url,
+    }
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = {
+      profile,
+      running: false,
+      status: 'failed',
+      error: { message: err?.message || 'Failed to wake API-only gateway' },
+    }
+  }
+}
+
+export async function sleep(ctx: Context) {
+  const profile = resolveProfile(ctx)
+  const mgr = getGatewayManagerInstance()
+  if (!mgr?.stopApiOnly) {
+    ctx.status = 503
+    ctx.body = {
+      profile,
+      running: true,
+      status: 'unavailable',
+      error: { message: 'API-only gateway sleep is not available' },
+    }
+    return
+  }
+
+  try {
+    const status = await mgr.stopApiOnly(profile)
+    ctx.body = {
+      profile,
+      running: !!status?.running,
+      status: status?.status || (status?.running ? 'ready' : 'stopped'),
+    }
+    if (status?.url) (ctx.body as any).url = status.url
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = {
+      profile,
+      running: true,
+      status: 'failed',
+      error: { message: err?.message || 'Failed to sleep API-only gateway' },
+    }
+  }
 }
 
 export async function get(ctx: Context) {

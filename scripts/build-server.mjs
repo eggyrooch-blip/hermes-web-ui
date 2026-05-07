@@ -18,7 +18,9 @@ await esbuild.build({
   define: {
     __APP_VERSION__: JSON.stringify(version),
   },
-  sourcemap: true,
+  // Sourcemaps shipped to production reveal full server logic. Keep them only
+  // for local dev / CI where NODE_ENV is not 'production'.
+  sourcemap: process.env.NODE_ENV !== 'production',
   minify: true,
   treeShaking: true,
   logLevel: 'info',

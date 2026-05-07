@@ -1,5 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import { hasApiKey } from '@/api/client'
+import { canAccessProtectedRoutes, isUserMode, shouldSkipLoginPage } from '@/api/client'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -29,16 +29,19 @@ const router = createRouter({
       path: '/hermes/models',
       name: 'hermes.models',
       component: () => import('@/views/hermes/ModelsView.vue'),
+      meta: { hiddenInChatPlane: true },
     },
     {
       path: '/hermes/profiles',
       name: 'hermes.profiles',
       component: () => import('@/views/hermes/ProfilesView.vue'),
+      meta: { hiddenInChatPlane: true },
     },
     {
       path: '/hermes/logs',
       name: 'hermes.logs',
       component: () => import('@/views/hermes/LogsView.vue'),
+      meta: { hiddenInChatPlane: true },
     },
     {
       path: '/hermes/usage',
@@ -64,16 +67,19 @@ const router = createRouter({
       path: '/hermes/gateways',
       name: 'hermes.gateways',
       component: () => import('@/views/hermes/GatewaysView.vue'),
+      meta: { hiddenInChatPlane: true },
     },
     {
       path: '/hermes/channels',
       name: 'hermes.channels',
       component: () => import('@/views/hermes/ChannelsView.vue'),
+      meta: { hiddenInChatPlane: true },
     },
     {
       path: '/hermes/terminal',
       name: 'hermes.terminal',
       component: () => import('@/views/hermes/TerminalView.vue'),
+      meta: { hiddenInChatPlane: true },
     },
     {
       path: '/hermes/group-chat',
@@ -92,7 +98,7 @@ router.beforeEach((to, _from, next) => {
   // Public pages don't need auth
   if (to.meta.public) {
     // Already has key, skip login
-    if (to.name === 'login' && hasApiKey()) {
+    if (to.name === 'login' && shouldSkipLoginPage()) {
       next({ path: '/hermes/chat' })
       return
     }
@@ -101,8 +107,13 @@ router.beforeEach((to, _from, next) => {
   }
 
   // All other pages require token
-  if (!hasApiKey()) {
+  if (!canAccessProtectedRoutes()) {
     next({ name: 'login' })
+    return
+  }
+
+  if (isUserMode() && to.meta.hiddenInChatPlane) {
+    next({ name: 'hermes.chat' })
     return
   }
 

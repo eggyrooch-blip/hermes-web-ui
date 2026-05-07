@@ -4,8 +4,11 @@ const listConversationSummariesFromDbMock = vi.fn()
 const getConversationDetailFromDbMock = vi.fn()
 const listConversationSummariesMock = vi.fn()
 const getConversationDetailMock = vi.fn()
+const listSessionSummariesMock = vi.fn()
+const searchSessionSummariesMock = vi.fn()
 const getSessionDetailFromDbMock = vi.fn()
 const getUsageStatsFromDbMock = vi.fn()
+const listSessionsMock = vi.fn()
 const getSessionMock = vi.fn()
 const getGroupChatServerMock = vi.fn()
 const getLocalUsageStatsMock = vi.fn()
@@ -30,15 +33,15 @@ vi.mock('../../packages/server/src/services/logger', () => ({
 }))
 
 vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({
-  listSessions: vi.fn(),
+  listSessions: listSessionsMock,
   getSession: getSessionMock,
   deleteSession: vi.fn(),
   renameSession: vi.fn(),
 }))
 
 vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
-  listSessionSummaries: vi.fn(),
-  searchSessionSummaries: vi.fn(),
+  listSessionSummaries: listSessionSummariesMock,
+  searchSessionSummaries: searchSessionSummariesMock,
   getSessionDetailFromDb: getSessionDetailFromDbMock,
   getUsageStatsFromDb: getUsageStatsFromDbMock,
 }))
@@ -74,8 +77,11 @@ describe('session conversations controller', () => {
     getConversationDetailFromDbMock.mockReset()
     listConversationSummariesMock.mockReset()
     getConversationDetailMock.mockReset()
+    listSessionSummariesMock.mockReset()
+    searchSessionSummariesMock.mockReset()
     getSessionDetailFromDbMock.mockReset()
     getUsageStatsFromDbMock.mockReset()
+    listSessionsMock.mockReset()
     getSessionMock.mockReset()
     getGroupChatServerMock.mockReset()
     getGroupChatServerMock.mockReturnValue(null)
@@ -83,6 +89,7 @@ describe('session conversations controller', () => {
     getActiveProfileNameMock.mockReset()
     getActiveProfileNameMock.mockReturnValue('default')
     loggerWarnMock.mockReset()
+    delete process.env.HERMES_WEB_PLANE
   })
 
   it('prefers the DB-backed conversations summary path', async () => {
@@ -135,6 +142,118 @@ describe('session conversations controller', () => {
     expect(ctx.body).toEqual({ session_id: 'root', messages: [{ id: 1 }], visible_count: 1, thread_session_count: 1 })
   })
 
+  it('lists Hermes sessions from the request-bound profile in chat plane', async () => {
+    process.env.HERMES_WEB_PLANE = 'chat'
+    listSessionSummariesMock.mockResolvedValue([{ id: 'bound-session', source: 'feishu' }])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: {},
+      state: { user: { openid: 'ou_test', profile: 'g41a5b5g', role: 'user' } },
+      get: () => '',
+      body: null,
+    }
+    await mod.listHermesSessions(ctx)
+
+    expect(listSessionSummariesMock).toHaveBeenCalledWith(undefined, 2000, 'g41a5b5g')
+    expect(listSessionsMock).not.toHaveBeenCalled()
+    expect(ctx.body).toEqual({ sessions: [{ id: 'bound-session', source: 'feishu' }] })
+  })
+
+  it('keeps API Server chat sessions visible in chat-plane history', async () => {
+    process.env.HERMES_WEB_PLANE = 'chat'
+    listSessionSummariesMock.mockResolvedValue([
+      { id: 'web-chat', source: 'api_server' },
+      { id: 'feishu-chat', source: 'feishu' },
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: {},
+      state: { user: { openid: 'ou_test', profile: 'g41a5b5g', role: 'user' } },
+      get: () => '',
+      body: null,
+    }
+    await mod.listHermesSessions(ctx)
+
+    expect(listSessionSummariesMock).toHaveBeenCalledWith(undefined, 2000, 'g41a5b5g')
+    expect(ctx.body).toEqual({
+      sessions: [
+        { id: 'web-chat', source: 'api_server' },
+        { id: 'feishu-chat', source: 'feishu' },
+      ],
+    })
+  })
+
+  it('does not fall back to active-profile CLI sessions for chat-plane Hermes history', async () => {
+    process.env.HERMES_WEB_PLANE = 'chat'
+    listSessionSummariesMock.mockRejectedValue(new Error('bound state missing'))
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: {},
+      state: { user: { openid: 'ou_test', profile: 'g41a5b5g', role: 'user' } },
+      get: () => '',
+      body: null,
+    }
+    await mod.listHermesSessions(ctx)
+
+    expect(listSessionsMock).not.toHaveBeenCalled()
+    expect(ctx.body).toEqual({ sessions: [] })
+  })
+
+  it('loads Hermes session detail from the request-bound profile in chat plane', async () => {
+    process.env.HERMES_WEB_PLANE = 'chat'
+    getSessionDetailFromDbMock.mockResolvedValue({ id: 'bound-session', source: 'feishu', messages: [] })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'bound-session' },
+      state: { user: { openid: 'ou_test', profile: 'g41a5b5g', role: 'user' } },
+      get: () => '',
+      body: null,
+    }
+    await mod.getHermesSession(ctx)
+
+    expect(getSessionDetailFromDbMock).toHaveBeenCalledWith('bound-session', 'g41a5b5g')
+    expect(getSessionMock).not.toHaveBeenCalled()
+    expect(ctx.body).toEqual({ session: { id: 'bound-session', source: 'feishu', messages: [] } })
+  })
+
+  it('loads API Server chat session detail in chat-plane history', async () => {
+    process.env.HERMES_WEB_PLANE = 'chat'
+    getSessionDetailFromDbMock.mockResolvedValue({ id: 'web-chat', source: 'api_server', messages: [] })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'web-chat' },
+      state: { user: { openid: 'ou_test', profile: 'g41a5b5g', role: 'user' } },
+      get: () => '',
+      body: null,
+    }
+    await mod.getHermesSession(ctx)
+
+    expect(getSessionDetailFromDbMock).toHaveBeenCalledWith('web-chat', 'g41a5b5g')
+    expect(ctx.body).toEqual({ session: { id: 'web-chat', source: 'api_server', messages: [] } })
+  })
+
+  it('searches Hermes sessions in the request-bound profile in chat plane', async () => {
+    process.env.HERMES_WEB_PLANE = 'chat'
+    searchSessionSummariesMock.mockResolvedValue([{ id: 'match', source: 'webui' }])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: { q: 'hello', source: 'webui', limit: '7' },
+      state: { user: { openid: 'ou_test', profile: 'g41a5b5g', role: 'user' } },
+      get: () => '',
+      body: null,
+    }
+    await mod.search(ctx)
+
+    expect(searchSessionSummariesMock).toHaveBeenCalledWith('hello', 'webui', 7, 'g41a5b5g')
+    expect(ctx.body).toEqual({ results: [{ id: 'match', source: 'webui' }] })
+  })
+
   it('merges native state.db usage analytics with local Web UI usage for the requested period', async () => {
     const today = new Date().toISOString().slice(0, 10)
     getLocalUsageStatsMock.mockReturnValue({
@@ -148,7 +267,7 @@ describe('session conversations controller', () => {
         { model: 'local-model', input_tokens: 10, output_tokens: 5, cache_read_tokens: 2, cache_write_tokens: 1, reasoning_tokens: 3, sessions: 1 },
       ],
       by_day: [
-        { date: today, tokens: 15, cache: 2, sessions: 1, cost: 0 },
+        { date: today, input_tokens: 10, output_tokens: 5, cache_read_tokens: 2, cache_write_tokens: 1, sessions: 1, errors: 0, cost: 0 },
       ],
     })
     getUsageStatsFromDbMock.mockResolvedValue({
@@ -164,16 +283,16 @@ describe('session conversations controller', () => {
         { model: 'hermes-model', input_tokens: 20, output_tokens: 10, cache_read_tokens: 4, cache_write_tokens: 2, reasoning_tokens: 6, sessions: 2 },
       ],
       by_day: [
-        { date: today, tokens: 30, cache: 4, sessions: 2, cost: 0.02 },
+        { date: today, input_tokens: 20, output_tokens: 10, cache_read_tokens: 4, cache_write_tokens: 2, sessions: 2, errors: 0, cost: 0.02 },
       ],
     })
 
     const mod = await import('../../packages/server/src/controllers/hermes/sessions')
-    const ctx: any = { query: { days: '2' }, body: null }
+    const ctx: any = { query: { days: '2' }, state: {}, get: () => '', body: null }
     await mod.usageStats(ctx)
 
     expect(getLocalUsageStatsMock).toHaveBeenCalledWith('default', 2)
-    expect(getUsageStatsFromDbMock).toHaveBeenCalledWith(2)
+    expect(getUsageStatsFromDbMock).toHaveBeenCalledWith(2, expect.any(Number), undefined, false)
     expect(ctx.body).toMatchObject({
       total_input_tokens: 30,
       total_output_tokens: 15,
@@ -189,6 +308,59 @@ describe('session conversations controller', () => {
       { model: 'hermes-model', input_tokens: 20, output_tokens: 10, cache_read_tokens: 4, cache_write_tokens: 2, reasoning_tokens: 6, sessions: 2 },
       { model: 'local-model', input_tokens: 10, output_tokens: 5, cache_read_tokens: 2, cache_write_tokens: 1, reasoning_tokens: 3, sessions: 1 },
     ])
-    expect(ctx.body.daily_usage.find((row: any) => row.date === today)).toMatchObject({ tokens: 45, cache: 6, sessions: 3, cost: 0.02 })
+    expect(ctx.body.daily_usage.find((row: any) => row.date === today)).toMatchObject({
+      input_tokens: 30,
+      output_tokens: 15,
+      cache_read_tokens: 6,
+      cache_write_tokens: 3,
+      sessions: 3,
+      cost: 0.02,
+    })
+  })
+
+  it('includes API Server usage from the request-bound profile in chat plane', async () => {
+    process.env.HERMES_WEB_PLANE = 'chat'
+    getLocalUsageStatsMock.mockReturnValue({
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      sessions: 0,
+      by_model: [],
+      by_day: [],
+    })
+    getUsageStatsFromDbMock.mockResolvedValue({
+      input_tokens: 100,
+      output_tokens: 50,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      sessions: 2,
+      cost: 0.12,
+      total_api_calls: 3,
+      by_model: [
+        { model: 'glm-5.1', input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0, sessions: 2 },
+      ],
+      by_day: [],
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: { days: '30' },
+      state: { user: { openid: 'ou_test', profile: 'g41a5b5g', role: 'user' } },
+      get: () => '',
+      body: null,
+    }
+    await mod.usageStats(ctx)
+
+    expect(getLocalUsageStatsMock).toHaveBeenCalledWith('g41a5b5g', 30)
+    expect(getUsageStatsFromDbMock).toHaveBeenCalledWith(30, expect.any(Number), 'g41a5b5g', true)
+    expect(ctx.body).toMatchObject({
+      total_input_tokens: 100,
+      total_output_tokens: 50,
+      total_sessions: 2,
+      total_cost: 0,
+    })
   })
 })

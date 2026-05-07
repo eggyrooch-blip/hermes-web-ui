@@ -3,6 +3,12 @@ import { getApiKey, getBaseUrlValue } from '../client'
 /**
  * Construct a download URL with auth token as query parameter.
  * Token is passed via query param because <a> tags cannot set headers.
+ *
+ * DEPRECATED-FOR: v0.6.0 — token-in-query is a known leakage surface
+ * (Referer headers, server access logs, browser history). This helper
+ * stays for now to keep <img src> and <a href> downloads working. See
+ * Plans/glimmering-drifting-eclipse.md Sprint 2 D1 for the cookie-based
+ * replacement.
  */
 export function getDownloadUrl(filePath: string, fileName?: string): string {
   const base = getBaseUrlValue()

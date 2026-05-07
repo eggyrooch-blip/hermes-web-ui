@@ -1,7 +1,34 @@
 import { Server, Socket, Namespace } from 'socket.io'
 import type { Server as HttpServer } from 'http'
 import { getToken } from '../../../services/auth'
+import { config } from '../../../config'
 import { logger } from '../../../services/logger'
+
+type SocketIoCorsOrigin =
+    | boolean
+    | string
+    | string[]
+    | ((origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => void)
+
+/**
+ * Translate the BFF's CORS_ORIGINS env-string into the shape Socket.IO's
+ * cors option expects.
+ *   ''                     → same-origin (no ACAO header)
+ *   '*'                    → echo any origin (legacy behaviour, opt-in)
+ *   'https://a,https://b'  → strict allowlist
+ */
+function resolveSocketIoCors(raw: string): { origin: SocketIoCorsOrigin } {
+    const trimmed = raw.trim()
+    if (trimmed === '') return { origin: false }
+    if (trimmed === '*') return { origin: '*' }
+    const allowed = new Set(trimmed.split(',').map(s => s.trim()).filter(Boolean))
+    return {
+        origin: (originHeader, cb) => {
+            if (!originHeader || allowed.has(originHeader)) cb(null, true)
+            else cb(null, false)
+        },
+    }
+}
 import { getDb } from '../../../db'
 import { GC_ROOMS_TABLE, GC_MESSAGES_TABLE, GC_ROOM_AGENTS_TABLE, GC_CONTEXT_SNAPSHOTS_TABLE, GC_ROOM_MEMBERS_TABLE, GC_PENDING_SESSION_DELETES_TABLE, GC_SESSION_PROFILES_TABLE } from '../../../db/hermes/schemas'
 import { AgentClients } from './agent-clients'
@@ -491,8 +518,12 @@ export class GroupChatServer {
         this.storage = new ChatStorage()
         this.storage.init()
 
+        // SECURITY: Socket.IO has its own CORS config that is independent
+        // from the Koa cors middleware. Mirror the same three-mode resolution
+        // (same-origin / wildcard / strict allowlist) so this transport
+        // doesn't reopen the gap that index.ts:H5 closed.
         this.io = new Server(httpServer, {
-            cors: { origin: '*' }
+            cors: resolveSocketIoCors(config.corsOrigins),
         })
         this.nsp = this.io.of('/group-chat')
         this.nsp.use(this.authMiddleware.bind(this))
@@ -584,12 +615,46 @@ export class GroupChatServer {
     // ─── Auth ───────────────────────────────────────────────────
 
     private async authMiddleware(socket: Socket, next: (err?: Error) => void): Promise<void> {
+        // SECURITY: dispatch by config.authMode like terminal.ts does.
+        // The previous implementation only checked the bearer token, which let
+        // any client through in trusted-feishu / feishu-oauth-dev modes
+        // because getToken() returns null in those modes — equivalent to the
+        // C2 terminal-bypass bug.
+        const { config, isAuthDisabled } = await import('../../../config')
+
+        if (config.authMode === 'trusted-feishu') {
+            const { verifyTrustedFeishuHeaders, resolveProfileForOpenId } = await import('../../request-context')
+            const fakeCtx = {
+                get: (name: string) => {
+                    const value = socket.handshake.headers[name.toLowerCase()]
+                    return Array.isArray(value) ? value[0] || '' : value || ''
+                },
+            } as any
+            const verified = verifyTrustedFeishuHeaders(fakeCtx)
+            if (!verified.ok) return next(new Error('Unauthorized'))
+            const profile = resolveProfileForOpenId(verified.openid)
+            if (!profile) return next(new Error('Unauthorized'))
+            socket.data.profile = profile
+            return next()
+        }
+
+        if (config.authMode === 'feishu-oauth-dev') {
+            const { parseFeishuSessionCookie, getFeishuSessionSecret, extractFeishuSessionFromCookieHeader } = await import('../../feishu-oauth')
+            const sessionCookie = extractFeishuSessionFromCookieHeader(socket.handshake.headers['cookie'])
+            const user = parseFeishuSessionCookie(sessionCookie, { secret: getFeishuSessionSecret() })
+            if (!user) return next(new Error('Unauthorized'))
+            socket.data.profile = user.profile
+            return next()
+        }
+
+        if (isAuthDisabled()) {
+            return next()
+        }
+
         const authToken = await getToken()
         const token = socket.handshake.auth.token || socket.handshake.query.token || ''
-        if (authToken) {
-            if (token !== authToken) {
-                return next(new Error('Unauthorized'))
-            }
+        if (authToken && token !== authToken) {
+            return next(new Error('Unauthorized'))
         }
         next()
     }

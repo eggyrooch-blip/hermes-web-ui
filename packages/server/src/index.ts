@@ -7,12 +7,11 @@ import os from 'os'
 import { resolve } from 'path'
 import { mkdir } from 'fs/promises'
 import { readFileSync } from 'fs'
-import { config } from './config'
+import { config, isAuthDisabled } from './config'
 import { getToken, requireAuth } from './services/auth'
 import { initGatewayManager, getGatewayManagerInstance } from './services/gateway-bootstrap'
 import { bindShutdown } from './services/shutdown'
 import { setupTerminalWebSocket } from './routes/hermes/terminal'
-import { startVersionCheck } from './routes/health'
 import { registerRoutes } from './routes'
 import { setGroupChatServer } from './routes/hermes/group-chat'
 import { setChatRunServer } from './routes/hermes/chat-run'
@@ -26,10 +25,14 @@ const APP_VERSION = typeof __APP_VERSION__ !== 'undefined'
   ? __APP_VERSION__
   : (() => { try { return JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf-8')).version } catch { return 'dev' } })()
 
-// Global error handlers
+// Global error handlers.
+// We exit on uncaughtException so a process supervisor (Docker `restart`,
+// systemd, pm2, launchd) restarts us into a known-good state — see the
+// "Operations" section of README.md for the supervisor expectations.
+// The 200ms grace lets pino flush its sync destination before exit.
 process.on('uncaughtException', (err) => {
-  logger.fatal(err, 'Uncaught exception')
-  process.exit(1)
+  logger.fatal(err, 'Uncaught exception — exiting for supervisor restart')
+  setTimeout(() => process.exit(1), 200).unref()
 })
 
 process.on('unhandledRejection', (reason) => {
@@ -53,6 +56,13 @@ function safeNetworkInterfaces() {
 
 export async function bootstrap() {
   console.log(`hermes-web-ui v${APP_VERSION} starting...`)
+
+  if (isAuthDisabled()) {
+    const warn = '⚠️  AUTH_DISABLED is set — all API endpoints are OPEN. DO NOT expose this server to a public/untrusted network.'
+    console.warn(warn)
+    logger.warn(warn)
+  }
+
   await mkdir(config.uploadDir, { recursive: true })
   await mkdir(config.dataDir, { recursive: true })
 
@@ -74,9 +84,26 @@ export async function bootstrap() {
   await syncAllHermesSessionsOnStartup()
   console.log('[bootstrap] Hermes session sync completed')
 
-  app.use(cors({ origin: config.corsOrigins }))
+  // CORS: default to same-origin (no Access-Control-Allow-Origin header).
+  //   ''                         → same-origin only (safe default)
+  //   '*'                        → echo any origin (legacy behaviour, opt-in)
+  //   'https://a.com,https://b'  → strict allowlist
+  const corsRaw = config.corsOrigins.trim()
+  if (corsRaw === '') {
+    // No CORS middleware at all — browser enforces same-origin.
+  } else if (corsRaw === '*') {
+    app.use(cors({ origin: '*' }))
+  } else {
+    const allowed = new Set(corsRaw.split(',').map(s => s.trim()).filter(Boolean))
+    app.use(cors({
+      origin: (ctx) => {
+        const requested = ctx.get('Origin')
+        return allowed.has(requested) ? requested : ''
+      },
+    }))
+  }
   app.use(bodyParser())
-  console.log('[bootstrap] cors + bodyParser registered')
+  console.log('[bootstrap] cors + bodyParser registered (mode=%s)', corsRaw || 'same-origin')
 
   // Register all routes (handles auth internally)
   const proxyMiddleware = registerRoutes(app, requireAuth(authToken))
@@ -84,8 +111,9 @@ export async function bootstrap() {
   console.log('[bootstrap] routes registered')
 
   if (authToken) {
-    console.log(`Auth enabled — token: ${authToken}`)
-    logger.info('Auth enabled — token: %s', authToken)
+    const tail = authToken.slice(-4)
+    console.log(`Auth enabled — token: ****${tail} (run "cat ~/.hermes-web-ui/.token" to retrieve)`)
+    logger.info('Auth enabled — token suffix=****%s', tail)
   }
 
   // SPA fallback
@@ -155,7 +183,6 @@ export async function bootstrap() {
   })
 
   bindShutdown(server, groupChatServer, chatRunServer)
-  startVersionCheck()
 }
 
 bootstrap()

@@ -36,6 +36,12 @@ ENV HERMES_HOME=/home/agent/.hermes
 
 EXPOSE 6060
 
+# Healthcheck — let Docker / orchestrators detect a hung process and trigger
+# the configured restart policy. /health is the only route registered before
+# auth, so a 200 here means the HTTP listener is alive.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD curl -fsS "http://127.0.0.1:${PORT:-6060}/health" >/dev/null || exit 1
+
 # 强制覆盖基础镜像的默认启动脚本，让镜像本身具备独立运行的能力
 ENTRYPOINT ["node", "dist/server/index.js"]
 CMD []

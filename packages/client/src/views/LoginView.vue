@@ -2,11 +2,13 @@
 import { ref, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
-import { setApiKey, hasApiKey } from "@/api/client";
-import { fetchAuthStatus, loginWithPassword } from "@/api/auth";
+import { setApiKey, hasApiKey, setRuntimeMode } from "@/api/client";
+import { fetchAuthStatus, fetchCurrentUser, loginWithPassword } from "@/api/auth";
+import { useProfilesStore } from "@/stores/hermes/profiles";
 
 const { t } = useI18n();
 const router = useRouter();
+const profilesStore = useProfilesStore();
 
 // Read token saved by main.ts (before router strips URL params)
 const urlToken = (window as any).__LOGIN_TOKEN__ || "";
@@ -17,8 +19,8 @@ const password = ref("");
 const loading = ref(false);
 const errorMsg = ref("");
 
-// Login method: 'token' or 'password'
-const loginMethod = ref<"token" | "password">("token");
+// Login method: 'token', 'password', or 'feishu'
+const loginMethod = ref<"token" | "password" | "feishu">("token");
 const hasPasswordLogin = ref(false);
 
 // If already has a key, try to go to main page
@@ -29,6 +31,22 @@ if (hasApiKey()) {
 onMounted(async () => {
   try {
     const status = await fetchAuthStatus();
+    setRuntimeMode(status.authMode, status.plane);
+    if (status.authMode === "trusted-feishu") {
+      router.replace("/hermes/chat");
+      return;
+    }
+    if (status.authMode === "feishu-oauth-dev") {
+      loginMethod.value = "feishu";
+      try {
+        const user = await fetchCurrentUser();
+        profilesStore.setBoundProfile(user.profile, user);
+        router.replace("/hermes/chat");
+      } catch {
+        // No valid OAuth session cookie yet.
+      }
+      return;
+    }
     hasPasswordLogin.value = status.hasPasswordLogin;
     if (status.hasPasswordLogin && !urlToken) {
       loginMethod.value = "password";
@@ -39,11 +57,17 @@ onMounted(async () => {
 });
 
 async function handleLogin() {
-  if (loginMethod.value === "token") {
+  if (loginMethod.value === "feishu") {
+    handleFeishuLogin();
+  } else if (loginMethod.value === "token") {
     await handleTokenLogin();
   } else {
     await handlePasswordLogin();
   }
+}
+
+function handleFeishuLogin() {
+  window.location.assign("/api/auth/feishu/login");
 }
 
 async function handleTokenLogin() {
@@ -150,8 +174,14 @@ async function handlePasswordLogin() {
           />
         </template>
 
+        <template v-if="loginMethod === 'feishu'">
+          <button type="button" class="login-btn" :disabled="loading" @click="handleFeishuLogin">
+            {{ t("login.feishuLogin") }}
+          </button>
+        </template>
+
         <div v-if="errorMsg" class="login-error">{{ errorMsg }}</div>
-        <button type="submit" class="login-btn" :disabled="loading">
+        <button v-if="loginMethod !== 'feishu'" type="submit" class="login-btn" :disabled="loading">
           {{ loading ? "..." : t("login.submit") }}
         </button>
       </form>

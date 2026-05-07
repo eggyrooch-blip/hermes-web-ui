@@ -1,7 +1,7 @@
-import { randomUUID } from 'crypto'
+import { randomBytes, randomUUID } from 'crypto'
 import { join } from 'path'
 import { homedir } from 'os'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'fs'
 import { getActiveAuthPath } from '../../services/hermes/hermes-profile'
 import { logger } from '../../services/logger'
 
@@ -22,6 +22,10 @@ interface CodexSession {
   id: string; userCode: string; deviceAuthId: string
   status: 'pending' | 'approved' | 'expired' | 'error'
   error?: string; accessToken?: string; refreshToken?: string; createdAt: number
+  /** Stable identity of the caller that started this device flow.
+   *  Used to gate poll() so a session id leak does not let a different
+   *  caller observe the login state of someone else. */
+  ownerPrincipal: string
 }
 
 const sessions = new Map<string, CodexSession>()
@@ -31,6 +35,26 @@ function cleanupExpiredSessions() {
   sessions.forEach((session, id) => { if (now - session.createdAt > POLL_MAX_DURATION + 60000) { sessions.delete(id) } })
 }
 
+// Periodic cleanup so abandoned sessions don't accumulate even when no
+// new login starts. (Previously cleanupExpiredSessions only ran inside start().)
+setInterval(cleanupExpiredSessions, 5 * 60 * 1000).unref?.()
+
+/**
+ * Derive a stable principal for the current request. We don't expose the raw
+ * Bearer token; a short HMAC-style suffix is enough to bind a session to its
+ * caller. For Feishu modes we use the openid that already lives on ctx.state.user.
+ */
+function getCallerPrincipal(ctx: any): string {
+  const user = ctx?.state?.user
+  if (user?.openid) return `feishu:${user.openid}`
+  const auth = (ctx?.headers?.authorization || '') as string
+  if (auth.startsWith('Bearer ')) return `token:${auth.slice(-8)}`
+  const queryToken = ctx?.query?.token
+  if (typeof queryToken === 'string' && queryToken) return `token:${queryToken.slice(-8)}`
+  // Fall back to the remote address; better than nothing if auth is disabled.
+  return `addr:${ctx?.ip || 'unknown'}`
+}
+
 // --- Auth file helpers ---
 interface AuthJson { version?: number; active_provider?: string; providers?: Record<string, any>; credential_pool?: Record<string, any[]>; updated_at?: string }
 
@@ -38,19 +62,34 @@ function loadAuthJson(authPath: string): AuthJson {
   try { return JSON.parse(readFileSync(authPath, 'utf-8')) as AuthJson } catch { return { version: 1 } }
 }
 
+/**
+ * Atomic write: stage the new bytes in a sibling temp file with the right
+ * mode, then rename onto the target. A crash between `writeFileSync` and
+ * `renameSync` leaves the original auth.json intact instead of half-written.
+ */
+function atomicWriteFile(targetPath: string, content: string, mode = 0o600): void {
+  const dir = targetPath.substring(0, targetPath.lastIndexOf('/'))
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  const tmpPath = `${targetPath}.${randomBytes(8).toString('hex')}.tmp`
+  try {
+    writeFileSync(tmpPath, content, { mode })
+    renameSync(tmpPath, targetPath)
+  } catch (err) {
+    try { unlinkSync(tmpPath) } catch { /* tmp may already be gone */ }
+    throw err
+  }
+}
+
 function saveAuthJson(authPath: string, data: AuthJson): void {
   data.updated_at = new Date().toISOString()
-  const dir = authPath.substring(0, authPath.lastIndexOf('/'))
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  writeFileSync(authPath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+  atomicWriteFile(authPath, JSON.stringify(data, null, 2) + '\n')
 }
 
 function saveCodexCliTokens(accessToken: string, refreshToken: string): void {
   const codexHome = process.env.CODEX_HOME || CODEX_HOME
   const codexAuthPath = join(codexHome, 'auth.json')
-  const dir = codexAuthPath.substring(0, codexAuthPath.lastIndexOf('/'))
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  writeFileSync(codexAuthPath, JSON.stringify({ tokens: { access_token: accessToken, refresh_token: refreshToken }, last_refresh: new Date().toISOString() }, null, 2) + '\n', { mode: 0o600 })
+  const payload = JSON.stringify({ tokens: { access_token: accessToken, refresh_token: refreshToken }, last_refresh: new Date().toISOString() }, null, 2) + '\n'
+  atomicWriteFile(codexAuthPath, payload)
 }
 
 function decodeJwtExp(token: string): number | null {
@@ -125,7 +164,14 @@ export async function start(ctx: any) {
     }
     const data = await res.json() as { user_code: string; device_auth_id: string; interval?: string }
     const sessionId = randomUUID()
-    const session: CodexSession = { id: sessionId, userCode: data.user_code, deviceAuthId: data.device_auth_id, status: 'pending', createdAt: Date.now() }
+    const session: CodexSession = {
+      id: sessionId,
+      userCode: data.user_code,
+      deviceAuthId: data.device_auth_id,
+      status: 'pending',
+      createdAt: Date.now(),
+      ownerPrincipal: getCallerPrincipal(ctx),
+    }
     sessions.set(sessionId, session)
     const authPath = getActiveAuthPath()
     codexLoginWorker(session, authPath).catch(err => { logger.error(err, 'Worker error'); session.status = 'error'; session.error = err.message })
@@ -138,6 +184,12 @@ export async function start(ctx: any) {
 export async function poll(ctx: any) {
   const session = sessions.get(ctx.params.sessionId)
   if (!session) { ctx.status = 404; ctx.body = { error: 'Session not found' }; return }
+  // SECURITY: only the principal that created the session may observe its
+  // status. Returning 404 for foreign callers (rather than 403) avoids
+  // leaking that a session id is valid.
+  if (session.ownerPrincipal !== getCallerPrincipal(ctx)) {
+    ctx.status = 404; ctx.body = { error: 'Session not found' }; return
+  }
   ctx.body = { status: session.status, error: session.error || null }
 }
 

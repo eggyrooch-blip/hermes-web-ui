@@ -30,10 +30,19 @@
  *   - WSL / Docker：hermes gateway run（detached 子进程，手动 kill）
  */
 
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, type ChildProcess, type SpawnOptions, type StdioOptions } from 'child_process'
 import { resolve, join } from 'path'
 import { homedir } from 'os'
-import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs'
+import {
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { createServer } from 'net'
@@ -47,7 +56,74 @@ const execFileAsync = promisify(execFile)
 // ============================
 
 const HERMES_BASE = resolve(homedir(), '.hermes')
+const WEB_UI_API_GATEWAYS_BASE = resolve(homedir(), '.hermes-web-ui', 'api-gateways')
 const HERMES_BIN = process.env.HERMES_BIN?.trim() || 'hermes'
+
+// ─── Upstream host allowlist ───────────────────────────────────
+//
+// SECURITY: a profile's config.yaml is user-editable, and its
+// `platforms.api_server.extra.host` value is fed straight into the BFF's
+// proxy. Without this gate any user who can write a profile yaml can turn
+// the BFF into a generic HTTP proxy targeting internal IPs, cloud metadata
+// endpoints, or arbitrary public hosts (SSRF). Allow only loopback by
+// default; operators opt in to extra hosts via HERMES_UPSTREAM_HOSTS
+// (comma-separated, exact-match hostnames or IPs).
+
+const DEFAULT_UPSTREAM_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
+
+function parseUpstreamHostAllowlist(): Set<string> {
+  const set = new Set(DEFAULT_UPSTREAM_HOSTS)
+  const extra = process.env.HERMES_UPSTREAM_HOSTS?.trim()
+  if (extra) {
+    for (const host of extra.split(',').map(h => h.trim()).filter(Boolean)) {
+      set.add(host.toLowerCase())
+    }
+  }
+  return set
+}
+
+const UPSTREAM_HOST_ALLOWLIST = parseUpstreamHostAllowlist()
+
+export function isAllowedUpstreamHost(host: string): boolean {
+  if (!host) return false
+  const normalized = host.toLowerCase().trim()
+  // Strip an IPv6 [..]: bracket form just in case.
+  const stripped = normalized.startsWith('[') && normalized.endsWith(']')
+    ? normalized.slice(1, -1)
+    : normalized
+  return UPSTREAM_HOST_ALLOWLIST.has(stripped)
+}
+const CHAT_API_ONLY_SKIP_ENTRIES = new Set([
+  'config.yaml',
+  '.env',
+  'gateway.pid',
+  'gateway.lock',
+  'gateway_state.json',
+  'logs',
+])
+const CHAT_API_ONLY_BLOCKED_ENV_PREFIXES = [
+  'FEISHU_',
+  'DINGTALK_',
+  'WECOM_',
+  'WEIXIN_',
+  'TELEGRAM_',
+  'DISCORD_',
+  'SLACK_',
+  'MATRIX_',
+  'MATTERMOST_',
+  'WHATSAPP_',
+  'SIGNAL_',
+  'QQBOT_',
+  'YUANBAO_',
+  'BLUEBUBBLES_',
+  'WEBHOOK_',
+  'TWILIO_',
+]
+const PROFILE_WORKSPACE_ENV_KEYS = new Set([
+  'TERMINAL_CWD',
+  'HERMES_WRITE_SAFE_ROOT',
+  'TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE',
+])
 
 /**
  * 检测系统的 init 系统（服务管理器）
@@ -112,6 +188,7 @@ interface ManagedGateway {
   host: string
   url: string
   process?: ChildProcess
+  mode?: 'profile' | 'api-only'
 }
 
 // ============================
@@ -142,9 +219,18 @@ export class GatewayManager {
     return join(HERMES_BASE, 'profiles', name)
   }
 
+  private apiOnlyDir(name: string): string {
+    return join(WEB_UI_API_GATEWAYS_BASE, name)
+  }
+
   /**
    * 从 profile 的 config.yaml 读取 api_server 端口和主机
    * 读取路径：platforms.api_server.extra.port / extra.host
+   *
+   * SECURITY: host 必须通过 allowlist 校验（默认 localhost，
+   * 可通过 HERMES_UPSTREAM_HOSTS 扩展）。否则 profile 配置文件本身就成了
+   * SSRF 注入点：任何能编辑 yaml 的人都能让 BFF 把请求转发到内网或公网
+   * 任意服务器。校验失败时回退到默认 host，并记录 warn 日志。
    */
   private readProfilePort(name: string): { port: number; host: string } {
     const configPath = join(this.profileDir(name), 'config.yaml')
@@ -157,7 +243,11 @@ export class GatewayManager {
       const extra = cfg?.platforms?.api_server?.extra
       const rawPort = extra?.port || 8642
       const port = typeof rawPort === 'number' ? rawPort : parseInt(rawPort, 10) || 8642
-      const host = extra?.host || '127.0.0.1'
+      const rawHost = (extra?.host || '127.0.0.1').toString()
+      const host = isAllowedUpstreamHost(rawHost) ? rawHost : '127.0.0.1'
+      if (host !== rawHost) {
+        logger.warn('Profile %s requested upstream host %s which is not in the allowlist; falling back to 127.0.0.1', name, rawHost)
+      }
       // 端口超出合法范围时回退到默认值
       return { port: port > 0 && port <= 65535 ? port : 8642, host }
     } catch {
@@ -167,7 +257,15 @@ export class GatewayManager {
 
   /** 从 profile 的 gateway.pid 文件读取 PID（JSON 格式 { "pid": 12345 }） */
   private readPidFile(name: string): number | null {
-    const pidPath = join(this.profileDir(name), 'gateway.pid')
+    return this.readPidFileFromDir(this.profileDir(name))
+  }
+
+  private readApiOnlyPidFile(name: string): number | null {
+    return this.readPidFileFromDir(this.apiOnlyDir(name))
+  }
+
+  private readPidFileFromDir(dir: string): number | null {
+    const pidPath = join(dir, 'gateway.pid')
     if (!existsSync(pidPath)) return null
 
     try {
@@ -414,13 +512,31 @@ export class GatewayManager {
    *   ④ 否则 → 标记为未运行（不杀进程，由 startAll 处理）
    */
   async detectStatus(name: string): Promise<GatewayStatus> {
+    const existing = this.gateways.get(name)
+    if (existing && this.isProcessAlive(existing.pid) && await this.checkHealth(existing.url)) {
+      return {
+        profile: name,
+        port: existing.port,
+        host: existing.host,
+        url: existing.url,
+        running: true,
+        pid: existing.pid,
+      }
+    }
+
     const pid = this.readPidFile(name)
     const { port, host } = this.readProfilePort(name)
     const url = `http://${host}:${port}`
 
     if (pid && this.isProcessAlive(pid) && await this.checkHealth(url)) {
-      this.gateways.set(name, { pid, port, host, url })
+      this.gateways.set(name, { pid, port, host, url, mode: 'profile' })
       return { profile: name, port, host, url, running: true, pid }
+    }
+
+    const apiOnlyPid = this.readApiOnlyPidFile(name)
+    if (apiOnlyPid && this.isProcessAlive(apiOnlyPid) && await this.checkHealth(url)) {
+      this.gateways.set(name, { pid: apiOnlyPid, port, host, url, mode: 'api-only' })
+      return { profile: name, port, host, url, running: true, pid: apiOnlyPid }
     }
 
     // 未运行或端口不匹配
@@ -446,18 +562,15 @@ export class GatewayManager {
   async start(name: string): Promise<GatewayStatus> {
     const { port, host } = await this.resolvePort(name)
     const hermesHome = this.profileDir(name)
+    mkdirSync(join(hermesHome, 'workspace'), { recursive: true })
+    this.ensureProfileWorkspaceConfig(hermesHome)
     const url = `http://${host}:${port}`
 
     if (needsRunMode) {
       // WSL / Docker：无 systemd/launchd，用 "gateway run" 作为 detached 子进程
       return new Promise((resolve, reject) => {
-        const env = { ...process.env, HERMES_HOME: hermesHome }
-        const child = spawn(HERMES_BIN, ['gateway', 'run', '--replace'], {
-          detached: true,
-          stdio: 'ignore',
-          windowsHide: true,
-          env,
-        })
+        const env = this.buildProfileEnv(hermesHome)
+        const child = spawn(HERMES_BIN, ['gateway', 'run', '--replace'], this.buildGatewayRunOptions(env, join(hermesHome, 'workspace'), 'ignore'))
         child.unref()
 
         const pid = child.pid ?? 0
@@ -471,11 +584,12 @@ export class GatewayManager {
 
     // 正常系统：先 start，失败则 restart（处理服务已运行的情况）
     logger.info('Starting gateway for profile "%s" (start mode, port: %d)', name, port)
-    const env = { ...process.env, HERMES_HOME: hermesHome }
+    const env = this.buildProfileEnv(hermesHome)
     try {
       const { stdout } = await execFileAsync(HERMES_BIN, ['gateway', 'start'], {
         timeout: 30000,
         env,
+        cwd: join(hermesHome, 'workspace'),
         windowsHide: true,
       })
       logger.debug('gateway start output: %s', stdout?.trim())
@@ -485,6 +599,7 @@ export class GatewayManager {
         const { stdout } = await execFileAsync(HERMES_BIN, ['gateway', 'restart'], {
           timeout: 30000,
           env,
+          cwd: join(hermesHome, 'workspace'),
           windowsHide: true,
         })
         logger.debug('gateway restart output: %s', stdout?.trim())
@@ -496,8 +611,145 @@ export class GatewayManager {
     return this.waitForReady(name, 0, port, host, url)
   }
 
+  async startApiOnly(name: string): Promise<GatewayStatus> {
+    const { port, host } = await this.resolvePort(name)
+    const runtimeHome = this.prepareApiOnlyHome(name, port, host)
+    const url = `http://${host}:${port}`
+    const logsDir = join(runtimeHome, 'logs')
+    mkdirSync(logsDir, { recursive: true })
+    const stdout = openSync(join(logsDir, 'gateway.log'), 'a')
+    const stderr = openSync(join(logsDir, 'gateway.error.log'), 'a')
+
+    const env = this.buildApiOnlyEnv(runtimeHome, port, host)
+    const child = spawn(HERMES_BIN, ['gateway', 'run', '--replace'], this.buildGatewayRunOptions(env, join(runtimeHome, 'workspace'), ['ignore', stdout, stderr]))
+    child.unref()
+
+    const pid = child.pid ?? 0
+    logger.info('Starting API-only gateway for profile "%s" (PID: %d, port: %d)', name, pid, port)
+
+    return this.waitForReady(name, pid, port, host, url, 'api-only')
+  }
+
+  private prepareApiOnlyHome(name: string, port: number, host: string): string {
+    const sourceDir = this.profileDir(name)
+    const runtimeHome = this.apiOnlyDir(name)
+    mkdirSync(join(sourceDir, 'workspace'), { recursive: true })
+    rmSync(runtimeHome, { recursive: true, force: true })
+    mkdirSync(runtimeHome, { recursive: true })
+
+    for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+      if (CHAT_API_ONLY_SKIP_ENTRIES.has(entry.name)) continue
+      symlinkSync(join(sourceDir, entry.name), join(runtimeHome, entry.name))
+    }
+
+    const sourceConfigPath = join(sourceDir, 'config.yaml')
+    const cfg = existsSync(sourceConfigPath)
+      ? (yaml.load(readFileSync(sourceConfigPath, 'utf-8')) as any) || {}
+      : {}
+    cfg.platforms = cfg.platforms && typeof cfg.platforms === 'object' ? cfg.platforms : {}
+    for (const key of Object.keys(cfg.platforms)) {
+      if (key !== 'api_server' && cfg.platforms[key] && typeof cfg.platforms[key] === 'object') {
+        cfg.platforms[key] = { ...cfg.platforms[key], enabled: false }
+      }
+    }
+    cfg.platforms.api_server = {
+      ...(cfg.platforms.api_server || {}),
+      enabled: true,
+      key: '',
+      cors_origins: '*',
+      extra: {
+        ...((cfg.platforms.api_server || {}).extra || {}),
+        port,
+        host,
+      },
+    }
+    this.withProfileWorkspaceConfig(cfg, join(runtimeHome, 'workspace'))
+
+    writeFileSync(join(runtimeHome, 'config.yaml'), yaml.dump(cfg, { lineWidth: -1 }), 'utf-8')
+    const sourceEnvPath = join(sourceDir, '.env')
+    const providerEnv = existsSync(sourceEnvPath)
+      ? readFileSync(sourceEnvPath, 'utf-8')
+        .split(/\r?\n/)
+        .filter(line => {
+          const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/)
+          if (!match) return true
+          const key = match[1]
+          if (key.startsWith('API_SERVER_')) return false
+          if (PROFILE_WORKSPACE_ENV_KEYS.has(key)) return false
+          return !CHAT_API_ONLY_BLOCKED_ENV_PREFIXES.some(prefix => key.startsWith(prefix))
+        })
+      : []
+    const workspaceDir = join(runtimeHome, 'workspace')
+
+    writeFileSync(join(runtimeHome, '.env'), [
+      ...providerEnv,
+      'API_SERVER_ENABLED=true',
+      `API_SERVER_HOST=${host}`,
+      `API_SERVER_PORT=${port}`,
+      'API_SERVER_CORS_ORIGINS=*',
+      `TERMINAL_CWD=${workspaceDir}`,
+      `HERMES_WRITE_SAFE_ROOT=${workspaceDir}`,
+      'TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=true',
+      '',
+    ].join('\n'), 'utf-8')
+    return runtimeHome
+  }
+
+  private ensureProfileWorkspaceConfig(hermesHome: string): void {
+    const configPath = join(hermesHome, 'config.yaml')
+    const cfg = existsSync(configPath)
+      ? (yaml.load(readFileSync(configPath, 'utf-8')) as any) || {}
+      : {}
+    this.withProfileWorkspaceConfig(cfg, join(hermesHome, 'workspace'))
+    writeFileSync(configPath, yaml.dump(cfg, { lineWidth: -1 }), 'utf-8')
+  }
+
+  private buildProfileEnv(hermesHome: string): NodeJS.ProcessEnv {
+    const workspaceDir = join(hermesHome, 'workspace')
+    return this.withProfileWorkspaceEnv({ ...process.env, HERMES_HOME: hermesHome }, workspaceDir)
+  }
+
+  private buildApiOnlyEnv(runtimeHome: string, port: number, host: string): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env }
+    for (const key of Object.keys(env)) {
+      if (CHAT_API_ONLY_BLOCKED_ENV_PREFIXES.some(prefix => key.startsWith(prefix))) {
+        delete env[key]
+      }
+    }
+    env.HERMES_HOME = runtimeHome
+    env.API_SERVER_ENABLED = 'true'
+    env.API_SERVER_HOST = host
+    env.API_SERVER_PORT = String(port)
+    env.API_SERVER_CORS_ORIGINS = '*'
+    return this.withProfileWorkspaceEnv(env, join(runtimeHome, 'workspace'))
+  }
+
+  private withProfileWorkspaceEnv(env: NodeJS.ProcessEnv, workspaceDir: string): NodeJS.ProcessEnv {
+    env.TERMINAL_CWD = workspaceDir
+    env.HERMES_WRITE_SAFE_ROOT = workspaceDir
+    env.TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE = 'true'
+    return env
+  }
+
+  private buildGatewayRunOptions(env: NodeJS.ProcessEnv, workspaceDir: string, stdio: StdioOptions): SpawnOptions {
+    return {
+      detached: true,
+      stdio,
+      windowsHide: true,
+      env,
+      cwd: workspaceDir,
+    }
+  }
+
+  private withProfileWorkspaceConfig(cfg: any, workspaceDir: string): any {
+    cfg.terminal = cfg.terminal && typeof cfg.terminal === 'object' ? cfg.terminal : {}
+    cfg.terminal.cwd = workspaceDir
+    cfg.terminal.docker_mount_cwd_to_workspace = true
+    return cfg
+  }
+
   /** 等待网关健康检查通过，最多 15 秒 */
-  private async waitForReady(name: string, pid: number, port: number, host: string, url: string): Promise<GatewayStatus> {
+  private async waitForReady(name: string, pid: number, port: number, host: string, url: string, mode: 'profile' | 'api-only' = 'profile'): Promise<GatewayStatus> {
     const deadline = Date.now() + 15000
     while (Date.now() < deadline) {
       if (pid && !this.isProcessAlive(pid)) {
@@ -505,8 +757,8 @@ export class GatewayManager {
       }
       if (await this.checkHealth(url, 2000)) {
         // "gateway start" 自行管理进程，重新从 pid 文件读取实际 PID
-        const actualPid = this.readPidFile(name) ?? pid
-        this.gateways.set(name, { pid: actualPid, port, host, url })
+        const actualPid = (mode === 'api-only' ? this.readApiOnlyPidFile(name) : this.readPidFile(name)) ?? pid
+        this.gateways.set(name, { pid: actualPid, port, host, url, mode })
         return { profile: name, port, host, url, running: true, pid: actualPid || undefined }
       }
       await new Promise(r => setTimeout(r, 500))
@@ -564,6 +816,68 @@ export class GatewayManager {
     // 超时也清理
     this.gateways.delete(name)
     logger.warn('Stopped gateway for profile "%s" (timeout)', name)
+  }
+
+  async stopApiOnly(name: string, timeoutMs = 10000): Promise<GatewayStatus & { status: 'stopped' | 'not_api_only' }> {
+    const { port, host } = this.readProfilePort(name)
+    const url = this.gateways.get(name)?.url || `http://${host}:${port}`
+
+    if (!this.gateways.has(name)) {
+      const apiOnlyPid = this.readApiOnlyPidFile(name)
+      if (apiOnlyPid && this.isProcessAlive(apiOnlyPid)) {
+        this.gateways.set(name, { pid: apiOnlyPid, port, host, url, mode: 'api-only' })
+      }
+    }
+
+    const target = this.gateways.get(name)
+    if (!target || target.mode !== 'api-only') {
+      const running = await this.checkHealth(url, 1000)
+      return {
+        profile: name,
+        port,
+        host,
+        url,
+        running,
+        pid: target?.pid,
+        status: 'not_api_only',
+      }
+    }
+
+    if (target.pid) {
+      try {
+        process.kill(-target.pid, 'SIGTERM')
+      } catch {
+        try { process.kill(target.pid, 'SIGTERM') } catch { }
+      }
+    }
+
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (!(await this.checkHealth(url, 1000))) {
+        this.gateways.delete(name)
+        logger.info('Stopped API-only gateway for profile "%s"', name)
+        return {
+          profile: name,
+          port: target.port,
+          host: target.host,
+          url,
+          running: false,
+          status: 'stopped',
+        }
+      }
+      await new Promise(r => setTimeout(r, 300))
+    }
+
+    this.gateways.delete(name)
+    logger.warn('Stopped API-only gateway for profile "%s" (timeout)', name)
+    return {
+      profile: name,
+      port: target.port,
+      host: target.host,
+      url,
+      running: false,
+      status: 'stopped',
+    }
   }
 
   /** 停止所有已管理的网关（并行执行） */

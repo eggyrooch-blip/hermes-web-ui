@@ -9,6 +9,11 @@ vi.mock('../../packages/server/src/services/gateway-bootstrap', () => ({
   getGatewayManagerInstance: () => null,
 }))
 
+vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
+  getActiveProfileName: () => 'default',
+  getProfileDir: (name: string) => `/tmp/hermes/${name}`,
+}))
+
 // Mock updateUsage so we can assert calls without real DB
 const { mockUpdateUsage } = vi.hoisted(() => ({
   mockUpdateUsage: vi.fn(),
@@ -33,6 +38,9 @@ function createMockCtx(overrides: Record<string, any> = {}) {
     res: {
       write: vi.fn(),
       end: vi.fn(),
+      // EventEmitter surface used by proxy() to react to client disconnect.
+      on: vi.fn(),
+      removeListener: vi.fn(),
       headersSent: false,
       writableEnded: false,
     },
@@ -168,7 +176,8 @@ describe('Proxy Handler', () => {
     await proxy(ctx)
 
     expect(ctx.status).toBe(502)
-    expect(ctx.body).toEqual({ error: { message: 'Proxy error: ECONNREFUSED' } })
+    // WIP intentionally redacts upstream error detail to avoid SSRF reconnaissance.
+    expect(ctx.body).toEqual({ error: { message: 'Upstream gateway unreachable' } })
   })
 
   it('passes through non-200 status codes', async () => {

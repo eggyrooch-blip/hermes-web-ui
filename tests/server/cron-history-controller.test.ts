@@ -7,12 +7,16 @@ const profileDirState = vi.hoisted(() => ({ value: '' }))
 
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
   getActiveProfileDir: () => profileDirState.value,
+  getActiveProfileName: () => 'default',
+  getProfileDir: () => profileDirState.value,
 }))
 
 function createCtx(overrides: Record<string, any> = {}) {
   return {
     query: {},
     params: {},
+    state: {},
+    get: () => '',
     status: 200,
     body: null,
     ...overrides,

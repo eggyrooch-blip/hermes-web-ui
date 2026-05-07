@@ -43,6 +43,23 @@ async function loadHealthControllerWithInjectedVersion(version: string) {
   return import('../../packages/server/src/controllers/health')
 }
 
+async function loadHealthControllerWithHermesVersionMock(getVersion: ReturnType<typeof vi.fn>) {
+  vi.resetModules()
+  ;(globalThis as any).__APP_VERSION__ = 'test'
+
+  vi.doMock('../../packages/server/src/services/hermes/hermes-cli', () => ({
+    getVersion,
+  }))
+
+  vi.doMock('../../packages/server/src/services/gateway-bootstrap', () => ({
+    getGatewayManagerInstance: vi.fn(() => ({
+      getUpstream: () => 'http://127.0.0.1:9999',
+    })),
+  }))
+
+  return import('../../packages/server/src/controllers/health')
+}
+
 function createMockCtx() {
   return {
     body: null as any,
@@ -80,36 +97,35 @@ describe('health controller version metadata', () => {
     expect(ctx.body.webui_version).toBe('9.9.9-test')
   })
 
-  it('checks npm latest using the root package name', async () => {
-    vi.spyOn(console, 'log').mockImplementation(() => {})
-    const pkg = readRootPackage()
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({ version: '99.99.99' }),
-    })
-    vi.stubGlobal('fetch', fetchMock)
+  it('does not expose Web UI latest-version or update-available metadata', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
 
-    const { checkLatestVersion, healthCheck } = await loadHealthControllerWithoutInjectedVersion()
-
-    await checkLatestVersion()
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      `https://registry.npmjs.org/${pkg.name}/latest`,
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    )
-
+    const mod = await loadHealthControllerWithoutInjectedVersion()
     const ctx = createMockCtx()
-    await healthCheck(ctx)
 
-    expect(ctx.body.webui_latest).toBe('99.99.99')
-    expect(ctx.body.webui_update_available).toBe(true)
+    await mod.healthCheck(ctx)
+
+    expect('checkLatestVersion' in mod).toBe(false)
+    expect('startVersionCheck' in mod).toBe(false)
+    expect(ctx.body).not.toHaveProperty('webui_latest')
+    expect(ctx.body).not.toHaveProperty('webui_update_available')
   })
 
-  it('does not throw when latest-version lookup fails', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
+  it('coalesces concurrent Hermes version probes', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
+    const getVersion = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      return 'Hermes Agent v0.11.0\n'
+    })
 
-    const { checkLatestVersion } = await loadHealthControllerWithoutInjectedVersion()
+    const { healthCheck } = await loadHealthControllerWithHermesVersionMock(getVersion)
+    const ctxA = createMockCtx()
+    const ctxB = createMockCtx()
 
-    await expect(checkLatestVersion()).resolves.toBeUndefined()
+    await Promise.all([healthCheck(ctxA), healthCheck(ctxB)])
+
+    expect(getVersion).toHaveBeenCalledTimes(1)
+    expect(ctxA.body.version).toBe('v0.11.0')
+    expect(ctxB.body.version).toBe('v0.11.0')
   })
 })

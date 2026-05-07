@@ -13,6 +13,7 @@ vi.mock('@/router', () => ({
 
 import {
   buildJobUpdateRequest,
+  listJobs,
   scheduleToDisplayText,
   scheduleToEditableInput,
   updateJob,
@@ -118,4 +119,23 @@ describe('Hermes jobs edit payloads', () => {
       schedule: 'every 14400m',
     })
   })
+
+  it('returns a gateway-unavailable jobs list result without throwing', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({
+        jobs: [],
+        gateway_unavailable: true,
+        error: { message: 'Proxy error: ECONNREFUSED' },
+      }),
+    })
+
+    await expect(listJobs()).resolves.toEqual({
+      jobs: [],
+      gatewayUnavailable: true,
+      errorMessage: 'Proxy error: ECONNREFUSED',
+    })
+  })
+
 })

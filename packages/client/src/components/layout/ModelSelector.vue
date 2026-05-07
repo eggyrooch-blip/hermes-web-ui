@@ -2,10 +2,36 @@
 import { ref, computed } from 'vue'
 import { NModal, NInput, NSelect } from 'naive-ui'
 import { useAppStore } from '@/stores/hermes/app'
+import { useChatStore } from '@/stores/hermes/chat'
 import { useI18n } from 'vue-i18n'
+import { getProviderLogo } from '@/utils/providerLogo'
+import { isUserMode } from '@/api/client'
+
+const props = withDefaults(defineProps<{ variant?: 'sidebar' | 'compact' }>(), {
+  variant: 'sidebar',
+})
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const chatStore = useChatStore()
+
+// In compact (chat) mode, the source of truth for what will actually be
+// sent is session.model (chat.ts:655 prefers it over the global default).
+const displayModel = computed(() => {
+  if (props.variant === 'compact' && chatStore.activeSession?.model) {
+    return chatStore.activeSession.model
+  }
+  return appStore.selectedModel
+})
+
+const displayProvider = computed(() => {
+  if (props.variant === 'compact' && chatStore.activeSession?.provider) {
+    return chatStore.activeSession.provider
+  }
+  return appStore.selectedProvider
+})
+
+const currentLogo = computed(() => getProviderLogo(displayProvider.value))
 
 const showModal = ref(false)
 const searchQuery = ref('')
@@ -14,7 +40,7 @@ const customInput = ref('')
 const customProvider = ref('')
 
 const providerOptions = computed(() => {
-  const current = appStore.selectedProvider
+  const current = displayProvider.value
   customProvider.value = current
   return appStore.modelGroups.map(g => ({ label: g.label, value: g.provider }))
 })
@@ -56,21 +82,35 @@ function isGroupCollapsed(provider: string) {
   return !!collapsedGroups.value[provider]
 }
 
-function handleSelect(model: string, provider: string) {
+async function applyModelChange(model: string, provider: string) {
+  // In compact (chat input) mode, also update the active session so the
+  // next message uses the new model — appStore.switchModel only updates
+  // the global default, but chat.ts:655 reads session.model first.
+  if (props.variant === 'compact' && !chatStore.activeSession && isUserMode()) {
+    chatStore.newChat()
+  }
+  if (props.variant === 'compact' && chatStore.activeSession) {
+    await chatStore.switchSessionModel(model, provider)
+  } else {
+    await appStore.switchModel(model, provider)
+  }
+}
+
+async function handleSelect(model: string, provider: string) {
   const meta = appStore.modelGroups.find(g => g.provider === provider)?.model_meta?.[model]
   if (meta?.disabled) return
-  appStore.switchModel(model, provider)
+  await applyModelChange(model, provider)
   showModal.value = false
   searchQuery.value = ''
 }
 
-function handleCustomSubmit() {
+async function handleCustomSubmit() {
   const model = customInput.value.trim()
   if (!model || !customProvider.value) return
   // 拦截 disabled 模型，避免 custom input 绕过列表里的灰显限制
   const meta = appStore.modelGroups.find(g => g.provider === customProvider.value)?.model_meta?.[model]
   if (meta?.disabled) return
-  appStore.switchModel(model, customProvider.value)
+  await applyModelChange(model, customProvider.value)
   showModal.value = false
   searchQuery.value = ''
   customInput.value = ''
@@ -80,16 +120,21 @@ function openModal() {
   collapsedGroups.value = {}
   searchQuery.value = ''
   customInput.value = ''
-  customProvider.value = appStore.selectedProvider
+  customProvider.value = displayProvider.value
   showModal.value = true
 }
 </script>
 
 <template>
-  <div class="model-selector">
-    <div class="model-label">{{ t('models.title') }}</div>
-    <button class="model-trigger" @click="openModal">
-      <span class="model-name" :title="appStore.selectedModel">{{ appStore.selectedModel || '—' }}</span>
+  <div class="model-selector" :class="{ compact: props.variant === 'compact' }">
+    <div v-if="props.variant === 'sidebar'" class="model-label">{{ t('models.title') }}</div>
+    <button class="model-trigger" :title="displayModel" @click="openModal">
+      <span
+        class="model-logo"
+        :style="{ background: currentLogo.bg, color: currentLogo.fg }"
+        aria-hidden="true"
+      >{{ currentLogo.label }}</span>
+      <span class="model-name">{{ displayModel || '—' }}</span>
       <svg class="model-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="6 9 12 15 18 9" />
       </svg>
@@ -128,7 +173,7 @@ function openModal() {
               :key="model"
               class="model-item"
               :class="{
-                active: model === appStore.selectedModel && group.provider === appStore.selectedProvider,
+                active: model === displayModel && group.provider === displayProvider,
                 disabled: !!group.model_meta?.[model]?.disabled,
               }"
               :title="group.model_meta?.[model]?.disabled ? t('models.disabledTooltip') : ''"
@@ -138,7 +183,7 @@ function openModal() {
               <span v-if="group.model_meta?.[model]?.preview" class="model-badge-preview">{{ t('models.previewBadge') }}</span>
               <span v-if="group.model_meta?.[model]?.disabled" class="model-badge-disabled">{{ t('models.disabledBadge') }}</span>
               <span v-if="customModelSet.has(model)" class="model-badge-custom">{{ t('models.customBadge') }}</span>
-              <svg v-if="model === appStore.selectedModel && group.provider === appStore.selectedProvider" class="model-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <svg v-if="model === displayModel && group.provider === displayProvider" class="model-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="20 6 9 17 4 12" />
               </svg>
             </div>
@@ -208,6 +253,20 @@ function openModal() {
   }
 }
 
+.model-logo {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  user-select: none;
+}
+
 .model-name {
   flex: 1;
   overflow: hidden;
@@ -219,6 +278,44 @@ function openModal() {
 .model-arrow {
   flex-shrink: 0;
   color: $text-muted;
+}
+
+// Compact variant: used inside chat input top bar
+.model-selector.compact {
+  padding: 0;
+  margin: 0;
+  display: inline-flex;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 220px;
+
+  .model-trigger {
+    padding: 3px 8px 3px 4px;
+    border-radius: 999px;
+    background: transparent;
+    border-color: transparent;
+    font-size: 12px;
+    gap: 5px;
+
+    &:hover {
+      background: rgba(var(--accent-primary-rgb), 0.08);
+      border-color: transparent;
+    }
+  }
+
+  .model-logo {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    font-size: 9px;
+  }
+
+  .model-name {
+    font-family: $font-code;
+    font-size: 11.5px;
+    color: $text-secondary;
+    max-width: 160px;
+  }
 }
 
 .model-search {

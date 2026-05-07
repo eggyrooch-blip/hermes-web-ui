@@ -119,6 +119,32 @@ describe('MarkdownRenderer', () => {
     expect(wrapper.find('code.hljs').text()).toContain('INFO Starting server')
   })
 
+  it('rewrites relative workspace image paths to download URLs', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '![Cherry tree](fractal_cherry_blossom.jpg)',
+      },
+    })
+
+    const src = wrapper.find('img').attributes('src')
+    expect(src).toContain('/api/hermes/download?')
+    expect(decodeURIComponent(src)).toContain('path=fractal_cherry_blossom.jpg')
+  })
+
+  it('renders local HTML artifacts emitted as image markdown as downloadable file cards', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '![Cherry animation](sakura_fractal.html)',
+      },
+    })
+
+    expect(wrapper.find('img').exists()).toBe(false)
+    const card = wrapper.find('.markdown-file-card')
+    expect(card.exists()).toBe(true)
+    expect(card.attributes('data-path')).toBe('sakura_fractal.html')
+    expect(card.text()).toContain('Cherry animation')
+  })
+
   it('renders outer markdown draft fences as markdown while preserving nested fenced examples', () => {
     const wrapper = mount(MarkdownRenderer, {
       props: {

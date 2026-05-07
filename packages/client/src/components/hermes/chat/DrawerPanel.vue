@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { isUserMode } from '@/api/client'
 import TerminalPanel from './TerminalPanel.vue'
 import FilesPanel from './FilesPanel.vue'
 
@@ -19,11 +20,17 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<Emits>()
 const { t } = useI18n()
+const showTerminal = computed(() => !isUserMode())
 
-const activeTab = ref<'terminal' | 'files'>(props.activeTab)
+const activeTab = ref<'terminal' | 'files'>(showTerminal.value ? props.activeTab : 'files')
 
 watch(() => props.activeTab, (newVal) => {
-  if (newVal) activeTab.value = newVal
+  if (!newVal) return
+  activeTab.value = showTerminal.value ? newVal : 'files'
+})
+
+watch(showTerminal, (enabled) => {
+  if (!enabled && activeTab.value === 'terminal') activeTab.value = 'files'
 })
 
 function handleClose() {
@@ -44,6 +51,7 @@ function handleClose() {
             {{ t('drawer.files') }}
           </button>
           <button
+            v-if="showTerminal"
             :class="['tab-button', { active: activeTab === 'terminal' }]"
             @click="activeTab = 'terminal'"
           >
@@ -62,7 +70,7 @@ function handleClose() {
         <div v-show="activeTab === 'files'" class="drawer-pane">
           <FilesPanel />
         </div>
-        <div v-show="activeTab === 'terminal'" class="drawer-pane">
+        <div v-if="showTerminal" v-show="activeTab === 'terminal'" class="drawer-pane">
           <TerminalPanel />
         </div>
       </div>
@@ -180,5 +188,4 @@ function handleClose() {
   overflow: auto;
 }
 </style>
-
 

@@ -155,6 +155,15 @@ const historySessions = computed<Session[]>(() =>
   hermesSessions.value.map(sessionSummaryToSession)
 )
 
+/**
+ * Performance guard: render at most this many sessions per group on first
+ * paint. Anything beyond is hidden behind the "Show more" prompt below so a
+ * 5000-row history does not freeze the main thread. The full list is still
+ * available — the search input is the recommended path for finding older
+ * conversations once a group exceeds the cap.
+ */
+const SESSION_GROUP_RENDER_CAP = 200
+
 // Source sort order: api_server first, cron last, others alphabetical
 function sourceSortKey(source: string): number {
   if (source === 'api_server') return -1
@@ -235,28 +244,26 @@ watch(groupedSessions, groups => {
   }
 }, { once: true })
 
-// Auto-load first CLI session when Hermes sessions are loaded
+// Auto-load first visible session when Hermes sessions are loaded
 watch(hermesSessionsLoaded, (loaded) => {
   if (loaded && hermesSessions.value.length > 0) {
     // Only auto-load if no session is currently active
     if (!historySessionId.value || !hermesSessions.value.find(s => s.id === historySessionId.value)) {
-      // Find first CLI session
-      const firstCliSession = hermesSessions.value.find(s => s.source === 'cli')
-      if (firstCliSession) {
-        // Ensure the CLI group is expanded
-        if (collapsedGroups.value.has('cli')) {
-          collapsedGroups.value = new Set([...collapsedGroups.value].filter(s => s !== 'cli'))
+      const firstSession = hermesSessions.value[0]
+      if (firstSession) {
+        if (collapsedGroups.value.has(firstSession.source)) {
+          collapsedGroups.value = new Set([...collapsedGroups.value].filter(s => s !== firstSession.source))
         }
-        // Load session details
-        handleSessionClick(firstCliSession.id)
+        handleSessionClick(firstSession.id)
       }
-      // If no CLI session exists, don't auto-load any session
     }
   }
 }, { once: true })
 
 const activeSessionTitle = computed(() =>
-  historySession.value?.title || t('chat.newChat'),
+  historySession.value?.title || (hermesSessionsLoaded.value && hermesSessions.value.length === 0
+    ? t('chat.hermesHistory')
+    : t('chat.newChat')),
 )
 
 const activeSessionSource = computed(() =>
@@ -401,7 +408,7 @@ async function handleWorkspaceConfirm() {
           </div>
           <template v-if="!collapsedGroups.has(group.source)">
             <SessionListItem
-              v-for="s in group.sessions"
+              v-for="s in group.sessions.slice(0, SESSION_GROUP_RENDER_CAP)"
               :key="s.id"
               :session="s"
               :active="s.id === historySessionId"
@@ -411,6 +418,12 @@ async function handleWorkspaceConfirm() {
               @select="handleSessionClick(s.id)"
               @contextmenu="handleContextMenu($event, s.id)"
             />
+            <div
+              v-if="group.sessions.length > SESSION_GROUP_RENDER_CAP"
+              class="session-group-overflow"
+            >
+              {{ t('chat.tooManySessionsInGroup', { shown: SESSION_GROUP_RENDER_CAP, total: group.sessions.length }) }}
+            </div>
           </template>
         </template>
       </div>
@@ -481,7 +494,20 @@ async function handleWorkspaceConfirm() {
         </div>
       </header>
 
-      <HistoryMessageList :session="historySession" />
+      <div v-if="hermesSessionsLoaded && hermesSessions.length === 0" class="history-empty-state">
+        <div class="history-empty-icon" aria-hidden="true">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+            <path d="M3 12a9 9 0 1 0 3-6.7" />
+            <path d="M3 4v5h5" />
+            <path d="M12 7v5l3 2" />
+          </svg>
+        </div>
+        <div class="history-empty-copy">
+          <h2>{{ t('chat.historyEmptyTitle') }}</h2>
+          <p>{{ t('chat.historyEmptyHint') }}</p>
+        </div>
+      </div>
+      <HistoryMessageList v-else :session="historySession" />
     </div>
   </div>
 </template>
@@ -766,6 +792,55 @@ async function handleWorkspaceConfirm() {
   &:hover {
     color: $error;
     background: rgba($error, 0.1);
+  }
+}
+
+.history-empty-state {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 32px 20px;
+  text-align: center;
+  color: $text-secondary;
+  background: $bg-card;
+
+  .dark & {
+    background: #333333;
+  }
+}
+
+.history-empty-icon {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba($accent-primary, 0.18);
+  border-radius: $radius-md;
+  color: $accent-primary;
+  background: rgba($accent-primary, 0.06);
+}
+
+.history-empty-copy {
+  max-width: 320px;
+
+  h2 {
+    margin: 0;
+    color: $text-primary;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.35;
+  }
+
+  p {
+    margin: 8px 0 0;
+    color: $text-muted;
+    font-size: 13px;
+    line-height: 1.55;
   }
 }
 

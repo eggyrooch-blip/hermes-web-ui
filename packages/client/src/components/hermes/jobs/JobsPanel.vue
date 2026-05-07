@@ -2,6 +2,7 @@
 import JobCard from './JobCard.vue'
 import { useJobsStore } from '@/stores/hermes/jobs'
 import { useI18n } from 'vue-i18n'
+import { NButton } from 'naive-ui'
 
 const props = defineProps<{
   selectedJobId: string | null
@@ -28,7 +29,28 @@ function handleDeselect() {
 </script>
 
 <template>
-  <div v-if="jobsStore.jobs.length === 0" class="empty-state">
+  <div v-if="jobsStore.gatewayUnavailable" class="empty-state gateway-state">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" class="empty-icon">
+      <path d="M12 2v4"/>
+      <path d="M12 18v4"/>
+      <path d="m4.93 4.93 2.83 2.83"/>
+      <path d="m16.24 16.24 2.83 2.83"/>
+      <path d="M2 12h4"/>
+      <path d="M18 12h4"/>
+      <path d="m4.93 19.07 2.83-2.83"/>
+      <path d="m16.24 7.76 2.83-2.83"/>
+    </svg>
+    <div>
+      <p class="empty-title">{{ t('jobs.gatewayUnavailable') }}</p>
+      <p class="empty-hint">{{ t('jobs.gatewayUnavailableHint') }}</p>
+    </div>
+    <div class="gateway-actions">
+      <NButton size="small" :loading="jobsStore.loading" @click="jobsStore.fetchJobs">
+        {{ t('common.retry') }}
+      </NButton>
+    </div>
+  </div>
+  <div v-else-if="jobsStore.jobs.length === 0" class="empty-state">
     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" class="empty-icon">
       <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
       <line x1="16" y1="2" x2="16" y2="6"/>
@@ -74,6 +96,35 @@ function handleDeselect() {
   p {
     font-size: 14px;
   }
+
+  .empty-title {
+    margin: 0 0 4px;
+    color: $text-secondary;
+    font-weight: 600;
+  }
+
+  .empty-hint {
+    margin: 0;
+    max-width: 420px;
+    color: $text-muted;
+    line-height: 1.5;
+  }
+}
+
+.gateway-state {
+  min-height: 220px;
+  padding: 28px;
+  border: 1px dashed $border-color;
+  border-radius: $radius-md;
+  background: rgba(var(--accent-primary-rgb), 0.04);
+  text-align: center;
+}
+
+.gateway-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
 }
 
 .jobs-grid {

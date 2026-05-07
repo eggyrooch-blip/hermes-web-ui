@@ -1,9 +1,10 @@
 import { writeFile } from 'fs/promises'
 import { join } from 'path'
-import { safeReadFile, safeStat, getHermesDir } from '../../services/config-helpers'
+import { safeReadFile, safeStat } from '../../services/config-helpers'
+import { getRequestProfileDir } from '../../services/request-context'
 
 export async function get(ctx: any) {
-  const hd = getHermesDir()
+  const hd = getRequestProfileDir(ctx)
   const memoryPath = join(hd, 'memories', 'MEMORY.md')
   const userPath = join(hd, 'memories', 'USER.md')
   const soulPath = join(hd, 'SOUL.md')
@@ -29,12 +30,13 @@ export async function save(ctx: any) {
     ctx.body = { error: 'Section must be "memory", "user", or "soul"' }
     return
   }
+  const hd = getRequestProfileDir(ctx)
   let filePath: string
   if (section === 'soul') {
-    filePath = join(getHermesDir(), 'SOUL.md')
+    filePath = join(hd, 'SOUL.md')
   } else {
     const fileName = section === 'memory' ? 'MEMORY.md' : 'USER.md'
-    filePath = join(getHermesDir(), 'memories', fileName)
+    filePath = join(hd, 'memories', fileName)
   }
   try {
     await writeFile(filePath, content, 'utf-8')

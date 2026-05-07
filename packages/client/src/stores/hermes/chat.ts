@@ -1,6 +1,6 @@
 import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, type RunEvent, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
 import { deleteSession as deleteSessionApi, fetchSession, fetchSessions, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
-import { getApiKey } from '@/api/client'
+import { getApiKey, isUserMode } from '@/api/client'
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useAppStore } from './app'
@@ -227,6 +227,17 @@ function mapHermesSession(s: SessionSummary): Session {
   }
 }
 
+function getToolCompletedResult(evt: RunEvent): string | undefined {
+  const output = (evt as any).output
+  if (typeof output === 'string') return output
+  if (output != null) return JSON.stringify(output)
+  return typeof evt.error === 'string' ? evt.error : undefined
+}
+
+function isToolCompletedError(evt: RunEvent): boolean {
+  return (evt as any).error === true || typeof evt.error === 'string'
+}
+
 const STORAGE_KEY_PREFIX = 'hermes_active_session_'
 const LEGACY_STORAGE_KEY = 'hermes_active_session'
 
@@ -326,6 +337,8 @@ export const useChatStore = defineStore('chat', () => {
   })
   const isLoadingSessions = ref(false)
   const sessionsLoaded = ref(false)
+  /** Last error from loadSessions(). null when the most recent load succeeded. */
+  const sessionsError = ref<string | null>(null)
   const isLoadingMessages = ref(false)
   const isRunActive = computed(() => isStreaming.value)
 
@@ -363,6 +376,7 @@ export const useChatStore = defineStore('chat', () => {
 
   async function loadSessions() {
     isLoadingSessions.value = true
+    sessionsError.value = null
     try {
       const list = await fetchSessions()
       const fresh = list.map(mapHermesSession)
@@ -383,7 +397,12 @@ export const useChatStore = defineStore('chat', () => {
       if (targetId) {
         await switchSession(targetId)
       }
-    } catch (err) {
+    } catch (err: any) {
+      // Surface the failure to the UI: without an explicit error state, an
+      // empty `sessions` array gets rendered as the "no sessions yet" empty
+      // state, which is misleading when the request actually failed.
+      const message = err?.message || String(err) || 'Unknown error'
+      sessionsError.value = message
       console.error('Failed to load sessions:', err)
     } finally {
       isLoadingSessions.value = false
@@ -511,6 +530,7 @@ export const useChatStore = defineStore('chat', () => {
     // Inherit current global model
     const appStore = useAppStore()
     session.model = appStore.selectedModel || undefined
+    session.provider = appStore.selectedProvider || undefined
     switchSession(session.id)
   }
 
@@ -518,8 +538,10 @@ export const useChatStore = defineStore('chat', () => {
     if (!activeSession.value) return
     activeSession.value.model = modelId
     activeSession.value.provider = provider || ''
-    // If provider changed, update global config too (Hermes requires it)
-    if (provider) {
+    // Outside user mode, preserve the legacy behavior of updating the profile
+    // default. In user mode the compact selector is session-local so the UI
+    // cannot mutate profile model settings.
+    if (provider && !isUserMode()) {
       const { useAppStore } = await import('./app')
       await useAppStore().switchModel(modelId, provider)
     }
@@ -653,10 +675,12 @@ export const useChatStore = defineStore('chat', () => {
 
       const appStore = useAppStore()
       const sessionModel = activeSession.value?.model || appStore.selectedModel
+      const sessionProvider = activeSession.value?.provider || appStore.selectedProvider
       const runPayload = {
         input,
         session_id: sid,
         model: sessionModel || undefined,
+        provider: sessionProvider || undefined,
       }
 
       // Helper to clean up this session's stream state
@@ -837,10 +861,10 @@ export const useChatStore = defineStore('chat', () => {
               if (toolMsgs.length > 0) {
                 const last = toolMsgs[toolMsgs.length - 1]
                 // Check if tool errored
-                const hasError = (evt as any).error === true
                 const duration = (evt as any).duration
                 updateMessage(sid, last.id, {
-                  toolStatus: hasError ? 'error' : 'done',
+                  toolStatus: isToolCompletedError(evt) ? 'error' : 'done',
+                  toolResult: getToolCompletedResult(evt),
                   toolDuration: duration,
                 })
               }
@@ -905,19 +929,20 @@ export const useChatStore = defineStore('chat', () => {
               // unsupported model), the gateway still emits run.completed
               // with an empty output. Without surfacing it here the chat UI
               // looks frozen / "succeeded with no reply". Detect by the
-              // combination of: no assistant text AND no tool activity AND
-              // empty final output. Usage being zero is a *supporting*
-              // signal but not required, since some providers/local models
-              // legitimately omit usage.
+              // combination of: no assistant text AND empty final output.
+              // This must also cover runs that already had tool activity,
+              // because the follow-up model call can fail after a successful
+              // tool call and otherwise leave the chat looking "done".
               const swallowedError =
                 !runProducedAssistantText &&
-                !runHadToolActivity &&
                 finalOutputTrimmed === ''
               if (swallowedError) {
                 addMessage(sid, {
                   id: uid(),
                   role: 'system',
-                  content: 'Error: Agent returned no output. The model call may have failed (e.g. invalid API key, model not supported by provider, or context exceeded). Check the hermes-agent logs for details.',
+                  content: runHadToolActivity
+                    ? 'Error: Agent returned no final output after tool activity. The model call may have failed after a tool call (e.g. provider overload, invalid API key, model not supported by provider, or context exceeded). Check the hermes-agent logs for details.'
+                    : 'Error: Agent returned no output. The model call may have failed (e.g. invalid API key, model not supported by provider, or context exceeded). Check the hermes-agent logs for details.',
                   timestamp: Date.now(),
                 })
               } else {
@@ -1192,9 +1217,9 @@ export const useChatStore = defineStore('chat', () => {
           const msgs = getSessionMsgs(sid)
           const toolMsgs = msgs.filter(m => m.role === 'tool' && m.toolStatus === 'running')
           if (toolMsgs.length > 0) {
-            const hasError = (evt as any).error === true
             updateMessage(sid, toolMsgs[toolMsgs.length - 1].id, {
-              toolStatus: hasError ? 'error' : 'done',
+              toolStatus: isToolCompletedError(evt) ? 'error' : 'done',
+              toolResult: getToolCompletedResult(evt),
               toolDuration: (evt as any).duration,
             })
           }
@@ -1246,12 +1271,14 @@ export const useChatStore = defineStore('chat', () => {
               })
             }
           }
-          const swallowedError = !runProducedAssistantText && !runHadToolActivity && finalOutputTrimmed === ''
+          const swallowedError = !runProducedAssistantText && finalOutputTrimmed === ''
           if (swallowedError) {
             addMessage(sid, {
               id: uid(),
               role: 'system',
-              content: 'Error: Agent returned no output. The model call may have failed (e.g. invalid API key, model not supported by provider, or context exceeded). Check the hermes-agent logs for details.',
+              content: runHadToolActivity
+                ? 'Error: Agent returned no final output after tool activity. The model call may have failed after a tool call (e.g. provider overload, invalid API key, model not supported by provider, or context exceeded). Check the hermes-agent logs for details.'
+                : 'Error: Agent returned no output. The model call may have failed (e.g. invalid API key, model not supported by provider, or context exceeded). Check the hermes-agent logs for details.',
               timestamp: Date.now(),
             })
           } else {
@@ -1454,6 +1481,7 @@ export const useChatStore = defineStore('chat', () => {
     isAborting,
     isLoadingSessions,
     sessionsLoaded,
+    sessionsError,
     isLoadingMessages,
 
     newChat,

@@ -34,6 +34,21 @@ setInterval(rotateIfNeeded, CHECK_INTERVAL)
 
 export const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
+  redact: {
+    paths: [
+      'headers.authorization',
+      'req.headers.authorization',
+      'request.headers.authorization',
+      'query.token',
+      'req.query.token',
+      '*.token',
+      '*.access_token',
+      '*.refresh_token',
+      '*.api_key',
+      '*.apiKey',
+    ],
+    censor: '[REDACTED]',
+  },
 }, pino.destination({
   dest: logFile,
   sync: true,

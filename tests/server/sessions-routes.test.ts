@@ -9,6 +9,7 @@ const getHermesSessionMock = vi.fn(async (ctx: any) => { ctx.body = { session: {
 const searchMock = vi.fn(async (ctx: any) => { ctx.body = { results: [{ id: 'search-1' }] } })
 const getMock = vi.fn(async (ctx: any) => { ctx.body = { session: { id: ctx.params.id } } })
 const removeMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
+const batchRemoveMock = vi.fn(async (ctx: any) => { ctx.body = { deleted: 0, failed: 0, errors: [] } })
 const renameMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const setWorkspaceMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const listWorkspaceFoldersMock = vi.fn(async (ctx: any) => { ctx.body = { folders: [] } })
@@ -27,6 +28,7 @@ vi.mock('../../packages/server/src/controllers/hermes/sessions', () => ({
   search: searchMock,
   get: getMock,
   remove: removeMock,
+  batchRemove: batchRemoveMock,
   rename: renameMock,
   setWorkspace: setWorkspaceMock,
   listWorkspaceFolders: listWorkspaceFoldersMock,
@@ -46,6 +48,7 @@ describe('session routes', () => {
     searchMock.mockClear()
     getMock.mockClear()
     removeMock.mockClear()
+    batchRemoveMock.mockClear()
     renameMock.mockClear()
   })
 

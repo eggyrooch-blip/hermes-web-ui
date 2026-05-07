@@ -1,24 +1,32 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, onMounted, reactive } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
-import { NButton, NModal, useMessage } from "naive-ui";
 import { useAppStore } from "@/stores/hermes/app";
-import ModelSelector from "./ModelSelector.vue";
+import { getAuthMode, getWebPlane, isUserMode, setRuntimeMode } from "@/api/client";
+import { fetchCurrentUser } from "@/api/auth";
+import { useProfilesStore } from "@/stores/hermes/profiles";
 import ProfileSelector from "./ProfileSelector.vue";
 import LanguageSwitch from "./LanguageSwitch.vue";
 import ThemeSwitch from "./ThemeSwitch.vue";
 import { useSessionSearch } from '@/composables/useSessionSearch'
-import { changelog } from "@/data/changelog";
 
 const { t } = useI18n();
-const message = useMessage();
 const route = useRoute();
 const router = useRouter();
 const appStore = useAppStore();
+const profilesStore = useProfilesStore();
 const { openSessionSearch } = useSessionSearch();
 const selectedKey = computed(() => route.name as string);
 const logoPath = '/logo.png';
+const currentUser = computed(() => profilesStore.currentUser);
+const displayName = computed(() => currentUser.value?.name || profilesStore.activeProfileName || '');
+const displayProfile = computed(() => currentUser.value?.profile || profilesStore.activeProfileName || '');
+const displayInitial = computed(() => (displayName.value || 'H').trim().slice(0, 1).toUpperCase());
+const showUserModeChrome = computed(() => isUserMode());
+const showAdminSurfaces = computed(() => !showUserModeChrome.value);
+const displaySubject = computed(() => currentUser.value ? '飞书登录' : 'feishu');
+const gatewayStandby = computed(() => showUserModeChrome.value && !appStore.connected);
 
 const collapsedGroups = reactive<Record<string, boolean>>({});
 
@@ -34,30 +42,37 @@ function handleNav(key: string) {
   router.push({ name: key });
 }
 
-async function handleUpdate() {
-  const ok = await appStore.doUpdate();
-  if (ok) {
-    message.success(t('sidebar.updateSuccess'), { duration: 5000 });
-  } else {
-    message.error(t('sidebar.updateFailed'));
+async function handleLogout() {
+  const authMode = getAuthMode();
+  const webPlane = getWebPlane();
+  if (authMode === 'feishu-oauth-dev') {
+    try {
+      await fetch('/api/auth/feishu/logout', { method: 'POST' });
+    } catch {
+      // Local cleanup still matters if the network request fails.
+    }
   }
-}
-
-function handleLogout() {
+  profilesStore.setCurrentUser(null);
   localStorage.clear();
+  if (authMode === 'feishu-oauth-dev') {
+    setRuntimeMode(authMode, webPlane);
+  }
   router.replace({ name: 'login' });
 }
 
-// Changelog
-const showChangelog = ref(false);
-
-function openChangelog() {
-  showChangelog.value = true;
-}
+onMounted(async () => {
+  if (getAuthMode() !== 'feishu-oauth-dev') return;
+  try {
+    const user = await fetchCurrentUser();
+    profilesStore.setBoundProfile(user.profile, user);
+  } catch {
+    // Keep the existing profile fallback for non-OAuth or expired sessions.
+  }
+});
 </script>
 
 <template>
-  <aside class="sidebar" :class="{ open: appStore.sidebarOpen, collapsed: appStore.sidebarCollapsed }">
+  <aside class="sidebar" :class="{ open: appStore.sidebarOpen, collapsed: appStore.sidebarCollapsed, 'user-mode': showUserModeChrome }">
     <div class="sidebar-logo" @click="router.push('/hermes/chat')">
       <img :src="logoPath" alt="Hermes" class="logo-img" />
       <span class="logo-text">Hermes</span>
@@ -131,7 +146,7 @@ function openChangelog() {
             </svg>
             <span>{{ t("sidebar.jobs") }}</span>
           </button>
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.channels' }" @click="handleNav('hermes.channels')">
+          <button v-if="showAdminSurfaces" class="nav-item" :class="{ active: selectedKey === 'hermes.channels' }" @click="handleNav('hermes.channels')">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
             </svg>
@@ -153,7 +168,13 @@ function openChangelog() {
             </svg>
             <span>{{ t("sidebar.memory") }}</span>
           </button>
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.models' }" @click="handleNav('hermes.models')">
+          <button class="nav-item" :class="{ active: selectedKey === 'hermes.files' }" @click="handleNav('hermes.files')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            </svg>
+            <span>{{ t("sidebar.files") }}</span>
+          </button>
+          <button v-if="showAdminSurfaces" class="nav-item" :class="{ active: selectedKey === 'hermes.models' }" @click="handleNav('hermes.models')">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3" />
               <path d="M12 1v4" />
@@ -179,7 +200,7 @@ function openChangelog() {
           </svg>
         </div>
         <div v-show="!isGroupCollapsed('monitoring')">
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.logs' }" @click="handleNav('hermes.logs')">
+          <button v-if="showAdminSurfaces" class="nav-item" :class="{ active: selectedKey === 'hermes.logs' }" @click="handleNav('hermes.logs')">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
               <polyline points="14 2 14 8 20 8" />
@@ -209,7 +230,7 @@ function openChangelog() {
           </svg>
         </div>
         <div v-show="!isGroupCollapsed('system')">
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.gateways' }" @click="handleNav('hermes.gateways')">
+          <button v-if="showAdminSurfaces" class="nav-item" :class="{ active: selectedKey === 'hermes.gateways' }" @click="handleNav('hermes.gateways')">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <rect x="2" y="2" width="20" height="8" rx="2" ry="2" />
               <rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
@@ -218,7 +239,7 @@ function openChangelog() {
             </svg>
             <span>{{ t("sidebar.gateways") }}</span>
           </button>
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.profiles' }" @click="handleNav('hermes.profiles')">
+          <button v-if="showAdminSurfaces" class="nav-item" :class="{ active: selectedKey === 'hermes.profiles' }" @click="handleNav('hermes.profiles')">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
               <circle cx="12" cy="7" r="4" />
@@ -236,10 +257,35 @@ function openChangelog() {
       </div>
     </nav>
 
-    <ProfileSelector />
-    <ModelSelector />
+    <div v-if="currentUser || showUserModeChrome" class="sidebar-user" :class="{ locked: showUserModeChrome }">
+      <div v-if="showUserModeChrome" class="user-card-actions">
+        <div class="user-theme-switch">
+          <ThemeSwitch />
+        </div>
+        <button class="card-logout-button" :title="t('sidebar.logout')" :aria-label="t('sidebar.logout')" @click="handleLogout">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+            <polyline points="16 17 21 12 16 7" />
+            <line x1="21" y1="12" x2="9" y2="12" />
+          </svg>
+        </button>
+      </div>
+      <div class="user-avatar-wrap">
+        <img v-if="currentUser?.avatarUrl" :src="currentUser.avatarUrl" :alt="displayName" class="user-avatar" />
+        <div v-else class="user-avatar fallback">{{ displayInitial }}</div>
+        <span class="user-status-dot" :class="{ connected: appStore.connected, standby: gatewayStandby }"></span>
+      </div>
+      <div class="user-meta">
+        <div class="user-name-row">
+          <span class="user-name">{{ displayName }}</span>
+        </div>
+        <div class="user-subject">{{ displaySubject }}</div>
+        <div v-if="!showUserModeChrome" class="user-profile">{{ displayProfile }}</div>
+      </div>
+    </div>
+    <ProfileSelector v-else />
 
-    <div class="sidebar-footer">
+    <div v-if="showAdminSurfaces" class="sidebar-footer">
       <button class="nav-item logout-item" @click="handleLogout">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -257,40 +303,16 @@ function openChangelog() {
           }"
         >
           <span class="status-dot"></span>
-          <span class="status-text">{{
+          <span v-if="showAdminSurfaces" class="status-text">{{
             appStore.connected
               ? t("sidebar.connected")
               : t("sidebar.disconnected")
           }}</span>
         </div>
-        <LanguageSwitch />
-      </div>
-      <div class="version-info">
-        <a class="github-link" href="https://github.com/EKKOLearnAI/hermes-web-ui" target="_blank" rel="noopener noreferrer" title="GitHub">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-        </a>
-        <span class="version-text" @click="openChangelog">Hermes Web UI v{{ appStore.serverVersion || "0.1.0" }}</span>
+        <LanguageSwitch v-if="showAdminSurfaces" />
         <ThemeSwitch />
       </div>
-      <NButton v-if="appStore.updateAvailable" type="primary" size="tiny" block class="update-btn" :loading="appStore.updating" @click="handleUpdate">
-        {{ appStore.updating ? t('sidebar.updating') : t('sidebar.updateVersion', { version: appStore.latestVersion }) }}
-      </NButton>
     </div>
-
-    <!-- Changelog modal -->
-    <NModal v-model:show="showChangelog" preset="dialog" :title="t('sidebar.changelog')" style="width: 520px;">
-      <div class="changelog-list">
-        <div v-for="entry in changelog" :key="entry.version" class="changelog-version-block">
-          <div class="changelog-version-header">
-            <span class="changelog-version-tag">v{{ entry.version }}</span>
-            <span class="changelog-date">{{ entry.date }}</span>
-          </div>
-          <ul class="changelog-changes">
-            <li v-for="(change, idx) in entry.changes" :key="idx">{{ t(change) }}</li>
-          </ul>
-        </div>
-      </div>
-    </NModal>
   </aside>
 </template>
 
@@ -308,6 +330,90 @@ function openChangelog() {
   padding: 0 12px 20px;
   flex-shrink: 0;
   transition: width $transition-normal;
+}
+
+.sidebar.user-mode {
+  background:
+    linear-gradient(180deg, rgba(242, 247, 252, 0.96), rgba(247, 249, 251, 0.98)),
+    $bg-sidebar;
+  border-right-color: rgba(37, 99, 235, 0.14);
+
+  .dark & {
+    background:
+      linear-gradient(180deg, rgba(24, 28, 35, 0.98), rgba(20, 22, 26, 0.98)),
+      $bg-sidebar;
+    border-right-color: rgba(96, 165, 250, 0.16);
+  }
+
+  .sidebar-logo {
+    background: transparent;
+    box-shadow: none;
+    border-bottom: 1px solid rgba(var(--accent-primary-rgb), 0.08);
+
+    .dark & {
+      background: transparent;
+    }
+  }
+
+  .logo-img {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+  }
+
+  .logo-text {
+    font-size: 19px;
+    letter-spacing: 0;
+  }
+
+  .nav-group-label {
+    color: rgba(var(--text-muted-rgb), 0.86);
+    letter-spacing: 0.04em;
+  }
+
+  .nav-item {
+    position: relative;
+    min-height: 42px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+
+    &:hover {
+      background: rgba(37, 99, 235, 0.06);
+      border-color: rgba(37, 99, 235, 0.1);
+    }
+
+    &.active {
+      color: #1d4ed8;
+      background: linear-gradient(135deg, rgba(37, 99, 235, 0.13), rgba(20, 184, 166, 0.08));
+      border-color: rgba(37, 99, 235, 0.16);
+      box-shadow: inset 3px 0 0 rgba(37, 99, 235, 0.72);
+    }
+
+    .dark &.active {
+      color: #bfdbfe;
+      background: linear-gradient(135deg, rgba(96, 165, 250, 0.18), rgba(45, 212, 191, 0.08));
+      border-color: rgba(96, 165, 250, 0.2);
+      box-shadow: inset 3px 0 0 rgba(96, 165, 250, 0.82);
+    }
+  }
+
+  .sidebar-user.locked {
+    border-color: rgba(37, 99, 235, 0.16);
+    background:
+      linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(20, 184, 166, 0.06)),
+      rgba(255, 255, 255, 0.72);
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+
+    .dark & {
+      background:
+        linear-gradient(135deg, rgba(96, 165, 250, 0.12), rgba(45, 212, 191, 0.06)),
+        rgba(17, 24, 39, 0.72);
+      border-color: rgba(96, 165, 250, 0.18);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.24);
+    }
+  }
+
 }
 
 .logo-img {
@@ -451,6 +557,134 @@ function openChangelog() {
   border-top: 1px solid $border-color;
 }
 
+.sidebar-user {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 74px 12px 12px;
+  margin-top: 8px;
+  border: 1px solid $border-color;
+  border-radius: $radius-md;
+  background: rgba(var(--accent-primary-rgb), 0.04);
+
+  &.locked {
+    align-items: center;
+    min-height: 78px;
+  }
+}
+
+.user-card-actions {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.user-theme-switch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.card-logout-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: $text-muted;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: $radius-sm;
+  cursor: pointer;
+  transition: color $transition-fast, background $transition-fast, border-color $transition-fast;
+
+  &:hover {
+    color: $error;
+    background: rgba(var(--error-rgb, 239, 68, 68), 0.06);
+    border-color: rgba(var(--error-rgb, 239, 68, 68), 0.12);
+  }
+}
+
+.user-avatar-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.user-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: $bg-card;
+
+  &.fallback {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: $text-primary;
+    font-size: 14px;
+    font-weight: 600;
+    background: rgba(var(--accent-primary-rgb), 0.14);
+  }
+}
+
+.user-status-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid $bg-sidebar;
+  background: $text-muted;
+
+  &.connected {
+    background: $success;
+  }
+
+  &.standby {
+    background: #d97706;
+    box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.12);
+  }
+}
+
+.user-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.user-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+
+  .user-name {
+    color: $text-primary;
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.user-subject,
+.user-profile {
+  margin-top: 2px;
+  color: $text-muted;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .logout-item {
   margin: 0 -12px;
   padding: 10px 12px;
@@ -495,93 +729,6 @@ function openChangelog() {
 
   .status-text {
     color: $text-secondary;
-  }
-}
-
-.version-info {
-  padding: 2px 12px 8px;
-  font-size: 11px;
-  color: $text-muted;
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.github-link {
-  color: $text-muted;
-  display: flex;
-  align-items: center;
-  transition: color 0.2s;
-
-  &:hover {
-    color: $text-primary;
-  }
-}
-
-.update-btn {
-  margin: 4px 0 0;
-  border-radius: 4px;
-}
-
-.version-text {
-  cursor: pointer;
-  transition: color 0.2s;
-
-  &:hover {
-    color: $accent-primary;
-  }
-}
-
-.changelog-list {
-  max-height: 400px;
-  overflow-y: auto;
-}
-
-.changelog-version-block {
-  margin-bottom: 20px;
-
-  &:last-child {
-    margin-bottom: 0;
-  }
-}
-
-.changelog-version-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-
-.changelog-version-tag {
-  font-weight: 600;
-  font-size: 14px;
-  color: $text-primary;
-  font-family: $font-code;
-}
-
-.changelog-changes {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-
-  li {
-    font-size: 13px;
-    color: $text-secondary;
-    padding: 4px 0 4px 16px;
-    position: relative;
-
-    &::before {
-      content: '';
-      position: absolute;
-      left: 0;
-      top: 12px;
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: $text-muted;
-    }
   }
 }
 
@@ -648,13 +795,23 @@ function openChangelog() {
       display: none;
     }
 
-    .version-text,
-    .github-link {
+    .status-row {
+      justify-content: center;
+    }
+  }
+
+  .sidebar-user {
+    justify-content: center;
+    padding: 8px 4px;
+    border-color: transparent;
+    background: transparent;
+
+    .user-card-actions {
       display: none;
     }
 
-    .status-row {
-      justify-content: center;
+    .user-meta {
+      display: none;
     }
   }
 }

@@ -44,31 +44,35 @@ const PACKAGE_INFO = readPackageInfo()
 const LOCAL_VERSION = typeof __APP_VERSION__ !== 'undefined'
   ? __APP_VERSION__
   : PACKAGE_INFO?.version || ''
+const HERMES_VERSION_CACHE_TTL_MS = 60_000
+let cachedHermesVersionRaw = ''
+let cachedHermesVersionAt = 0
+let pendingHermesVersion: Promise<string> | null = null
 
-let cachedLatestVersion = ''
+async function getCachedHermesVersion(): Promise<string> {
+  const now = Date.now()
+  if (cachedHermesVersionAt && now - cachedHermesVersionAt < HERMES_VERSION_CACHE_TTL_MS) {
+    return cachedHermesVersionRaw
+  }
 
-export async function checkLatestVersion(): Promise<void> {
-  try {
-    const packageName = PACKAGE_INFO?.name || 'hermes-web-ui'
-    const registryName = encodeURIComponent(packageName)
-    const res = await fetch(`https://registry.npmjs.org/${registryName}/latest`, { signal: AbortSignal.timeout(10000) })
-    if (res.ok) {
-      const data = await res.json() as { version: string }
-      cachedLatestVersion = data.version
-      if (LOCAL_VERSION && cachedLatestVersion !== LOCAL_VERSION) {
-        console.log(`Update available: ${LOCAL_VERSION} → ${cachedLatestVersion}`)
-      }
-    }
-  } catch { /* ignore */ }
-}
+  if (!pendingHermesVersion) {
+    pendingHermesVersion = hermesCli.getVersion()
+      .catch(() => '')
+      .then((raw) => {
+        cachedHermesVersionRaw = raw
+        cachedHermesVersionAt = Date.now()
+        return raw
+      })
+      .finally(() => {
+        pendingHermesVersion = null
+      })
+  }
 
-export function startVersionCheck(): void {
-  setTimeout(checkLatestVersion, 5000)
-  setInterval(checkLatestVersion, 30 * 60 * 1000)
+  return pendingHermesVersion
 }
 
 export async function healthCheck(ctx: any) {
-  const raw = await hermesCli.getVersion()
+  const raw = await getCachedHermesVersion()
   const hermesVersion = raw.split('\n')[0].replace('Hermes Agent ', '') || ''
   let gatewayOk = false
   try {
@@ -83,8 +87,8 @@ export async function healthCheck(ctx: any) {
     version: hermesVersion,
     gateway: gatewayOk ? 'running' : 'stopped',
     webui_version: LOCAL_VERSION,
-    webui_latest: cachedLatestVersion,
-    webui_update_available: Boolean(LOCAL_VERSION && cachedLatestVersion && cachedLatestVersion !== LOCAL_VERSION),
     node_version: process.versions.node,
+    plane: config.webPlane,
+    auth_mode: config.authMode,
   }
 }

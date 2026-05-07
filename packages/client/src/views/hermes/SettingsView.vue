@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { computed, onMounted } from "vue";
 import {
   NTabs,
   NTabPane,
   NSpin,
 } from "naive-ui";
 import { useI18n } from "vue-i18n";
+import { isUserMode } from "@/api/client";
 import { useSettingsStore } from "@/stores/hermes/settings";
 import DisplaySettings from "@/components/hermes/settings/DisplaySettings.vue";
 import AgentSettings from "@/components/hermes/settings/AgentSettings.vue";
@@ -17,6 +18,7 @@ import AccountSettings from "@/components/hermes/settings/AccountSettings.vue";
 
 const settingsStore = useSettingsStore();
 const { t } = useI18n();
+const showAdminSettings = computed(() => !isUserMode());
 
 onMounted(() => {
   settingsStore.fetchSettings();
@@ -30,13 +32,26 @@ onMounted(() => {
     </header>
 
     <div class="settings-content">
+      <section v-if="!showAdminSettings" class="user-mode-note">
+        <div class="note-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="3" y="11" width="18" height="11" rx="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+          </svg>
+        </div>
+        <div>
+          <h3>{{ t("settings.userMode.title") }}</h3>
+          <p>{{ t("settings.userMode.description") }}</p>
+        </div>
+      </section>
+
       <NSpin
         :show="settingsStore.loading || settingsStore.saving"
         size="large"
         :description="t('common.loading')"
       >
-        <NTabs type="line" animated>
-          <NTabPane name="account" :tab="t('settings.tabs.account')">
+        <NTabs type="line" animated :default-value="showAdminSettings ? 'account' : 'display'">
+          <NTabPane v-if="showAdminSettings" name="account" :tab="t('settings.tabs.account')">
             <AccountSettings />
           </NTabPane>
           <NTabPane name="display" :tab="t('settings.tabs.display')">
@@ -54,7 +69,7 @@ onMounted(() => {
           <NTabPane name="privacy" :tab="t('settings.tabs.privacy')">
             <PrivacySettings />
           </NTabPane>
-          <NTabPane name="models" :tab="t('settings.tabs.models')">
+          <NTabPane v-if="showAdminSettings" name="models" :tab="t('settings.tabs.models')">
             <ModelSettings />
           </NTabPane>
         </NTabs>
@@ -76,5 +91,43 @@ onMounted(() => {
   flex: 1;
   overflow-y: auto;
   padding: 20px;
+}
+
+.user-mode-note {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid $border-color;
+  border-radius: $radius-md;
+  background: rgba(var(--accent-primary-rgb), 0.05);
+  color: $text-secondary;
+
+  .note-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: $radius-sm;
+    color: $accent-primary;
+    background: rgba(var(--accent-primary-rgb), 0.1);
+    flex-shrink: 0;
+  }
+
+  h3 {
+    margin: 0 0 4px;
+    color: $text-primary;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  p {
+    margin: 0;
+    max-width: 720px;
+    font-size: 13px;
+    line-height: 1.6;
+  }
 }
 </style>

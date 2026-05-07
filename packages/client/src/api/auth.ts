@@ -3,6 +3,16 @@ import { request } from './client'
 export interface AuthStatus {
   hasPasswordLogin: boolean
   username: string | null
+  authMode?: string
+  plane?: string
+}
+
+export interface CurrentUser {
+  openid: string
+  profile: string
+  role: 'user' | 'admin'
+  name?: string
+  avatarUrl?: string
 }
 
 export async function fetchAuthStatus(): Promise<AuthStatus> {
@@ -23,6 +33,10 @@ export async function loginWithPassword(username: string, password: string): Pro
   }
   const data = await res.json()
   return data.token
+}
+
+export async function fetchCurrentUser(): Promise<CurrentUser> {
+  return request('/api/auth/me')
 }
 
 export async function setupPassword(username: string, password: string): Promise<void> {

@@ -1,5 +1,7 @@
-import { readFile } from 'fs/promises'
+import { readFile, writeFile, copyFile } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
+import { join } from 'path'
+import YAML from 'js-yaml'
 import { getActiveEnvPath, getActiveAuthPath } from '../../services/hermes/hermes-profile'
 import { readConfigYaml, writeConfigYaml, fetchProviderModels, buildModelGroups, PROVIDER_ENV_MAP } from '../../services/config-helpers'
 import { buildProviderModelMap, PROVIDER_PRESETS } from '../../shared/providers'
@@ -7,8 +9,49 @@ import { getCopilotModelsDetailed, resolveCopilotOAuthToken, type CopilotModelMe
 import { readAppConfig } from '../../services/app-config'
 import { getDb } from '../../db'
 import { MODEL_CONTEXT_TABLE } from '../../db/hermes/schemas'
+import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 
 const PROVIDER_MODEL_CATALOG = buildProviderModelMap()
+type AvailableGroup = { provider: string; label: string; base_url: string; models: string[]; api_key: string; model_meta?: Record<string, { preview?: boolean; disabled?: boolean }> }
+
+function requestConfigPath(ctx: any): string {
+  return join(getRequestProfileDir(ctx), 'config.yaml')
+}
+
+function requestEnvPath(ctx: any): string {
+  return join(getRequestProfileDir(ctx), '.env')
+}
+
+function requestAuthPath(ctx: any): string {
+  return join(getRequestProfileDir(ctx), 'auth.json')
+}
+
+async function readRequestConfigYaml(ctx: any): Promise<Record<string, any>> {
+  try {
+    const raw = await readFile(requestConfigPath(ctx), 'utf-8')
+    return (YAML.load(raw) as Record<string, any>) || {}
+  } catch {
+    return readConfigYaml()
+  }
+}
+
+async function writeRequestConfigYaml(ctx: any, config: Record<string, any>): Promise<void> {
+  if (!isChatPlaneRequest(ctx)) {
+    await writeConfigYaml(config)
+    return
+  }
+  const cp = requestConfigPath(ctx)
+  await copyFile(cp, cp + '.bak')
+  await writeFile(cp, YAML.dump(config, { lineWidth: -1, noRefs: true, quotingType: '"' }), 'utf-8')
+}
+
+function sanitizeAvailableGroups(groups: AvailableGroup[]): AvailableGroup[] {
+  return groups.map(group => ({
+    ...group,
+    base_url: '',
+    api_key: '',
+  }))
+}
 
 // Copilot 授权检测：复用同一套 token 解析逻辑（含 ~/.config/github-copilot/apps.json
 // 与 ghp_ PAT 跳过），与 getCopilotModels 行为一致，避免出现"模型能拉到却被判未授权"。
@@ -18,7 +61,8 @@ async function isCopilotAuthorized(envContent: string): Promise<boolean> {
 
 export async function getAvailable(ctx: any) {
   try {
-    const config = await readConfigYaml()
+    const chatPlane = isChatPlaneRequest(ctx)
+    const config = await readRequestConfigYaml(ctx)
     const modelSection = config.model
     let currentDefault = ''
     let currentDefaultProvider = ''
@@ -41,11 +85,11 @@ export async function getAvailable(ctx: any) {
       currentDefault = modelSection.trim()
     }
 
-    const groups: Array<{ provider: string; label: string; base_url: string; models: string[]; api_key: string; model_meta?: Record<string, { preview?: boolean; disabled?: boolean }> }> = []
+    const groups: AvailableGroup[] = []
     const seenProviders = new Set<string>()
 
     let envContent = ''
-    try { envContent = await readFile(getActiveEnvPath(), 'utf-8') } catch { }
+    try { envContent = await readFile(chatPlane ? requestEnvPath(ctx) : getActiveEnvPath(), 'utf-8') } catch { }
 
     const envHasValue = (key: string): boolean => {
       if (!key) return false
@@ -65,7 +109,7 @@ export async function getAvailable(ctx: any) {
 
     const isOAuthAuthorized = (providerKey: string): boolean => {
       try {
-        const authPath = getActiveAuthPath()
+        const authPath = chatPlane ? requestAuthPath(ctx) : getActiveAuthPath()
         if (!existsSync(authPath)) return false
         const auth = JSON.parse(readFileSync(authPath, 'utf-8'))
         const provider = auth.providers?.[providerKey]
@@ -198,11 +242,18 @@ export async function getAvailable(ctx: any) {
 
     if (groups.length === 0) {
       const fallback = buildModelGroups(config)
-      ctx.body = { ...fallback, allProviders: allProvidersBase }
+      ctx.body = chatPlane
+        ? { ...fallback, groups: sanitizeAvailableGroups((fallback.groups as any) || []), allProviders: sanitizeAvailableGroups(allProvidersBase as any) }
+        : { ...fallback, allProviders: allProvidersBase }
       return
     }
 
-    ctx.body = { default: currentDefault, default_provider: currentDefaultProvider, groups, allProviders: allProvidersBase }
+    ctx.body = {
+      default: currentDefault,
+      default_provider: currentDefaultProvider,
+      groups: chatPlane ? sanitizeAvailableGroups(groups) : groups,
+      allProviders: chatPlane ? sanitizeAvailableGroups(allProvidersBase as any) : allProvidersBase,
+    }
   } catch (err: any) {
     ctx.status = 500
     ctx.body = { error: err.message }
@@ -211,7 +262,7 @@ export async function getAvailable(ctx: any) {
 
 export async function getConfigModels(ctx: any) {
   try {
-    const config = await readConfigYaml()
+    const config = await readRequestConfigYaml(ctx)
     ctx.body = buildModelGroups(config)
   } catch (err: any) {
     ctx.status = 500
@@ -220,6 +271,12 @@ export async function getConfigModels(ctx: any) {
 }
 
 export async function setConfigModel(ctx: any) {
+  if (isChatPlaneRequest(ctx)) {
+    ctx.status = 403
+    ctx.body = { error: 'Model settings are not editable in chat plane' }
+    return
+  }
+
   const { default: defaultModel, provider: reqProvider } = ctx.request.body as { default: string; provider?: string }
   if (!defaultModel) {
     ctx.status = 400
@@ -227,11 +284,11 @@ export async function setConfigModel(ctx: any) {
     return
   }
   try {
-    const config = await readConfigYaml()
+    const config = await readRequestConfigYaml(ctx)
     config.model = {}
     config.model.default = defaultModel
     if (reqProvider) { config.model.provider = reqProvider }
-    await writeConfigYaml(config)
+    await writeRequestConfigYaml(ctx, config)
     ctx.body = { success: true }
   } catch (err: any) {
     ctx.status = 500

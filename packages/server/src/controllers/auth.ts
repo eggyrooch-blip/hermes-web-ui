@@ -1,6 +1,36 @@
 import type { Context } from 'koa'
 import { getCredentials, setCredentials, verifyCredentials, deleteCredentials } from '../services/credentials'
-import { getToken } from '../services/auth'
+import { getToken, HERMES_SESSION_COOKIE, SESSION_COOKIE_MAX_AGE_SECONDS } from '../services/auth'
+import { config } from '../config'
+import {
+  buildFeishuAuthorizeUrl,
+  createBoundFeishuSession,
+  createFeishuState,
+  exchangeFeishuCode,
+  FEISHU_SESSION_COOKIE,
+  FEISHU_STATE_COOKIE,
+  verifyFeishuState,
+} from '../services/feishu-oauth'
+import { logger } from '../services/logger'
+import type { WebUser } from '../services/request-context'
+
+function cookieSecure(ctx: Context): boolean {
+  return ctx.protocol === 'https' || ctx.secure
+}
+
+function setFeishuCookie(ctx: Context, name: string, value: string, maxAgeSeconds: number) {
+  ctx.cookies.set(name, value, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: cookieSecure(ctx),
+    maxAge: maxAgeSeconds * 1000,
+    overwrite: true,
+  })
+}
+
+function maskOpenId(openid: string): string {
+  return openid.length <= 8 ? '***' : `***${openid.slice(-8)}`
+}
 
 /**
  * GET /api/auth/status
@@ -11,6 +41,8 @@ export async function authStatus(ctx: Context) {
   ctx.body = {
     hasPasswordLogin: !!cred,
     username: cred?.username || null,
+    authMode: config.authMode,
+    plane: config.webPlane,
   }
 }
 
@@ -41,7 +73,140 @@ export async function login(ctx: Context) {
     return
   }
 
+  // SECURITY: also set an HttpOnly session cookie. Browsers that support it
+  // can use cookie auth (immune to XSS exfiltration of localStorage). The
+  // bearer token is still returned in the body for v0.5.x clients and
+  // non-browser callers; v0.7.0 will drop the body field. See
+  // Plans/token-cookie-migration.md.
+  ctx.cookies.set(HERMES_SESSION_COOKIE, token, {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: cookieSecure(ctx),
+    maxAge: SESSION_COOKIE_MAX_AGE_SECONDS * 1000,
+    overwrite: true,
+  })
+
   ctx.body = { token }
+}
+
+/**
+ * POST /api/auth/logout
+ * Clears the HermesSession cookie. The bearer token in localStorage is the
+ * client's responsibility; the server cannot revoke it without state.
+ */
+export async function logout(ctx: Context) {
+  ctx.cookies.set(HERMES_SESSION_COOKIE, '', {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: cookieSecure(ctx),
+    maxAge: 0,
+    overwrite: true,
+  })
+  ctx.body = { success: true }
+}
+
+/**
+ * GET /api/auth/feishu/login
+ * Local-dev Feishu OAuth entrypoint. Production can replace this with a
+ * reverse-proxy trusted-header layer while keeping the same request context.
+ */
+export async function feishuLogin(ctx: Context) {
+  if (config.authMode !== 'feishu-oauth-dev') {
+    ctx.status = 404
+    ctx.body = { error: 'Feishu OAuth is not enabled' }
+    return
+  }
+  if (!config.feishuAppId || !config.feishuRedirectUri) {
+    ctx.status = 500
+    ctx.body = { error: 'Feishu OAuth is not configured' }
+    return
+  }
+
+  const state = createFeishuState()
+  setFeishuCookie(ctx, FEISHU_STATE_COOKIE, state, 10 * 60)
+  ctx.redirect(buildFeishuAuthorizeUrl(state))
+}
+
+/**
+ * GET /api/auth/feishu/callback
+ * Exchanges Feishu authorization code, maps open_id to Hermes profile, then
+ * stores only a signed local session cookie in the browser.
+ */
+export async function feishuCallback(ctx: Context) {
+  if (config.authMode !== 'feishu-oauth-dev') {
+    ctx.status = 404
+    ctx.body = { error: 'Feishu OAuth is not enabled' }
+    return
+  }
+
+  const code = typeof ctx.query.code === 'string' ? ctx.query.code : ''
+  const state = typeof ctx.query.state === 'string' ? ctx.query.state : ''
+  const stateCookie = ctx.cookies.get(FEISHU_STATE_COOKIE)
+  if (!code) {
+    ctx.status = 400
+    ctx.body = { error: 'Missing Feishu authorization code' }
+    return
+  }
+  if (!verifyFeishuState(stateCookie, state)) {
+    ctx.status = 401
+    ctx.body = { error: 'Invalid Feishu OAuth state' }
+    return
+  }
+
+  try {
+    const token = await exchangeFeishuCode(code)
+    const bound = createBoundFeishuSession(token.openid, {
+      name: token.name,
+      avatarUrl: token.avatarUrl,
+    })
+    if (!bound) {
+      logger.warn({ openid: maskOpenId(token.openid) }, 'Feishu OAuth login rejected: no bound Hermes profile')
+      ctx.status = 403
+      ctx.body = { error: 'No Hermes profile is bound to this Feishu user' }
+      return
+    }
+
+    logger.info({ openid: maskOpenId(token.openid), profile: bound.user.profile }, 'Feishu OAuth login bound to Hermes profile')
+    setFeishuCookie(ctx, FEISHU_SESSION_COOKIE, bound.cookie, config.feishuSessionMaxAgeSeconds)
+    ctx.cookies.set(FEISHU_STATE_COOKIE, '', {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: cookieSecure(ctx),
+      maxAge: 0,
+      overwrite: true,
+    })
+    ctx.redirect(config.feishuCallbackRedirect)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Feishu OAuth failed' }
+  }
+}
+
+export async function feishuLogout(ctx: Context) {
+  ctx.cookies.set(FEISHU_SESSION_COOKIE, '', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: cookieSecure(ctx),
+    maxAge: 0,
+    overwrite: true,
+  })
+  ctx.body = { success: true }
+}
+
+export async function currentUser(ctx: Context) {
+  const user = ctx.state.user as WebUser | undefined
+  if (!user) {
+    ctx.status = 401
+    ctx.body = { error: 'Unauthorized' }
+    return
+  }
+  ctx.body = {
+    openid: user.openid,
+    profile: user.profile,
+    role: user.role,
+    name: user.name,
+    avatarUrl: user.avatarUrl,
+  }
 }
 
 /**

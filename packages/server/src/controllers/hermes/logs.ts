@@ -3,8 +3,18 @@ import { readFile } from 'fs/promises'
 import { join } from 'path'
 import { homedir } from 'os'
 import * as hermesCli from '../../services/hermes/hermes-cli'
+import { isChatPlaneRequest } from '../../services/request-context'
 
 const WEBUI_LOG_FILE = join(homedir(), '.hermes-web-ui', 'logs', 'server.log')
+
+function denyChatPlane(ctx: any): boolean {
+  if (isChatPlaneRequest(ctx)) {
+    ctx.status = 403
+    ctx.body = { error: 'Log access is not available in chat plane' }
+    return true
+  }
+  return false
+}
 
 interface LogEntry {
   timestamp: string; level: string; logger: string; message: string; raw: string
@@ -27,6 +37,7 @@ function parseLine(line: string): LogEntry {
 }
 
 export async function list(ctx: any) {
+  if (denyChatPlane(ctx)) return
   const files = await hermesCli.listLogFiles()
   if (existsSync(WEBUI_LOG_FILE)) {
     try {
@@ -40,6 +51,7 @@ export async function list(ctx: any) {
 }
 
 export async function read(ctx: any) {
+  if (denyChatPlane(ctx)) return
   const logName = ctx.params.name
   const lines = ctx.query.lines ? parseInt(ctx.query.lines as string, 10) : 100
   const level = (ctx.query.level as string) || undefined

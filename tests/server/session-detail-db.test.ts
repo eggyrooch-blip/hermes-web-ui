@@ -218,4 +218,42 @@ describe('session DB detail', () => {
     expect(detail?.messages[1].tool_calls?.[0]?.function?.name).toBe('terminal')
     expect(detail?.messages[1].reasoning).toBe('thinking before tool')
   })
+
+  it('can include api_server sessions in native usage stats when requested', async () => {
+    ensureSqliteAvailable()
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(join(profileDirState.value, 'state.db'))
+    createSchema(db)
+    insertSession(db, {
+      id: 'web-chat',
+      source: 'api_server',
+      model: 'glm-5.1',
+      started_at: 200,
+      message_count: 2,
+      input_tokens: 100,
+      output_tokens: 50,
+      api_call_count: 1,
+    })
+    insertSession(db, {
+      id: 'channel-chat',
+      source: 'feishu',
+      model: 'glm-5.1',
+      started_at: 210,
+      message_count: 2,
+      input_tokens: 20,
+      output_tokens: 10,
+      api_call_count: 1,
+    })
+    db.close()
+
+    const mod = await import('../../packages/server/src/db/hermes/sessions-db')
+    const hermesOnly = await mod.getUsageStatsFromDb(30, 300)
+    const withApiServer = await mod.getUsageStatsFromDb(30, 300, undefined, true)
+
+    expect(hermesOnly.sessions).toBe(1)
+    expect(hermesOnly.input_tokens).toBe(20)
+    expect(withApiServer.sessions).toBe(2)
+    expect(withApiServer.input_tokens).toBe(120)
+    expect(withApiServer.output_tokens).toBe(60)
+  })
 })

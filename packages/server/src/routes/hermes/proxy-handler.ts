@@ -2,6 +2,9 @@ import type { Context } from 'koa'
 import { config } from '../../config'
 import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
 import { updateUsage } from '../../db/hermes/usage-store'
+import { getRequestProfile } from '../../services/request-context'
+import { isAllowedUpstreamHost } from '../../services/hermes/gateway-manager'
+import { logger } from '../../services/logger'
 
 function getGatewayManager() { return getGatewayManagerInstance() }
 
@@ -49,33 +52,36 @@ async function waitForGatewayReady(upstream: string, timeoutMs: number = 5000): 
 
 /** Resolve profile name from request */
 function resolveProfile(ctx: Context): string {
-  // Use header/query from request, but fall back to authoritative source if not provided
-  const requestedProfile = ctx.get('x-hermes-profile') || (ctx.query.profile as string)
-
-  if (requestedProfile) {
-    return requestedProfile
-  }
-
-  // Fallback: read from authoritative source (active_profile file)
-  try {
-    const { getActiveProfileName } = require('../../services/hermes/hermes-profile')
-    return getActiveProfileName()
-  } catch {
-    return 'default'
-  }
+  return getRequestProfile(ctx)
 }
 
-/** Resolve upstream URL for a request based on profile header/query */
+/** Resolve upstream URL for a request based on profile header/query.
+ *
+ * SECURITY: defence-in-depth check. The primary SSRF gate lives in
+ * gateway-manager.readProfilePort() — it filters out non-allowlisted hosts
+ * before the URL ever reaches us. We re-parse the URL here and reject again,
+ * so a future code path that builds upstreams differently still fails closed.
+ */
 function resolveUpstream(ctx: Context): string {
   const mgr = getGatewayManager()
+  let raw: string
   if (mgr) {
     const profile = resolveProfile(ctx)
-    if (profile && profile !== 'default') {
-      return mgr.getUpstream(profile)
-    }
-    return mgr.getUpstream()
+    raw = profile && profile !== 'default' ? mgr.getUpstream(profile) : mgr.getUpstream()
+  } else {
+    raw = config.upstream.replace(/\/$/, '')
   }
-  return config.upstream.replace(/\/$/, '')
+  let host: string
+  try {
+    host = new URL(raw).hostname
+  } catch {
+    throw new Error('Invalid upstream URL')
+  }
+  if (!isAllowedUpstreamHost(host)) {
+    logger.warn('Rejecting upstream %s: host not in allowlist', raw)
+    throw new Error('Upstream host is not allowed')
+  }
+  return raw
 }
 
 function buildProxyHeaders(ctx: Context, upstream: string): Record<string, string> {
@@ -107,6 +113,20 @@ function buildProxyHeaders(ctx: Context, upstream: string): Record<string, strin
 // --- SSE stream interception ---
 
 const SSE_EVENTS_PATH = /^\/v1\/runs\/([^/]+)\/events$/
+
+// RFC 7230 §6.1 — these headers are scoped to a single hop and must not be
+// forwarded between upstream and downstream connections.
+const HOP_BY_HOP_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'trailers',
+  'transfer-encoding',
+  'upgrade',
+])
 
 /**
  * Parse SSE text chunks and extract run.completed events.
@@ -194,6 +214,22 @@ export async function proxy(ctx: Context) {
 
   const headers = buildProxyHeaders(ctx, upstream)
 
+  // SECURITY: cap proxy waits so a stuck or slow upstream cannot tie up BFF
+  // sockets indefinitely. SSE streams (chat events) intentionally use a much
+  // longer ceiling because a model run can legitimately take several minutes;
+  // every other endpoint has 120 s.
+  const isSSE = SSE_EVENTS_PATH.test(upstreamPath)
+  const timeoutMs = isSSE ? 30 * 60 * 1000 : 120 * 1000
+
+  // Propagate client disconnect to the upstream fetch. Without this the BFF
+  // keeps reading the upstream stream (and the upstream keeps generating —
+  // burning model tokens) after the user closes their tab.
+  const clientAbort = new AbortController()
+  const onClientClose = () => clientAbort.abort()
+  ctx.res.on('close', onClientClose)
+
+  const buildSignal = () => AbortSignal.any([clientAbort.signal, AbortSignal.timeout(timeoutMs)])
+
   try {
     let body: string | undefined
     if (ctx.req.method !== 'GET' && ctx.req.method !== 'HEAD') {
@@ -207,23 +243,29 @@ export async function proxy(ctx: Context) {
       }
     }
 
-    const requestInit: RequestInit = { method: ctx.req.method, headers, body }
+    const requestInit: RequestInit = {
+      method: ctx.req.method,
+      headers,
+      body,
+      signal: buildSignal(),
+    }
 
     let res: Response
     try {
       res = await fetch(url, requestInit)
     } catch (err: any) {
       if (isTransientGatewayError(err) && await waitForGatewayReady(upstream)) {
-        res = await fetch(url, requestInit)
+        // Retry uses a fresh signal so the previous timeout doesn't carry over.
+        res = await fetch(url, { ...requestInit, signal: buildSignal() })
       } else {
         throw err
       }
     }
 
-    // Set response headers
+    // Set response headers — strip the full RFC 7230 hop-by-hop set so upstream
+    // keep-alive / proxy-auth semantics do not bleed into the client connection.
     res.headers.forEach((value, key) => {
-      const lower = key.toLowerCase()
-      if (lower !== 'transfer-encoding' && lower !== 'connection') {
+      if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
         ctx.set(key, value)
       }
     })
@@ -273,12 +315,18 @@ export async function proxy(ctx: Context) {
       ctx.res.end()
     }
   } catch (err: any) {
+    // Log the full error server-side, but never echo upstream URLs / internal
+    // hostnames back to the client — that would help an SSRF attacker map the
+    // network behind the proxy.
+    logger.error(err, 'Proxy error')
     if (!ctx.res.headersSent) {
       ctx.status = 502
       ctx.set('Content-Type', 'application/json')
-      ctx.body = { error: { message: `Proxy error: ${err.message}` } }
+      ctx.body = { error: { message: 'Upstream gateway unreachable' } }
     } else {
       ctx.res.end()
     }
+  } finally {
+    ctx.res.removeListener('close', onClientClose)
   }
 }

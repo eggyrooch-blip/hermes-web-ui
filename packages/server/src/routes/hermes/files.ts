@@ -1,10 +1,14 @@
 import Router from '@koa/router'
+import type { Context } from 'koa'
+import { mkdir } from 'fs/promises'
+import { join } from 'path'
 import {
   createFileProvider,
   resolveHermesPath,
   isSensitivePath,
   MAX_EDIT_SIZE,
 } from '../../services/hermes/file-provider'
+import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 
 export const fileRoutes = new Router()
 
@@ -28,12 +32,28 @@ function handleError(ctx: any, err: any) {
   ctx.body = { error: err.message, code }
 }
 
+async function getFileRootDir(ctx: Context): Promise<string | undefined> {
+  if (!isChatPlaneRequest(ctx)) return undefined
+  const workspaceDir = join(getRequestProfileDir(ctx), 'workspace')
+  await mkdir(workspaceDir, { recursive: true })
+  return workspaceDir
+}
+
+function resolveFilePath(relativePath: string, rootDir?: string): string {
+  return resolveHermesPath(relativePath, rootDir)
+}
+
+async function createRequestFileProvider(rootDir?: string) {
+  return rootDir ? createFileProvider({ rootDir, forceLocal: true }) : createFileProvider()
+}
+
 // GET /api/hermes/files/list?path=
 fileRoutes.get('/api/hermes/files/list', async (ctx) => {
   const relativePath = (ctx.query.path as string) || ''
   try {
-    const absPath = resolveHermesPath(relativePath)
-    const provider = await createFileProvider()
+    const rootDir = await getFileRootDir(ctx)
+    const absPath = resolveFilePath(relativePath, rootDir)
+    const provider = await createRequestFileProvider(rootDir)
     const entries = await provider.listDir(absPath)
     entries.sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
@@ -54,8 +74,9 @@ fileRoutes.get('/api/hermes/files/stat', async (ctx) => {
     return
   }
   try {
-    const absPath = resolveHermesPath(relativePath)
-    const provider = await createFileProvider()
+    const rootDir = await getFileRootDir(ctx)
+    const absPath = resolveFilePath(relativePath, rootDir)
+    const provider = await createRequestFileProvider(rootDir)
     const info = await provider.stat(absPath)
     ctx.body = info
   } catch (err: any) {
@@ -72,8 +93,9 @@ fileRoutes.get('/api/hermes/files/read', async (ctx) => {
     return
   }
   try {
-    const absPath = resolveHermesPath(relativePath)
-    const provider = await createFileProvider()
+    const rootDir = await getFileRootDir(ctx)
+    const absPath = resolveFilePath(relativePath, rootDir)
+    const provider = await createRequestFileProvider(rootDir)
     const data = await provider.readFile(absPath)
     if (data.length > MAX_EDIT_SIZE) {
       ctx.status = 413
@@ -106,8 +128,9 @@ fileRoutes.put('/api/hermes/files/write', async (ctx) => {
       ctx.body = { error: 'Content too large', code: 'file_too_large' }
       return
     }
-    const absPath = resolveHermesPath(relativePath)
-    const provider = await createFileProvider()
+    const rootDir = await getFileRootDir(ctx)
+    const absPath = resolveFilePath(relativePath, rootDir)
+    const provider = await createRequestFileProvider(rootDir)
     await provider.writeFile(absPath, buf)
     ctx.body = { ok: true, path: relativePath }
   } catch (err: any) {
@@ -117,7 +140,9 @@ fileRoutes.put('/api/hermes/files/write', async (ctx) => {
 
 // DELETE /api/hermes/files/delete  body: { path, recursive? }
 fileRoutes.delete('/api/hermes/files/delete', async (ctx) => {
-  const { path: relativePath, recursive } = ctx.request.body as { path?: string; recursive?: boolean }
+  const body = (ctx.request.body || {}) as { path?: string; recursive?: boolean }
+  const relativePath = body.path || (ctx.query.path as string)
+  const recursive = body.recursive ?? ctx.query.recursive === 'true'
   if (!relativePath) {
     ctx.status = 400
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
@@ -129,8 +154,9 @@ fileRoutes.delete('/api/hermes/files/delete', async (ctx) => {
     return
   }
   try {
-    const absPath = resolveHermesPath(relativePath)
-    const provider = await createFileProvider()
+    const rootDir = await getFileRootDir(ctx)
+    const absPath = resolveFilePath(relativePath, rootDir)
+    const provider = await createRequestFileProvider(rootDir)
     if (recursive) {
       await provider.deleteDir(absPath)
     } else {
@@ -156,9 +182,10 @@ fileRoutes.post('/api/hermes/files/rename', async (ctx) => {
     return
   }
   try {
-    const absOld = resolveHermesPath(oldPath)
-    const absNew = resolveHermesPath(newPath)
-    const provider = await createFileProvider()
+    const rootDir = await getFileRootDir(ctx)
+    const absOld = resolveFilePath(oldPath, rootDir)
+    const absNew = resolveFilePath(newPath, rootDir)
+    const provider = await createRequestFileProvider(rootDir)
     await provider.renameFile(absOld, absNew)
     ctx.body = { ok: true }
   } catch (err: any) {
@@ -175,8 +202,9 @@ fileRoutes.post('/api/hermes/files/mkdir', async (ctx) => {
     return
   }
   try {
-    const absPath = resolveHermesPath(relativePath)
-    const provider = await createFileProvider()
+    const rootDir = await getFileRootDir(ctx)
+    const absPath = resolveFilePath(relativePath, rootDir)
+    const provider = await createRequestFileProvider(rootDir)
     await provider.mkDir(absPath)
     ctx.body = { ok: true }
   } catch (err: any) {
@@ -193,9 +221,10 @@ fileRoutes.post('/api/hermes/files/copy', async (ctx) => {
     return
   }
   try {
-    const absSrc = resolveHermesPath(srcPath)
-    const absDest = resolveHermesPath(destPath)
-    const provider = await createFileProvider()
+    const rootDir = await getFileRootDir(ctx)
+    const absSrc = resolveFilePath(srcPath, rootDir)
+    const absDest = resolveFilePath(destPath, rootDir)
+    const provider = await createRequestFileProvider(rootDir)
     await provider.copyFile(absSrc, absDest)
     ctx.body = { ok: true }
   } catch (err: any) {
@@ -226,7 +255,8 @@ fileRoutes.post('/api/hermes/files/upload', async (ctx) => {
 
   const boundaryBuf = Buffer.from(boundary)
   const parts = splitMultipart(raw, boundaryBuf)
-  const provider = await createFileProvider()
+  const rootDir = await getFileRootDir(ctx)
+  const provider = await createRequestFileProvider(rootDir)
   const results: { name: string; path: string }[] = []
 
   for (const part of parts) {
@@ -259,7 +289,7 @@ fileRoutes.post('/api/hermes/files/upload', async (ctx) => {
       return
     }
 
-    const absPath = resolveHermesPath(filePath)
+    const absPath = resolveFilePath(filePath, rootDir)
     await provider.writeFile(absPath, data)
     results.push({ name: filename, path: filePath })
   }

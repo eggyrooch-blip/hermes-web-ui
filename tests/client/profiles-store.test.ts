@@ -21,6 +21,7 @@ describe('Profiles Store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    localStorage.clear()
   })
 
   it('fetchProfiles loads profiles and sets active', async () => {
@@ -38,6 +39,22 @@ describe('Profiles Store', () => {
     expect(store.loading).toBe(false)
   })
 
+  it('stores Feishu display user when setting bound profile', () => {
+    const store = useProfilesStore()
+
+    store.setBoundProfile('g41a5b5g', {
+      openid: 'ou_test',
+      profile: 'g41a5b5g',
+      role: 'user',
+      name: '张三',
+      avatarUrl: 'https://example.com/avatar.png',
+    })
+
+    expect(store.currentUser?.name).toBe('张三')
+    expect(store.currentUser?.avatarUrl).toBe('https://example.com/avatar.png')
+    expect(localStorage.getItem('hermes_current_user')).toContain('张三')
+  })
+
   it('fetchProfiles sets loading state', async () => {
     mockProfilesApi.fetchProfiles.mockImplementation(
       () => new Promise(resolve => setTimeout(() => resolve([]), 10))
@@ -49,6 +66,26 @@ describe('Profiles Store', () => {
     expect(store.loading).toBe(true)
     await fetchPromise
     expect(store.loading).toBe(false)
+  })
+
+  it('uses the bound Feishu profile in user mode without calling the admin profiles API', async () => {
+    localStorage.setItem('hermes_web_plane', 'chat')
+    localStorage.setItem('hermes_current_user', JSON.stringify({
+      openid: 'ou_test',
+      profile: 'g41a5b5g',
+      role: 'user',
+      name: '张三',
+    }))
+
+    const store = useProfilesStore()
+    await store.fetchProfiles()
+
+    expect(mockProfilesApi.fetchProfiles).not.toHaveBeenCalled()
+    expect(store.activeProfileName).toBe('g41a5b5g')
+    expect(store.activeProfile?.name).toBe('g41a5b5g')
+    expect(store.profiles).toEqual([
+      expect.objectContaining({ name: 'g41a5b5g', active: true }),
+    ])
   })
 
   it('createProfile calls API and refreshes list', async () => {
