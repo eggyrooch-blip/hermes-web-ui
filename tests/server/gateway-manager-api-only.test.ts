@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import yaml from 'js-yaml'
 import { GatewayManager } from '../../packages/server/src/services/hermes/gateway-manager'
 
 describe('GatewayManager API-only lifecycle', () => {
@@ -52,6 +56,39 @@ describe('GatewayManager API-only lifecycle', () => {
     expect(options.cwd).toBe('/runtime/g41a5b5g/workspace')
     expect(options.env).toBe(env)
     expect(options.detached).toBe(true)
+  })
+
+  it('writes API-only configs with Hermes Agent readable fallback providers', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'hermes-gateway-manager-'))
+    try {
+      const sourceDir = join(tmp, 'profiles', 'g41a5b5g')
+      const runtimeDir = join(tmp, 'api-gateways', 'g41a5b5g')
+      mkdirSync(sourceDir, { recursive: true })
+      writeFileSync(join(sourceDir, 'config.yaml'), yaml.dump({
+        model: {
+          default: 'zai/glm-5.1',
+          provider: 'zai',
+        },
+        fallback: [
+          'openrouter/anthropic/claude-3.5-haiku:beta',
+          'openrouter/google/gemini-2.0-flash-exp:free',
+        ],
+      }), 'utf-8')
+
+      const manager = new GatewayManager('default') as any
+      manager.profileDir = vi.fn(() => sourceDir)
+      manager.apiOnlyDir = vi.fn(() => runtimeDir)
+
+      manager.prepareApiOnlyHome('g41a5b5g', 8656, '127.0.0.1')
+
+      const runtimeConfig = yaml.load(readFileSync(join(runtimeDir, 'config.yaml'), 'utf-8')) as any
+      expect(runtimeConfig.fallback_providers).toEqual([
+        { provider: 'openrouter', model: 'anthropic/claude-3.5-haiku:beta' },
+        { provider: 'openrouter', model: 'google/gemini-2.0-flash-exp:free' },
+      ])
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
   })
 
   it('stops only gateways that were started as API-only runtime', async () => {

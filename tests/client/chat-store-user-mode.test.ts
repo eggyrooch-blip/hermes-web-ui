@@ -5,6 +5,11 @@ import { createPinia, setActivePinia } from 'pinia'
 const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
 const switchModelMock = vi.hoisted(() => vi.fn())
 const startRunViaSocketMock = vi.hoisted(() => vi.fn(() => ({ abort: vi.fn() })))
+const fetchSessionMock = vi.hoisted(() => vi.fn())
+const resumeSessionMock = vi.hoisted(() => vi.fn((_sessionId: string, onResumed: (data: any) => void) => {
+  onResumed({ messages: [], isWorking: false, events: [] })
+  return { disconnect: vi.fn() }
+}))
 
 vi.mock('@/api/client', () => ({
   getApiKey: vi.fn(() => ''),
@@ -21,13 +26,16 @@ vi.mock('@/stores/hermes/app', () => ({
 
 vi.mock('@/api/hermes/chat', () => ({
   startRunViaSocket: startRunViaSocketMock,
-  resumeSession: vi.fn((_sessionId: string, onResumed: (data: any) => void) => {
-    onResumed({ messages: [], isWorking: false, events: [] })
-    return { disconnect: vi.fn() }
-  }),
+  resumeSession: resumeSessionMock,
   registerSessionHandlers: vi.fn(),
   unregisterSessionHandlers: vi.fn(),
   getChatRunSocket: vi.fn(() => null),
+}))
+
+vi.mock('@/api/hermes/sessions', () => ({
+  deleteSession: vi.fn(),
+  fetchSession: fetchSessionMock,
+  fetchSessions: vi.fn(() => Promise.resolve([])),
 }))
 
 import { useChatStore } from '@/stores/hermes/chat'
@@ -47,6 +55,11 @@ describe('chat store user-mode model selection', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     isUserModeMock.mockReturnValue(false)
+    fetchSessionMock.mockResolvedValue(null)
+    resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({ messages: [], isWorking: false, events: [] })
+      return { disconnect: vi.fn() }
+    })
   })
 
   it('keeps compact model changes session-local in chat plane user mode', async () => {
@@ -146,5 +159,61 @@ describe('chat store user-mode model selection', () => {
 
     const systemMessage = store.activeSession!.messages.find(m => m.role === 'system')
     expect(systemMessage?.content).toContain('no final output after tool activity')
+  })
+
+  it('keeps streamed run failure errors visible after the socket error callback', async () => {
+    const store = useChatStore()
+    store.newChat()
+
+    await store.sendMessage('generate a video')
+    fetchSessionMock.mockResolvedValue({
+      id: store.activeSession!.id,
+      title: 'generate a video',
+      messages: [{ role: 'user', content: 'generate a video' }],
+    })
+
+    const onEvent = startRunViaSocketMock.mock.calls[0][1]
+    const onError = startRunViaSocketMock.mock.calls[0][3]
+    onEvent({
+      event: 'run.failed',
+      session_id: store.activeSession!.id,
+      error: 'HTTP 429: The service may be temporarily overloaded',
+    })
+    onError(new Error('HTTP 429: The service may be temporarily overloaded'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const systemMessage = store.activeSession!.messages.find(m => m.role === 'system')
+    expect(systemMessage?.content).toContain('HTTP 429')
+  })
+
+  it('does not let a stale resume response overwrite the currently active session', async () => {
+    const callbacks = new Map<string, (data: any) => void>()
+    resumeSessionMock.mockImplementation((sessionId: string, onResumed: (data: any) => void) => {
+      callbacks.set(sessionId, onResumed)
+      return { disconnect: vi.fn() }
+    })
+
+    const store = useChatStore()
+    store.newChat()
+    const firstId = store.activeSession!.id
+    store.newChat()
+    const secondId = store.activeSession!.id
+
+    callbacks.get(firstId)!({
+      session_id: firstId,
+      isWorking: false,
+      events: [],
+      messages: [{
+        id: 1,
+        session_id: firstId,
+        role: 'assistant',
+        content: 'stale first-session reply',
+        timestamp: Date.now() / 1000,
+      }],
+    })
+
+    expect(store.activeSessionId).toBe(secondId)
+    expect(store.sessions.find(s => s.id === secondId)?.messages).toEqual([])
+    expect(store.sessions.find(s => s.id === firstId)?.messages[0]?.content).toBe('stale first-session reply')
   })
 })

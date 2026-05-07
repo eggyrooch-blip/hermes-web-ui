@@ -173,6 +173,13 @@ export async function listJobs(): Promise<JobListResult> {
   }
 }
 
+export async function wakeJobs(): Promise<JobWakeResult> {
+  return request<JobWakeResult>('/api/hermes/jobs/wake', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+}
+
 export async function getJob(jobId: string): Promise<Job> {
   return unwrap(await request<{ job: Job }>(`/api/hermes/jobs/${jobId}`))
 }

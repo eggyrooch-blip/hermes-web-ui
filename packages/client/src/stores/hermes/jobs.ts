@@ -18,7 +18,13 @@ export const useJobsStore = defineStore('jobs', () => {
     error.value = null
     gatewayUnavailable.value = false
     try {
-      const result = await jobsApi.listJobs()
+      let result = await jobsApi.listJobs()
+      if (result.gatewayUnavailable) {
+        const wake = await jobsApi.wakeJobs()
+        if (wake.running || wake.status === 'ready') {
+          result = await jobsApi.listJobs()
+        }
+      }
       jobs.value = result.jobs
       gatewayUnavailable.value = !!result.gatewayUnavailable
       error.value = result.gatewayUnavailable

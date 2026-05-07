@@ -93,6 +93,44 @@ export function isAllowedUpstreamHost(host: string): boolean {
     : normalized
   return UPSTREAM_HOST_ALLOWLIST.has(stripped)
 }
+
+function normalizeFallbackEntry(entry: unknown): { provider: string; model: string } | null {
+  if (typeof entry === 'string') {
+    const trimmed = entry.trim()
+    const slash = trimmed.indexOf('/')
+    if (slash <= 0 || slash >= trimmed.length - 1) return null
+    return {
+      provider: trimmed.slice(0, slash),
+      model: trimmed.slice(slash + 1),
+    }
+  }
+
+  if (!entry || typeof entry !== 'object') return null
+  const provider = (entry as any).provider
+  const model = (entry as any).model
+  if (typeof provider !== 'string' || typeof model !== 'string') return null
+  if (!provider.trim() || !model.trim()) return null
+  return { provider: provider.trim(), model: model.trim() }
+}
+
+function withAgentReadableFallbackConfig(cfg: any): any {
+  if (!cfg || typeof cfg !== 'object') return cfg
+  if (cfg.fallback_providers !== undefined || cfg.fallback_model !== undefined) return cfg
+
+  const source: unknown[] = Array.isArray(cfg.fallback)
+    ? cfg.fallback
+    : cfg.fallback
+      ? [cfg.fallback]
+      : []
+  const fallbackProviders = source
+    .map(normalizeFallbackEntry)
+    .filter((entry): entry is { provider: string; model: string } => entry !== null)
+
+  if (fallbackProviders.length > 0) {
+    cfg.fallback_providers = fallbackProviders
+  }
+  return cfg
+}
 const CHAT_API_ONLY_SKIP_ENTRIES = new Set([
   'config.yaml',
   '.env',
@@ -673,6 +711,7 @@ export class GatewayManager {
         host,
       },
     }
+    withAgentReadableFallbackConfig(cfg)
     this.withProfileWorkspaceConfig(cfg, join(runtimeHome, 'workspace'))
 
     writeFileSync(join(runtimeHome, 'config.yaml'), yaml.dump(cfg, { lineWidth: -1 }), 'utf-8')
@@ -710,6 +749,7 @@ export class GatewayManager {
     const cfg = existsSync(configPath)
       ? (yaml.load(readFileSync(configPath, 'utf-8')) as any) || {}
       : {}
+    withAgentReadableFallbackConfig(cfg)
     this.withProfileWorkspaceConfig(cfg, join(hermesHome, 'workspace'))
     writeFileSync(configPath, yaml.dump(cfg, { lineWidth: -1 }), 'utf-8')
   }

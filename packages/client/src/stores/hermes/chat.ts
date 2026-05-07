@@ -467,6 +467,11 @@ export const useChatStore = defineStore('chat', () => {
         const timeout = setTimeout(() => reject(new Error('resume timeout')), 15_000)
         resumeSession(sessionId, (data) => {
           clearTimeout(timeout)
+          const targetSession = sessions.value.find(s => s.id === sessionId)
+          if (!targetSession) {
+            resolve()
+            return
+          }
           if (data.isWorking) {
             serverWorking.value.add(sessionId)
           } else {
@@ -478,24 +483,24 @@ export const useChatStore = defineStore('chat', () => {
             queueLengths.value.delete(sessionId)
           }
           if ((data as any).isAborting) {
-            setAbortState({ aborting: true, synced: null })
-          } else if (!data.isWorking) {
+            if (activeSessionId.value === sessionId) setAbortState({ aborting: true, synced: null })
+          } else if (!data.isWorking && activeSessionId.value === sessionId) {
             setAbortState(null)
           }
-          if (data.inputTokens != null) activeSession.value!.inputTokens = data.inputTokens
-          if (data.outputTokens != null) activeSession.value!.outputTokens = data.outputTokens
+          if (data.inputTokens != null) targetSession.inputTokens = data.inputTokens
+          if (data.outputTokens != null) targetSession.outputTokens = data.outputTokens
           if (data.messages?.length) {
-            activeSession.value!.messages = mapHermesMessages(data.messages as any[])
+            targetSession.messages = mapHermesMessages(data.messages as any[])
           }
-          if (!activeSession.value!.title) {
-            const firstUser = activeSession.value!.messages.find(m => m.role === 'user')
+          if (!targetSession.title) {
+            const firstUser = targetSession.messages.find(m => m.role === 'user')
             if (firstUser) {
               const t = firstUser.content.slice(0, 40)
-              activeSession.value!.title = t + (firstUser.content.length > 40 ? '...' : '')
+              targetSession.title = t + (firstUser.content.length > 40 ? '...' : '')
             }
           }
           // Process replayed events (compression state etc.)
-          if (data.events?.length) {
+          if (data.events?.length && activeSessionId.value === sessionId) {
             for (const evt of data.events) {
               const e = evt.data as any
               if (e.event === 'compression.started') {
@@ -528,7 +533,9 @@ export const useChatStore = defineStore('chat', () => {
     } catch (err) {
       console.error('Failed to load session messages via resume:', err)
     } finally {
-      isLoadingMessages.value = false
+      if (activeSessionId.value === sessionId) {
+        isLoadingMessages.value = false
+      }
     }
 
     // Resume in-flight run event listeners if needed
@@ -1132,6 +1139,11 @@ export const useChatStore = defineStore('chat', () => {
           console.warn('Socket.IO run stream error:', err.message)
           const msgs = getSessionMsgs(sid)
           const last = msgs[msgs.length - 1]
+          const errorAlreadyVisible =
+            last?.role === 'system' &&
+            typeof last.content === 'string' &&
+            err?.message &&
+            last.content.includes(err.message)
           if (last?.isStreaming) {
             updateMessage(sid, last.id, { isStreaming: false })
           }
@@ -1141,7 +1153,7 @@ export const useChatStore = defineStore('chat', () => {
             }
           })
           cleanup()
-          if (sid === activeSessionId.value) {
+          if (sid === activeSessionId.value && !errorAlreadyVisible) {
             void refreshActiveSession()
           }
         },
