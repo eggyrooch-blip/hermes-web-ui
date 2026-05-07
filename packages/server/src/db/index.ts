@@ -35,6 +35,7 @@ export function getDb(): DatabaseSync | null {
     // Use WAL mode for better concurrency and WSL compatibility
     if (isDev) {
       _db.exec('PRAGMA journal_mode=DELETE')
+      _db.exec('PRAGMA busy_timeout=5000')
     } else {
       _db.exec('PRAGMA journal_mode=WAL')
       _db.exec('PRAGMA synchronous=NORMAL')

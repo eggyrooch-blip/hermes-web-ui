@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { mkdtempSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { Readable } from 'stream'
 
 const originalEnv = process.env
 let baseDir = ''
@@ -69,12 +70,13 @@ function multipartBody(filename: string, content: string): { body: Buffer; conte
 }
 
 function mockUploadCtx(body: Buffer, contentType: string) {
+  const req = Readable.from([body]) as any
+  req.headers = {
+    'content-type': contentType,
+    'content-length': String(body.length),
+  }
   const ctx = mockCtx({
-    req: {
-      async *[Symbol.asyncIterator]() {
-        yield body
-      },
-    },
+    req,
     get: (header: string) => header.toLowerCase() === 'content-type' ? contentType : '',
   })
   return ctx

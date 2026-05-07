@@ -1451,6 +1451,7 @@ export class ChatRunSocket {
   private async markCompleted(socket: Socket, sessionId: string, _info: { event: string; run_id?: string }) {
     const state = this.sessionMap.get(sessionId)
     if (state) {
+      const completedRunId = _info.run_id || state.runId
       if (state.isAborting) {
         logger.info({
           sessionId,
@@ -1464,7 +1465,7 @@ export class ChatRunSocket {
       state.runId = undefined
       state.events = []
       // Sync messages from Hermes ephemeral session to local DB
-      if (useLocalSessionStore() && this.hermesSessionIds.get(sessionId)) {
+      if (completedRunId && useLocalSessionStore() && this.hermesSessionIds.get(sessionId)) {
         const hermesId = this.hermesSessionIds.get(sessionId)
         const prof = state.profile
         this.hermesSessionIds.delete(sessionId)
@@ -1473,6 +1474,8 @@ export class ChatRunSocket {
           maxAttempts: 10,
           delayMs: 500,
         })
+      } else if (!completedRunId) {
+        this.hermesSessionIds.delete(sessionId)
       }
 
     }

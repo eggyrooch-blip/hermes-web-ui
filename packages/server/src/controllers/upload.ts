@@ -62,6 +62,7 @@ export async function handleUpload(ctx: any) {
 
   const results: UploadResult[] = []
   const cleanupPaths: string[] = []
+  const fileWrites: Promise<void>[] = []
   let aborted = false
   let timedOut = false
   let limitExceeded = false
@@ -72,8 +73,12 @@ export async function handleUpload(ctx: any) {
   }, UPLOAD_BODY_TIMEOUT_MS)
 
   const done = new Promise<void>((resolve, reject) => {
-    bb.on('file', async (_field, fileStream, info) => {
-      try {
+    const finish = () => {
+      Promise.all(fileWrites).then(() => resolve(), reject)
+    }
+
+    bb.on('file', (_field, fileStream, info) => {
+      const writePromise = (async () => {
         const original = info.filename || 'upload.bin'
         const ext = extname(original).toLowerCase()
         const savedName = randomBytes(8).toString('hex') + ext
@@ -87,13 +92,13 @@ export async function handleUpload(ctx: any) {
         await pipeline(fileStream, createWriteStream(target.savedPath))
         if (limitExceeded || bytes > MAX_UPLOAD_SIZE) return
         results.push({ name: original, path: target.responsePath })
-      } catch (err) {
-        reject(err)
-      }
+      })()
+      fileWrites.push(writePromise)
+      writePromise.catch(err => reject(err))
     })
     bb.on('error', err => reject(err))
-    bb.on('close', () => resolve())
-    bb.on('finish', () => resolve())
+    bb.on('close', finish)
+    bb.on('finish', finish)
   })
 
   ctx.req.on('aborted', () => { aborted = true })
