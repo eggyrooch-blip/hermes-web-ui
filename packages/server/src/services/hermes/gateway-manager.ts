@@ -235,6 +235,15 @@ interface ManagedGateway {
   mode?: 'profile' | 'api-only'
 }
 
+function formatHostForUrl(host: string): string {
+  if (host.startsWith('[') && host.endsWith(']')) return host
+  return host.includes(':') ? `[${host}]` : host
+}
+
+function buildHttpUrl(host: string, port: number): string {
+  return `http://${formatHostForUrl(host)}:${port}`
+}
+
 // ============================
 // GatewayManager
 // ============================
@@ -278,7 +287,9 @@ export class GatewayManager {
    */
   private readProfilePort(name: string): { port: number; host: string } {
     const configPath = join(this.profileDir(name), 'config.yaml')
-    if (!existsSync(configPath)) return { port: 8642, host: '127.0.0.1' }
+    const defaultHost = initSystem === 'container' ? 'hermes-agent' : '127.0.0.1'
+
+    if (!existsSync(configPath)) return { port: 8642, host: defaultHost }
 
     try {
       const content = readFileSync(configPath, 'utf-8')
@@ -287,15 +298,15 @@ export class GatewayManager {
       const extra = cfg?.platforms?.api_server?.extra
       const rawPort = extra?.port || 8642
       const port = typeof rawPort === 'number' ? rawPort : parseInt(rawPort, 10) || 8642
-      const rawHost = (extra?.host || '127.0.0.1').toString()
-      const host = isAllowedUpstreamHost(rawHost) ? rawHost : '127.0.0.1'
+      const rawHost = (extra?.host || defaultHost).toString()
+      const host = isAllowedUpstreamHost(rawHost) ? rawHost : defaultHost
       if (host !== rawHost) {
-        logger.warn('Profile %s requested upstream host %s which is not in the allowlist; falling back to 127.0.0.1', name, rawHost)
+        logger.warn('Profile %s requested upstream host %s which is not in the allowlist; falling back to %s', name, rawHost, defaultHost)
       }
       // 端口超出合法范围时回退到默认值
       return { port: port > 0 && port <= 65535 ? port : 8642, host }
     } catch {
-      return { port: 8642, host: '127.0.0.1' }
+      return { port: 8642, host: defaultHost }
     }
   }
 
@@ -496,7 +507,7 @@ export class GatewayManager {
     const gw = this.gateways.get(name)
     if (gw?.url) return gw.url
     const { port, host } = this.readProfilePort(name)
-    return `http://${host}:${port}`
+    return buildHttpUrl(host, port)
   }
 
   /** 读取 profile 的 API_SERVER_KEY（从 .env 文件） */
@@ -574,7 +585,7 @@ export class GatewayManager {
 
     const pid = this.readPidFile(name)
     const { port, host } = this.readProfilePort(name)
-    const url = `http://${host}:${port}`
+    const url = buildHttpUrl(host, port)
 
     if (pid && this.isProcessAlive(pid) && await this.checkHealth(url)) {
       this.gateways.set(name, { pid, port, host, url, mode: 'profile' })
@@ -612,7 +623,7 @@ export class GatewayManager {
     const hermesHome = this.profileDir(name)
     mkdirSync(join(hermesHome, 'workspace'), { recursive: true })
     this.ensureProfileWorkspaceConfig(hermesHome)
-    const url = `http://${host}:${port}`
+    const url = buildHttpUrl(host, port)
 
     if (needsRunMode) {
       // WSL / Docker：无 systemd/launchd，用 "gateway run" 作为 detached 子进程
@@ -826,7 +837,7 @@ export class GatewayManager {
     const gw = this.gateways.get(name)
     const url = gw?.url || (() => {
       const { port, host } = this.readProfilePort(name)
-      return `http://${host}:${port}`
+      return buildHttpUrl(host, port)
     })()
 
     if (!needsRunMode) {

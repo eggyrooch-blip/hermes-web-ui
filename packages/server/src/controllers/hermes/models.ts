@@ -12,7 +12,7 @@ import { MODEL_CONTEXT_TABLE } from '../../db/hermes/schemas'
 import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 
 const PROVIDER_MODEL_CATALOG = buildProviderModelMap()
-type AvailableGroup = { provider: string; label: string; base_url: string; models: string[]; api_key: string; model_meta?: Record<string, { preview?: boolean; disabled?: boolean }> }
+type AvailableGroup = { provider: string; label: string; base_url: string; models: string[]; api_key: string; builtin?: boolean; model_meta?: Record<string, { preview?: boolean; disabled?: boolean }> }
 
 function requestConfigPath(ctx: any): string {
   return join(getRequestProfileDir(ctx), 'config.yaml')
@@ -101,10 +101,10 @@ export async function getAvailable(ctx: any) {
       const match = envContent.match(new RegExp(`^${key}\\s*=\\s*(.+)`, 'm'))
       return match?.[1]?.trim() || ''
     }
-    const addGroup = (provider: string, label: string, base_url: string, models: string[], api_key: string, model_meta?: Record<string, { preview?: boolean; disabled?: boolean }>) => {
+    const addGroup = (provider: string, label: string, base_url: string, models: string[], api_key: string, builtin?: boolean, model_meta?: Record<string, { preview?: boolean; disabled?: boolean }>) => {
       if (seenProviders.has(provider)) return
       seenProviders.add(provider)
-      groups.push({ provider, label, base_url, models: [...models], api_key, ...(model_meta ? { model_meta } : {}) })
+      groups.push({ provider, label, base_url, models: [...models], api_key, ...(builtin ? { builtin: true } : {}), ...(model_meta ? { model_meta } : {}) })
     }
 
     const isOAuthAuthorized = (providerKey: string): boolean => {
@@ -194,7 +194,7 @@ export async function getAvailable(ctx: any) {
       }
       if (modelsList.length > 0) {
         const apiKey = envMapping.api_key_env ? envGetValue(envMapping.api_key_env) : ''
-        addGroup(providerKey, label, baseUrl, modelsList, apiKey, modelMeta)
+        addGroup(providerKey, label, baseUrl, modelsList, apiKey, true, modelMeta)
       }
     }
 
@@ -210,19 +210,20 @@ export async function getAvailable(ctx: any) {
         const bareKey = cp.name.trim().toLowerCase().replace(/ /g, '-')
         const builtinPreset = PROVIDER_PRESETS.find(p => p.value === bareKey)
         let models = builtinPreset?.models?.length ? [...builtinPreset.models] : [cp.model]
-        if (cp.api_key) {
+        // Skip dynamic fetch for builtin presets — their model list is maintained in providers.ts
+        if (!builtinPreset && cp.api_key) {
           try { const fetched = await fetchProviderModels(baseUrl, cp.api_key); if (fetched.length > 0) models = [...new Set([cp.model, ...fetched])] } catch { }
         }
         const label = builtinPreset?.label || cp.name
         const presetBaseUrl = builtinPreset?.base_url || ''
-        return { providerKey, label, base_url: presetBaseUrl || baseUrl, models, api_key: cp.api_key || '' }
+        return { providerKey, label, base_url: presetBaseUrl || baseUrl, models, api_key: cp.api_key || '', builtin: !!builtinPreset }
       }),
     )
 
     for (const result of customFetches) {
       if (result.status === 'fulfilled' && result.value) {
-        const { providerKey, label, base_url, models, api_key: cpApiKey } = result.value
-        addGroup(providerKey, label, base_url, models, cpApiKey)
+        const { providerKey, label, base_url, models, api_key: cpApiKey, builtin: cpBuiltin } = result.value as any
+        addGroup(providerKey, label, base_url, models, cpApiKey, cpBuiltin)
       }
     }
 

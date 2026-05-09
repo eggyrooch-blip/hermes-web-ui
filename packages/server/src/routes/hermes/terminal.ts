@@ -217,19 +217,23 @@ function createSession(shell: string, cwd: string): PtySession {
 
 // ─── WebSocket server setup ─────────────────────────────────────
 
-export function setupTerminalWebSocket(httpServer: HttpServer) {
+export function setupTerminalWebSocket(httpServers: HttpServer | HttpServer[]) {
   if (!pty) {
     logger.warn('node-pty not available, skipping terminal WebSocket setup')
     return
   }
 
+  const servers = Array.isArray(httpServers) ? httpServers : [httpServers]
+
   if (!isTerminalEnabled()) {
     logger.info('Terminal disabled (set HERMES_TERMINAL_ENABLED=1 to opt in)')
-    httpServer.on('upgrade', (req, socket) => {
-      const url = new URL(req.url || '', `http://${req.headers.host}`)
-      if (url.pathname === '/api/hermes/terminal') {
-        denyUpgrade(socket, 404, 'Not Found')
-      }
+    servers.forEach((httpServer) => {
+      httpServer.on('upgrade', (req, socket) => {
+        const url = new URL(req.url || '', `http://${req.headers.host}`)
+        if (url.pathname === '/api/hermes/terminal') {
+          denyUpgrade(socket, 404, 'Not Found')
+        }
+      })
     })
     return
   }
@@ -237,28 +241,30 @@ export function setupTerminalWebSocket(httpServer: HttpServer) {
   const wss = new WebSocketServer({ noServer: true })
   const defaultShell = findShell()
 
-  httpServer.on('upgrade', async (req, socket, head) => {
-    const url = new URL(req.url || '', `http://${req.headers.host}`)
-    if (url.pathname !== '/api/hermes/terminal') {
-      return
-    }
+  servers.forEach((httpServer) => {
+    httpServer.on('upgrade', async (req, socket, head) => {
+      const url = new URL(req.url || '', `http://${req.headers.host}`)
+      if (url.pathname !== '/api/hermes/terminal') {
+        return
+      }
 
-    if (config.webPlane === 'chat') {
-      denyUpgrade(socket, 403, 'Forbidden')
-      return
-    }
+      if (config.webPlane === 'chat') {
+        denyUpgrade(socket, 403, 'Forbidden')
+        return
+      }
 
-    const auth = await authenticateUpgrade(req, url)
-    if (!auth.ok) {
-      logger.warn('Terminal upgrade denied: %s (status=%d)', auth.reason, auth.status || 401)
-      denyUpgrade(socket, auth.status || 401, auth.reason || 'Unauthorized')
-      return
-    }
+      const auth = await authenticateUpgrade(req, url)
+      if (!auth.ok) {
+        logger.warn('Terminal upgrade denied: %s (status=%d)', auth.reason, auth.status || 401)
+        denyUpgrade(socket, auth.status || 401, auth.reason || 'Unauthorized')
+        return
+      }
 
-    logger.warn('Terminal upgrade granted to principal=%s remote=%s', auth.principal, req.socket.remoteAddress)
+      logger.warn('Terminal upgrade granted to principal=%s remote=%s', auth.principal, req.socket.remoteAddress)
 
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit('connection', ws, req)
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit('connection', ws, req)
+      })
     })
   })
 

@@ -1513,7 +1513,7 @@ export class ChatRunSocket {
       this.hermesSessionIds.delete(sessionId)
       logger.info({ sessionId, hermesId, profile: profile || 'default' }, '[chat-run-socket][abort] syncing stopped run from Hermes')
       synced = await this.syncFromHermes(socket, sessionId, hermesId, profile, {
-        maxAttempts: 10,
+        maxAttempts: 4,
         delayMs: 1000,
       })
     }
@@ -1764,7 +1764,7 @@ export class ChatRunSocket {
       this.enqueueEphemeralDelete(hermesSessionId, profile)
       return true
     } catch (err: any) {
-      logger.warn(err, '[chat-run-socket] syncFromHermes failed for session %s (hermesId: %s, profile: %s)', localSessionId, hermesSessionId, profile || 'default')
+      logger.warn(err, '[chat-run-socket] syncFromHermes failed for session %s (hermesId: %s, profile: %s): %s', localSessionId, hermesSessionId, profile || 'default', err?.message)
       return false
     }
   }

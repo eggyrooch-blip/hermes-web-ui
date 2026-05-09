@@ -1,6 +1,7 @@
 import type { Context } from 'koa'
 import { getCredentials, setCredentials, verifyCredentials, deleteCredentials } from '../services/credentials'
 import { getToken, HERMES_SESSION_COOKIE, SESSION_COOKIE_MAX_AGE_SECONDS } from '../services/auth'
+import { checkPassword, recordPasswordFailure, recordPasswordSuccess, extractIp, getLockedIps, unlockIp, unlockAll } from '../services/login-limiter'
 import { config } from '../config'
 import {
   buildFeishuAuthorizeUrl,
@@ -59,8 +60,17 @@ export async function login(ctx: Context) {
     return
   }
 
+  const ip = extractIp(ctx)
+  const result = checkPassword(ip)
+  if (!result.allowed) {
+    ctx.status = result.status
+    ctx.body = { error: 'Too many login attempts, please try again later' }
+    return
+  }
+
   const valid = await verifyCredentials(username, password)
   if (!valid) {
+    recordPasswordFailure(ip)
     ctx.status = 401
     ctx.body = { error: 'Invalid username or password' }
     return
@@ -86,6 +96,7 @@ export async function login(ctx: Context) {
     overwrite: true,
   })
 
+  recordPasswordSuccess(ip)
   ctx.body = { token }
 }
 
@@ -314,4 +325,34 @@ export async function changeUsername(ctx: Context) {
 export async function removePassword(ctx: Context) {
   await deleteCredentials()
   ctx.body = { success: true }
+}
+
+/**
+ * GET /api/auth/locked-ips
+ * List all currently locked IPs (protected).
+ */
+export async function listLockedIps(ctx: Context) {
+  const locks = getLockedIps()
+  ctx.body = { locks }
+}
+
+/**
+ * DELETE /api/auth/locked-ips?ip=xxx
+ * Unlock a specific IP. No ip param = unlock all.
+ */
+export async function unlockIpHandler(ctx: Context) {
+  const ip = ctx.query.ip as string
+  if (ip) {
+    const found = unlockIp(ip)
+    if (!found) {
+      ctx.status = 404
+      ctx.body = { error: 'IP not locked' }
+      return
+    }
+    ctx.body = { success: true }
+    return
+  }
+  // No IP specified — unlock all
+  const count = unlockAll()
+  ctx.body = { success: true, count }
 }

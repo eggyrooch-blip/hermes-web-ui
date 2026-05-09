@@ -77,7 +77,10 @@ export async function healthCheck(ctx: any) {
   let gatewayOk = false
   try {
     const mgr = getGatewayManagerInstance()
-    const upstream = mgr?.getUpstream() || config.upstream
+    const upstream = mgr?.getUpstream()
+    if (!upstream) {
+      throw new Error('GatewayManager not initialized')
+    }
     const res = await fetch(`${upstream.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(5000) })
     gatewayOk = res.ok
   } catch { }

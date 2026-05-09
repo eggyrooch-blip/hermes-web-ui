@@ -30,7 +30,6 @@ function resolveSocketIoCors(raw: string): { origin: SocketIoCorsOrigin } {
     }
 }
 import { getDb } from '../../../db'
-import { GC_ROOMS_TABLE, GC_MESSAGES_TABLE, GC_ROOM_AGENTS_TABLE, GC_CONTEXT_SNAPSHOTS_TABLE, GC_ROOM_MEMBERS_TABLE, GC_PENDING_SESSION_DELETES_TABLE, GC_SESSION_PROFILES_TABLE } from '../../../db/hermes/schemas'
 import { AgentClients } from './agent-clients'
 import { ContextEngine } from '../context-engine/compressor'
 import { SessionDeleter } from '../session-deleter'
@@ -64,74 +63,6 @@ interface Member {
     joinedAt: number
     online: boolean
     socketId: string
-}
-
-// ─── SQLite Storage (global DB) ──────────────────────────────
-
-const GC_PENDING_SESSION_DELETES_SCHEMA: Record<string, string> = {
-    session_id: 'TEXT PRIMARY KEY',
-    profile_name: 'TEXT NOT NULL',
-    status: "TEXT NOT NULL DEFAULT 'pending'",
-    attempt_count: 'INTEGER NOT NULL DEFAULT 0',
-    last_error: 'TEXT',
-    created_at: 'INTEGER NOT NULL',
-    updated_at: 'INTEGER NOT NULL',
-    next_attempt_at: 'INTEGER NOT NULL DEFAULT 0',
-}
-
-const GC_SESSION_PROFILES_SCHEMA: Record<string, string> = {
-    session_id: 'TEXT PRIMARY KEY',
-    room_id: 'TEXT NOT NULL',
-    agent_id: 'TEXT NOT NULL',
-    profile_name: 'TEXT NOT NULL',
-    created_at: 'INTEGER NOT NULL',
-}
-
-const GC_ROOMS_SCHEMA: Record<string, string> = {
-    id: 'TEXT PRIMARY KEY',
-    name: 'TEXT NOT NULL',
-    inviteCode: 'TEXT UNIQUE',
-    triggerTokens: 'INTEGER NOT NULL DEFAULT 100000',
-    maxHistoryTokens: 'INTEGER NOT NULL DEFAULT 32000',
-    tailMessageCount: 'INTEGER NOT NULL DEFAULT 20',
-    totalTokens: 'INTEGER NOT NULL DEFAULT 0',
-}
-
-const GC_MESSAGES_SCHEMA: Record<string, string> = {
-    id: 'TEXT PRIMARY KEY',
-    roomId: 'TEXT NOT NULL',
-    senderId: 'TEXT NOT NULL',
-    senderName: 'TEXT NOT NULL',
-    content: 'TEXT NOT NULL',
-    timestamp: 'INTEGER NOT NULL',
-}
-
-const GC_ROOM_AGENTS_SCHEMA: Record<string, string> = {
-    id: 'TEXT PRIMARY KEY',
-    roomId: 'TEXT NOT NULL',
-    agentId: 'TEXT NOT NULL',
-    profile: 'TEXT NOT NULL',
-    name: 'TEXT NOT NULL',
-    description: "TEXT NOT NULL DEFAULT ''",
-    invited: 'INTEGER NOT NULL DEFAULT 0',
-}
-
-const GC_CONTEXT_SNAPSHOTS_SCHEMA: Record<string, string> = {
-    roomId: 'TEXT PRIMARY KEY',
-    summary: 'TEXT NOT NULL DEFAULT \'\'',
-    lastMessageId: 'TEXT NOT NULL',
-    lastMessageTimestamp: 'INTEGER NOT NULL',
-    updatedAt: 'INTEGER NOT NULL',
-}
-
-const GC_ROOM_MEMBERS_SCHEMA: Record<string, string> = {
-    id: 'TEXT PRIMARY KEY',
-    roomId: 'TEXT NOT NULL',
-    userId: 'TEXT NOT NULL',
-    userName: 'TEXT NOT NULL',
-    description: "TEXT NOT NULL DEFAULT ''",
-    joinedAt: 'INTEGER NOT NULL',
-    updatedAt: 'INTEGER NOT NULL',
 }
 
 let _tablesEnsured = false
@@ -514,17 +445,19 @@ export class GroupChatServer {
         }
     }
 
-    constructor(httpServer: HttpServer) {
+    constructor(httpServers: HttpServer | HttpServer[]) {
         this.storage = new ChatStorage()
         this.storage.init()
+        const servers = Array.isArray(httpServers) ? httpServers : [httpServers]
 
         // SECURITY: Socket.IO has its own CORS config that is independent
         // from the Koa cors middleware. Mirror the same three-mode resolution
         // (same-origin / wildcard / strict allowlist) so this transport
         // doesn't reopen the gap that index.ts:H5 closed.
-        this.io = new Server(httpServer, {
+        this.io = new Server(servers[0], {
             cors: resolveSocketIoCors(config.corsOrigins),
         })
+        servers.slice(1).forEach((httpServer) => this.io.attach(httpServer))
         this.nsp = this.io.of('/group-chat')
         this.nsp.use(this.authMiddleware.bind(this))
         this.nsp.on('connection', this.onConnection.bind(this))

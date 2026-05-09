@@ -125,6 +125,10 @@ onMounted(async () => {
             </svg>
             <span>{{ t("sidebar.search") }}</span>
           </button>
+          <a class="nav-item fun-link" href="https://apikey.fun/register?aff=LIBAPI" target="_blank" rel="noopener noreferrer">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            <span>{{ t('sidebar.apiRelay') }}</span>
+          </a>
         </div>
       </div>
 
@@ -145,6 +149,14 @@ onMounted(async () => {
               <line x1="3" y1="10" x2="21" y2="10" />
             </svg>
             <span>{{ t("sidebar.jobs") }}</span>
+          </button>
+          <button class="nav-item" :class="{ active: selectedKey === 'hermes.kanban' }" @click="handleNav('hermes.kanban')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="5" height="18" rx="1" />
+              <rect x="10" y="3" width="5" height="12" rx="1" />
+              <rect x="17" y="3" width="5" height="18" rx="1" />
+            </svg>
+            <span>{{ t("sidebar.kanban") }}</span>
           </button>
           <button v-if="showAdminSurfaces" class="nav-item" :class="{ active: selectedKey === 'hermes.channels' }" @click="handleNav('hermes.channels')">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -876,5 +888,9 @@ onMounted(async () => {
       width: 90px;
     }
   }
+}
+
+.fun-link {
+  text-decoration: none;
 }
 </style>

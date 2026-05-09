@@ -39,3 +39,6 @@ hermes-dependencies.md
 .tmp/
 # Local-only review and planning notes (never tracked historically)
 Plans/
+CLAUDE.md
+# Client source map artifacts
+packages/client/src/**/*.js

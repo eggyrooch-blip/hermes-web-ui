@@ -6,7 +6,7 @@ export type AuthMode = 'token' | 'trusted-feishu' | 'feishu-oauth-dev'
 
 export function getListenHost(env: Record<string, string | undefined> = process.env): string | undefined {
   const host = env.BIND_HOST?.trim()
-  return host || undefined
+  return host || '0.0.0.0'
 }
 
 function parseWebPlane(raw: string | undefined): WebPlane {
@@ -38,10 +38,8 @@ export function isAuthDisabled(): boolean {
 
 export const config = {
   port: parseInt(process.env.PORT || '8648', 10),
-  // Leave host undefined by default so Node binds to IPv6 when available,
-  // falling back to IPv4 on systems without IPv6 support.
+  // Default to IPv4 for stable WSL/Windows browser access. Use BIND_HOST=:: explicitly for IPv6.
   host: getListenHost(),
-  upstream: process.env.UPSTREAM || 'http://127.0.0.1:8642',
   uploadDir: process.env.UPLOAD_DIR || resolve(homedir(), '.hermes-web-ui', 'upload'),
   dataDir: resolve(__dirname, '..', 'data'),
   // SECURITY: defaults to same-origin (no Access-Control-Allow-Origin emitted).
