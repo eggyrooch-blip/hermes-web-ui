@@ -991,7 +991,6 @@ export const useChatStore = defineStore('chat', () => {
                   toolStatus: isToolCompletedError(evt) ? 'error' : 'done',
                   toolResult: getToolCompletedResult(evt),
                   toolDuration: duration,
-                  toolResult: typeof (evt as any).output === 'string' ? (evt as any).output : undefined,
                 })
               }
 
@@ -1424,7 +1423,6 @@ export const useChatStore = defineStore('chat', () => {
               toolStatus: isToolCompletedError(evt) ? 'error' : 'done',
               toolResult: getToolCompletedResult(evt),
               toolDuration: (evt as any).duration,
-              toolResult: typeof (evt as any).output === 'string' ? (evt as any).output : undefined,
             })
           }
 

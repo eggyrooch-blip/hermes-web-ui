@@ -2,16 +2,13 @@
 import { NSwitch, NSelect, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores/hermes/settings'
-import { useTheme, type ThemeMode } from '@/composables/useTheme'
+import { useTheme, type BrightnessMode } from '@/composables/useTheme'
 import SettingRow from './SettingRow.vue'
-import { isUserMode } from '@/api/client'
 
 const settingsStore = useSettingsStore()
 const message = useMessage()
 const { t } = useI18n()
-const { mode, setMode } = useTheme()
-const showCostLabel = () => isUserMode() ? t('settings.display.showTokenUsage') : t('settings.display.showCost')
-const showCostHint = () => isUserMode() ? t('settings.display.showTokenUsageHint') : t('settings.display.showCostHint')
+const { brightness, setBrightness } = useTheme()
 
 const themeOptions = [
   { label: t('settings.display.themeLight'), value: 'light' },
@@ -29,8 +26,8 @@ async function save(values: Record<string, any>) {
 }
 
 function handleThemeChange(val: string) {
-  const m = val as ThemeMode
-  setMode(m)
+  const m = val as BrightnessMode
+  setBrightness(m)
   save({ skin: m })
 }
 </script>
@@ -38,7 +35,7 @@ function handleThemeChange(val: string) {
 <template>
   <section class="settings-section">
     <SettingRow :label="t('settings.display.theme')" :hint="t('settings.display.themeHint')">
-      <NSelect :value="mode" :options="themeOptions" size="small" :consistent-menu-width="false" class="input-sm" @update:value="handleThemeChange" />
+      <NSelect :value="brightness" :options="themeOptions" size="small" :consistent-menu-width="false" class="input-sm" @update:value="handleThemeChange" />
     </SettingRow>
     <SettingRow :label="t('settings.display.streaming')" :hint="t('settings.display.streamingHint')">
       <NSwitch :value="settingsStore.display.streaming" @update:value="v => save({ streaming: v })" />
@@ -49,7 +46,7 @@ function handleThemeChange(val: string) {
     <SettingRow :label="t('settings.display.showReasoning')" :hint="t('settings.display.showReasoningHint')">
       <NSwitch :value="settingsStore.display.show_reasoning" @update:value="v => save({ show_reasoning: v })" />
     </SettingRow>
-    <SettingRow :label="showCostLabel()" :hint="showCostHint()">
+    <SettingRow :label="t('settings.display.showCost')" :hint="t('settings.display.showCostHint')">
       <NSwitch :value="settingsStore.display.show_cost" @update:value="v => save({ show_cost: v })" />
     </SettingRow>
     <SettingRow :label="t('settings.display.inlineDiffs')" :hint="t('settings.display.inlineDiffsHint')">
