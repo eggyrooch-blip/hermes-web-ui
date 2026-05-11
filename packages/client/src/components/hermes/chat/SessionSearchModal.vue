@@ -43,7 +43,7 @@ const items = computed<SearchItem[]>(() => {
 
 function formatSource(source: string): string {
   const map: Record<string, string> = {
-    api_server: '飞书 / API Server',
+    api_server: 'API Server',
     cli: 'CLI',
     telegram: 'Telegram',
     discord: 'Discord',
