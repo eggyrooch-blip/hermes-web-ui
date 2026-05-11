@@ -75,6 +75,7 @@ export default {
     jobs: '예약 작업',
     models: '모델',
     profiles: '프로필',
+    plugins: '플러그인',
     skills: '스킬',
     memory: '메모리',
     logs: '로그',
@@ -286,6 +287,74 @@ export default {
     },
   },
 
+  // 플러그인
+  plugins: {
+    title: '플러그인',
+    refresh: '새로고침',
+    notice: '탐색 가능한 Hermes 플러그인 manifest의 읽기 전용 인벤토리입니다. 탐색 메타데이터는 플러그인 코드를 로드하지 않고 읽습니다. v1의 관리 작업은 CLI에 유지되며, 변경 사항은 새 Hermes 세션에서 적용됩니다.',
+    loadFailed: '플러그인을 불러오지 못했습니다',
+    commandCopied: '명령을 복사했습니다',
+    searchPlaceholder: 'key, 이름, 설명, 경로 검색...',
+    source: '소스',
+    kind: '종류',
+    statusTitle: '상태',
+    configStatus: 'config: {status}',
+    notAvailable: 'n/a',
+    copyCommand: '명령 복사',
+    managedElsewhere: '다른 곳에서 관리됨',
+    noMatch: '현재 필터와 일치하는 플러그인이 없습니다',
+    enabled: '활성화됨',
+    disabled: '비활성화됨',
+    summary: {
+      total: '전체',
+      active: '활성 / 자동',
+      inactive: '비활성',
+      disabled: '비활성화됨',
+      providerManaged: 'Provider 관리',
+    },
+    status: {
+      enabled: '활성화됨',
+      'auto-active': '자동 활성',
+      inactive: '비활성',
+      disabled: '비활성화됨',
+      'provider-managed': 'Provider 관리',
+    },
+    statusLabel: {
+      enabled: '설정으로 활성화됨',
+      'auto-active': '자동 활성',
+      inactive: '비활성',
+      disabled: '비활성화됨',
+      'provider-managed': 'Provider 관리',
+    },
+    configStatuses: {
+      enabled: '활성화됨',
+      disabled: '비활성화됨',
+      'not-enabled': '활성화되지 않음',
+      auto: '자동',
+      'provider-managed': 'Provider 관리',
+    },
+    table: {
+      plugin: '플러그인',
+      status: '상태',
+      source: '소스',
+      kind: '종류',
+      capabilities: '기능',
+      path: '경로 / entrypoint',
+      cli: 'CLI',
+    },
+    capabilities: {
+      tools: '{count} tools',
+      hooks: '{count} hooks',
+      env: '{count} env',
+    },
+    metadata: {
+      agentRoot: 'Agent root',
+      python: 'Python',
+      scanCwd: 'Scan cwd',
+      projectPlugins: '프로젝트 플러그인',
+    },
+  },
+
   // 메모리
   memory: {
     title: '메모리',
@@ -451,6 +520,8 @@ export default {
       session: '세션',
       privacy: '개인정보',
       apiServer: 'API 서버',
+      models: '모델',
+      voice: '음성',
     },
     display: {
       streaming: '스트리밍 응답',
@@ -528,6 +599,55 @@ export default {
       keyHint: 'API 접근 키',
       cors: 'CORS 출처',
       corsHint: '허용된 교차 출처',
+    },
+    voice: {
+      ttsProvider: 'TTS 제공자',
+      ttsProviderHint: '메시지 재생에 사용할 텍스트 음성 변환 엔진 선택',
+      providerWebSpeech: 'WebSpeech API (브라우저)',
+      providerOpenai: 'OpenAI TTS',
+      providerCustom: '사용자 정의 엔드포인트 (OpenAI 호환)',
+      providerEdge: 'Edge TTS (무료, API Key 불필요)',
+
+      // WebSpeech
+      webspeechVoice: '음성',
+      webspeechVoiceHint: '브라우저 또는 OS에서 음성 선택',
+      webspeechVoicePlaceholder: '자동 (기본 음성)',
+
+      // OpenAI
+      openaiKey: 'API 키',
+      openaiKeyHint: 'TTS 접근 권한이 있는 OpenAI API 키',
+      openaiUrl: 'API 기본 URL',
+      openaiUrlHint: '예: https://api.openai.com/v1/audio/speech',
+      openaiModel: '모델',
+      openaiModelHint: 'tts-1 (빠름) / tts-1-hd (고음질)',
+      openaiVoice: '음색',
+      openaiVoiceHint: '합성에 사용할 음색',
+
+      // Custom endpoint
+      customHint: '모든 OpenAI 호환 TTS API 사용 가능 — GPT-SoVITS, CosyVoice 등 지원',
+      customUrl: 'API URL',
+      customUrlHint: 'TTS 서비스의 기본 URL',
+      customUrlPlaceholder: '로컬 어댑터에 설정된 주소 (예: http://127.0.0.1:9880)',
+      customApiKey: 'API 키 (선택사항)',
+      customApiKeyHint: '일부 사용자 정의 엔드포인트는 인증 필요',
+      customApiKeyPlaceholder: '필요하지 않으면 비워둠',
+
+      // Edge TTS
+      edgeHint: 'Microsoft Edge TTS 기반 (node-edge-tts).',
+      edgeUrl: '어댑터 URL',
+      edgeUrlHint: 'Edge TTS 어댑터 주소 (예: http://127.0.0.1:9882)',
+      edgeUrlPlaceholder: 'http://127.0.0.1:9882',
+      edgeVoice: '음색',
+      edgeVoiceHint: '음성 합성에 사용할 음색 선택',
+
+      // Test
+      testTitle: '음성 테스트',
+      testText: '테스트 텍스트',
+      testTextPlaceholder: '테스트할 텍스트 입력...',
+      testTextDefault: '안녕하세요, 음성 테스트입니다.',
+      testButton: '테스트',
+      testButtonPlaying: '재생 중...',
+      testFailed: '테스트 실패: {error}',
     },
     lockedIps: {
       title: '잠긴 IP 관리',
@@ -670,6 +790,10 @@ export default {
     new_0_5_15_9: 'Hermes Markdown 미디어 렌더링 및 동기화 재시도 수정',
     new_0_5_15_10: '업스트림 환경 변수 종속성 제거',
     new_0_5_15_11: '칸반 기능을 사용할 수 없는 경우 hermes-agent를 업그레이드하세요',
+    new_0_5_16_1: '채팅 스트리밍을 /v1/runs에서 /v1/responses API로 마이그레이션하여 지연 시간 단축',
+    new_0_5_16_2: '실제 API 사용량(토큰, 캐시, 추론)을 사용량 통계 테이블에 저장',
+    new_0_5_16_3: '웹사이트 내비게이션 바에 QQ 그룹 QR 코드 추가',
+    new_0_5_16_4: '메시지 스키마에서 사용하지 않는 codex_reasoning_items 필드 제거',
     new_0_5_13_1: '메시지 큐를 통한 순차 실행 처리로 동시 요청 충돌 방지',
     new_0_5_13_2: '2단계 스킬 디렉토리 구조 지원, 플랫 스킬은 기타 카테고리로 분류',
     new_0_5_13_3: '시작 동기화 시 임시 세션(eph_*) 필터링',
