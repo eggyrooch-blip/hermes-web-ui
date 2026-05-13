@@ -197,6 +197,23 @@ describe('Feishu OAuth controller', () => {
     })
   })
 
+  it('wakes the bound profile gateway after OAuth login when it is stopped', async () => {
+    const gatewayManager = {
+      detectStatus: vi.fn().mockResolvedValue({ profile: 'feishu_sunke', running: false }),
+      startApiOnly: vi.fn().mockResolvedValue({ profile: 'feishu_sunke', running: true }),
+    }
+    vi.doMock('../../packages/server/src/services/gateway-bootstrap', () => ({
+      getGatewayManagerInstance: () => gatewayManager,
+    }))
+
+    const { wakeBoundProfileGateway } = await import('../../packages/server/src/controllers/auth')
+
+    await wakeBoundProfileGateway('feishu_sunke')
+
+    expect(gatewayManager.detectStatus).toHaveBeenCalledWith('feishu_sunke')
+    expect(gatewayManager.startApiOnly).toHaveBeenCalledWith('feishu_sunke')
+  })
+
   it('keeps Feishu logout public so it can always clear the session cookie', async () => {
     const { authPublicRoutes, authProtectedRoutes } = await import('../../packages/server/src/routes/auth')
     const hasLogout = (route: any) => route.path === '/api/auth/feishu/logout' && route.methods.includes('POST')

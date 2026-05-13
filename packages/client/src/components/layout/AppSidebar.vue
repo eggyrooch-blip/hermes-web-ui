@@ -267,6 +267,9 @@ onMounted(async () => {
 
     <div v-if="currentUser || showUserModeChrome" class="sidebar-user" :class="{ locked: showUserModeChrome }">
       <div v-if="showUserModeChrome" class="user-card-actions">
+        <div class="user-language-switch">
+          <LanguageSwitch />
+        </div>
         <div class="user-theme-switch">
           <ThemeSwitch />
         </div>
@@ -570,7 +573,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 74px 12px 12px;
+  padding: 12px 144px 12px 12px;
   margin-top: 8px;
   border: 1px solid $border-color;
   border-radius: $radius-md;
@@ -595,6 +598,10 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.user-language-switch {
+  width: 74px;
 }
 
 .card-logout-button {

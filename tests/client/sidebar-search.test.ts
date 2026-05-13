@@ -216,7 +216,7 @@ describe('AppSidebar search entry', () => {
     expect(card.find('.card-logout-button').text()).toBe('')
     expect(wrapper.find('.sidebar-footer .logout-item').exists()).toBe(false)
     expect(wrapper.find('.sidebar-footer .status-row').exists()).toBe(false)
-    expect(wrapper.find('language-switch-stub').exists()).toBe(false)
+    expect(card.find('language-switch-stub').exists()).toBe(true)
     expect(wrapper.text()).not.toContain('sidebar.connected')
     expect(wrapper.text()).not.toContain('sidebar.disconnected')
   })
