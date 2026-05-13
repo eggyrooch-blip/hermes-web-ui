@@ -25,7 +25,6 @@ const displayProfile = computed(() => currentUser.value?.profile || profilesStor
 const displayInitial = computed(() => (displayName.value || 'H').trim().slice(0, 1).toUpperCase());
 const showUserModeChrome = computed(() => isUserMode());
 const showAdminSurfaces = computed(() => !showUserModeChrome.value);
-const displaySubject = computed(() => currentUser.value ? '飞书登录' : 'feishu');
 const gatewayStandby = computed(() => showUserModeChrome.value && !appStore.connected);
 
 const collapsedGroups = reactive<Record<string, boolean>>({});
@@ -267,9 +266,6 @@ onMounted(async () => {
 
     <div v-if="currentUser || showUserModeChrome" class="sidebar-user" :class="{ locked: showUserModeChrome }">
       <div v-if="showUserModeChrome" class="user-card-actions">
-        <div class="user-language-switch">
-          <LanguageSwitch />
-        </div>
         <div class="user-theme-switch">
           <ThemeSwitch />
         </div>
@@ -290,7 +286,6 @@ onMounted(async () => {
         <div class="user-name-row">
           <span class="user-name">{{ displayName }}</span>
         </div>
-        <div class="user-subject">{{ displaySubject }}</div>
         <div class="user-profile">{{ displayProfile }}</div>
       </div>
     </div>
@@ -600,10 +595,6 @@ onMounted(async () => {
   justify-content: center;
 }
 
-.user-language-switch {
-  width: 74px;
-}
-
 .card-logout-button {
   display: flex;
   align-items: center;
@@ -690,7 +681,6 @@ onMounted(async () => {
   }
 }
 
-.user-subject,
 .user-profile {
   margin-top: 2px;
   color: $text-muted;
