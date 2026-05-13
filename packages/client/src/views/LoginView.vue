@@ -75,6 +75,9 @@ async function handleLogin() {
 }
 
 function handleFeishuLogin() {
+  if (loading.value) return;
+  loading.value = true;
+  errorMsg.value = "";
   window.location.assign("/api/auth/feishu/login");
 }
 

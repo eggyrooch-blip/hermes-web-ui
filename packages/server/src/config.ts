@@ -9,6 +9,11 @@ export function getListenHost(env: Record<string, string | undefined> = process.
   return host || '0.0.0.0'
 }
 
+export function getFeishuCallbackRedirect(env: Record<string, string | undefined> = process.env): string {
+  const redirect = env.FEISHU_CALLBACK_REDIRECT?.trim()
+  return redirect || '/#/hermes/chat'
+}
+
 function parseWebPlane(raw: string | undefined): WebPlane {
   const value = raw?.trim().toLowerCase()
   if (value === 'chat' || value === 'ops' || value === 'both') return value
@@ -66,7 +71,7 @@ export const config = {
   feishuApiBaseUrl: process.env.FEISHU_API_BASE_URL || 'https://open.feishu.cn',
   feishuSessionSecret: process.env.FEISHU_SESSION_SECRET || '',
   feishuSessionMaxAgeSeconds: parseInt(process.env.FEISHU_SESSION_MAX_AGE_SECONDS || String(7 * 24 * 60 * 60), 10),
-  feishuCallbackRedirect: process.env.FEISHU_CALLBACK_REDIRECT || '/#/',
+  feishuCallbackRedirect: getFeishuCallbackRedirect(),
   chatPlaneAllowSettings: parseBool(process.env.HERMES_CHAT_PLANE_ALLOW_SETTINGS),
   chatPlaneTempOpenAdmin: parseBool(process.env.HERMES_CHAT_PLANE_TEMP_OPEN_ADMIN),
 }

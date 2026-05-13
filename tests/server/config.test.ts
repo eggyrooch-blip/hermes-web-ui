@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getListenHost } from '../../packages/server/src/config'
+import { getFeishuCallbackRedirect, getListenHost } from '../../packages/server/src/config'
 
 describe('server config', () => {
   it('defaults to an IPv4 bind host', () => {
@@ -12,5 +12,13 @@ describe('server config', () => {
 
   it('ignores blank BIND_HOST values', () => {
     expect(getListenHost({ BIND_HOST: ' ' })).toBe('0.0.0.0')
+  })
+
+  it('defaults Feishu OAuth callbacks to the chat route', () => {
+    expect(getFeishuCallbackRedirect({})).toBe('/#/hermes/chat')
+  })
+
+  it('uses FEISHU_CALLBACK_REDIRECT when provided', () => {
+    expect(getFeishuCallbackRedirect({ FEISHU_CALLBACK_REDIRECT: '/#/custom' })).toBe('/#/custom')
   })
 })

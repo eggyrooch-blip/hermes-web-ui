@@ -107,6 +107,26 @@ describe('LoginView token login', () => {
     expect(mockSetApiKey).not.toHaveBeenCalled()
   })
 
+  it('prevents duplicate Feishu OAuth redirects after the login button is clicked', async () => {
+    mockFetchAuthStatus.mockResolvedValue({
+      hasPasswordLogin: false,
+      authMode: 'feishu-oauth-dev',
+      plane: 'chat',
+    })
+    mockFetchCurrentUser.mockRejectedValue(new Error('Unauthorized'))
+
+    const wrapper = mount(LoginView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    const button = wrapper.find('button.login-btn')
+    await button.trigger('click')
+    await button.trigger('click')
+
+    expect(mockLocationAssign).toHaveBeenCalledOnce()
+    expect(mockLocationAssign).toHaveBeenCalledWith('/api/auth/feishu/login')
+  })
+
   it('redirects to chat when Feishu OAuth current user is already valid', async () => {
     mockFetchAuthStatus.mockResolvedValue({
       hasPasswordLogin: false,
