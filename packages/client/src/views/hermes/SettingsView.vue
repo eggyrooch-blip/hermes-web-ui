@@ -15,6 +15,7 @@ import SessionSettings from "@/components/hermes/settings/SessionSettings.vue";
 import PrivacySettings from "@/components/hermes/settings/PrivacySettings.vue";
 import ModelSettings from "@/components/hermes/settings/ModelSettings.vue";
 import AccountSettings from "@/components/hermes/settings/AccountSettings.vue";
+import VoiceSettings from "@/components/hermes/settings/VoiceSettings.vue";
 
 const settingsStore = useSettingsStore();
 const { t } = useI18n();
@@ -71,6 +72,9 @@ onMounted(() => {
           </NTabPane>
           <NTabPane v-if="showAdminSettings" name="models" :tab="t('settings.tabs.models')">
             <ModelSettings />
+          </NTabPane>
+          <NTabPane name="voice" :tab="t('settings.tabs.voice')">
+            <VoiceSettings />
           </NTabPane>
         </NTabs>
       </NSpin>

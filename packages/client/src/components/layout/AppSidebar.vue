@@ -288,7 +288,7 @@ onMounted(async () => {
           <span class="user-name">{{ displayName }}</span>
         </div>
         <div class="user-subject">{{ displaySubject }}</div>
-        <div v-if="!showUserModeChrome" class="user-profile">{{ displayProfile }}</div>
+        <div class="user-profile">{{ displayProfile }}</div>
       </div>
     </div>
     <ProfileSelector v-else />
