@@ -9,6 +9,7 @@ import { useProfilesStore } from "@/stores/hermes/profiles";
 import ProfileSelector from "./ProfileSelector.vue";
 import LanguageSwitch from "./LanguageSwitch.vue";
 import ThemeSwitch from "./ThemeSwitch.vue";
+import { useTheme } from '@/composables/useTheme'
 import { useSessionSearch } from '@/composables/useSessionSearch'
 
 const { t } = useI18n();
@@ -17,6 +18,7 @@ const router = useRouter();
 const appStore = useAppStore();
 const profilesStore = useProfilesStore();
 const { openSessionSearch } = useSessionSearch();
+const { isDark, toggleBrightness } = useTheme();
 const selectedKey = computed(() => route.name as string);
 const logoPath = '/logo.png';
 const currentUser = computed(() => profilesStore.currentUser);
@@ -266,9 +268,22 @@ onMounted(async () => {
 
     <div v-if="currentUser || showUserModeChrome" class="sidebar-user" :class="{ locked: showUserModeChrome }">
       <div v-if="showUserModeChrome" class="user-card-actions">
-        <div class="user-theme-switch">
-          <ThemeSwitch />
-        </div>
+        <button class="card-action-button" :title="isDark ? 'Light mode' : 'Dark mode'" :aria-label="isDark ? 'Light mode' : 'Dark mode'" @click="toggleBrightness">
+          <svg v-if="isDark" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="5" />
+            <line x1="12" y1="1" x2="12" y2="3" />
+            <line x1="12" y1="21" x2="12" y2="23" />
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+            <line x1="1" y1="12" x2="3" y2="12" />
+            <line x1="21" y1="12" x2="23" y2="12" />
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+          </svg>
+          <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+          </svg>
+        </button>
         <button class="card-logout-button" :title="t('sidebar.logout')" :aria-label="t('sidebar.logout')" @click="handleLogout">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -405,18 +420,14 @@ onMounted(async () => {
   }
 
   .sidebar-user.locked {
-    border-color: rgba(37, 99, 235, 0.16);
-    background:
-      linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(20, 184, 166, 0.06)),
-      rgba(255, 255, 255, 0.72);
-    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+    border-color: rgba(var(--accent-primary-rgb), 0.08);
+    background: transparent;
+    box-shadow: none;
 
     .dark & {
-      background:
-        linear-gradient(135deg, rgba(96, 165, 250, 0.12), rgba(45, 212, 191, 0.06)),
-        rgba(17, 24, 39, 0.72);
-      border-color: rgba(96, 165, 250, 0.18);
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.24);
+      background: transparent;
+      border-color: rgba(var(--accent-primary-rgb), 0.08);
+      box-shadow: none;
     }
   }
 
@@ -567,40 +578,35 @@ onMounted(async () => {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 14px 84px 14px 14px;
-  margin-top: 8px;
-  border: 1px solid $border-color;
-  border-radius: $radius-md;
-  background: rgba(var(--accent-primary-rgb), 0.04);
+  gap: 10px;
+  padding: 12px 62px 12px 12px;
+  margin: 8px -4px 0;
+  border-top: 1px solid rgba(var(--accent-primary-rgb), 0.08);
+  background: transparent;
 
   &.locked {
     align-items: center;
-    min-height: 92px;
+    min-height: 58px;
   }
 }
 
 .user-card-actions {
   position: absolute;
-  top: 10px;
+  top: 50%;
   right: 10px;
+  transform: translateY(-50%);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
-.user-theme-switch {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
+.card-action-button,
 .card-logout-button {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   color: $text-muted;
   background: transparent;
@@ -622,8 +628,8 @@ onMounted(async () => {
 }
 
 .user-avatar {
-  width: 48px;
-  height: 48px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   object-fit: cover;
   flex-shrink: 0;
@@ -644,8 +650,8 @@ onMounted(async () => {
   position: absolute;
   right: -1px;
   bottom: -1px;
-  width: 11px;
-  height: 11px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   border: 2px solid $bg-sidebar;
   background: $text-muted;
@@ -664,6 +670,7 @@ onMounted(async () => {
   min-width: 0;
   flex: 1;
   padding-right: 2px;
+  line-height: 1.2;
 }
 
 .user-name-row {
@@ -673,10 +680,10 @@ onMounted(async () => {
   min-width: 0;
 
   .user-name {
-    color: $text-primary;
-    font-size: 17px;
-    line-height: 1.2;
-    font-weight: 700;
+    color: $text-secondary;
+    font-size: 14px;
+    line-height: 1.25;
+    font-weight: 500;
     overflow: visible;
     text-overflow: clip;
     white-space: normal;
@@ -685,8 +692,8 @@ onMounted(async () => {
 }
 
 .user-profile {
-  margin-top: 6px;
-  color: $text-secondary;
+  margin-top: 2px;
+  color: $text-muted;
   font-size: 12px;
   line-height: 1.25;
   overflow: visible;
