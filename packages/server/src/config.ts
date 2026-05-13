@@ -58,6 +58,7 @@ export const config = {
   trustedHeaderSecret: process.env.HERMES_TRUSTED_HEADER_SECRET || '',
   trustedHeaderMaxAgeSeconds: parseInt(process.env.HERMES_TRUSTED_HEADER_MAX_AGE_SECONDS || '300', 10),
   multitenancyDb: process.env.HERMES_MULTITENANCY_DB || resolve(homedir(), '.hermes', 'multitenancy.db'),
+  requiredProfile: process.env.HERMES_REQUIRED_PROFILE?.trim() || '',
   feishuAppId: process.env.FEISHU_APP_ID || '',
   feishuAppSecret: process.env.FEISHU_APP_SECRET || '',
   feishuRedirectUri: process.env.FEISHU_REDIRECT_URI || '',

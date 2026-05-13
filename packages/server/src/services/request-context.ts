@@ -88,6 +88,7 @@ export function resolveProfileForOpenId(openid: string): string | null {
           'SELECT profile_name FROM multitenancy_routing WHERE open_id = ? AND active = 1 LIMIT 1',
         ).get(openid) as { profile_name?: string } | undefined
         const profile = row?.profile_name?.trim()
+        if (profile && config.requiredProfile && profile !== config.requiredProfile) return null
         if (profile) return profile
       } finally {
         db.close()
