@@ -38,6 +38,13 @@ const statusType = computed(() => {
 
 const scheduleExpr = computed(() => scheduleToDisplayText(props.job.schedule, props.job.schedule_display || '—'))
 
+const deliveryLabel = computed(() => {
+  if (props.job.deliver === 'feishu') return t('jobs.feishu')
+  if (props.job.deliver === 'local') return t('jobs.local')
+  if (props.job.deliver === 'origin') return t('jobs.origin')
+  return props.job.deliver || '—'
+})
+
 const formatTime = (t?: string | null) => {
   if (!t) return '—'
   return new Date(t).toLocaleString()
@@ -117,7 +124,7 @@ function handleCardClick(e: MouseEvent) {
       </div>
       <div class="info-row">
         <span class="info-label">{{ t('jobs.info.deliver') }}</span>
-        <span class="info-value">{{ job.deliver }}<template v-if="job.origin"> ({{ job.origin.platform }})</template></span>
+        <span class="info-value">{{ deliveryLabel }}<template v-if="job.deliver === 'origin' && job.origin"> ({{ job.origin.platform }})</template></span>
       </div>
       <div v-if="job.repeat" class="info-row">
         <span class="info-label">{{ t('jobs.info.repeat') }}</span>

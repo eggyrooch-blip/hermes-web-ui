@@ -1,7 +1,7 @@
 import type { Context } from 'koa'
 import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
 import { updateUsage } from '../../db/hermes/usage-store'
-import { getRequestProfile } from '../../services/request-context'
+import { getRequestProfile, isChatPlaneRequest, type WebUser } from '../../services/request-context'
 import { isAllowedUpstreamHost } from '../../services/hermes/gateway-manager'
 import { logger } from '../../services/logger'
 
@@ -88,7 +88,13 @@ function buildProxyHeaders(ctx: Context, upstream: string): Record<string, strin
     const lower = key.toLowerCase()
     if (lower === 'host') {
       headers['host'] = new URL(upstream).host
-    } else if (lower === 'origin' || lower === 'referer' || lower === 'connection' || lower === 'authorization') {
+    } else if (
+      lower === 'origin' ||
+      lower === 'referer' ||
+      lower === 'connection' ||
+      lower === 'authorization' ||
+      lower === 'x-hermes-feishu-openid'
+    ) {
       continue
     } else {
       const v = Array.isArray(value) ? value[0] : value
@@ -102,6 +108,12 @@ function buildProxyHeaders(ctx: Context, upstream: string): Record<string, strin
     if (apiKey) {
       headers['authorization'] = `Bearer ${apiKey}`
     }
+  }
+
+  if (isChatPlaneRequest(ctx)) {
+    const user = ctx.state?.user as WebUser | undefined
+    const openid = user?.openid?.trim()
+    if (openid) headers['X-Hermes-Feishu-OpenId'] = openid
   }
 
   return headers

@@ -1,6 +1,6 @@
 import type { Context } from 'koa'
 import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
-import { getRequestProfile, isChatPlaneRequest } from '../../services/request-context'
+import { getRequestProfile, isChatPlaneRequest, type WebUser } from '../../services/request-context'
 
 function getUpstream(profile: string): string {
   const mgr = getGatewayManagerInstance()
@@ -19,10 +19,19 @@ function resolveProfile(ctx: Context): string {
   return getRequestProfile(ctx)
 }
 
-function buildHeaders(profile: string): Record<string, string> {
+function getChatPlaneOpenId(ctx: Context): string | undefined {
+  if (!isChatPlaneRequest(ctx)) return undefined
+  const user = ctx.state?.user as WebUser | undefined
+  const openid = user?.openid?.trim()
+  return openid || undefined
+}
+
+function buildHeaders(profile: string, ctx: Context): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const apiKey = getApiKey(profile)
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+  const openid = getChatPlaneOpenId(ctx)
+  if (openid) headers['X-Hermes-Feishu-OpenId'] = openid
   return headers
 }
 
@@ -38,8 +47,8 @@ const CHAT_PLANE_BODY_BLOCKLIST = new Set([
   'authorization',
 ])
 
-function sanitizeChatPlaneBody(value: unknown): unknown {
-  if (!isChatPlaneRequest() || !value || typeof value !== 'object' || Array.isArray(value)) return value
+function sanitizeChatPlaneBody(ctx: Context, value: unknown): unknown {
+  if (!isChatPlaneRequest(ctx) || !value || typeof value !== 'object' || Array.isArray(value)) return value
 
   const sanitized: Record<string, unknown> = {}
   for (const [key, fieldValue] of Object.entries(value as Record<string, unknown>)) {
@@ -47,6 +56,34 @@ function sanitizeChatPlaneBody(value: unknown): unknown {
     sanitized[key] = fieldValue
   }
   return sanitized
+}
+
+function normalizeChatPlaneJobBody(ctx: Context, profile: string, upstreamPath: string, method: string, value: unknown): unknown {
+  if (!isChatPlaneRequest(ctx) || !value || typeof value !== 'object' || Array.isArray(value)) return value
+
+  const body = { ...(value as Record<string, unknown>) }
+  delete body.owner_open_id
+  delete body.owner_profile
+
+  const openid = getChatPlaneOpenId(ctx)
+  if (openid) {
+    body.owner_open_id = openid
+    body.owner_profile = profile
+  }
+
+  if (method === 'POST' && upstreamPath === '/api/jobs') {
+    const deliveryMode = typeof body.delivery_mode === 'string' ? body.delivery_mode : ''
+    delete body.delivery_mode
+    if (deliveryMode === 'history_only') {
+      body.deliver = 'local'
+    } else if (deliveryMode === 'feishu_origin') {
+      body.deliver = 'origin'
+    } else if (!body.deliver || body.deliver === 'origin' || deliveryMode === 'feishu_default') {
+      body.deliver = 'feishu'
+    }
+  }
+
+  return body
 }
 
 async function readUpstreamError(res: Response): Promise<unknown> {
@@ -88,15 +125,22 @@ async function proxyRequest(
   const search = params.toString()
   const url = `${upstream}${upstreamPath}${search ? `?${search}` : ''}`
 
-  const headers = buildHeaders(profile)
+  const requestMethod = method || ctx.req.method || ctx.method || 'GET'
+  const headers = buildHeaders(profile, ctx)
   const body = ctx.req.method !== 'GET' && ctx.req.method !== 'HEAD'
-    ? JSON.stringify(sanitizeChatPlaneBody(ctx.request.body || {}))
+    ? JSON.stringify(normalizeChatPlaneJobBody(
+      ctx,
+      profile,
+      upstreamPath,
+      requestMethod,
+      sanitizeChatPlaneBody(ctx, ctx.request.body || {}),
+    ))
     : undefined
 
   let res: Response
   try {
     res = await fetch(url, {
-      method: method || ctx.req.method,
+      method: requestMethod,
       headers,
       body,
       signal: AbortSignal.timeout(TIMEOUT_MS),

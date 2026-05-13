@@ -985,6 +985,8 @@ export class ChatRunSocket {
 
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+      const userOpenId = (socket.data?.user?.openid as string | undefined)?.trim()
+      if (userOpenId) headers['X-Hermes-Feishu-OpenId'] = userOpenId
       // Convert conversation_history from OpenAI format to Anthropic format
       if (body.conversation_history && Array.isArray(body.conversation_history)) {
         body.conversation_history = convertHistoryFormat(body.conversation_history)

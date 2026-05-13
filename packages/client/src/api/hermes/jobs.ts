@@ -149,7 +149,7 @@ export function buildJobUpdateRequest(original: Job, form: JobFormValues): Updat
   const payload: UpdateJobRequest = {}
   const originalSchedule = scheduleToEditableInput(original.schedule, original.schedule_display || '')
   const originalRepeat = jobRepeatToEditValue(original.repeat)
-  const originalDeliver = original.deliver || 'origin'
+  const originalDeliver = original.deliver || 'feishu'
 
   if (form.name !== original.name) payload.name = form.name
   if (form.schedule !== originalSchedule) payload.schedule = form.schedule
