@@ -209,7 +209,13 @@ function detectInitSystem(): string {
 }
 
 const initSystem = detectInitSystem()
-const needsRunMode = !['systemd', 'launchd', 'windows-service'].includes(initSystem)
+// HERMES_FORCE_RUN_MODE=1 强制走 `gateway run --replace` (detached subprocess),
+// 跳过 service-mode (`gateway start`)。适用于宿主有 systemd 但没装 per-profile
+// `hermes-gateway-<profile>.service` units 的部署 — 直接用 detached process
+// 跟 macOS launchd 路径一致。
+const needsRunMode =
+  process.env.HERMES_FORCE_RUN_MODE === '1' ||
+  !['systemd', 'launchd', 'windows-service'].includes(initSystem)
 // 启动时输出 init 系统检测结果（方便调试）
 logger.debug('Detected init system: %s (needsRunMode: %s)', initSystem, needsRunMode)
 
