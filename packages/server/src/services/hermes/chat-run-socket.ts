@@ -9,6 +9,9 @@
  * the client emits 'resume' to rejoin its session room.
  */
 import type { Server, Socket } from 'socket.io'
+import { existsSync } from 'fs'
+import { readFile } from 'fs/promises'
+import { extname, isAbsolute, resolve } from 'path'
 import { getSystemPrompt } from '../../lib/llm-prompt'
 import {
   getSession,
@@ -27,6 +30,7 @@ import { parseAnthropicContentArray } from '../../lib/llm-json'
 import { updateUsage } from '../../db/hermes/usage-store'
 import { logger } from '../logger'
 import { config } from '../../config'
+import { getProfileDir } from './hermes-profile'
 import {
   extractFeishuSessionFromCookieHeader,
   getFeishuSessionSecret,
@@ -70,6 +74,66 @@ function isContentBlockArray(input: any): input is ContentBlock[] {
   return Array.isArray(input) && input.length > 0 && ('type' in input[0])
 }
 
+const USE_CLIENT_SUPPLIED_HISTORY = process.env.HERMES_WEBUI_CLIENT_HISTORY === '1'
+const TEXT_FILE_EXTENSIONS = new Set([
+  '.txt', '.md', '.markdown', '.json', '.jsonl', '.csv', '.tsv', '.yaml', '.yml',
+  '.xml', '.html', '.css', '.js', '.ts', '.tsx', '.jsx', '.py', '.sh', '.log',
+])
+const MAX_INLINE_FILE_CHARS = 200_000
+
+function resolveUploadedPath(profile: string, filePath: string): string | null {
+  if (!filePath) return null
+  const workspaceRoot = resolve(getProfileDir(profile), 'workspace')
+  if (isAbsolute(filePath)) {
+    const absolutePath = resolve(filePath)
+    const uploadRoot = resolve(config.uploadDir)
+    const allowedRoots = [workspaceRoot, uploadRoot]
+    return allowedRoots.some(root => absolutePath === root || absolutePath.startsWith(`${root}/`))
+      ? absolutePath
+      : null
+  }
+  const candidate = resolve(workspaceRoot, filePath)
+  if (candidate !== workspaceRoot && !candidate.startsWith(`${workspaceRoot}/`)) return null
+  return candidate
+}
+
+function shouldInlineFile(block: ContentBlock): boolean {
+  if (block.type !== 'file') return false
+  const media = (block.media_type || '').toLowerCase()
+  if (media.startsWith('text/')) return true
+  return TEXT_FILE_EXTENSIONS.has(extname(block.name || block.path).toLowerCase())
+}
+
+async function readInlineFileBlock(profile: string, block: ContentBlock): Promise<string> {
+  if (block.type !== 'file') return ''
+  const resolvedPath = resolveUploadedPath(profile, block.path)
+  if (!resolvedPath || !existsSync(resolvedPath) || !shouldInlineFile(block)) {
+    return `[File: ${block.name || block.path}]`
+  }
+  const content = await readFile(resolvedPath, 'utf-8')
+  const trimmed = content.length > MAX_INLINE_FILE_CHARS
+    ? `${content.slice(0, MAX_INLINE_FILE_CHARS)}\n\n[File truncated at ${MAX_INLINE_FILE_CHARS} characters]`
+    : content
+  return `\n\n[File: ${block.name || block.path}]\n${trimmed}`
+}
+
+async function buildResponsesInput(input: string | ContentBlock[], profile: string): Promise<any> {
+  if (!isContentBlockArray(input)) return input
+
+  const hasImage = input.some(block => block.type === 'image')
+  if (!hasImage) {
+    const parts: string[] = []
+    for (const block of input) {
+      if (block.type === 'text') parts.push(block.text)
+      if (block.type === 'file') parts.push(await readInlineFileBlock(profile, block))
+    }
+    return parts.filter(Boolean).join('\n')
+  }
+
+  const parts = await convertContentBlocks(input, profile)
+  return [{ role: 'user', content: parts }]
+}
+
 /**
  * Convert ContentBlock[] to multimodal format for /v1/responses API.
  *
@@ -77,7 +141,7 @@ function isContentBlockArray(input: any): input is ContentBlock[] {
  * - image → { type: "input_image", image_url: "data:image/...;base64,..." }
  * - file → text mention [File: name]
  */
-async function convertContentBlocks(blocks: ContentBlock[]): Promise<Array<{ type: string; text?: string; image_url?: string }>> {
+async function convertContentBlocks(blocks: ContentBlock[], profile: string): Promise<Array<{ type: string; text?: string; image_url?: string }>> {
   const parts: Array<{ type: string; text?: string; image_url?: string }> = []
   const fs = await import('fs/promises')
   const path = await import('path')
@@ -87,8 +151,10 @@ async function convertContentBlocks(blocks: ContentBlock[]): Promise<Array<{ typ
       parts.push({ type: 'input_text', text: block.text })
     } else if (block.type === 'image') {
       try {
-        const buf = await fs.readFile(block.path)
-        const ext = path.extname(block.path).toLowerCase().replace('.', '')
+        const resolvedPath = resolveUploadedPath(profile, block.path)
+        if (!resolvedPath) throw new Error('image path is outside allowed upload roots')
+        const buf = await fs.readFile(resolvedPath)
+        const ext = path.extname(resolvedPath).toLowerCase().replace('.', '')
         const mime = ext === 'jpg' ? 'jpeg' : ext || 'png'
         const base64 = buf.toString('base64')
         parts.push({ type: 'input_image', image_url: `data:image/${mime};base64,${base64}` })
@@ -96,7 +162,7 @@ async function convertContentBlocks(blocks: ContentBlock[]): Promise<Array<{ typ
         parts.push({ type: 'input_text', text: `[Image: ${block.path}]` })
       }
     } else if (block.type === 'file') {
-      parts.push({ type: 'input_text', text: `[File: ${block.name || block.path}]` })
+      parts.push({ type: 'input_text', text: await readInlineFileBlock(profile, block) })
     }
   }
 
@@ -169,6 +235,7 @@ interface QueuedRun {
   queue_id: string
   input: string | ContentBlock[]
   model?: string
+  provider?: string
   instructions?: string
   profile: string
 }
@@ -201,6 +268,7 @@ export class ChatRunSocket {
   private gatewayManager: any
   /** sessionId → session state (messages, working status, events, run tracking) */
   private sessionMap = new Map<string, SessionState>()
+  private hermesSessionIds = new Map<string, string>()
 
   constructor(io: Server, gatewayManager: any) {
     this.nsp = io.of('/chat-run')
@@ -245,6 +313,7 @@ export class ChatRunSocket {
       input: string | ContentBlock[]
       session_id?: string
       model?: string
+      provider?: string
       instructions?: string
       queue_id?: string
     }) => {
@@ -255,6 +324,7 @@ export class ChatRunSocket {
             queue_id: data.queue_id || `queue_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
             input: data.input,
             model: data.model,
+            provider: data.provider,
             instructions: data.instructions,
             profile,
           })
@@ -502,11 +572,12 @@ export class ChatRunSocket {
 
   private async handleRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; session_id?: string; model?: string; instructions?: string },
+    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string },
     profile: string,
     skipUserMessage = false,
   ) {
-    const { input, session_id, model, instructions } = data
+    const { input, session_id, model, provider, instructions } = data
+    await this.ensureGatewayReady(profile)
     const upstream = this.gatewayManager.getUpstream(profile).replace(/\/$/, '')
     const apiKey = this.gatewayManager.getApiKey(profile) || undefined
 
@@ -593,8 +664,10 @@ export class ChatRunSocket {
     }
     try {
       // Build upstream request body
-      const body: Record<string, any> = { input }
+      const body: Record<string, any> = { input: await buildResponsesInput(input, profile) }
       if (model) body.model = model
+      if (provider) body.provider = provider
+      if (session_id) body.conversation = `webui:${session_id}`
       if (instructions) {
         body.instructions = `${getSystemPrompt()}\n${instructions}`
       } else {
@@ -610,12 +683,14 @@ export class ChatRunSocket {
             : `\n${workspaceCtx}`
         }
       }
-      // Build conversation_history from DB if session_id is provided
-      if (session_id) {
+      // Legacy opt-in path for stateless upstreams. Default is Hermes-native
+      // response chaining via conversation/previous_response_id so the profile
+      // gateway owns transcript continuity.
+      if (USE_CLIENT_SUPPLIED_HISTORY && session_id) {
         try {
           const detail = useLocalSessionStore()
             ? getSessionDetail(session_id)
-            : await getSessionDetailFromDb(session_id)
+            : await getSessionDetailFromDb(session_id, profile)
           if (detail?.messages?.length) {
             // Filter valid messages
             const validMessages = detail.messages.filter(m =>
@@ -910,20 +985,12 @@ export class ChatRunSocket {
 
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
-      // Convert input from ContentBlock[] to multimodal message format for /v1/responses
-      if (isContentBlockArray(input)) {
-        const parts = await convertContentBlocks(input)
-        body.input = [{ role: 'user', content: parts }]
-      }
-
-      // Debug: write history to JSON file for analysis (before conversion)
-
       // Convert conversation_history from OpenAI format to Anthropic format
       if (body.conversation_history && Array.isArray(body.conversation_history)) {
         body.conversation_history = convertHistoryFormat(body.conversation_history)
       }
       body.stream = true
-      body.store = false
+      body.store = true
 
       const abortController = new AbortController()
       if (session_id) {
@@ -954,6 +1021,8 @@ export class ChatRunSocket {
         if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
         return
       }
+      const hermesSessionId = res.headers.get('X-Hermes-Session-Id') || res.headers.get('x-hermes-session-id')
+      if (session_id && hermesSessionId) this.hermesSessionIds.set(session_id, hermesSessionId)
 
       let responseId: string | undefined
       for await (const frame of readSseFrames(res.body)) {
@@ -995,6 +1064,8 @@ export class ChatRunSocket {
             run_id: responseId,
           })
           const finalOutput = parsed.response || parsed
+          const completedHermesSessionId = finalOutput.session_id || finalOutput.sessionId || hermesSessionId
+          if (session_id && completedHermesSessionId) this.hermesSessionIds.set(session_id, String(completedHermesSessionId))
           const finalText = extractResponseText(finalOutput)
           if (upstreamEvent === 'response.completed' && session_id) {
             const usage = finalOutput.usage || {}
@@ -1288,7 +1359,7 @@ export class ChatRunSocket {
   }
 
   /** Mark a session run as completed/failed so reconnecting clients get notified */
-  private async markCompleted(_socket: Socket, sessionId: string, _info: { event: string; run_id?: string }) {
+  private async markCompleted(socket: Socket, sessionId: string, _info: { event: string; run_id?: string }) {
     const state = this.sessionMap.get(sessionId)
     if (state) {
       if (state.isAborting) {
@@ -1303,6 +1374,11 @@ export class ChatRunSocket {
       state.runId = undefined
       state.events = []
       this.flushResponseRunToDb(state, sessionId)
+      const profile = state.profile
+      const hermesSessionId = this.hermesSessionIds.get(sessionId)
+      if (profile && hermesSessionId) {
+        void this.syncFromHermes(socket, sessionId, hermesSessionId, profile, { maxAttempts: 10, delayMs: 500 })
+      }
       state.responseRun = undefined
       state.profile = undefined
       updateSessionStats(sessionId)
@@ -1328,6 +1404,7 @@ export class ChatRunSocket {
       input: next.input,
       session_id: sessionId,
       model: next.model,
+      provider: next.provider,
       instructions: next.instructions,
     }, next.profile || fallbackProfile, true)
     return true
@@ -1372,6 +1449,7 @@ export class ChatRunSocket {
         input: next.input,
         session_id: sessionId,
         model: next.model,
+        provider: next.provider,
         instructions: next.instructions,
       }, next.profile || profile || 'default', true)
       return
@@ -1401,7 +1479,7 @@ export class ChatRunSocket {
     try {
       const detail = useLocalSessionStore()
         ? getSessionDetail(sid)
-        : await getSessionDetailFromDb(sid)
+        : await getSessionDetailFromDb(sid, state.profile)
       const msgs = detail?.messages
         ?.filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool') || []
 
@@ -1434,6 +1512,48 @@ export class ChatRunSocket {
       logger.warn(err, '[chat-run-socket] failed to calculate usage for session %s', sid)
       return { inputTokens: 0, outputTokens: 0 }
     }
+  }
+
+  private async ensureGatewayReady(profile: string): Promise<void> {
+    if (typeof this.gatewayManager.detectStatus !== 'function') return
+    const current = await this.gatewayManager.detectStatus(profile)
+    if (current?.running) return
+    if (typeof this.gatewayManager.startApiOnly === 'function') {
+      await this.gatewayManager.startApiOnly(profile)
+    }
+  }
+
+  private async syncFromHermes(
+    _socket: Socket,
+    localSessionId: string,
+    hermesSessionId: string,
+    profile: string,
+    options: { maxAttempts?: number; delayMs?: number } = {},
+  ): Promise<boolean> {
+    const maxAttempts = options.maxAttempts ?? 3
+    const delayMs = options.delayMs ?? 250
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const { getSessionMessagesFromDb } = await import('../../db/hermes/sessions-db')
+        const detail = await getSessionMessagesFromDb(hermesSessionId, profile)
+        if (detail?.messages?.length) {
+          const state = this.sessionMap.get(localSessionId)
+          if (state) {
+            state.messages = this.handleMessage(detail.messages.map(message => ({
+              ...message,
+              session_id: localSessionId,
+            })), localSessionId)
+          }
+          return true
+        }
+      } catch (err) {
+        logger.debug(err, '[chat-run-socket] Hermes state sync attempt %d failed for %s', attempt, hermesSessionId)
+      }
+      if (attempt < maxAttempts) {
+        await new Promise(resolvePromise => setTimeout(resolvePromise, delayMs))
+      }
+    }
+    return false
   }
 
   /** Get or create session state in sessionMap */

@@ -1,4 +1,4 @@
-import { writeFile } from 'fs/promises'
+import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { safeReadFile, safeStat } from '../../services/config-helpers'
 import { getRequestProfileDir } from '../../services/request-context'
@@ -36,7 +36,9 @@ export async function save(ctx: any) {
     filePath = join(hd, 'SOUL.md')
   } else {
     const fileName = section === 'memory' ? 'MEMORY.md' : 'USER.md'
-    filePath = join(hd, 'memories', fileName)
+    const memoryDir = join(hd, 'memories')
+    await mkdir(memoryDir, { recursive: true })
+    filePath = join(memoryDir, fileName)
   }
   try {
     await writeFile(filePath, content, 'utf-8')

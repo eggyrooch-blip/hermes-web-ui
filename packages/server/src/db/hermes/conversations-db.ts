@@ -1,4 +1,4 @@
-import { getActiveProfileDir } from '../../services/hermes/hermes-profile'
+import { getActiveProfileDir, getProfileDir } from '../../services/hermes/hermes-profile'
 import type {
   ConversationDetail,
   ConversationListOptions,
@@ -61,9 +61,11 @@ interface ConversationSessionRow {
   is_active: boolean
 }
 
-function conversationDbPath(): string {
-  return `${getActiveProfileDir()}/state.db`
+function conversationDbPath(profile?: string): string {
+  return profile ? `${getProfileDir(profile)}/state.db` : `${getActiveProfileDir()}/state.db`
 }
+
+type ConversationDbListOptions = ConversationListOptions & { profile?: string }
 
 function normalizeNumber(value: unknown, fallback = 0): number {
   if (value == null || value === '') return fallback
@@ -358,13 +360,13 @@ function normalizeVisibleMessage(message: { id: number | string, session_id: str
   }
 }
 
-async function openConversationDb() {
+async function openConversationDb(profile?: string) {
   if (!SQLITE_AVAILABLE) {
     throw new Error(`node:sqlite requires Node >= 22.5, current: ${process.versions.node}`)
   }
 
   const { DatabaseSync } = await import('node:sqlite')
-  return new DatabaseSync(conversationDbPath(), { open: true, readOnly: true })
+  return new DatabaseSync(conversationDbPath(profile), { open: true, readOnly: true })
 }
 
 function buildConversationSessionSql(source?: string): { sql: string, params: any[] } {
@@ -417,8 +419,8 @@ function buildConversationSessionSql(source?: string): { sql: string, params: an
   return { sql, params: source ? [source] : [] }
 }
 
-async function loadConversationSessions(source?: string): Promise<ConversationSessionRow[]> {
-  const db = await openConversationDb()
+async function loadConversationSessions(source?: string, profile?: string): Promise<ConversationSessionRow[]> {
+  const db = await openConversationDb(profile)
   try {
     const { sql, params } = buildConversationSessionSql(source)
     const rows = db.prepare(sql).all(...params) as Record<string, unknown>[]
@@ -429,10 +431,10 @@ async function loadConversationSessions(source?: string): Promise<ConversationSe
   }
 }
 
-export async function listConversationSummariesFromDb(options: ConversationListOptions = {}): Promise<ConversationSummary[]> {
+export async function listConversationSummariesFromDb(options: ConversationDbListOptions = {}): Promise<ConversationSummary[]> {
   const humanOnly = options.humanOnly !== false
   const limit = options.limit && options.limit > 0 ? options.limit : DEFAULT_CONVERSATION_LIMIT
-  const sessions = await loadConversationSessions(options.source)
+  const sessions = await loadConversationSessions(options.source, options.profile)
   const byId = new Map(sessions.map(session => [session.id, session]))
   const childrenByParent = new Map<string | null, string[]>()
   for (const session of sessions) {
@@ -454,9 +456,9 @@ export async function listConversationSummariesFromDb(options: ConversationListO
   return sortByRecency(summaries).slice(0, limit)
 }
 
-export async function getConversationDetailFromDb(sessionId: string, options: ConversationListOptions = {}): Promise<ConversationDetail | null> {
+export async function getConversationDetailFromDb(sessionId: string, options: ConversationDbListOptions = {}): Promise<ConversationDetail | null> {
   const humanOnly = options.humanOnly !== false
-  const sessions = await loadConversationSessions(options.source)
+  const sessions = await loadConversationSessions(options.source, options.profile)
   const byId = new Map(sessions.map(session => [session.id, session]))
   const childrenByParent = new Map<string | null, string[]>()
   for (const session of sessions) {
@@ -482,7 +484,7 @@ export async function getConversationDetailFromDb(sessionId: string, options: Co
 
   if (!chain.length) return null
 
-  const db = await openConversationDb()
+  const db = await openConversationDb(options.profile)
   try {
     const ids = chain.map(session => session.id)
     const placeholders = ids.map(() => '?').join(', ')

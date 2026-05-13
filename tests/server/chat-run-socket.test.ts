@@ -152,6 +152,47 @@ describe('ChatRunSocket gateway lifecycle', () => {
     }))
   })
 
+  it('uses Hermes-native response chaining instead of local conversation_history', async () => {
+    const { io } = createSocketServer()
+    const gatewayManager = {
+      detectStatus: vi.fn().mockResolvedValue({
+        profile: 'g41a5b5g',
+        running: true,
+        url: 'http://127.0.0.1:8654',
+      }),
+      startApiOnly: vi.fn(),
+      getUpstream: vi.fn(() => 'http://127.0.0.1:8654'),
+      getApiKey: vi.fn(() => null),
+    }
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const chatRun = new ChatRunSocket(io as any, gatewayManager)
+    const socket = {
+      connected: true,
+      emit: vi.fn(),
+      join: vi.fn(),
+    }
+
+    await (chatRun as any).handleRun(socket, {
+      input: 'hello',
+      session_id: 'session-native',
+      model: 'gpt-5.4',
+    }, 'g41a5b5g')
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(body).toEqual(expect.objectContaining({
+      input: 'hello',
+      conversation: 'webui:session-native',
+      store: true,
+      stream: true,
+    }))
+    expect(body).not.toHaveProperty('conversation_history')
+  })
+
   it('inlines uploaded markdown file content before forwarding a run upstream', async () => {
     const profile = 'vitest-file-profile'
     const profileDir = resolve(homedir(), '.hermes', 'profiles', profile)
