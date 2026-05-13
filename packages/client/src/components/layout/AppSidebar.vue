@@ -567,8 +567,8 @@ onMounted(async () => {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 144px 12px 12px;
+  gap: 12px;
+  padding: 14px 84px 14px 14px;
   margin-top: 8px;
   border: 1px solid $border-color;
   border-radius: $radius-md;
@@ -576,7 +576,7 @@ onMounted(async () => {
 
   &.locked {
     align-items: center;
-    min-height: 78px;
+    min-height: 92px;
   }
 }
 
@@ -622,8 +622,8 @@ onMounted(async () => {
 }
 
 .user-avatar {
-  width: 34px;
-  height: 34px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   object-fit: cover;
   flex-shrink: 0;
@@ -644,8 +644,8 @@ onMounted(async () => {
   position: absolute;
   right: -1px;
   bottom: -1px;
-  width: 9px;
-  height: 9px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
   border: 2px solid $bg-sidebar;
   background: $text-muted;
@@ -663,6 +663,7 @@ onMounted(async () => {
 .user-meta {
   min-width: 0;
   flex: 1;
+  padding-right: 2px;
 }
 
 .user-name-row {
@@ -673,21 +674,25 @@ onMounted(async () => {
 
   .user-name {
     color: $text-primary;
-    font-size: 13px;
-    font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font-size: 17px;
+    line-height: 1.2;
+    font-weight: 700;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }
 
 .user-profile {
-  margin-top: 2px;
-  color: $text-muted;
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  margin-top: 6px;
+  color: $text-secondary;
+  font-size: 12px;
+  line-height: 1.25;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .logout-item {

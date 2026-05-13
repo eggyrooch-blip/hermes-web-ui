@@ -36,6 +36,8 @@ export default {
     removeConfirm: '确定要移除密码登录吗？移除后需要使用访问令牌登录。',
     passwordLoginNotConfigured: '密码登录未配置',
     passwordLoginConfigured: '密码登录已启用（{username}）',
+    wakingTitle: 'Hermes 正在唤醒中',
+    wakingDescription: '正在绑定你的 profile 并连接运行时，请稍候。',
   },
 
   // 通用

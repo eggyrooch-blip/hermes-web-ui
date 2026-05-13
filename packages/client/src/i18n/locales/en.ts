@@ -36,6 +36,8 @@ export default {
     removeConfirm: 'Are you sure you want to remove password login? You will need to use the access token to log in.',
     passwordLoginNotConfigured: 'Password login is not configured',
     passwordLoginConfigured: 'Password login enabled ({username})',
+    wakingTitle: 'Hermes is waking up',
+    wakingDescription: 'Binding your profile and connecting the runtime. Please wait.',
   },
 
   // Common

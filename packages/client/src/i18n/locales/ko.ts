@@ -36,6 +36,8 @@ export default {
     removeConfirm: '비밀번호 로그인을 제거하시겠습니까? 액세스 토큰을 사용하여 로그인해야 합니다.',
     passwordLoginNotConfigured: '비밀번호 로그인 미설정',
     passwordLoginConfigured: '비밀번호 로그인 활성화됨 ({username})',
+    wakingTitle: 'Hermes를 깨우는 중',
+    wakingDescription: '프로필을 연결하고 runtime에 접속하는 중입니다. 잠시만 기다려 주세요.',
   },
 
   // 공통

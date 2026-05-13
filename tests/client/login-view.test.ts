@@ -58,6 +58,8 @@ describe('LoginView token login', () => {
 
   it('validates token login against the Hermes sessions endpoint', async () => {
     const wrapper = mount(LoginView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
 
     await wrapper.find('input.login-input').setValue('secret-token')
     await wrapper.find('form.login-form').trigger('submit')
@@ -73,6 +75,8 @@ describe('LoginView token login', () => {
   it('keeps the existing invalid-token behavior on 401', async () => {
     mockFetch.mockResolvedValue({ ok: false, status: 401 })
     const wrapper = mount(LoginView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
 
     await wrapper.find('input.login-input').setValue('bad-token')
     await wrapper.find('form.login-form').trigger('submit')
@@ -118,5 +122,23 @@ describe('LoginView token login', () => {
     expect(mockFetchCurrentUser).toHaveBeenCalledOnce()
     expect(window.localStorage.getItem('hermes_active_profile_name')).toBe('researcher')
     expect(mockReplace).toHaveBeenCalledWith('/hermes/chat')
+  })
+
+  it('shows a wake screen while validating an existing Feishu OAuth session', async () => {
+    mockFetchAuthStatus.mockResolvedValue({
+      hasPasswordLogin: false,
+      authMode: 'feishu-oauth-dev',
+      plane: 'chat',
+    })
+    mockFetchCurrentUser.mockReturnValue(new Promise(() => {}))
+
+    const wrapper = mount(LoginView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('login.wakingTitle')
+    expect(wrapper.text()).toContain('login.wakingDescription')
+    expect(wrapper.find('form.login-form').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('login.feishuLogin')
   })
 })
