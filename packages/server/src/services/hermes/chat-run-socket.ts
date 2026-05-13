@@ -26,6 +26,12 @@ import { getCompressionSnapshot } from '../../db/hermes/compression-snapshot'
 import { parseAnthropicContentArray } from '../../lib/llm-json'
 import { updateUsage } from '../../db/hermes/usage-store'
 import { logger } from '../logger'
+import { config } from '../../config'
+import {
+  extractFeishuSessionFromCookieHeader,
+  getFeishuSessionSecret,
+  parseFeishuSessionCookie,
+} from '../feishu-oauth'
 
 /**
  * Content block types for Anthropic-compatible message format
@@ -210,6 +216,15 @@ export class ChatRunSocket {
   // --- Auth middleware ---
 
   private async authMiddleware(socket: Socket, next: (err?: Error) => void) {
+    if (config.authMode === 'feishu-oauth-dev') {
+      const sessionCookie = extractFeishuSessionFromCookieHeader(socket.handshake.headers?.cookie)
+      const user = parseFeishuSessionCookie(sessionCookie, { secret: getFeishuSessionSecret() })
+      if (!user) return next(new Error('Authentication failed'))
+      socket.data.user = user
+      socket.data.profile = user.profile
+      return next()
+    }
+
     const token = socket.handshake.auth?.token as string | undefined
     if (!process.env.AUTH_DISABLED && process.env.AUTH_DISABLED !== '1') {
       const { getToken } = await import('../auth')
@@ -224,7 +239,7 @@ export class ChatRunSocket {
   // --- Connection handler ---
 
   private onConnection(socket: Socket) {
-    const profile = (socket.handshake.query?.profile as string) || 'default'
+    const profile = (socket.data?.profile as string | undefined) || (socket.handshake.query?.profile as string) || 'default'
 
     socket.on('run', async (data: {
       input: string | ContentBlock[]

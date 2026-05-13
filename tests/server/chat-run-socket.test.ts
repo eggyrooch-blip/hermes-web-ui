@@ -21,7 +21,56 @@ function createSocketServer() {
 describe('ChatRunSocket gateway lifecycle', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
     vi.restoreAllMocks()
+  })
+
+  it('binds Feishu OAuth socket runs to the signed session profile', async () => {
+    vi.resetModules()
+    vi.stubEnv('HERMES_AUTH_MODE', 'feishu-oauth-dev')
+    vi.stubEnv('FEISHU_SESSION_SECRET', 'socket-secret')
+
+    const { ChatRunSocket: OAuthChatRunSocket } = await import('../../packages/server/src/services/hermes/chat-run-socket')
+    const { createFeishuSessionCookie, FEISHU_SESSION_COOKIE } = await import('../../packages/server/src/services/feishu-oauth')
+    const { io, namespace } = createSocketServer()
+    const gatewayManager = {
+      detectStatus: vi.fn(),
+      startApiOnly: vi.fn(),
+      getUpstream: vi.fn(() => 'http://127.0.0.1:8651'),
+      getApiKey: vi.fn(() => null),
+    }
+    const chatRun = new OAuthChatRunSocket(io as any, gatewayManager)
+    const handleRun = vi.spyOn(chatRun as any, 'handleRun').mockResolvedValue(undefined)
+
+    chatRun.init()
+    const middleware = namespace.use.mock.calls[0][0]
+    const onConnection = namespace.on.mock.calls.find(([event]) => event === 'connection')?.[1]
+    const cookie = createFeishuSessionCookie({
+      openid: 'ou_test',
+      profile: 'feishu_ou_bound',
+      secret: 'socket-secret',
+    })
+    const socket = {
+      data: {},
+      handshake: {
+        auth: {},
+        query: { profile: 'default' },
+        headers: { cookie: `${FEISHU_SESSION_COOKIE}=${cookie}` },
+      },
+      on: vi.fn(),
+      emit: vi.fn(),
+      join: vi.fn(),
+      connected: true,
+    }
+
+    await new Promise<void>((resolvePromise, reject) => {
+      middleware(socket, (err?: Error) => err ? reject(err) : resolvePromise())
+    })
+    onConnection(socket)
+    const runHandler = socket.on.mock.calls.find(([event]) => event === 'run')?.[1]
+    await runHandler({ input: 'hello' })
+
+    expect(handleRun).toHaveBeenCalledWith(socket, { input: 'hello' }, 'feishu_ou_bound')
   })
 
   it('starts a stopped request profile gateway before creating a run', async () => {
