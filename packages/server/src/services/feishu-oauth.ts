@@ -284,6 +284,12 @@ export async function feishuOAuthAuth(ctx: Context, next: Next): Promise<void> {
     ctx.body = { error: 'Unauthorized' }
     return
   }
+  if (config.requiredProfile && user.profile !== config.requiredProfile) {
+    ctx.status = 401
+    ctx.set('Content-Type', 'application/json')
+    ctx.body = { error: 'Unauthorized' }
+    return
+  }
 
   ctx.state.user = user
   await next()

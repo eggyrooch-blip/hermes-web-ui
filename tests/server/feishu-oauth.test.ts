@@ -65,6 +65,37 @@ describe('Feishu OAuth session helpers', () => {
     })).toBeNull()
   })
 
+  it('rejects an authenticated cookie whose profile is not the required canonical profile', async () => {
+    process.env.FEISHU_SESSION_SECRET = 'session-secret'
+    process.env.HERMES_REQUIRED_PROFILE = 'sunke'
+    vi.resetModules()
+    const {
+      createFeishuSessionCookie,
+      feishuOAuthAuth,
+    } = await import('../../packages/server/src/services/feishu-oauth')
+
+    const cookie = createFeishuSessionCookie({
+      openid: 'ou_test',
+      profile: 'feishu_sunke',
+      secret: 'session-secret',
+      now: Math.floor(Date.now() / 1000),
+      maxAgeSeconds: 3600,
+    })
+    const ctx: any = {
+      path: '/api/auth/me',
+      state: {},
+      cookies: { get: vi.fn().mockReturnValue(cookie) },
+      set: vi.fn(),
+    }
+    const next = vi.fn()
+
+    await feishuOAuthAuth(ctx, next)
+
+    expect(next).not.toHaveBeenCalled()
+    expect(ctx.status).toBe(401)
+    expect(ctx.body).toEqual({ error: 'Unauthorized' })
+  })
+
   it('builds the Feishu authorize URL with app id, redirect uri, and state', async () => {
     process.env.FEISHU_APP_ID = 'cli_test'
     process.env.FEISHU_REDIRECT_URI = 'http://localhost:8648/api/auth/feishu/callback'
