@@ -24,6 +24,7 @@ const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
 import { proxy, setRunSession } from '../../packages/server/src/routes/hermes/proxy-handler'
+import { config } from '../../packages/server/src/config'
 
 function createMockCtx(overrides: Record<string, any> = {}) {
   const ctx: any = {
@@ -78,6 +79,7 @@ function createSSEBody(events: string[]): ReadableStream<Uint8Array> {
 describe('Proxy Handler', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    config.webPlane = 'both'
   })
 
   it('rewrites /api/hermes/v1/* to /v1/*', async () => {
@@ -143,6 +145,30 @@ describe('Proxy Handler', () => {
 
     const [, options] = mockFetch.mock.calls[0]
     expect(options.headers.host).toBe('127.0.0.1:8642')
+  })
+
+  it('injects Feishu openid from chat-plane session and ignores client spoofing', async () => {
+    config.webPlane = 'chat'
+    mockFetch.mockResolvedValue({
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: null,
+      json: () => Promise.resolve({}),
+    })
+
+    const ctx = createMockCtx({
+      headers: {
+        host: 'localhost:8648',
+        'x-hermes-feishu-openid': 'spoofed',
+        'content-type': 'application/json',
+      },
+      state: { user: { openid: 'ou_cf23e7c262afa4b7a006baa75f863ed5', profile: 'sunke', role: 'user' } },
+    })
+    await proxy(ctx)
+
+    const [, options] = mockFetch.mock.calls[0]
+    expect(options.headers['X-Hermes-Feishu-OpenId']).toBe('ou_cf23e7c262afa4b7a006baa75f863ed5')
+    expect(options.headers['x-hermes-feishu-openid']).toBeUndefined()
   })
 
   it('forwards query string while stripping the web-ui token parameter', async () => {

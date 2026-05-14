@@ -9,6 +9,9 @@
  * the client emits 'resume' to rejoin its session room.
  */
 import type { Server, Socket } from 'socket.io'
+import { existsSync } from 'fs'
+import { readFile } from 'fs/promises'
+import { extname, isAbsolute, resolve } from 'path'
 import { getSystemPrompt } from '../../lib/llm-prompt'
 import {
   getSession,
@@ -26,6 +29,13 @@ import { getCompressionSnapshot } from '../../db/hermes/compression-snapshot'
 import { parseAnthropicContentArray } from '../../lib/llm-json'
 import { updateUsage } from '../../db/hermes/usage-store'
 import { logger } from '../logger'
+import { config } from '../../config'
+import { getProfileDir } from './hermes-profile'
+import {
+  extractFeishuSessionFromCookieHeader,
+  getFeishuSessionSecret,
+  parseFeishuSessionCookie,
+} from '../feishu-oauth'
 
 /**
  * Content block types for Anthropic-compatible message format
@@ -64,6 +74,66 @@ function isContentBlockArray(input: any): input is ContentBlock[] {
   return Array.isArray(input) && input.length > 0 && ('type' in input[0])
 }
 
+const USE_CLIENT_SUPPLIED_HISTORY = process.env.HERMES_WEBUI_CLIENT_HISTORY === '1'
+const TEXT_FILE_EXTENSIONS = new Set([
+  '.txt', '.md', '.markdown', '.json', '.jsonl', '.csv', '.tsv', '.yaml', '.yml',
+  '.xml', '.html', '.css', '.js', '.ts', '.tsx', '.jsx', '.py', '.sh', '.log',
+])
+const MAX_INLINE_FILE_CHARS = 200_000
+
+function resolveUploadedPath(profile: string, filePath: string): string | null {
+  if (!filePath) return null
+  const workspaceRoot = resolve(getProfileDir(profile), 'workspace')
+  if (isAbsolute(filePath)) {
+    const absolutePath = resolve(filePath)
+    const uploadRoot = resolve(config.uploadDir)
+    const allowedRoots = [workspaceRoot, uploadRoot]
+    return allowedRoots.some(root => absolutePath === root || absolutePath.startsWith(`${root}/`))
+      ? absolutePath
+      : null
+  }
+  const candidate = resolve(workspaceRoot, filePath)
+  if (candidate !== workspaceRoot && !candidate.startsWith(`${workspaceRoot}/`)) return null
+  return candidate
+}
+
+function shouldInlineFile(block: ContentBlock): boolean {
+  if (block.type !== 'file') return false
+  const media = (block.media_type || '').toLowerCase()
+  if (media.startsWith('text/')) return true
+  return TEXT_FILE_EXTENSIONS.has(extname(block.name || block.path).toLowerCase())
+}
+
+async function readInlineFileBlock(profile: string, block: ContentBlock): Promise<string> {
+  if (block.type !== 'file') return ''
+  const resolvedPath = resolveUploadedPath(profile, block.path)
+  if (!resolvedPath || !existsSync(resolvedPath) || !shouldInlineFile(block)) {
+    return `[File: ${block.name || block.path}]`
+  }
+  const content = await readFile(resolvedPath, 'utf-8')
+  const trimmed = content.length > MAX_INLINE_FILE_CHARS
+    ? `${content.slice(0, MAX_INLINE_FILE_CHARS)}\n\n[File truncated at ${MAX_INLINE_FILE_CHARS} characters]`
+    : content
+  return `\n\n[File: ${block.name || block.path}]\n${trimmed}`
+}
+
+async function buildResponsesInput(input: string | ContentBlock[], profile: string): Promise<any> {
+  if (!isContentBlockArray(input)) return input
+
+  const hasImage = input.some(block => block.type === 'image')
+  if (!hasImage) {
+    const parts: string[] = []
+    for (const block of input) {
+      if (block.type === 'text') parts.push(block.text)
+      if (block.type === 'file') parts.push(await readInlineFileBlock(profile, block))
+    }
+    return parts.filter(Boolean).join('\n')
+  }
+
+  const parts = await convertContentBlocks(input, profile)
+  return [{ role: 'user', content: parts }]
+}
+
 /**
  * Convert ContentBlock[] to multimodal format for /v1/responses API.
  *
@@ -71,7 +141,7 @@ function isContentBlockArray(input: any): input is ContentBlock[] {
  * - image → { type: "input_image", image_url: "data:image/...;base64,..." }
  * - file → text mention [File: name]
  */
-async function convertContentBlocks(blocks: ContentBlock[]): Promise<Array<{ type: string; text?: string; image_url?: string }>> {
+async function convertContentBlocks(blocks: ContentBlock[], profile: string): Promise<Array<{ type: string; text?: string; image_url?: string }>> {
   const parts: Array<{ type: string; text?: string; image_url?: string }> = []
   const fs = await import('fs/promises')
   const path = await import('path')
@@ -81,8 +151,10 @@ async function convertContentBlocks(blocks: ContentBlock[]): Promise<Array<{ typ
       parts.push({ type: 'input_text', text: block.text })
     } else if (block.type === 'image') {
       try {
-        const buf = await fs.readFile(block.path)
-        const ext = path.extname(block.path).toLowerCase().replace('.', '')
+        const resolvedPath = resolveUploadedPath(profile, block.path)
+        if (!resolvedPath) throw new Error('image path is outside allowed upload roots')
+        const buf = await fs.readFile(resolvedPath)
+        const ext = path.extname(resolvedPath).toLowerCase().replace('.', '')
         const mime = ext === 'jpg' ? 'jpeg' : ext || 'png'
         const base64 = buf.toString('base64')
         parts.push({ type: 'input_image', image_url: `data:image/${mime};base64,${base64}` })
@@ -90,7 +162,7 @@ async function convertContentBlocks(blocks: ContentBlock[]): Promise<Array<{ typ
         parts.push({ type: 'input_text', text: `[Image: ${block.path}]` })
       }
     } else if (block.type === 'file') {
-      parts.push({ type: 'input_text', text: `[File: ${block.name || block.path}]` })
+      parts.push({ type: 'input_text', text: await readInlineFileBlock(profile, block) })
     }
   }
 
@@ -163,6 +235,7 @@ interface QueuedRun {
   queue_id: string
   input: string | ContentBlock[]
   model?: string
+  provider?: string
   instructions?: string
   profile: string
 }
@@ -195,6 +268,7 @@ export class ChatRunSocket {
   private gatewayManager: any
   /** sessionId → session state (messages, working status, events, run tracking) */
   private sessionMap = new Map<string, SessionState>()
+  private hermesSessionIds = new Map<string, string>()
 
   constructor(io: Server, gatewayManager: any) {
     this.nsp = io.of('/chat-run')
@@ -210,6 +284,15 @@ export class ChatRunSocket {
   // --- Auth middleware ---
 
   private async authMiddleware(socket: Socket, next: (err?: Error) => void) {
+    if (config.authMode === 'feishu-oauth-dev') {
+      const sessionCookie = extractFeishuSessionFromCookieHeader(socket.handshake.headers?.cookie)
+      const user = parseFeishuSessionCookie(sessionCookie, { secret: getFeishuSessionSecret() })
+      if (!user) return next(new Error('Authentication failed'))
+      socket.data.user = user
+      socket.data.profile = user.profile
+      return next()
+    }
+
     const token = socket.handshake.auth?.token as string | undefined
     if (!process.env.AUTH_DISABLED && process.env.AUTH_DISABLED !== '1') {
       const { getToken } = await import('../auth')
@@ -224,12 +307,13 @@ export class ChatRunSocket {
   // --- Connection handler ---
 
   private onConnection(socket: Socket) {
-    const profile = (socket.handshake.query?.profile as string) || 'default'
+    const profile = (socket.data?.profile as string | undefined) || (socket.handshake.query?.profile as string) || 'default'
 
     socket.on('run', async (data: {
       input: string | ContentBlock[]
       session_id?: string
       model?: string
+      provider?: string
       instructions?: string
       queue_id?: string
     }) => {
@@ -240,6 +324,7 @@ export class ChatRunSocket {
             queue_id: data.queue_id || `queue_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
             input: data.input,
             model: data.model,
+            provider: data.provider,
             instructions: data.instructions,
             profile,
           })
@@ -487,13 +572,11 @@ export class ChatRunSocket {
 
   private async handleRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; session_id?: string; model?: string; instructions?: string },
+    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string },
     profile: string,
     skipUserMessage = false,
   ) {
-    const { input, session_id, model, instructions } = data
-    const upstream = this.gatewayManager.getUpstream(profile).replace(/\/$/, '')
-    const apiKey = this.gatewayManager.getApiKey(profile) || undefined
+    const { input, session_id, model, provider, instructions } = data
 
     // Local marker used only to group in-memory messages for this streamed response.
     const runMarker = session_id
@@ -576,10 +659,27 @@ export class ChatRunSocket {
         socket.emit(event, tagged)
       }
     }
+    if (config.webuiRunBroker) {
+      await this.handleBrokerRun(socket, {
+        input,
+        session_id,
+        model,
+        provider,
+        instructions,
+      }, profile, runMarker, emit)
+      return
+    }
+
+    await this.ensureGatewayReady(profile)
+    const upstream = this.gatewayManager.getUpstream(profile).replace(/\/$/, '')
+    const apiKey = this.gatewayManager.getApiKey(profile) || undefined
+
     try {
       // Build upstream request body
-      const body: Record<string, any> = { input }
+      const body: Record<string, any> = { input: await buildResponsesInput(input, profile) }
       if (model) body.model = model
+      if (provider) body.provider = provider
+      if (session_id) body.conversation = `webui:${session_id}`
       if (instructions) {
         body.instructions = `${getSystemPrompt()}\n${instructions}`
       } else {
@@ -595,12 +695,14 @@ export class ChatRunSocket {
             : `\n${workspaceCtx}`
         }
       }
-      // Build conversation_history from DB if session_id is provided
-      if (session_id) {
+      // Legacy opt-in path for stateless upstreams. Default is Hermes-native
+      // response chaining via conversation/previous_response_id so the profile
+      // gateway owns transcript continuity.
+      if (USE_CLIENT_SUPPLIED_HISTORY && session_id) {
         try {
           const detail = useLocalSessionStore()
             ? getSessionDetail(session_id)
-            : await getSessionDetailFromDb(session_id)
+            : await getSessionDetailFromDb(session_id, profile)
           if (detail?.messages?.length) {
             // Filter valid messages
             const validMessages = detail.messages.filter(m =>
@@ -895,20 +997,14 @@ export class ChatRunSocket {
 
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
-      // Convert input from ContentBlock[] to multimodal message format for /v1/responses
-      if (isContentBlockArray(input)) {
-        const parts = await convertContentBlocks(input)
-        body.input = [{ role: 'user', content: parts }]
-      }
-
-      // Debug: write history to JSON file for analysis (before conversion)
-
+      const userOpenId = (socket.data?.user?.openid as string | undefined)?.trim()
+      if (userOpenId) headers['X-Hermes-Feishu-OpenId'] = userOpenId
       // Convert conversation_history from OpenAI format to Anthropic format
       if (body.conversation_history && Array.isArray(body.conversation_history)) {
         body.conversation_history = convertHistoryFormat(body.conversation_history)
       }
       body.stream = true
-      body.store = false
+      body.store = true
 
       const abortController = new AbortController()
       if (session_id) {
@@ -939,6 +1035,8 @@ export class ChatRunSocket {
         if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
         return
       }
+      const hermesSessionId = res.headers.get('X-Hermes-Session-Id') || res.headers.get('x-hermes-session-id')
+      if (session_id && hermesSessionId) this.hermesSessionIds.set(session_id, hermesSessionId)
 
       let responseId: string | undefined
       for await (const frame of readSseFrames(res.body)) {
@@ -980,6 +1078,8 @@ export class ChatRunSocket {
             run_id: responseId,
           })
           const finalOutput = parsed.response || parsed
+          const completedHermesSessionId = finalOutput.session_id || finalOutput.sessionId || hermesSessionId
+          if (session_id && completedHermesSessionId) this.hermesSessionIds.set(session_id, String(completedHermesSessionId))
           const finalText = extractResponseText(finalOutput)
           if (upstreamEvent === 'response.completed' && session_id) {
             const usage = finalOutput.usage || {}
@@ -1273,7 +1373,7 @@ export class ChatRunSocket {
   }
 
   /** Mark a session run as completed/failed so reconnecting clients get notified */
-  private async markCompleted(_socket: Socket, sessionId: string, _info: { event: string; run_id?: string }) {
+  private async markCompleted(socket: Socket, sessionId: string, _info: { event: string; run_id?: string }) {
     const state = this.sessionMap.get(sessionId)
     if (state) {
       if (state.isAborting) {
@@ -1288,6 +1388,11 @@ export class ChatRunSocket {
       state.runId = undefined
       state.events = []
       this.flushResponseRunToDb(state, sessionId)
+      const profile = state.profile
+      const hermesSessionId = this.hermesSessionIds.get(sessionId)
+      if (profile && hermesSessionId) {
+        void this.syncFromHermes(socket, sessionId, hermesSessionId, profile, { maxAttempts: 10, delayMs: 500 })
+      }
       state.responseRun = undefined
       state.profile = undefined
       updateSessionStats(sessionId)
@@ -1313,6 +1418,7 @@ export class ChatRunSocket {
       input: next.input,
       session_id: sessionId,
       model: next.model,
+      provider: next.provider,
       instructions: next.instructions,
     }, next.profile || fallbackProfile, true)
     return true
@@ -1357,6 +1463,7 @@ export class ChatRunSocket {
         input: next.input,
         session_id: sessionId,
         model: next.model,
+        provider: next.provider,
         instructions: next.instructions,
       }, next.profile || profile || 'default', true)
       return
@@ -1386,7 +1493,7 @@ export class ChatRunSocket {
     try {
       const detail = useLocalSessionStore()
         ? getSessionDetail(sid)
-        : await getSessionDetailFromDb(sid)
+        : await getSessionDetailFromDb(sid, state.profile)
       const msgs = detail?.messages
         ?.filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool') || []
 
@@ -1419,6 +1526,252 @@ export class ChatRunSocket {
       logger.warn(err, '[chat-run-socket] failed to calculate usage for session %s', sid)
       return { inputTokens: 0, outputTokens: 0 }
     }
+  }
+
+  private async handleBrokerRun(
+    socket: Socket,
+    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string },
+    profile: string,
+    runMarker: string | undefined,
+    emit: (event: string, payload: any) => void,
+  ) {
+    const { input, session_id, model, provider, instructions } = data
+    const brokerUrl = config.runBrokerUrl
+    if (!brokerUrl) {
+      const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+      if (session_id) await this.markCompleted(socket, session_id, { event: 'run.failed' })
+      emit('run.failed', {
+        event: 'run.failed',
+        error: 'HERMES_RUN_BROKER_URL is required when HERMES_WEBUI_RUN_BROKER=1',
+        queue_remaining: queueLen,
+      })
+      return
+    }
+
+    const userKey = (socket.data?.user?.openid as string | undefined)?.trim() || profile
+    const content = contentBlocksToString(input).trim()
+    const metadata: Record<string, any> = {
+      source: 'hermes-web-ui',
+    }
+    if (model) metadata.model = model
+    if (provider) metadata.provider = provider
+    if (session_id) metadata.conversation = `webui:${session_id}`
+    metadata.instructions = instructions
+      ? `${getSystemPrompt()}\n${instructions}`
+      : getSystemPrompt()
+
+    if (session_id) {
+      const sessionRow = getSession(session_id)
+      if (sessionRow?.workspace) {
+        const workspaceCtx = `[Current working directory: ${sessionRow.workspace}]`
+        metadata.instructions = metadata.instructions
+          ? `\n${workspaceCtx}\n${metadata.instructions}`
+          : `\n${workspaceCtx}`
+      }
+    }
+
+    const builtInput = await buildResponsesInput(input, profile)
+    if (builtInput !== content) {
+      metadata.input = builtInput
+    }
+
+    const request = {
+      channel: 'webui',
+      profile_name: profile,
+      user_key: userKey,
+      content,
+      session_id,
+      delivery_mode: 'socket',
+      credential_subject: userKey,
+      requires_host_tools: true,
+      metadata,
+    }
+
+    const abortController = new AbortController()
+    if (session_id) {
+      const state = this.getOrCreateSession(session_id)
+      state.isWorking = true
+      state.runId = undefined
+      state.abortController = abortController
+      this.getResponseRunState(state, runMarker)
+    }
+
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
+      const res = await fetch(`${brokerUrl}/api/run-broker/runs`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+        signal: abortController.signal,
+      })
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+        if (session_id) await this.markCompleted(socket, session_id, { event: 'run.failed' })
+        emit('run.failed', { event: 'run.failed', error: `Run broker ${res.status}: ${text}`, queue_remaining: queueLen })
+        if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
+        return
+      }
+      if (!res.body) {
+        const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+        if (session_id) await this.markCompleted(socket, session_id, { event: 'run.failed' })
+        emit('run.failed', { event: 'run.failed', error: 'Run broker response stream missing', queue_remaining: queueLen })
+        if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
+        return
+      }
+
+      let runId: string | undefined
+      let finalText = ''
+      for await (const frame of readSseFrames(res.body)) {
+        let parsed: any
+        try {
+          parsed = JSON.parse(frame.data)
+        } catch {
+          continue
+        }
+        const brokerKind = parsed.kind || parsed.event || frame.event
+        const eventRunId = parsed.run_id || parsed.runId || parsed.payload?.run_id
+        if (eventRunId) runId = String(eventRunId)
+
+        if (brokerKind === 'content' || brokerKind === 'thinking') {
+          const deltaText = parsed.text || parsed.delta || parsed.payload?.text || ''
+          if (!deltaText) continue
+          finalText += deltaText
+          if (session_id) {
+            const state = this.sessionMap.get(session_id)
+            if (state) {
+              const run = this.getResponseRunState(state, runMarker)
+              run.responseId = runId || run.responseId
+              const last = [...state.messages].reverse().find(m => m.runMarker === runMarker)
+              if (last?.role === 'assistant' && last.finish_reason == null && !last.tool_calls?.length) {
+                last.content += deltaText
+              } else {
+                state.messages.push({
+                  id: state.messages.length + 1,
+                  session_id,
+                  runMarker,
+                  role: 'assistant',
+                  content: deltaText,
+                  timestamp: Math.floor(Date.now() / 1000),
+                })
+              }
+            }
+          }
+          emit('message.delta', {
+            event: 'message.delta',
+            run_id: runId,
+            response_id: runId,
+            delta: deltaText,
+          })
+          continue
+        }
+
+        if (brokerKind === 'tool_started') {
+          emit('tool.started', {
+            event: 'tool.started',
+            run_id: runId,
+            response_id: runId,
+            tool: parsed.name || parsed.payload?.tool || parsed.payload?.name,
+            name: parsed.name || parsed.payload?.name || parsed.payload?.tool,
+            arguments: parsed.payload?.arguments,
+          })
+          continue
+        }
+
+        if (brokerKind === 'tool_completed') {
+          emit('tool.completed', {
+            event: 'tool.completed',
+            run_id: runId,
+            response_id: runId,
+            tool: parsed.name || parsed.payload?.tool || parsed.payload?.name,
+            name: parsed.name || parsed.payload?.name || parsed.payload?.tool,
+            output: parsed.text || parsed.payload?.output,
+          })
+          continue
+        }
+
+        if (brokerKind === 'done' || brokerKind === 'error') {
+          const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+          if (session_id) await this.markCompleted(socket, session_id, {
+            event: brokerKind === 'done' ? 'run.completed' : 'run.failed',
+            run_id: runId,
+          })
+          const eventName = brokerKind === 'done' ? 'run.completed' : 'run.failed'
+          emit(eventName, {
+            event: eventName,
+            run_id: runId,
+            response_id: runId,
+            output: parsed.text || parsed.payload?.output || finalText,
+            usage: parsed.payload?.usage,
+            error: parsed.error || parsed.payload?.error,
+            queue_remaining: queueLen,
+          })
+          if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
+          return
+        }
+      }
+
+      const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+      if (session_id) await this.markCompleted(socket, session_id, { event: 'run.failed', run_id: runId })
+      emit('run.failed', {
+        event: 'run.failed',
+        run_id: runId,
+        response_id: runId,
+        error: 'Run broker stream ended without a terminal event',
+        queue_remaining: queueLen,
+      })
+      if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
+    } catch (err: any) {
+      const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+      if (session_id) {
+        await this.markCompleted(socket, session_id, { event: 'run.failed' })
+      }
+      emit('run.failed', { event: 'run.failed', error: err.message, queue_remaining: queueLen })
+      if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
+    }
+  }
+
+  private async ensureGatewayReady(profile: string): Promise<void> {
+    if (typeof this.gatewayManager.detectStatus !== 'function') return
+    const current = await this.gatewayManager.detectStatus(profile)
+    if (current?.running) return
+    if (typeof this.gatewayManager.startApiOnly === 'function') {
+      await this.gatewayManager.startApiOnly(profile)
+    }
+  }
+
+  private async syncFromHermes(
+    _socket: Socket,
+    localSessionId: string,
+    hermesSessionId: string,
+    profile: string,
+    options: { maxAttempts?: number; delayMs?: number } = {},
+  ): Promise<boolean> {
+    const maxAttempts = options.maxAttempts ?? 3
+    const delayMs = options.delayMs ?? 250
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const { getSessionMessagesFromDb } = await import('../../db/hermes/sessions-db')
+        const detail = await getSessionMessagesFromDb(hermesSessionId, profile)
+        if (detail?.messages?.length) {
+          const state = this.sessionMap.get(localSessionId)
+          if (state) {
+            state.messages = this.handleMessage(detail.messages.map(message => ({
+              ...message,
+              session_id: localSessionId,
+            })), localSessionId)
+          }
+          return true
+        }
+      } catch (err) {
+        logger.debug(err, '[chat-run-socket] Hermes state sync attempt %d failed for %s', attempt, hermesSessionId)
+      }
+      if (attempt < maxAttempts) {
+        await new Promise(resolvePromise => setTimeout(resolvePromise, delayMs))
+      }
+    }
+    return false
   }
 
   /** Get or create session state in sessionMap */

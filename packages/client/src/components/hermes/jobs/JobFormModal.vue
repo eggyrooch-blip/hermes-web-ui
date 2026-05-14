@@ -32,7 +32,7 @@ const formData = ref({
   name: '',
   schedule: '',
   prompt: '',
-  deliver: 'origin',
+  deliver: 'feishu',
   repeat_times: null as number | null,
 })
 
@@ -50,12 +50,18 @@ const schedulePresets = computed(() => [
   { label: t('jobs.presetEveryMonth'), value: '0 9 1 * *' },
 ])
 
-const targetOptions = computed(() => [
-  { label: t('jobs.origin'), value: 'origin' },
-  { label: t('jobs.local'), value: 'local' },
-])
-
 const originalJob = ref<Job | null>(null)
+
+const targetOptions = computed(() => {
+  const options = [
+    { label: t('jobs.feishu'), value: 'feishu' },
+    { label: t('jobs.local'), value: 'local' },
+  ]
+  if (originalJob.value?.origin?.platform) {
+    options.splice(1, 0, { label: t('jobs.origin'), value: 'origin' })
+  }
+  return options
+})
 
 onMounted(async () => {
   if (props.jobId) {
@@ -66,7 +72,7 @@ onMounted(async () => {
         name: job.name,
         schedule: scheduleToEditableInput(job.schedule, job.schedule_display || ''),
         prompt: job.prompt,
-        deliver: job.deliver || 'origin',
+        deliver: job.deliver || 'feishu',
         repeat_times: jobRepeatToEditValue(job.repeat),
       }
     } catch (e: any) {

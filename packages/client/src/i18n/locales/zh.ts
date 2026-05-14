@@ -36,6 +36,8 @@ export default {
     removeConfirm: '确定要移除密码登录吗？移除后需要使用访问令牌登录。',
     passwordLoginNotConfigured: '密码登录未配置',
     passwordLoginConfigured: '密码登录已启用（{username}）',
+    wakingTitle: 'Hermes 正在唤醒中',
+    wakingDescription: '正在绑定你的 profile 并连接运行时，请稍候。',
   },
 
   // 通用
@@ -347,9 +349,10 @@ export default {
     presetEveryMonth: '每月 1 日 09:00',
     prompt: '提示词',
     promptPlaceholder: '要执行的内容',
-    deliverTarget: '投递目标',
-    origin: '来源',
-    local: '本地',
+    deliverTarget: '结果发送到',
+    feishu: '飞书',
+    origin: '创建来源',
+    local: '仅保存历史',
     repeatCount: '重复次数（可选）',
     modelPlaceholder: 'Default model',
     repeatPlaceholder: '留空表示无限重复',

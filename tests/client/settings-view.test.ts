@@ -54,6 +54,9 @@ vi.mock('@/components/hermes/settings/PrivacySettings.vue', () => ({
 vi.mock('@/components/hermes/settings/ModelSettings.vue', () => ({
   default: { template: '<div>ModelSettings</div>' },
 }))
+vi.mock('@/components/hermes/settings/VoiceSettings.vue', () => ({
+  default: { template: '<div>VoiceSettings</div>' },
+}))
 
 import SettingsView from '@/views/hermes/SettingsView.vue'
 

@@ -17,6 +17,7 @@ const token = ref(urlToken);
 const username = ref("");
 const password = ref("");
 const loading = ref(false);
+const authChecking = ref(true);
 const errorMsg = ref("");
 
 // Login method: 'token', 'password', or 'feishu'
@@ -38,12 +39,15 @@ onMounted(async () => {
     }
     if (status.authMode === "feishu-oauth-dev") {
       loginMethod.value = "feishu";
+      authChecking.value = true;
       try {
         const user = await fetchCurrentUser();
         profilesStore.setBoundProfile(user.profile, user);
         router.replace("/hermes/chat");
       } catch {
         // No valid OAuth session cookie yet.
+      } finally {
+        authChecking.value = false;
       }
       return;
     }
@@ -53,6 +57,10 @@ onMounted(async () => {
     }
   } catch {
     // Fallback to token-only
+  } finally {
+    if (loginMethod.value !== "feishu") {
+      authChecking.value = false;
+    }
   }
 });
 
@@ -67,6 +75,9 @@ async function handleLogin() {
 }
 
 function handleFeishuLogin() {
+  if (loading.value) return;
+  loading.value = true;
+  errorMsg.value = "";
   window.location.assign("/api/auth/feishu/login");
 }
 
@@ -140,8 +151,14 @@ async function handlePasswordLogin() {
       <h1 class="login-title">{{ t("login.title") }}</h1>
       <p class="login-desc">{{ t("login.description") }}</p>
 
+      <div v-if="authChecking" class="wake-state" role="status" aria-live="polite">
+        <div class="wake-spinner" aria-hidden="true"></div>
+        <h2>{{ t("login.wakingTitle") }}</h2>
+        <p>{{ t("login.wakingDescription") }}</p>
+      </div>
+
       <!-- Method toggle -->
-      <div v-if="hasPasswordLogin" class="login-method-toggle">
+      <div v-else-if="hasPasswordLogin" class="login-method-toggle">
         <button
           class="toggle-btn"
           :class="{ active: loginMethod === 'password' }"
@@ -154,7 +171,7 @@ async function handlePasswordLogin() {
         >{{ t("login.tokenLogin") }}</button>
       </div>
 
-      <form class="login-form" @submit.prevent="handleLogin">
+      <form v-if="!authChecking" class="login-form" @submit.prevent="handleLogin">
         <!-- Token login -->
         <template v-if="loginMethod === 'token'">
           <input
@@ -240,6 +257,43 @@ async function handlePasswordLogin() {
   color: $text-muted;
   margin: 0 0 32px;
   line-height: 1.6;
+}
+
+.wake-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0 2px;
+
+  h2 {
+    margin: 4px 0 0;
+    color: $text-primary;
+    font-size: 18px;
+    font-weight: 600;
+  }
+
+  p {
+    margin: 0;
+    color: $text-muted;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+}
+
+.wake-spinner {
+  width: 34px;
+  height: 34px;
+  border: 3px solid rgba(var(--accent-primary-rgb), 0.18);
+  border-top-color: $accent-primary;
+  border-radius: 50%;
+  animation: wake-spin 0.9s linear infinite;
+}
+
+@keyframes wake-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .login-method-toggle {

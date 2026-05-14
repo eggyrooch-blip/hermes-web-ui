@@ -583,11 +583,11 @@ async function openSessionDb(profile?: string) {
  * Lightweight alternative: get messages + session row for a single session ID
  * without chain traversal. Used by syncFromHermes for ephemeral sessions.
  */
-export async function getSessionMessagesFromDb(sessionId: string): Promise<{
+export async function getSessionMessagesFromDb(sessionId: string, profile?: string): Promise<{
   messages: HermesMessageRow[]
   session: HermesSessionRow | null
 } | null> {
-  const db = await openSessionDb()
+  const db = await openSessionDb(profile)
   try {
     const sessionRow = db.prepare(`
       SELECT ${SESSION_SELECT}

@@ -44,10 +44,11 @@ export async function listConversations(ctx: any) {
   const source = (ctx.query.source as string) || undefined
   const humanOnly = (ctx.query.humanOnly as string) !== 'false' && ctx.query.humanOnly !== '0'
   const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
+  const profile = isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : undefined
 
   if (useLocalSessionStore()) {
-    const profile = getRequestProfile(ctx)
-    const sessions = localListSessions(profile, source, limit && limit > 0 ? limit : 200)
+    const localProfile = getRequestProfile(ctx)
+    const sessions = localListSessions(localProfile, source, limit && limit > 0 ? limit : 200)
     const summaries: ConversationSummary[] = sessions.map(s => ({
       id: s.id,
       source: s.source,
@@ -77,7 +78,7 @@ export async function listConversations(ctx: any) {
   }
 
   try {
-    const sessions = await listConversationSummariesFromDb({ source, humanOnly, limit })
+    const sessions = await listConversationSummariesFromDb({ source, humanOnly, limit, profile })
     ctx.body = { sessions: filterPendingDeletedConversationSummaries(sessions) }
     return
   } catch (err) {
@@ -91,6 +92,7 @@ export async function listConversations(ctx: any) {
 export async function getConversationMessages(ctx: any) {
   const source = (ctx.query.source as string) || undefined
   const humanOnly = (ctx.query.humanOnly as string) !== 'false' && ctx.query.humanOnly !== '0'
+  const profile = isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : undefined
 
   if (useLocalSessionStore()) {
     const detail = localGetSessionDetail(ctx.params.id)
@@ -122,7 +124,7 @@ export async function getConversationMessages(ctx: any) {
   }
 
   try {
-    const detail = await getConversationDetailFromDb(ctx.params.id, { source, humanOnly })
+    const detail = await getConversationDetailFromDb(ctx.params.id, { source, humanOnly, profile })
     if (!detail) {
       ctx.status = 404
       ctx.body = { error: 'Conversation not found' }
@@ -155,9 +157,10 @@ export async function list(ctx: any) {
 
   const source = (ctx.query.source as string) || undefined
   const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
+  const profile = isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : undefined
 
   try {
-    const sessions = await listSessionSummaries(source, limit && limit > 0 ? limit : 2000)
+    const sessions = await listSessionSummaries(source, limit && limit > 0 ? limit : 2000, profile)
     ctx.body = { sessions: filterPendingDeletedSessions(sessions) }
     return
   } catch (err) {
@@ -229,6 +232,17 @@ export async function get(ctx: any) {
   if (useLocalSessionStore()) {
     const session = localGetSessionDetail(ctx.params.id)
     if (!session || session.profile !== getRequestProfile(ctx)) {
+      ctx.status = 404
+      ctx.body = { error: 'Session not found' }
+      return
+    }
+    ctx.body = { session }
+    return
+  }
+
+  if (isChatPlaneRequest(ctx)) {
+    const session = await getSessionDetailFromDb(ctx.params.id, getRequestProfile(ctx))
+    if (!session) {
       ctx.status = 404
       ctx.body = { error: 'Session not found' }
       return

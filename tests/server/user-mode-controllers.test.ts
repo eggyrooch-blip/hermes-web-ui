@@ -469,7 +469,10 @@ custom_providers:
 
     const forwarded = JSON.parse(fetchMock.mock.calls[0][1].body)
     expect(forwarded).toEqual({
+      deliver: 'feishu',
       name: 'job',
+      owner_open_id: 'ou_test',
+      owner_profile: 'g41a5b5g',
       prompt: 'run safely',
     })
   })

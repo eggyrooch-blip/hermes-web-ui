@@ -549,3 +549,21 @@ Test files live in `tests/client/` and `tests/server/`. Configuration is in root
 3. Add routes with `path: '/{agent}/*'` and `name: '{agent}.*'` in the router
 4. Register routes in `routes/index.ts` following the public → auth → protected pattern
 5. Follow the same patterns as the Hermes integration
+
+---
+
+## 架构速查
+
+> 排障 / 对账 / 架构理解请先看 **[`ARCHITECTURE-GUIDE.md`](./ARCHITECTURE-GUIDE.md)**。本 CLAUDE.md 讲"如何写新代码"（命名、模板、TS 风格），架构 GUIDE 讲"现有代码长什么样、谁连谁、坑在哪、锚点速查表"。两者互补。
+
+兄弟文档（在 Obsidian 主仓 `My-Second-Brain/hermes/` 下）：
+
+- `ARCHITECTURE-GUIDE.md`（hermes 三仓 + lark-bridge 总图）
+- `hermes-multitenancy ARCHITECTURE-GUIDE`（multitenancy.db schema + router.py 三路 lookup）
+- `hermes-feishu-uat ARCHITECTURE-GUIDE`（UAT 主仓 / 飞书 IM 链路）
+
+### 架构红线（实现新代码前必读）
+
+- **新路由必须在 `proxyMiddleware` 之前注册**（`routes/index.ts:75-78`）。`/api/hermes/*` 有 catch-all proxy 兜底——把新路由放在 `proxyRoutes` 之后会被直接 forward 到 hermes gateway，导致本地 BFF 逻辑根本不执行。
+- **chat plane 下 `getRequestProfile(ctx)` 强制 `user.profile`**（`services/request-context.ts:121-125`）。不要尝试用 `X-Hermes-Profile` header 或 `?profile=` query 在 chat plane 下覆盖飞书账号绑定的 profile——服务端忽略，前端调试也无效。
+- **唯一发往 hermes gateway 的 fetch 在 `proxy-handler.ts:259`** + **chat-run socket 的 `chat-run-socket.ts:921`**。要给上游加新 header（如 `X-Hermes-Open-Id`）只改 `buildProxyHeaders()`（`proxy-handler.ts:84`）这一处；其它路径不能绕过 SSRF allowlist (`gateway-manager.ts:87 isAllowedUpstreamHost`)。

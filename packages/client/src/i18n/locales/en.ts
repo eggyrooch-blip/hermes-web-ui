@@ -36,6 +36,8 @@ export default {
     removeConfirm: 'Are you sure you want to remove password login? You will need to use the access token to log in.',
     passwordLoginNotConfigured: 'Password login is not configured',
     passwordLoginConfigured: 'Password login enabled ({username})',
+    wakingTitle: 'Hermes is waking up',
+    wakingDescription: 'Binding your profile and connecting the runtime. Please wait.',
   },
 
   // Common
@@ -347,9 +349,10 @@ export default {
     presetEveryMonth: 'Every month 1st at 09:00',
     prompt: 'Prompt',
     promptPlaceholder: 'The prompt to execute',
-    deliverTarget: 'Deliver Target',
-    origin: 'Origin',
-    local: 'Local',
+    deliverTarget: 'Send Results To',
+    feishu: 'Feishu',
+    origin: 'Creation Origin',
+    local: 'History Only',
     repeatCount: 'Repeat Count (optional)',
     modelPlaceholder: 'Default model',
     repeatPlaceholder: 'Leave empty for infinite',
