@@ -1,7 +1,7 @@
 import type { Context } from 'koa'
 import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
 import { updateUsage } from '../../db/hermes/usage-store'
-import { getRequestProfile } from '../../services/request-context'
+import { getRequestProfile, isChatPlaneRequest } from '../../services/request-context'
 import { isAllowedUpstreamHost } from '../../services/hermes/gateway-manager'
 import { logger } from '../../services/logger'
 
@@ -110,6 +110,18 @@ function buildProxyHeaders(ctx: Context, upstream: string): Record<string, strin
 // --- SSE stream interception ---
 
 const SSE_EVENTS_PATH = /^\/v1\/runs\/([^/]+)\/events$/
+const EXECUTABLE_CHAT_PLANE_PROXY_PATHS = [
+  { method: 'POST', pattern: /^\/v1\/responses$/ },
+  { method: 'POST', pattern: /^\/v1\/chat\/completions$/ },
+  { method: 'POST', pattern: /^\/v1\/runs$/ },
+]
+
+function isExecutableProxyRequest(method: string, upstreamPath: string): boolean {
+  const normalizedMethod = method.toUpperCase()
+  return EXECUTABLE_CHAT_PLANE_PROXY_PATHS.some((entry) => (
+    entry.method === normalizedMethod && entry.pattern.test(upstreamPath)
+  ))
+}
 
 // RFC 7230 §6.1 — these headers are scoped to a single hop and must not be
 // forwarded between upstream and downstream connections.
@@ -211,6 +223,16 @@ export async function proxy(ctx: Context) {
     return
   }
   const upstreamPath = ctx.path.replace(/^\/api\/hermes\/v1/, '/v1').replace(/^\/api\/hermes/, '/api')
+  if (isChatPlaneRequest(ctx) && isExecutableProxyRequest(ctx.method, upstreamPath)) {
+    ctx.status = 403
+    ctx.body = {
+      error: {
+        message: 'Executable Hermes runs must go through the multitenancy sandbox path',
+        code: 'sandbox_required',
+      },
+    }
+    return
+  }
   const params = new URLSearchParams(ctx.search || '')
   params.delete('token')
   const search = params.toString()
