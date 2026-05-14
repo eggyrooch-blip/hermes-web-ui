@@ -280,5 +280,15 @@ export async function resume(ctx: Context) {
 }
 
 export async function run(ctx: Context) {
+  if (isChatPlaneRequest(ctx)) {
+    ctx.status = 403
+    ctx.body = {
+      error: {
+        message: 'Manual job execution must go through the multitenancy sandbox path',
+        code: 'sandbox_required',
+      },
+    }
+    return
+  }
   await proxyRequest(ctx, `/api/jobs/${ctx.params.id}/run`)
 }
