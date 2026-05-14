@@ -119,5 +119,10 @@
     "vue-router": "^4.6.4",
     "vue-tsc": "^3.2.8",
     "ws": "^8.20.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "node-pty"
+    ]
   }
 }

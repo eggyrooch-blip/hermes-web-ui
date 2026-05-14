@@ -36,6 +36,8 @@ export default {
     removeConfirm: 'Tem certeza de que deseja remover o login por senha? Voce precisara usar o token de acesso.',
     passwordLoginNotConfigured: 'Login por senha nao configurado',
     passwordLoginConfigured: 'Login por senha habilitado ({username})',
+    wakingTitle: 'Hermes esta iniciando',
+    wakingDescription: 'Vinculando seu perfil e conectando o runtime. Aguarde.',
   },
 
   // Common

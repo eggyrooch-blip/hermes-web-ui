@@ -36,6 +36,8 @@ export default {
     removeConfirm: 'パスワードログインを削除しますか？アクセストークンを使用してログインする必要があります。',
     passwordLoginNotConfigured: 'パスワードログイン未設定',
     passwordLoginConfigured: 'パスワードログイン有効（{username}）',
+    wakingTitle: 'Hermes を起動しています',
+    wakingDescription: 'プロフィールを紐付けて runtime に接続しています。少しお待ちください。',
   },
 
   // 共通

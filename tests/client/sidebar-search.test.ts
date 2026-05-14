@@ -173,7 +173,7 @@ describe('AppSidebar search entry', () => {
     expect(wrapper.text()).not.toContain('sidebar.profiles')
   })
 
-  it('shows a compact Feishu identity card with card-local controls in user mode', () => {
+  it('shows only name and profile in the user identity card', () => {
     getWebPlaneMock.mockReturnValue('chat')
     isUserModeMock.mockReturnValue(true)
     appStoreMock.connected = false
@@ -205,7 +205,6 @@ describe('AppSidebar search entry', () => {
     expect(wrapper.text()).not.toContain('飞书 OAuth')
     expect(wrapper.text()).not.toContain('飞书登录')
     expect(wrapper.text()).toContain('g41a5b5g')
-    expect(wrapper.text()).not.toContain('profile g41a5b5g')
     expect(wrapper.text()).not.toContain('已锁定')
     expect(wrapper.text()).not.toContain('ou_cf23e')
     const card = wrapper.find('.sidebar-user')
@@ -216,7 +215,7 @@ describe('AppSidebar search entry', () => {
     expect(card.find('.card-logout-button').text()).toBe('')
     expect(wrapper.find('.sidebar-footer .logout-item').exists()).toBe(false)
     expect(wrapper.find('.sidebar-footer .status-row').exists()).toBe(false)
-    expect(wrapper.find('language-switch-stub').exists()).toBe(false)
+    expect(card.find('language-switch-stub').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('sidebar.connected')
     expect(wrapper.text()).not.toContain('sidebar.disconnected')
   })

@@ -47,6 +47,7 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { createServer } from 'net'
 import yaml from 'js-yaml'
+import { config, parseBool } from '../../config'
 import { logger } from '../logger'
 
 const execFileAsync = promisify(execFile)
@@ -162,6 +163,11 @@ const PROFILE_WORKSPACE_ENV_KEYS = new Set([
   'HERMES_WRITE_SAFE_ROOT',
   'TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE',
 ])
+
+function apiOnlyGatewayBlockedByBrokerMode(): boolean {
+  if (parseBool(process.env.HERMES_WEBUI_ALLOW_API_ONLY_GATEWAYS)) return false
+  return config.webPlane === 'chat' && (config.webuiRunBroker || config.webuiJobsBroker)
+}
 
 /**
  * 检测系统的 init 系统（服务管理器）
@@ -677,6 +683,14 @@ export class GatewayManager {
   }
 
   async startApiOnly(name: string): Promise<GatewayStatus> {
+    if (apiOnlyGatewayBlockedByBrokerMode()) {
+      logger.warn(
+        'Blocked API-only gateway startup for profile "%s": chat broker mode is active',
+        name,
+      )
+      throw new Error('API-only gateways are disabled in chat broker mode')
+    }
+
     const { port, host } = await this.resolvePort(name)
     const runtimeHome = this.prepareApiOnlyHome(name, port, host)
     const url = `http://${host}:${port}`

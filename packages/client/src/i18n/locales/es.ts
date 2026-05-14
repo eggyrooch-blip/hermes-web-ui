@@ -36,6 +36,8 @@ export default {
     removeConfirm: 'Esta seguro de eliminar el login con contrasena? Necesitara usar el token de acceso.',
     passwordLoginNotConfigured: 'Login con contrasena no configurado',
     passwordLoginConfigured: 'Login con contrasena habilitado ({username})',
+    wakingTitle: 'Hermes se esta iniciando',
+    wakingDescription: 'Vinculando tu perfil y conectando el runtime. Espera un momento.',
   },
 
   // Common

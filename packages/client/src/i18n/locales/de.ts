@@ -36,6 +36,8 @@ export default {
     removeConfirm: 'Mochten Sie das Passwort-Login wirklich entfernen? Sie mussen dann den Zugangs-Token verwenden.',
     passwordLoginNotConfigured: 'Passwort-Login ist nicht konfiguriert',
     passwordLoginConfigured: 'Passwort-Login aktiviert ({username})',
+    wakingTitle: 'Hermes wird gestartet',
+    wakingDescription: 'Profil wird gebunden und Runtime verbunden. Bitte warten.',
   },
 
   // Common

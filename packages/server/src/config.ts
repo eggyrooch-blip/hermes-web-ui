@@ -22,6 +22,12 @@ export function getRunBrokerKey(env: Record<string, string | undefined> = proces
   return env.HERMES_RUN_BROKER_KEY?.trim() || ''
 }
 
+export function getJobsBrokerEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  const explicit = env.HERMES_WEBUI_JOBS_BROKER
+  if (explicit !== undefined) return parseBool(explicit)
+  return parseBool(env.HERMES_WEBUI_RUN_BROKER)
+}
+
 function parseWebPlane(raw: string | undefined): WebPlane {
   const value = raw?.trim().toLowerCase()
   if (value === 'chat' || value === 'ops' || value === 'both') return value
@@ -71,6 +77,7 @@ export const config = {
   trustedHeaderSecret: process.env.HERMES_TRUSTED_HEADER_SECRET || '',
   trustedHeaderMaxAgeSeconds: parseInt(process.env.HERMES_TRUSTED_HEADER_MAX_AGE_SECONDS || '300', 10),
   multitenancyDb: process.env.HERMES_MULTITENANCY_DB || resolve(homedir(), '.hermes', 'multitenancy.db'),
+  requiredProfile: process.env.HERMES_REQUIRED_PROFILE?.trim() || '',
   feishuAppId: process.env.FEISHU_APP_ID || '',
   feishuAppSecret: process.env.FEISHU_APP_SECRET || '',
   feishuRedirectUri: process.env.FEISHU_REDIRECT_URI || '',
@@ -80,6 +87,7 @@ export const config = {
   feishuSessionMaxAgeSeconds: parseInt(process.env.FEISHU_SESSION_MAX_AGE_SECONDS || String(7 * 24 * 60 * 60), 10),
   feishuCallbackRedirect: getFeishuCallbackRedirect(),
   webuiRunBroker: parseBool(process.env.HERMES_WEBUI_RUN_BROKER),
+  webuiJobsBroker: getJobsBrokerEnabled(),
   runBrokerUrl: getRunBrokerUrl(),
   runBrokerKey: getRunBrokerKey(),
   chatPlaneAllowSettings: parseBool(process.env.HERMES_CHAT_PLANE_ALLOW_SETTINGS),

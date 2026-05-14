@@ -36,6 +36,8 @@ export default {
     removeConfirm: 'Voulez-vous vraiment supprimer le login par mot de passe? Vous devrez utiliser le jeton d\'acces.',
     passwordLoginNotConfigured: 'Login par mot de passe non configure',
     passwordLoginConfigured: 'Login par mot de passe active ({username})',
+    wakingTitle: 'Hermes demarre',
+    wakingDescription: 'Liaison de votre profil et connexion du runtime. Veuillez patienter.',
   },
 
   // Common

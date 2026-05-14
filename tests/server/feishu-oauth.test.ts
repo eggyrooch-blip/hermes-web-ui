@@ -65,6 +65,37 @@ describe('Feishu OAuth session helpers', () => {
     })).toBeNull()
   })
 
+  it('rejects an authenticated cookie whose profile is not the required canonical profile', async () => {
+    process.env.FEISHU_SESSION_SECRET = 'session-secret'
+    process.env.HERMES_REQUIRED_PROFILE = 'sunke'
+    vi.resetModules()
+    const {
+      createFeishuSessionCookie,
+      feishuOAuthAuth,
+    } = await import('../../packages/server/src/services/feishu-oauth')
+
+    const cookie = createFeishuSessionCookie({
+      openid: 'ou_test',
+      profile: 'feishu_sunke',
+      secret: 'session-secret',
+      now: Math.floor(Date.now() / 1000),
+      maxAgeSeconds: 3600,
+    })
+    const ctx: any = {
+      path: '/api/auth/me',
+      state: {},
+      cookies: { get: vi.fn().mockReturnValue(cookie) },
+      set: vi.fn(),
+    }
+    const next = vi.fn()
+
+    await feishuOAuthAuth(ctx, next)
+
+    expect(next).not.toHaveBeenCalled()
+    expect(ctx.status).toBe(401)
+    expect(ctx.body).toEqual({ error: 'Unauthorized' })
+  })
+
   it('builds the Feishu authorize URL with app id, redirect uri, and state', async () => {
     process.env.FEISHU_APP_ID = 'cli_test'
     process.env.FEISHU_REDIRECT_URI = 'http://localhost:8648/api/auth/feishu/callback'
@@ -195,6 +226,23 @@ describe('Feishu OAuth controller', () => {
       name: '张三',
       avatarUrl: 'https://example.com/avatar.png',
     })
+  })
+
+  it('wakes the bound profile gateway after OAuth login when it is stopped', async () => {
+    const gatewayManager = {
+      detectStatus: vi.fn().mockResolvedValue({ profile: 'feishu_sunke', running: false }),
+      startApiOnly: vi.fn().mockResolvedValue({ profile: 'feishu_sunke', running: true }),
+    }
+    vi.doMock('../../packages/server/src/services/gateway-bootstrap', () => ({
+      getGatewayManagerInstance: () => gatewayManager,
+    }))
+
+    const { wakeBoundProfileGateway } = await import('../../packages/server/src/controllers/auth')
+
+    await wakeBoundProfileGateway('feishu_sunke')
+
+    expect(gatewayManager.detectStatus).toHaveBeenCalledWith('feishu_sunke')
+    expect(gatewayManager.startApiOnly).toHaveBeenCalledWith('feishu_sunke')
   })
 
   it('keeps Feishu logout public so it can always clear the session cookie', async () => {

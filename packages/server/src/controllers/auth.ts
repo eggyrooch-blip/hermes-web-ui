@@ -12,6 +12,7 @@ import {
   FEISHU_STATE_COOKIE,
   verifyFeishuState,
 } from '../services/feishu-oauth'
+import { getGatewayManagerInstance } from '../services/gateway-bootstrap'
 import { logger } from '../services/logger'
 import type { WebUser } from '../services/request-context'
 
@@ -31,6 +32,26 @@ function setFeishuCookie(ctx: Context, name: string, value: string, maxAgeSecond
 
 function maskOpenId(openid: string): string {
   return openid.length <= 8 ? '***' : `***${openid.slice(-8)}`
+}
+
+export async function wakeBoundProfileGateway(profile: string): Promise<void> {
+  const mgr = getGatewayManagerInstance()
+  if (!mgr || !profile) return
+  try {
+    const current = typeof mgr.detectStatus === 'function'
+      ? await mgr.detectStatus(profile)
+      : null
+    if (current?.running) return
+    if (typeof mgr.startApiOnly === 'function') {
+      await mgr.startApiOnly(profile)
+      return
+    }
+    if (typeof mgr.start === 'function') {
+      await mgr.start(profile)
+    }
+  } catch (err) {
+    logger.warn(err, 'Failed to wake bound profile gateway after Feishu OAuth login')
+  }
 }
 
 /**
@@ -178,6 +199,7 @@ export async function feishuCallback(ctx: Context) {
     }
 
     logger.info({ openid: maskOpenId(token.openid), profile: bound.user.profile }, 'Feishu OAuth login bound to Hermes profile')
+    await wakeBoundProfileGateway(bound.user.profile)
     setFeishuCookie(ctx, FEISHU_SESSION_COOKIE, bound.cookie, config.feishuSessionMaxAgeSeconds)
     ctx.cookies.set(FEISHU_STATE_COOKIE, '', {
       httpOnly: true,

@@ -468,13 +468,20 @@ custom_providers:
     await create(ctx)
 
     const forwarded = JSON.parse(fetchMock.mock.calls[0][1].body)
-    expect(forwarded).toEqual({
-      deliver: 'feishu',
+    expect(forwarded).toMatchObject({
       name: 'job',
       owner_open_id: 'ou_test',
       owner_profile: 'g41a5b5g',
       prompt: 'run safely',
+      deliver: 'feishu',
     })
+    expect(forwarded.profile).toBeUndefined()
+    expect(forwarded.token).toBeUndefined()
+    expect(forwarded['x-hermes-profile']).toBeUndefined()
+    expect(forwarded.provider).toBeUndefined()
+    expect(forwarded.base_url).toBeUndefined()
+    expect(forwarded.api_key).toBeUndefined()
+    expect(forwarded.apiKey).toBeUndefined()
   })
 
   it('serves files only from the bound profile workspace in chat plane', async () => {

@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 
 const originalEnv = process.env
 
@@ -149,5 +152,56 @@ describe('chat plane access control', () => {
 
     expect(next).toHaveBeenCalledOnce()
     expect(ctx.status).toBe(200)
+  })
+})
+
+describe('multitenancy profile resolution', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    process.env = originalEnv
+  })
+
+  function makeRoutingDb(rows: Array<{ user_id: string; profile_name: string; open_id: string; active?: number }>) {
+    const dir = mkdtempSync(join(tmpdir(), 'hermes-routing-'))
+    const dbPath = join(dir, 'multitenancy.db')
+    const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite')
+    const db = new DatabaseSync(dbPath)
+    try {
+      db.exec(`
+        CREATE TABLE multitenancy_routing (
+          user_id TEXT PRIMARY KEY NOT NULL,
+          profile_name TEXT NOT NULL,
+          open_id TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1
+        );
+      `)
+      const stmt = db.prepare('INSERT INTO multitenancy_routing (user_id, profile_name, open_id, active) VALUES (?, ?, ?, ?)')
+      for (const row of rows) {
+        stmt.run(row.user_id, row.profile_name, row.open_id, row.active ?? 1)
+      }
+    } finally {
+      db.close()
+    }
+    return dbPath
+  }
+
+  it('resolves the profile bound by multitenancy routing', async () => {
+    const dbPath = makeRoutingDb([{ user_id: 'sunke', profile_name: 'sunke', open_id: 'ou_sunke' }])
+    const { resolveProfileForOpenId } = await loadRequestContext({ HERMES_MULTITENANCY_DB: dbPath })
+
+    expect(resolveProfileForOpenId('ou_sunke')).toBe('sunke')
+  })
+
+  it('rejects OAuth profile binding when the route is not the required canonical profile', async () => {
+    const dbPath = makeRoutingDb([{ user_id: 'sunke', profile_name: 'feishu_sunke', open_id: 'ou_sunke' }])
+    const { resolveProfileForOpenId } = await loadRequestContext({
+      HERMES_MULTITENANCY_DB: dbPath,
+      HERMES_REQUIRED_PROFILE: 'sunke',
+    })
+
+    expect(resolveProfileForOpenId('ou_sunke')).toBeNull()
   })
 })

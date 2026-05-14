@@ -1,4 +1,5 @@
 import type { Context } from 'koa'
+import { config } from '../../config'
 import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
 import { getRequestProfile, isChatPlaneRequest, type WebUser } from '../../services/request-context'
 
@@ -32,6 +33,17 @@ function buildHeaders(profile: string, ctx: Context): Record<string, string> {
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
   const openid = getChatPlaneOpenId(ctx)
   if (openid) headers['X-Hermes-Feishu-OpenId'] = openid
+  return headers
+}
+
+function brokerHeaders(profile: string, ctx: Context): Record<string, string> {
+  const userKey = getChatPlaneOpenId(ctx) || profile
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Hermes-Profile': profile,
+    'X-Hermes-User-Key': userKey,
+  }
+  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
   return headers
 }
 
@@ -98,6 +110,79 @@ async function readUpstreamError(res: Response): Promise<unknown> {
 
   const text = await res.text().catch(() => '')
   return { error: { message: text || `Upstream error: ${res.status} ${res.statusText}` } }
+}
+
+function shouldUseJobsBroker(ctx: Context): boolean {
+  return isChatPlaneRequest(ctx) && config.webuiJobsBroker
+}
+
+async function brokerRequest(
+  ctx: Context,
+  brokerPath: string,
+  method?: string,
+  options: { fallbackUnavailableJobList?: boolean } = {},
+): Promise<void> {
+  const profile = resolveProfile(ctx)
+  if (!config.runBrokerUrl) {
+    ctx.status = 503
+    ctx.set('Content-Type', 'application/json')
+    ctx.body = { error: { message: 'HERMES_RUN_BROKER_URL is required for jobs broker mode' } }
+    return
+  }
+
+  const params = new URLSearchParams(ctx.search || '')
+  params.delete('token')
+  params.delete('profile')
+  params.delete('x-hermes-profile')
+  const search = params.toString()
+  const url = `${config.runBrokerUrl}${brokerPath}${search ? `?${search}` : ''}`
+  const requestMethod = method || ctx.req.method || ctx.method || 'GET'
+  const normalizedPathForBody = brokerPath === '/api/run-broker/jobs' ? '/api/jobs' : brokerPath
+  const body = ctx.req.method !== 'GET' && ctx.req.method !== 'HEAD'
+    ? JSON.stringify(normalizeChatPlaneJobBody(
+      ctx,
+      profile,
+      normalizedPathForBody,
+      requestMethod,
+      sanitizeChatPlaneBody(ctx, ctx.request.body || {}),
+    ))
+    : undefined
+
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: requestMethod,
+      headers: brokerHeaders(profile, ctx),
+      body,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
+  } catch (e: any) {
+    if (options.fallbackUnavailableJobList) {
+      ctx.status = 200
+      ctx.set('Content-Type', 'application/json')
+      ctx.body = {
+        jobs: [],
+        gateway_unavailable: true,
+        error: { message: `Broker error: ${e.message}` },
+      }
+      return
+    }
+    ctx.status = 502
+    ctx.set('Content-Type', 'application/json')
+    ctx.body = { error: { message: `Broker error: ${e.message}` } }
+    return
+  }
+
+  if (!res.ok) {
+    ctx.status = res.status
+    ctx.set('Content-Type', 'application/json')
+    ctx.body = await readUpstreamError(res)
+    return
+  }
+
+  ctx.status = res.status
+  ctx.set('Content-Type', res.headers.get('content-type') || 'application/json')
+  ctx.body = await res.json()
 }
 
 async function proxyRequest(
@@ -175,11 +260,25 @@ async function proxyRequest(
 }
 
 export async function list(ctx: Context) {
+  if (shouldUseJobsBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/jobs', undefined, { fallbackUnavailableJobList: true })
+    return
+  }
   await proxyRequest(ctx, '/api/jobs', undefined, { fallbackUnavailableJobList: true })
 }
 
 export async function wake(ctx: Context) {
   const profile = resolveProfile(ctx)
+  if (shouldUseJobsBroker(ctx)) {
+    ctx.body = {
+      profile,
+      running: true,
+      status: 'ready',
+      url: config.runBrokerUrl,
+    }
+    return
+  }
+
   const mgr = getGatewayManagerInstance()
   if (!mgr?.detectStatus || !mgr?.startApiOnly) {
     ctx.status = 503
@@ -224,6 +323,16 @@ export async function wake(ctx: Context) {
 
 export async function sleep(ctx: Context) {
   const profile = resolveProfile(ctx)
+  if (shouldUseJobsBroker(ctx)) {
+    ctx.body = {
+      profile,
+      running: true,
+      status: 'ready',
+      url: config.runBrokerUrl,
+    }
+    return
+  }
+
   const mgr = getGatewayManagerInstance()
   if (!mgr?.stopApiOnly) {
     ctx.status = 503
@@ -256,26 +365,50 @@ export async function sleep(ctx: Context) {
 }
 
 export async function get(ctx: Context) {
+  if (shouldUseJobsBroker(ctx)) {
+    await brokerRequest(ctx, `/api/run-broker/jobs/${ctx.params.id}`)
+    return
+  }
   await proxyRequest(ctx, `/api/jobs/${ctx.params.id}`)
 }
 
 export async function create(ctx: Context) {
+  if (shouldUseJobsBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/jobs')
+    return
+  }
   await proxyRequest(ctx, '/api/jobs')
 }
 
 export async function update(ctx: Context) {
+  if (shouldUseJobsBroker(ctx)) {
+    await brokerRequest(ctx, `/api/run-broker/jobs/${ctx.params.id}`)
+    return
+  }
   await proxyRequest(ctx, `/api/jobs/${ctx.params.id}`)
 }
 
 export async function remove(ctx: Context) {
+  if (shouldUseJobsBroker(ctx)) {
+    await brokerRequest(ctx, `/api/run-broker/jobs/${ctx.params.id}`)
+    return
+  }
   await proxyRequest(ctx, `/api/jobs/${ctx.params.id}`)
 }
 
 export async function pause(ctx: Context) {
+  if (shouldUseJobsBroker(ctx)) {
+    await brokerRequest(ctx, `/api/run-broker/jobs/${ctx.params.id}/pause`)
+    return
+  }
   await proxyRequest(ctx, `/api/jobs/${ctx.params.id}/pause`)
 }
 
 export async function resume(ctx: Context) {
+  if (shouldUseJobsBroker(ctx)) {
+    await brokerRequest(ctx, `/api/run-broker/jobs/${ctx.params.id}/resume`)
+    return
+  }
   await proxyRequest(ctx, `/api/jobs/${ctx.params.id}/resume`)
 }
 

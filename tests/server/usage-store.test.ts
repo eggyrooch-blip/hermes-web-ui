@@ -120,6 +120,7 @@ describe('Usage Store (SQLite path)', () => {
   let getMock: ReturnType<typeof vi.fn>
   let allMock: ReturnType<typeof vi.fn>
   let deleteMock: ReturnType<typeof vi.fn>
+  let execMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     vi.resetModules()
@@ -128,12 +129,15 @@ describe('Usage Store (SQLite path)', () => {
     getMock = vi.fn()
     allMock = vi.fn()
     deleteMock = vi.fn()
+    execMock = vi.fn()
 
     vi.doMock('../../packages/server/src/db/index', () => ({
       isSqliteAvailable: () => true,
       ensureTable: vi.fn(),
       getDb: () => ({
+        exec: execMock,
         prepare: vi.fn((sql: string) => {
+          if (sql.includes("sqlite_master") && sql.includes("type='table'")) return { get: vi.fn(() => undefined) }
           if (sql.includes('INSERT') || sql.includes('UPDATE')) return { run: runMock }
           if (sql.includes('SELECT') && sql.includes('WHERE session_id = ?')) return { get: getMock }
           if (sql.includes('SELECT') && sql.includes('IN')) return { all: allMock }

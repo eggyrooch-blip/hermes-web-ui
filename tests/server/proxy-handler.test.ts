@@ -23,6 +23,7 @@ vi.mock('../../packages/server/src/db/hermes/usage-store', () => ({
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
+import { config } from '../../packages/server/src/config'
 import { proxy, setRunSession } from '../../packages/server/src/routes/hermes/proxy-handler'
 import { config } from '../../packages/server/src/config'
 
