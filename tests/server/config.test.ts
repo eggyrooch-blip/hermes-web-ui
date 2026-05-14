@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { getFeishuCallbackRedirect, getListenHost } from '../../packages/server/src/config'
+import {
+  getFeishuCallbackRedirect,
+  getListenHost,
+  getRunBrokerKey,
+  getRunBrokerUrl,
+} from '../../packages/server/src/config'
 
 describe('server config', () => {
   it('defaults to an IPv4 bind host', () => {
@@ -20,5 +25,13 @@ describe('server config', () => {
 
   it('uses FEISHU_CALLBACK_REDIRECT when provided', () => {
     expect(getFeishuCallbackRedirect({ FEISHU_CALLBACK_REDIRECT: '/#/custom' })).toBe('/#/custom')
+  })
+
+  it('normalizes Run Broker URL values', () => {
+    expect(getRunBrokerUrl({ HERMES_RUN_BROKER_URL: ' http://127.0.0.1:8766/// ' })).toBe('http://127.0.0.1:8766')
+  })
+
+  it('reads Run Broker shared secret values', () => {
+    expect(getRunBrokerKey({ HERMES_RUN_BROKER_KEY: ' broker-secret ' })).toBe('broker-secret')
   })
 })

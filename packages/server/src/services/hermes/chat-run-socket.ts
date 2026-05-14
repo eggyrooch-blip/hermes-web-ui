@@ -577,9 +577,6 @@ export class ChatRunSocket {
     skipUserMessage = false,
   ) {
     const { input, session_id, model, provider, instructions } = data
-    await this.ensureGatewayReady(profile)
-    const upstream = this.gatewayManager.getUpstream(profile).replace(/\/$/, '')
-    const apiKey = this.gatewayManager.getApiKey(profile) || undefined
 
     // Local marker used only to group in-memory messages for this streamed response.
     const runMarker = session_id
@@ -662,6 +659,21 @@ export class ChatRunSocket {
         socket.emit(event, tagged)
       }
     }
+    if (config.webuiRunBroker) {
+      await this.handleBrokerRun(socket, {
+        input,
+        session_id,
+        model,
+        provider,
+        instructions,
+      }, profile, runMarker, emit)
+      return
+    }
+
+    await this.ensureGatewayReady(profile)
+    const upstream = this.gatewayManager.getUpstream(profile).replace(/\/$/, '')
+    const apiKey = this.gatewayManager.getApiKey(profile) || undefined
+
     try {
       // Build upstream request body
       const body: Record<string, any> = { input: await buildResponsesInput(input, profile) }
@@ -1513,6 +1525,210 @@ export class ChatRunSocket {
     } catch (err: any) {
       logger.warn(err, '[chat-run-socket] failed to calculate usage for session %s', sid)
       return { inputTokens: 0, outputTokens: 0 }
+    }
+  }
+
+  private async handleBrokerRun(
+    socket: Socket,
+    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string },
+    profile: string,
+    runMarker: string | undefined,
+    emit: (event: string, payload: any) => void,
+  ) {
+    const { input, session_id, model, provider, instructions } = data
+    const brokerUrl = config.runBrokerUrl
+    if (!brokerUrl) {
+      const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+      if (session_id) await this.markCompleted(socket, session_id, { event: 'run.failed' })
+      emit('run.failed', {
+        event: 'run.failed',
+        error: 'HERMES_RUN_BROKER_URL is required when HERMES_WEBUI_RUN_BROKER=1',
+        queue_remaining: queueLen,
+      })
+      return
+    }
+
+    const userKey = (socket.data?.user?.openid as string | undefined)?.trim() || profile
+    const content = contentBlocksToString(input).trim()
+    const metadata: Record<string, any> = {
+      source: 'hermes-web-ui',
+    }
+    if (model) metadata.model = model
+    if (provider) metadata.provider = provider
+    if (session_id) metadata.conversation = `webui:${session_id}`
+    metadata.instructions = instructions
+      ? `${getSystemPrompt()}\n${instructions}`
+      : getSystemPrompt()
+
+    if (session_id) {
+      const sessionRow = getSession(session_id)
+      if (sessionRow?.workspace) {
+        const workspaceCtx = `[Current working directory: ${sessionRow.workspace}]`
+        metadata.instructions = metadata.instructions
+          ? `\n${workspaceCtx}\n${metadata.instructions}`
+          : `\n${workspaceCtx}`
+      }
+    }
+
+    const builtInput = await buildResponsesInput(input, profile)
+    if (builtInput !== content) {
+      metadata.input = builtInput
+    }
+
+    const request = {
+      channel: 'webui',
+      profile_name: profile,
+      user_key: userKey,
+      content,
+      session_id,
+      delivery_mode: 'socket',
+      credential_subject: userKey,
+      requires_host_tools: true,
+      metadata,
+    }
+
+    const abortController = new AbortController()
+    if (session_id) {
+      const state = this.getOrCreateSession(session_id)
+      state.isWorking = true
+      state.runId = undefined
+      state.abortController = abortController
+      this.getResponseRunState(state, runMarker)
+    }
+
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
+      const res = await fetch(`${brokerUrl}/api/run-broker/runs`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+        signal: abortController.signal,
+      })
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+        if (session_id) await this.markCompleted(socket, session_id, { event: 'run.failed' })
+        emit('run.failed', { event: 'run.failed', error: `Run broker ${res.status}: ${text}`, queue_remaining: queueLen })
+        if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
+        return
+      }
+      if (!res.body) {
+        const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+        if (session_id) await this.markCompleted(socket, session_id, { event: 'run.failed' })
+        emit('run.failed', { event: 'run.failed', error: 'Run broker response stream missing', queue_remaining: queueLen })
+        if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
+        return
+      }
+
+      let runId: string | undefined
+      let finalText = ''
+      for await (const frame of readSseFrames(res.body)) {
+        let parsed: any
+        try {
+          parsed = JSON.parse(frame.data)
+        } catch {
+          continue
+        }
+        const brokerKind = parsed.kind || parsed.event || frame.event
+        const eventRunId = parsed.run_id || parsed.runId || parsed.payload?.run_id
+        if (eventRunId) runId = String(eventRunId)
+
+        if (brokerKind === 'content' || brokerKind === 'thinking') {
+          const deltaText = parsed.text || parsed.delta || parsed.payload?.text || ''
+          if (!deltaText) continue
+          finalText += deltaText
+          if (session_id) {
+            const state = this.sessionMap.get(session_id)
+            if (state) {
+              const run = this.getResponseRunState(state, runMarker)
+              run.responseId = runId || run.responseId
+              const last = [...state.messages].reverse().find(m => m.runMarker === runMarker)
+              if (last?.role === 'assistant' && last.finish_reason == null && !last.tool_calls?.length) {
+                last.content += deltaText
+              } else {
+                state.messages.push({
+                  id: state.messages.length + 1,
+                  session_id,
+                  runMarker,
+                  role: 'assistant',
+                  content: deltaText,
+                  timestamp: Math.floor(Date.now() / 1000),
+                })
+              }
+            }
+          }
+          emit('message.delta', {
+            event: 'message.delta',
+            run_id: runId,
+            response_id: runId,
+            delta: deltaText,
+          })
+          continue
+        }
+
+        if (brokerKind === 'tool_started') {
+          emit('tool.started', {
+            event: 'tool.started',
+            run_id: runId,
+            response_id: runId,
+            tool: parsed.name || parsed.payload?.tool || parsed.payload?.name,
+            name: parsed.name || parsed.payload?.name || parsed.payload?.tool,
+            arguments: parsed.payload?.arguments,
+          })
+          continue
+        }
+
+        if (brokerKind === 'tool_completed') {
+          emit('tool.completed', {
+            event: 'tool.completed',
+            run_id: runId,
+            response_id: runId,
+            tool: parsed.name || parsed.payload?.tool || parsed.payload?.name,
+            name: parsed.name || parsed.payload?.name || parsed.payload?.tool,
+            output: parsed.text || parsed.payload?.output,
+          })
+          continue
+        }
+
+        if (brokerKind === 'done' || brokerKind === 'error') {
+          const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+          if (session_id) await this.markCompleted(socket, session_id, {
+            event: brokerKind === 'done' ? 'run.completed' : 'run.failed',
+            run_id: runId,
+          })
+          const eventName = brokerKind === 'done' ? 'run.completed' : 'run.failed'
+          emit(eventName, {
+            event: eventName,
+            run_id: runId,
+            response_id: runId,
+            output: parsed.text || parsed.payload?.output || finalText,
+            usage: parsed.payload?.usage,
+            error: parsed.error || parsed.payload?.error,
+            queue_remaining: queueLen,
+          })
+          if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
+          return
+        }
+      }
+
+      const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+      if (session_id) await this.markCompleted(socket, session_id, { event: 'run.failed', run_id: runId })
+      emit('run.failed', {
+        event: 'run.failed',
+        run_id: runId,
+        response_id: runId,
+        error: 'Run broker stream ended without a terminal event',
+        queue_remaining: queueLen,
+      })
+      if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
+    } catch (err: any) {
+      const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+      if (session_id) {
+        await this.markCompleted(socket, session_id, { event: 'run.failed' })
+      }
+      emit('run.failed', { event: 'run.failed', error: err.message, queue_remaining: queueLen })
+      if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
     }
   }
 

@@ -193,6 +193,83 @@ describe('ChatRunSocket gateway lifecycle', () => {
     expect(body).not.toHaveProperty('conversation_history')
   })
 
+  it('submits WebUI socket runs to the broker when the broker flag is enabled', async () => {
+    vi.resetModules()
+    vi.stubEnv('HERMES_WEBUI_RUN_BROKER', '1')
+    vi.stubEnv('HERMES_RUN_BROKER_URL', 'http://127.0.0.1:8766')
+    vi.stubEnv('HERMES_RUN_BROKER_KEY', 'broker-secret')
+    const { ChatRunSocket: BrokerChatRunSocket } = await import('../../packages/server/src/services/hermes/chat-run-socket')
+
+    const { io, room } = createSocketServer()
+    const gatewayManager = {
+      detectStatus: vi.fn(),
+      startApiOnly: vi.fn(),
+      getUpstream: vi.fn(() => {
+        throw new Error('profile apiserver should not be used')
+      }),
+      getApiKey: vi.fn(() => null),
+    }
+    const encoder = new TextEncoder()
+    const fetchMock = vi.fn(async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"kind":"content","text":"broker hello","payload":{"run_id":"run_webui_1"}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"kind":"done","payload":{"run_id":"run_webui_1","usage":{"input_tokens":1,"output_tokens":2}}}\n\n'))
+        controller.close()
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const chatRun = new BrokerChatRunSocket(io as any, gatewayManager)
+    const socket = {
+      data: { user: { openid: 'ou_webui_user' } },
+      connected: true,
+      emit: vi.fn(),
+      join: vi.fn(),
+    }
+
+    await (chatRun as any).handleRun(socket, {
+      input: 'hello broker',
+      session_id: 'session-broker',
+      model: 'gpt-5.4',
+      provider: 'openai',
+    }, 'sunke')
+
+    expect(gatewayManager.getUpstream).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:8766/api/run-broker/runs', expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({
+        Authorization: 'Bearer broker-secret',
+      }),
+    }))
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(body).toEqual(expect.objectContaining({
+      channel: 'webui',
+      profile_name: 'sunke',
+      user_key: 'ou_webui_user',
+      content: 'hello broker',
+      session_id: 'session-broker',
+      delivery_mode: 'socket',
+      credential_subject: 'ou_webui_user',
+      requires_host_tools: true,
+    }))
+    expect(body.metadata).toEqual(expect.objectContaining({
+      model: 'gpt-5.4',
+      provider: 'openai',
+      conversation: 'webui:session-broker',
+    }))
+    expect(room.emit).toHaveBeenCalledWith('message.delta', expect.objectContaining({
+      session_id: 'session-broker',
+      delta: 'broker hello',
+    }))
+    expect(room.emit).toHaveBeenCalledWith('run.completed', expect.objectContaining({
+      session_id: 'session-broker',
+      run_id: 'run_webui_1',
+    }))
+  })
+
   it('inlines uploaded markdown file content before forwarding a run upstream', async () => {
     const profile = 'vitest-file-profile'
     const profileDir = resolve(homedir(), '.hermes', 'profiles', profile)

@@ -14,6 +14,14 @@ export function getFeishuCallbackRedirect(env: Record<string, string | undefined
   return redirect || '/#/hermes/chat'
 }
 
+export function getRunBrokerUrl(env: Record<string, string | undefined> = process.env): string {
+  return env.HERMES_RUN_BROKER_URL?.trim().replace(/\/+$/, '') || ''
+}
+
+export function getRunBrokerKey(env: Record<string, string | undefined> = process.env): string {
+  return env.HERMES_RUN_BROKER_KEY?.trim() || ''
+}
+
 function parseWebPlane(raw: string | undefined): WebPlane {
   const value = raw?.trim().toLowerCase()
   if (value === 'chat' || value === 'ops' || value === 'both') return value
@@ -72,6 +80,9 @@ export const config = {
   feishuSessionSecret: process.env.FEISHU_SESSION_SECRET || '',
   feishuSessionMaxAgeSeconds: parseInt(process.env.FEISHU_SESSION_MAX_AGE_SECONDS || String(7 * 24 * 60 * 60), 10),
   feishuCallbackRedirect: getFeishuCallbackRedirect(),
+  webuiRunBroker: parseBool(process.env.HERMES_WEBUI_RUN_BROKER),
+  runBrokerUrl: getRunBrokerUrl(),
+  runBrokerKey: getRunBrokerKey(),
   chatPlaneAllowSettings: parseBool(process.env.HERMES_CHAT_PLANE_ALLOW_SETTINGS),
   chatPlaneTempOpenAdmin: parseBool(process.env.HERMES_CHAT_PLANE_TEMP_OPEN_ADMIN),
 }
