@@ -12,6 +12,7 @@ import type { Server, Socket } from 'socket.io'
 import { existsSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { extname, isAbsolute, resolve } from 'path'
+import { inflateRawSync } from 'zlib'
 import { getSystemPrompt } from '../../lib/llm-prompt'
 import {
   getSession,
@@ -79,6 +80,7 @@ const TEXT_FILE_EXTENSIONS = new Set([
   '.txt', '.md', '.markdown', '.json', '.jsonl', '.csv', '.tsv', '.yaml', '.yml',
   '.xml', '.html', '.css', '.js', '.ts', '.tsx', '.jsx', '.py', '.sh', '.log',
 ])
+const SPREADSHEET_FILE_EXTENSIONS = new Set(['.xlsx'])
 const MAX_INLINE_FILE_CHARS = 200_000
 
 function resolveUploadedPath(profile: string, filePath: string): string | null {
@@ -101,7 +103,8 @@ function shouldInlineFile(block: ContentBlock): boolean {
   if (block.type !== 'file') return false
   const media = (block.media_type || '').toLowerCase()
   if (media.startsWith('text/')) return true
-  return TEXT_FILE_EXTENSIONS.has(extname(block.name || block.path).toLowerCase())
+  const extension = extname(block.name || block.path).toLowerCase()
+  return TEXT_FILE_EXTENSIONS.has(extension) || SPREADSHEET_FILE_EXTENSIONS.has(extension)
 }
 
 async function readInlineFileBlock(profile: string, block: ContentBlock): Promise<string> {
@@ -110,11 +113,112 @@ async function readInlineFileBlock(profile: string, block: ContentBlock): Promis
   if (!resolvedPath || !existsSync(resolvedPath) || !shouldInlineFile(block)) {
     return `[File: ${block.name || block.path}]`
   }
-  const content = await readFile(resolvedPath, 'utf-8')
+  const extension = extname(block.name || block.path).toLowerCase()
+  const content = SPREADSHEET_FILE_EXTENSIONS.has(extension)
+    ? extractXlsxText(await readFile(resolvedPath))
+    : await readFile(resolvedPath, 'utf-8')
+  if (!content) return `[File: ${block.name || block.path}]`
   const trimmed = content.length > MAX_INLINE_FILE_CHARS
     ? `${content.slice(0, MAX_INLINE_FILE_CHARS)}\n\n[File truncated at ${MAX_INLINE_FILE_CHARS} characters]`
     : content
   return `\n\n[File: ${block.name || block.path}]\n${trimmed}`
+}
+
+function extractXlsxText(file: Buffer): string {
+  const entries = unzipEntries(file)
+  const sharedStrings = parseSharedStrings(entries.get('xl/sharedStrings.xml')?.toString('utf-8') || '')
+  const lines: string[] = []
+  const sheets = [...entries.keys()]
+    .filter(name => name.startsWith('xl/worksheets/') && name.endsWith('.xml'))
+    .sort()
+    .slice(0, 3)
+
+  for (const sheet of sheets) {
+    const xml = entries.get(sheet)?.toString('utf-8') || ''
+    const rows: string[] = []
+    for (const rowMatch of xml.matchAll(/<row\b[\s\S]*?<\/row>/g)) {
+      if (rows.length >= 50) break
+      const rowXml = rowMatch[0]
+      const values: string[] = []
+      for (const cellMatch of rowXml.matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
+        if (values.length >= 20) break
+        values.push(parseXlsxCell(cellMatch[1], cellMatch[2], sharedStrings))
+      }
+      while (values.length > 0 && values[values.length - 1] === '') values.pop()
+      if (values.length > 0) rows.push(values.join('\t'))
+    }
+    if (rows.length > 0) {
+      lines.push(`[${sheet.split('/').pop()?.replace(/\.xml$/, '') || 'sheet'}]`)
+      lines.push(...rows)
+    }
+  }
+  return lines.join('\n')
+}
+
+function unzipEntries(file: Buffer): Map<string, Buffer> {
+  const entries = new Map<string, Buffer>()
+  const eocdOffset = findZipEndOfCentralDirectory(file)
+  if (eocdOffset < 0) return entries
+  const centralDirectorySize = file.readUInt32LE(eocdOffset + 12)
+  const centralDirectoryOffset = file.readUInt32LE(eocdOffset + 16)
+  let offset = centralDirectoryOffset
+  const end = centralDirectoryOffset + centralDirectorySize
+  while (offset < end && file.readUInt32LE(offset) === 0x02014b50) {
+    const method = file.readUInt16LE(offset + 10)
+    const compressedSize = file.readUInt32LE(offset + 20)
+    const nameLength = file.readUInt16LE(offset + 28)
+    const extraLength = file.readUInt16LE(offset + 30)
+    const commentLength = file.readUInt16LE(offset + 32)
+    const localHeaderOffset = file.readUInt32LE(offset + 42)
+    const name = file.subarray(offset + 46, offset + 46 + nameLength).toString('utf-8')
+    const localNameLength = file.readUInt16LE(localHeaderOffset + 26)
+    const localExtraLength = file.readUInt16LE(localHeaderOffset + 28)
+    const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength
+    const compressed = file.subarray(dataStart, dataStart + compressedSize)
+    if (method === 0) entries.set(name, compressed)
+    if (method === 8) entries.set(name, inflateRawSync(compressed))
+    offset += 46 + nameLength + extraLength + commentLength
+  }
+  return entries
+}
+
+function findZipEndOfCentralDirectory(file: Buffer): number {
+  for (let offset = file.length - 22; offset >= 0; offset -= 1) {
+    if (file.readUInt32LE(offset) === 0x06054b50) return offset
+  }
+  return -1
+}
+
+function parseSharedStrings(xml: string): string[] {
+  if (!xml) return []
+  return [...xml.matchAll(/<si\b[\s\S]*?<\/si>/g)]
+    .map(match => [...match[0].matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)]
+      .map(text => decodeXmlText(text[1]))
+      .join(''))
+}
+
+function parseXlsxCell(attributes: string, body: string, sharedStrings: string[]): string {
+  const type = /\bt="([^"]+)"/.exec(attributes)?.[1] || ''
+  if (type === 'inlineStr') {
+    return [...body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)]
+      .map(text => decodeXmlText(text[1]))
+      .join('')
+  }
+  const value = /<v>([\s\S]*?)<\/v>/.exec(body)?.[1] || ''
+  if (type === 's') {
+    const index = Number(value)
+    return Number.isInteger(index) && index >= 0 && index < sharedStrings.length ? sharedStrings[index] : ''
+  }
+  return decodeXmlText(value)
+}
+
+function decodeXmlText(text: string): string {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
 }
 
 async function buildResponsesInput(input: string | ContentBlock[], profile: string): Promise<any> {

@@ -319,6 +319,47 @@ describe('ChatRunSocket gateway lifecycle', () => {
     }
   })
 
+  it('extracts uploaded xlsx content before forwarding a run upstream', async () => {
+    const profile = 'vitest-xlsx-profile'
+    const profileDir = resolve(homedir(), '.hermes', 'profiles', profile)
+    const uploadDir = join(profileDir, 'workspace', 'uploads')
+    await mkdir(uploadDir, { recursive: true })
+    const xlsxBase64 = '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'
+    await writeFile(join(uploadDir, 'sheet.xlsx'), Buffer.from(xlsxBase64, 'base64'))
+
+    try {
+      const { io } = createSocketServer()
+      const gatewayManager = {
+        detectStatus: vi.fn().mockResolvedValue({ profile, running: true, url: 'http://127.0.0.1:8654' }),
+        startApiOnly: vi.fn(),
+        getUpstream: vi.fn(() => 'http://127.0.0.1:8654'),
+        getApiKey: vi.fn(() => null),
+      }
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }))
+      vi.stubGlobal('fetch', fetchMock)
+
+      const chatRun = new ChatRunSocket(io as any, gatewayManager)
+      const socket = { connected: true, emit: vi.fn(), join: vi.fn() }
+
+      await (chatRun as any).handleRun(socket, {
+        input: [
+          { type: 'text', text: 'Read this sheet.' },
+          { type: 'file', name: 'sheet.xlsx', path: 'uploads/sheet.xlsx', media_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+        ],
+      }, profile)
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+      expect(body.input).toContain('HERMES_FILE_E2E_20260514_2230')
+      expect(body.input).toContain('42')
+      expect(body.input).not.toBe('[File: sheet.xlsx]')
+    } finally {
+      await rm(profileDir, { recursive: true, force: true })
+    }
+  })
+
   it('retries Hermes state sync after a completed local chat run', () => {
     const { io } = createSocketServer()
     const gatewayManager = {
