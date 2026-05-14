@@ -3,10 +3,21 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import yaml from 'js-yaml'
+import { config } from '../../packages/server/src/config'
 import { GatewayManager } from '../../packages/server/src/services/hermes/gateway-manager'
 
 describe('GatewayManager API-only lifecycle', () => {
+  const originalConfig = {
+    webPlane: config.webPlane,
+    webuiRunBroker: config.webuiRunBroker,
+    webuiJobsBroker: config.webuiJobsBroker,
+  }
+
   afterEach(() => {
+    config.webPlane = originalConfig.webPlane
+    config.webuiRunBroker = originalConfig.webuiRunBroker
+    config.webuiJobsBroker = originalConfig.webuiJobsBroker
+    vi.unstubAllEnvs()
     vi.restoreAllMocks()
   })
 
@@ -56,6 +67,21 @@ describe('GatewayManager API-only lifecycle', () => {
     expect(options.cwd).toBe('/runtime/g41a5b5g/workspace')
     expect(options.env).toBe(env)
     expect(options.detached).toBe(true)
+  })
+
+  it('blocks API-only gateway startup in chat broker mode', async () => {
+    config.webPlane = 'chat'
+    config.webuiRunBroker = true
+    config.webuiJobsBroker = true
+    vi.stubEnv('HERMES_WEBUI_ALLOW_API_ONLY_GATEWAYS', '')
+
+    const manager = new GatewayManager('default') as any
+    manager.resolvePort = vi.fn().mockRejectedValue(new Error('resolvePort should not be called'))
+
+    await expect(manager.startApiOnly('zhanglina')).rejects.toThrow(
+      'API-only gateways are disabled in chat broker mode',
+    )
+    expect(manager.resolvePort).not.toHaveBeenCalled()
   })
 
   it('writes API-only configs with Hermes Agent readable fallback providers', () => {
