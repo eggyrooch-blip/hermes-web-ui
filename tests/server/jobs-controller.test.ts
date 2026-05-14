@@ -11,7 +11,7 @@ const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
 import { config } from '../../packages/server/src/config'
-import { create, update } from '../../packages/server/src/controllers/hermes/jobs'
+import { create, list, update } from '../../packages/server/src/controllers/hermes/jobs'
 
 function createMockCtx(overrides: Record<string, any> = {}) {
   const ctx: any = {
@@ -39,6 +39,9 @@ describe('Hermes jobs controller proxy', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     config.webPlane = 'both'
+    config.webuiJobsBroker = false
+    config.runBrokerUrl = ''
+    config.runBrokerKey = ''
   })
 
   it('passes through upstream validation status and body instead of masking it as 502', async () => {
@@ -114,5 +117,90 @@ describe('Hermes jobs controller proxy', () => {
       owner_profile: 'sunke',
     })
     expect(JSON.parse(options.body).profile).toBeUndefined()
+  })
+
+  it('uses the multitenancy broker for chat-plane job creation when enabled', async () => {
+    config.webPlane = 'chat'
+    config.webuiJobsBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+    config.runBrokerKey = 'broker-secret'
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({
+        job: {
+          id: 'job1',
+          name: 'sunke smoke',
+          deliver: 'feishu',
+          owner_open_id: 'ou_cf23e7c262afa4b7a006baa75f863ed5',
+          owner_profile: 'sunke',
+        },
+      }),
+    })
+
+    const ctx = createMockCtx({
+      req: { method: 'POST' },
+      request: {
+        body: {
+          name: 'sunke smoke',
+          schedule: '*/5 * * * *',
+          prompt: 'ping',
+          deliver: 'origin',
+          owner_open_id: 'spoofed',
+          profile: 'other',
+          api_key: 'secret',
+        },
+      },
+      params: {},
+      state: { user: { openid: 'ou_cf23e7c262afa4b7a006baa75f863ed5', profile: 'sunke', role: 'user' } },
+    })
+
+    await create(ctx)
+
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(url).toBe('http://127.0.0.1:8766/api/run-broker/jobs')
+    expect(options.headers).toMatchObject({
+      Authorization: 'Bearer broker-secret',
+      'X-Hermes-Profile': 'sunke',
+      'X-Hermes-User-Key': 'ou_cf23e7c262afa4b7a006baa75f863ed5',
+    })
+    expect(JSON.parse(options.body)).toMatchObject({
+      name: 'sunke smoke',
+      schedule: '*/5 * * * *',
+      prompt: 'ping',
+      deliver: 'feishu',
+      owner_open_id: 'ou_cf23e7c262afa4b7a006baa75f863ed5',
+      owner_profile: 'sunke',
+    })
+    expect(JSON.parse(options.body).profile).toBeUndefined()
+    expect(JSON.parse(options.body).api_key).toBeUndefined()
+  })
+
+  it('lists chat-plane jobs through the multitenancy broker without profile selectors', async () => {
+    config.webPlane = 'chat'
+    config.webuiJobsBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({ jobs: [] }),
+    })
+
+    const ctx = createMockCtx({
+      req: { method: 'GET' },
+      search: '?profile=other&token=secret&include_disabled=true',
+      state: { user: { openid: 'ou_cf23e7c262afa4b7a006baa75f863ed5', profile: 'sunke', role: 'user' } },
+    })
+
+    await list(ctx)
+
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(url).toBe('http://127.0.0.1:8766/api/run-broker/jobs?include_disabled=true')
+    expect(options.headers).toMatchObject({
+      'X-Hermes-Profile': 'sunke',
+      'X-Hermes-User-Key': 'ou_cf23e7c262afa4b7a006baa75f863ed5',
+    })
   })
 })

@@ -22,6 +22,12 @@ export function getRunBrokerKey(env: Record<string, string | undefined> = proces
   return env.HERMES_RUN_BROKER_KEY?.trim() || ''
 }
 
+export function getJobsBrokerEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  const explicit = env.HERMES_WEBUI_JOBS_BROKER
+  if (explicit !== undefined) return parseBool(explicit)
+  return parseBool(env.HERMES_WEBUI_RUN_BROKER)
+}
+
 function parseWebPlane(raw: string | undefined): WebPlane {
   const value = raw?.trim().toLowerCase()
   if (value === 'chat' || value === 'ops' || value === 'both') return value
@@ -81,6 +87,7 @@ export const config = {
   feishuSessionMaxAgeSeconds: parseInt(process.env.FEISHU_SESSION_MAX_AGE_SECONDS || String(7 * 24 * 60 * 60), 10),
   feishuCallbackRedirect: getFeishuCallbackRedirect(),
   webuiRunBroker: parseBool(process.env.HERMES_WEBUI_RUN_BROKER),
+  webuiJobsBroker: getJobsBrokerEnabled(),
   runBrokerUrl: getRunBrokerUrl(),
   runBrokerKey: getRunBrokerKey(),
   chatPlaneAllowSettings: parseBool(process.env.HERMES_CHAT_PLANE_ALLOW_SETTINGS),
