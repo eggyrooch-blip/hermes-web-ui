@@ -38,6 +38,10 @@ export default {
     passwordLoginConfigured: 'Passwort-Login aktiviert ({username})',
     wakingTitle: 'Hermes wird gestartet',
     wakingDescription: 'Profil wird gebunden und Runtime verbunden. Bitte warten.',
+    feishuUatTitle: 'Feishu-Tools autorisieren',
+    feishuUatDescription: 'Schliessen Sie die Feishu-Autorisierung ab, damit Hermes Feishu-APIs in Ihrem Namen nutzen kann.',
+    feishuUatOpen: 'Feishu-Autorisierung offnen',
+    feishuUatFailed: 'Feishu-Autorisierung fehlgeschlagen',
   },
 
   // Common

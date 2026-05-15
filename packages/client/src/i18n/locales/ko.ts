@@ -38,6 +38,10 @@ export default {
     passwordLoginConfigured: '비밀번호 로그인 활성화됨 ({username})',
     wakingTitle: 'Hermes를 깨우는 중',
     wakingDescription: '프로필을 연결하고 runtime에 접속하는 중입니다. 잠시만 기다려 주세요.',
+    feishuUatTitle: 'Feishu 도구 승인',
+    feishuUatDescription: 'Hermes가 사용자 권한으로 Feishu API를 사용할 수 있도록 Feishu 승인을 완료하세요.',
+    feishuUatOpen: 'Feishu 승인 열기',
+    feishuUatFailed: 'Feishu 승인 실패',
   },
 
   // 공통

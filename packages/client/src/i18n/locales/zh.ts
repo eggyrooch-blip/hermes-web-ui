@@ -38,6 +38,10 @@ export default {
     passwordLoginConfigured: '密码登录已启用（{username}）',
     wakingTitle: 'Hermes 正在唤醒中',
     wakingDescription: '正在绑定你的 profile 并连接运行时，请稍候。',
+    feishuUatTitle: '授权飞书工具',
+    feishuUatDescription: '完成飞书授权后，Hermes 才能以你的身份调用飞书 API。',
+    feishuUatOpen: '打开飞书授权',
+    feishuUatFailed: '飞书授权失败',
   },
 
   // 通用

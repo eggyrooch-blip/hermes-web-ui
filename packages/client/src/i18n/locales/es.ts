@@ -38,6 +38,10 @@ export default {
     passwordLoginConfigured: 'Login con contrasena habilitado ({username})',
     wakingTitle: 'Hermes se esta iniciando',
     wakingDescription: 'Vinculando tu perfil y conectando el runtime. Espera un momento.',
+    feishuUatTitle: 'Autorizar herramientas de Feishu',
+    feishuUatDescription: 'Completa la autorizacion de Feishu para que Hermes pueda usar las APIs de Feishu como tu.',
+    feishuUatOpen: 'Abrir autorizacion de Feishu',
+    feishuUatFailed: 'Error en la autorizacion de Feishu',
   },
 
   // Common

@@ -252,4 +252,70 @@ describe('Feishu OAuth controller', () => {
     expect(authPublicRoutes.stack.some(hasLogout)).toBe(true)
     expect(authProtectedRoutes.stack.some(hasLogout)).toBe(false)
   })
+
+  it('proxies Feishu UAT status with the authenticated server-side user identity', async () => {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    process.env.HERMES_RUN_BROKER_KEY = 'broker-secret'
+    vi.resetModules()
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      status: 'valid',
+      profile_name: 'sunke',
+      subject_id: 'ou_sunke',
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { feishuUatStatus } = await import('../../packages/server/src/controllers/auth')
+    const ctx: any = {
+      state: { user: { profile: 'sunke', openid: 'ou_sunke', role: 'user' } },
+      query: { profile_name: 'attacker', user_key: 'ou_attacker', required_scopes: 'wiki:wiki:readonly' },
+    }
+
+    await feishuUatStatus(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body.status).toBe('valid')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url.toString()).toBe('http://broker.test/api/run-broker/credentials/feishu/uat/status?profile_name=sunke&user_key=ou_sunke&required_scopes=wiki%3Awiki%3Areadonly')
+    expect(init.headers.Authorization).toBe('Bearer broker-secret')
+  })
+
+  it('starts Feishu UAT auth through the broker without trusting browser identity fields', async () => {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    process.env.HERMES_RUN_BROKER_KEY = 'broker-secret'
+    vi.resetModules()
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      status: 'pending',
+      session_id: 'sess-1',
+      verification_uri: 'https://accounts.feishu.cn/device',
+      user_code: 'ABCD-1234',
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { feishuUatStart } = await import('../../packages/server/src/controllers/auth')
+    const ctx: any = {
+      state: { user: { profile: 'sunke', openid: 'ou_sunke', role: 'user' } },
+      request: { body: { profile_name: 'attacker', user_key: 'ou_attacker', scope: 'wiki:wiki:readonly' } },
+    }
+
+    await feishuUatStart(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body.session_id).toBe('sess-1')
+    const [_url, init] = fetchMock.mock.calls[0]
+    expect(JSON.parse(init.body)).toEqual({
+      profile_name: 'sunke',
+      user_key: 'ou_sunke',
+      scope: 'wiki:wiki:readonly',
+    })
+  })
+
+  it('keeps Feishu UAT routes protected behind WebUI authentication', async () => {
+    const { authPublicRoutes, authProtectedRoutes } = await import('../../packages/server/src/routes/auth')
+    const protectedPaths = new Set(authProtectedRoutes.stack.map((route: any) => route.path))
+    const publicPaths = new Set(authPublicRoutes.stack.map((route: any) => route.path))
+
+    expect(protectedPaths.has('/api/auth/feishu/uat/status')).toBe(true)
+    expect(protectedPaths.has('/api/auth/feishu/uat/start')).toBe(true)
+    expect(protectedPaths.has('/api/auth/feishu/uat/sessions/:sessionId')).toBe(true)
+    expect(publicPaths.has('/api/auth/feishu/uat/status')).toBe(false)
+    expect(publicPaths.has('/api/auth/feishu/uat/start')).toBe(false)
+  })
 })

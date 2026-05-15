@@ -38,6 +38,10 @@ export default {
     passwordLoginConfigured: 'Login par mot de passe active ({username})',
     wakingTitle: 'Hermes demarre',
     wakingDescription: 'Liaison de votre profil et connexion du runtime. Veuillez patienter.',
+    feishuUatTitle: 'Autoriser les outils Feishu',
+    feishuUatDescription: 'Terminez l\'autorisation Feishu pour que Hermes puisse utiliser les APIs Feishu en votre nom.',
+    feishuUatOpen: 'Ouvrir l\'autorisation Feishu',
+    feishuUatFailed: 'Echec de l\'autorisation Feishu',
   },
 
   // Common

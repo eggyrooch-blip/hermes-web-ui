@@ -34,6 +34,42 @@ function maskOpenId(openid: string): string {
   return openid.length <= 8 ? '***' : `***${openid.slice(-8)}`
 }
 
+function getAuthenticatedFeishuUser(ctx: Context): WebUser {
+  const user = ctx.state?.user as WebUser | undefined
+  if (!user?.profile || !user?.openid) {
+    const err: any = new Error('Feishu user session is required')
+    err.status = 401
+    throw err
+  }
+  return user
+}
+
+function brokerHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
+  return headers
+}
+
+function brokerUrl(path: string): string {
+  if (!config.runBrokerUrl) {
+    const err: any = new Error('HERMES_RUN_BROKER_URL is required for Feishu UAT auth')
+    err.status = 503
+    throw err
+  }
+  return `${config.runBrokerUrl}${path}`
+}
+
+async function pipeBrokerJson(ctx: Context, res: Response): Promise<void> {
+  const body = await res.json().catch(async () => ({ error: await res.text().catch(() => 'Broker request failed') }))
+  ctx.status = res.status
+  ctx.body = body
+}
+
+function handleUatProxyError(ctx: Context, err: any): void {
+  ctx.status = typeof err?.status === 'number' ? err.status : 500
+  ctx.body = { error: err?.message || 'Feishu UAT auth failed' }
+}
+
 export async function wakeBoundProfileGateway(profile: string): Promise<void> {
   const mgr = getGatewayManagerInstance()
   if (!mgr || !profile) return
@@ -224,6 +260,88 @@ export async function feishuLogout(ctx: Context) {
     overwrite: true,
   })
   ctx.body = { success: true }
+}
+
+export async function feishuUatStatus(ctx: Context) {
+  try {
+    const user = getAuthenticatedFeishuUser(ctx)
+    const params = new URLSearchParams()
+    params.set('profile_name', user.profile)
+    params.set('user_key', user.openid)
+    const requiredScopes = typeof ctx.query.required_scopes === 'string' ? ctx.query.required_scopes : ''
+    if (requiredScopes) params.set('required_scopes', requiredScopes)
+    const res = await fetch(brokerUrl(`/api/run-broker/credentials/feishu/uat/status?${params.toString()}`), {
+      method: 'GET',
+      headers: brokerHeaders(),
+    })
+    await pipeBrokerJson(ctx, res)
+  } catch (err: any) {
+    handleUatProxyError(ctx, err)
+  }
+}
+
+export async function feishuUatStart(ctx: Context) {
+  try {
+    const user = getAuthenticatedFeishuUser(ctx)
+    const body = (ctx.request.body || {}) as { scope?: unknown }
+    const payload: Record<string, string> = {
+      profile_name: user.profile,
+      user_key: user.openid,
+    }
+    if (typeof body.scope === 'string' && body.scope.trim()) payload.scope = body.scope.trim()
+    const res = await fetch(brokerUrl('/api/run-broker/feishu-auth/sessions'), {
+      method: 'POST',
+      headers: brokerHeaders(),
+      body: JSON.stringify(payload),
+    })
+    await pipeBrokerJson(ctx, res)
+  } catch (err: any) {
+    handleUatProxyError(ctx, err)
+  }
+}
+
+export async function feishuUatPoll(ctx: Context) {
+  try {
+    const user = getAuthenticatedFeishuUser(ctx)
+    const sessionId = String(ctx.params?.sessionId || '').trim()
+    if (!sessionId) {
+      ctx.status = 400
+      ctx.body = { error: 'sessionId is required' }
+      return
+    }
+    const params = new URLSearchParams()
+    params.set('profile_name', user.profile)
+    params.set('user_key', user.openid)
+    const res = await fetch(brokerUrl(`/api/run-broker/feishu-auth/sessions/${encodeURIComponent(sessionId)}?${params.toString()}`), {
+      method: 'GET',
+      headers: brokerHeaders(),
+    })
+    await pipeBrokerJson(ctx, res)
+  } catch (err: any) {
+    handleUatProxyError(ctx, err)
+  }
+}
+
+export async function feishuUatCancel(ctx: Context) {
+  try {
+    const user = getAuthenticatedFeishuUser(ctx)
+    const sessionId = String(ctx.params?.sessionId || '').trim()
+    if (!sessionId) {
+      ctx.status = 400
+      ctx.body = { error: 'sessionId is required' }
+      return
+    }
+    const params = new URLSearchParams()
+    params.set('profile_name', user.profile)
+    params.set('user_key', user.openid)
+    const res = await fetch(brokerUrl(`/api/run-broker/feishu-auth/sessions/${encodeURIComponent(sessionId)}?${params.toString()}`), {
+      method: 'DELETE',
+      headers: brokerHeaders(),
+    })
+    await pipeBrokerJson(ctx, res)
+  } catch (err: any) {
+    handleUatProxyError(ctx, err)
+  }
 }
 
 export async function currentUser(ctx: Context) {

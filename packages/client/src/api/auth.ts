@@ -15,6 +15,25 @@ export interface CurrentUser {
   avatarUrl?: string
 }
 
+export interface FeishuUatStatus {
+  status: 'missing' | 'valid' | 'expired' | 'scope_missing' | string
+  profile_name?: string
+  subject_id?: string
+  missing_scopes?: string[]
+  scopes?: string[]
+  expires_at?: number | null
+}
+
+export interface FeishuUatAuthSession {
+  status: 'pending' | 'success' | 'error' | 'expired' | string
+  session_id: string
+  verification_uri?: string
+  user_code?: string
+  expires_at?: number
+  interval?: number
+  error?: string
+}
+
 export async function fetchAuthStatus(): Promise<AuthStatus> {
   const res = await fetch('/api/auth/status')
   if (!res.ok) throw new Error('Failed to fetch auth status')
@@ -39,6 +58,22 @@ export async function loginWithPassword(username: string, password: string): Pro
 
 export async function fetchCurrentUser(): Promise<CurrentUser> {
   return request('/api/auth/me')
+}
+
+export async function fetchFeishuUatStatus(requiredScopes?: string): Promise<FeishuUatStatus> {
+  const suffix = requiredScopes ? `?required_scopes=${encodeURIComponent(requiredScopes)}` : ''
+  return request(`/api/auth/feishu/uat/status${suffix}`)
+}
+
+export async function startFeishuUatAuth(scope?: string): Promise<FeishuUatAuthSession> {
+  return request('/api/auth/feishu/uat/start', {
+    method: 'POST',
+    body: JSON.stringify(scope ? { scope } : {}),
+  })
+}
+
+export async function pollFeishuUatAuth(sessionId: string): Promise<FeishuUatAuthSession> {
+  return request(`/api/auth/feishu/uat/sessions/${encodeURIComponent(sessionId)}`)
 }
 
 export async function setupPassword(username: string, password: string): Promise<void> {

@@ -6,6 +6,9 @@ import { createPinia, setActivePinia } from 'pinia'
 const mockReplace = vi.hoisted(() => vi.fn())
 const mockFetchAuthStatus = vi.hoisted(() => vi.fn())
 const mockFetchCurrentUser = vi.hoisted(() => vi.fn())
+const mockFetchFeishuUatStatus = vi.hoisted(() => vi.fn())
+const mockStartFeishuUatAuth = vi.hoisted(() => vi.fn())
+const mockPollFeishuUatAuth = vi.hoisted(() => vi.fn())
 const mockLoginWithPassword = vi.hoisted(() => vi.fn())
 const mockSetApiKey = vi.hoisted(() => vi.fn())
 const mockHasApiKey = vi.hoisted(() => vi.fn())
@@ -33,6 +36,9 @@ vi.mock('@/api/client', () => ({
 vi.mock('@/api/auth', () => ({
   fetchAuthStatus: mockFetchAuthStatus,
   fetchCurrentUser: mockFetchCurrentUser,
+  fetchFeishuUatStatus: mockFetchFeishuUatStatus,
+  startFeishuUatAuth: mockStartFeishuUatAuth,
+  pollFeishuUatAuth: mockPollFeishuUatAuth,
   loginWithPassword: mockLoginWithPassword,
 }))
 
@@ -53,6 +59,15 @@ describe('LoginView token login', () => {
     mockHasApiKey.mockReturnValue(false)
     mockFetchAuthStatus.mockResolvedValue({ hasPasswordLogin: false })
     mockFetchCurrentUser.mockResolvedValue({ openid: 'ou_test', profile: 'researcher', role: 'user' })
+    mockFetchFeishuUatStatus.mockResolvedValue({ status: 'valid' })
+    mockStartFeishuUatAuth.mockResolvedValue({
+      status: 'pending',
+      session_id: 'sess-1',
+      verification_uri: 'https://accounts.feishu.cn/device',
+      user_code: 'ABCD-1234',
+      interval: 10,
+    })
+    mockPollFeishuUatAuth.mockResolvedValue({ status: 'pending' })
     mockFetch.mockResolvedValue({ ok: true, status: 200 })
   })
 
@@ -140,8 +155,31 @@ describe('LoginView token login', () => {
 
     expect(mockFetch).not.toHaveBeenCalledWith('/api/hermes/sessions')
     expect(mockFetchCurrentUser).toHaveBeenCalledOnce()
+    expect(mockFetchFeishuUatStatus).toHaveBeenCalledOnce()
     expect(window.localStorage.getItem('hermes_active_profile_name')).toBe('researcher')
     expect(mockReplace).toHaveBeenCalledWith('/hermes/chat')
+  })
+
+  it('shows Feishu UAT authorization when an existing OAuth session lacks tool authorization', async () => {
+    mockFetchAuthStatus.mockResolvedValue({
+      hasPasswordLogin: false,
+      authMode: 'feishu-oauth-dev',
+      plane: 'chat',
+    })
+    mockFetchFeishuUatStatus.mockResolvedValue({ status: 'missing' })
+
+    const wrapper = mount(LoginView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    expect(mockFetchCurrentUser).toHaveBeenCalledOnce()
+    expect(mockFetchFeishuUatStatus).toHaveBeenCalledOnce()
+    expect(mockStartFeishuUatAuth).toHaveBeenCalledOnce()
+    expect(wrapper.text()).toContain('login.feishuUatTitle')
+    expect(wrapper.text()).toContain('ABCD-1234')
+    expect(wrapper.find('a[href="https://accounts.feishu.cn/device"]').exists()).toBe(true)
+    expect(mockReplace).not.toHaveBeenCalledWith('/hermes/chat')
   })
 
   it('shows a wake screen while validating an existing Feishu OAuth session', async () => {
