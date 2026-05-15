@@ -528,8 +528,78 @@ custom_providers:
 
     await invokeFileRoute('GET', '/api/hermes/files/read', ctx)
 
-    expect(ctx.status).toBe(404)
+    expect(ctx.status).toBe(403)
     expect(ctx.body.content).toBeUndefined()
+  })
+
+  it('does not expose materialized workspace credentials in chat-plane files or downloads', async () => {
+    const profileWorkspace = join(baseDir, 'profiles', 'g41a5b5g', 'workspace')
+    mkdirSync(join(profileWorkspace, 'credentials'), { recursive: true })
+    mkdirSync(join(profileWorkspace, 'Downloads'), { recursive: true })
+    writeFileSync(join(profileWorkspace, 'credentials', 'gitlab.token'), 'secret-token', 'utf-8')
+    writeFileSync(join(profileWorkspace, 'Downloads', 'report.txt'), 'safe report', 'utf-8')
+
+    const rootCtx = mockCtx({ query: { path: '' } })
+    await invokeFileRoute('GET', '/api/hermes/files/list', rootCtx)
+
+    expect(rootCtx.body.entries.map((entry: { name: string }) => entry.name)).toEqual(['Downloads'])
+
+    const readCtx = mockCtx({ query: { path: 'credentials/gitlab.token' } })
+    await invokeFileRoute('GET', '/api/hermes/files/read', readCtx)
+
+    expect(readCtx.status).toBe(403)
+    expect(readCtx.body.content).toBeUndefined()
+
+    const statCtx = mockCtx({ query: { path: 'credentials/gitlab.token' } })
+    await invokeFileRoute('GET', '/api/hermes/files/stat', statCtx)
+
+    expect(statCtx.status).toBe(403)
+
+    const downloadCtx = mockCtx({ query: { path: 'credentials/gitlab.token' } })
+    await invokeDownloadRoute(downloadCtx)
+
+    expect(downloadCtx.status).toBe(403)
+    expect(Buffer.isBuffer(downloadCtx.body)).toBe(false)
+  })
+
+  it('does not allow chat-plane file mutations inside sensitive workspace paths', async () => {
+    const profileWorkspace = join(baseDir, 'profiles', 'g41a5b5g', 'workspace')
+    mkdirSync(join(profileWorkspace, 'credentials'), { recursive: true })
+    writeFileSync(join(profileWorkspace, 'safe.txt'), 'safe', 'utf-8')
+
+    const writeCtx = mockCtx({
+      method: 'PUT',
+      request: { body: { path: 'credentials/gitlab.token', content: 'new-secret' } },
+    })
+    await invokeFileRoute('PUT', '/api/hermes/files/write', writeCtx)
+    expect(writeCtx.status).toBe(403)
+
+    const mkdirCtx = mockCtx({
+      method: 'POST',
+      request: { body: { path: 'credentials/new' } },
+    })
+    await invokeFileRoute('POST', '/api/hermes/files/mkdir', mkdirCtx)
+    expect(mkdirCtx.status).toBe(403)
+
+    const copyCtx = mockCtx({
+      method: 'POST',
+      request: { body: { srcPath: 'safe.txt', destPath: 'credentials/copied.token' } },
+    })
+    await invokeFileRoute('POST', '/api/hermes/files/copy', copyCtx)
+    expect(copyCtx.status).toBe(403)
+
+    const renameCtx = mockCtx({
+      method: 'POST',
+      request: { body: { oldPath: 'safe.txt', newPath: 'credentials/renamed.token' } },
+    })
+    await invokeFileRoute('POST', '/api/hermes/files/rename', renameCtx)
+    expect(renameCtx.status).toBe(403)
+
+    const upload = multipartBody('gitlab.token', 'uploaded-secret')
+    const uploadCtx = mockUploadCtx(upload.body, upload.contentType)
+    uploadCtx.query = { path: 'credentials' }
+    await invokeFileRoute('POST', '/api/hermes/files/upload', uploadCtx)
+    expect(uploadCtx.status).toBe(403)
   })
 
   it('deletes chat-plane workspace files from query params when DELETE bodies are not parsed', async () => {
@@ -571,7 +641,7 @@ custom_providers:
     const relativeCtx = mockCtx({ query: { path: 'config.yaml' } })
     await invokeDownloadRoute(relativeCtx)
 
-    expect(relativeCtx.status).toBe(404)
+    expect(relativeCtx.status).toBe(403)
 
     const absoluteCtx = mockCtx({ query: { path: join(baseDir, 'config.yaml') } })
     await invokeDownloadRoute(absoluteCtx)

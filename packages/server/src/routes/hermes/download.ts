@@ -6,6 +6,7 @@ import {
   createFileProvider,
   localProvider,
   isInUploadDir,
+  isSensitivePath,
   validatePath,
   resolveHermesPath,
 } from '../../services/hermes/file-provider'
@@ -115,6 +116,11 @@ downloadRoutes.get('/api/hermes/download', async (ctx) => {
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
+  if (!filePath.startsWith('/') && isSensitivePath(filePath)) {
+    ctx.status = 403
+    ctx.body = { error: 'Cannot download sensitive file', code: 'permission_denied' }
+    return
+  }
 
   try {
     const target = await getDownloadTarget(ctx, filePath)
@@ -147,6 +153,7 @@ downloadRoutes.get('/api/hermes/download', async (ctx) => {
       invalid_path: 400,
       not_found: 404,
       ENOENT: 404,
+      permission_denied: 403,
       file_too_large: 413,
       unsupported_backend: 501,
       backend_error: 502,

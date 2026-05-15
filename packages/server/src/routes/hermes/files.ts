@@ -47,14 +47,23 @@ async function createRequestFileProvider(rootDir?: string) {
   return rootDir ? createFileProvider({ rootDir, forceLocal: true }) : createFileProvider()
 }
 
+function denySensitivePath(ctx: Context, relativePath: string, action = 'access'): boolean {
+  if (!isSensitivePath(relativePath)) return false
+  ctx.status = 403
+  ctx.body = { error: `Cannot ${action} sensitive file`, code: 'permission_denied' }
+  return true
+}
+
 // GET /api/hermes/files/list?path=
 fileRoutes.get('/api/hermes/files/list', async (ctx) => {
   const relativePath = (ctx.query.path as string) || ''
+  if (relativePath && denySensitivePath(ctx, relativePath)) return
   try {
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(relativePath, rootDir)
     const provider = await createRequestFileProvider(rootDir)
-    const entries = await provider.listDir(absPath)
+    const entries = (await provider.listDir(absPath))
+      .filter(entry => !isSensitivePath(entry.path || entry.name))
     entries.sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
       return a.name.localeCompare(b.name)
@@ -73,6 +82,7 @@ fileRoutes.get('/api/hermes/files/stat', async (ctx) => {
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
+  if (denySensitivePath(ctx, relativePath)) return
   try {
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(relativePath, rootDir)
@@ -92,6 +102,7 @@ fileRoutes.get('/api/hermes/files/read', async (ctx) => {
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
+  if (denySensitivePath(ctx, relativePath)) return
   try {
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(relativePath, rootDir)
@@ -116,11 +127,7 @@ fileRoutes.put('/api/hermes/files/write', async (ctx) => {
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
-  if (isSensitivePath(relativePath)) {
-    ctx.status = 403
-    ctx.body = { error: 'Cannot modify sensitive file', code: 'permission_denied' }
-    return
-  }
+  if (denySensitivePath(ctx, relativePath, 'modify')) return
   try {
     const buf = Buffer.from(content || '', 'utf-8')
     if (buf.length > MAX_EDIT_SIZE) {
@@ -148,11 +155,7 @@ fileRoutes.delete('/api/hermes/files/delete', async (ctx) => {
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
-  if (isSensitivePath(relativePath)) {
-    ctx.status = 403
-    ctx.body = { error: 'Cannot delete sensitive file', code: 'permission_denied' }
-    return
-  }
+  if (denySensitivePath(ctx, relativePath, 'delete')) return
   try {
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(relativePath, rootDir)
@@ -176,11 +179,8 @@ fileRoutes.post('/api/hermes/files/rename', async (ctx) => {
     ctx.body = { error: 'Missing oldPath or newPath', code: 'missing_path' }
     return
   }
-  if (isSensitivePath(oldPath)) {
-    ctx.status = 403
-    ctx.body = { error: 'Cannot rename sensitive file', code: 'permission_denied' }
-    return
-  }
+  if (denySensitivePath(ctx, oldPath, 'rename')) return
+  if (denySensitivePath(ctx, newPath, 'rename into')) return
   try {
     const rootDir = await getFileRootDir(ctx)
     const absOld = resolveFilePath(oldPath, rootDir)
@@ -201,6 +201,7 @@ fileRoutes.post('/api/hermes/files/mkdir', async (ctx) => {
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
+  if (denySensitivePath(ctx, relativePath, 'create')) return
   try {
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(relativePath, rootDir)
@@ -220,6 +221,8 @@ fileRoutes.post('/api/hermes/files/copy', async (ctx) => {
     ctx.body = { error: 'Missing srcPath or destPath', code: 'missing_path' }
     return
   }
+  if (denySensitivePath(ctx, srcPath, 'copy')) return
+  if (denySensitivePath(ctx, destPath, 'copy into')) return
   try {
     const rootDir = await getFileRootDir(ctx)
     const absSrc = resolveFilePath(srcPath, rootDir)

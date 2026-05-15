@@ -17,8 +17,10 @@ const BACKEND_TIMEOUT = 30_000
 // Max edit/upload file size (default 10MB)
 export const MAX_EDIT_SIZE = parseInt(process.env.MAX_EDIT_SIZE || '', 10) || 10 * 1024 * 1024
 
-// Sensitive files that should not be written/deleted/renamed
-const SENSITIVE_FILES = new Set(['.env', 'auth.json'])
+// Sensitive files and profile-local runtime directories that must not be
+// exposed through user-facing file APIs.
+const SENSITIVE_FILES = new Set(['.env', 'auth.json', 'config.yaml'])
+const SENSITIVE_PATH_PARTS = new Set(['credentials', 'tokens', '.ssh', 'feishu_uat'])
 
 export interface FileEntry {
   name: string
@@ -111,7 +113,7 @@ export function isInUploadDir(filePath: string): boolean {
 export function isSensitivePath(relativePath: string): boolean {
   const parts = relativePath.replace(/\\/g, '/').split('/')
   const fileName = parts[parts.length - 1]
-  return SENSITIVE_FILES.has(fileName)
+  return SENSITIVE_FILES.has(fileName) || parts.some(part => SENSITIVE_PATH_PARTS.has(part))
 }
 
 /**
