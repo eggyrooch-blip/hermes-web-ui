@@ -560,6 +560,7 @@ g41a5b5g  | ou_cf23e7c262afa4b7a006baa75f863ed5 | feishu_g41a5b5g   | 1
 - 不再使用 active/root profile、terminal/docker/ssh backend。
 - DELETE 接口走 query 参数（生产 Koa bodyParser 不解 DELETE body）。
 - 2026-05-15 安全补充：profile runtime 为兼容通用 skills 可能把 token 物化到 `workspace/credentials/` 或 `workspace/tokens/`，但这不是用户可见文件。WebUI 文件 API 在服务端 fail-closed：根列表过滤 `.env`、`auth.json`、`config.yaml`、`feishu_uat/`、`credentials/`、`tokens/`、`.ssh/`；直接 list/read/stat/write/delete/rename/copy/upload/download 这些路径一律 403。不要只靠前端隐藏。
+- 2026-05-15 追加补强：Skills 文件浏览接口也改成 `relative()` 边界判断，不能用 `startsWith()`；`skills-secret/` 这类同前缀兄弟目录不能被 `/api/hermes/skills/{*path}` 读到，同时复用敏感路径 denylist，避免 skill 文件面成为 token 文件旁路。
 
 ### Milestone 6 — Wake on login + Health 缓存（2026-05-07）
 - 飞书 OAuth user 加载成功后，AppSidebar `onMounted` 自动 `POST /api/hermes/jobs/wake` 唤醒对应 profile 的 hermes runtime。

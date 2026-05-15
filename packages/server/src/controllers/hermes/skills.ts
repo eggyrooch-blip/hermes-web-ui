@@ -1,5 +1,5 @@
 import { readdir, readFile } from 'fs/promises'
-import { join, resolve } from 'path'
+import { isAbsolute, join, relative, resolve } from 'path'
 import { createHash } from 'crypto'
 import YAML from 'js-yaml'
 import {
@@ -8,6 +8,7 @@ import {
 } from '../../services/config-helpers'
 import { pinSkill } from '../../services/hermes/hermes-cli'
 import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
+import { isSensitivePath } from '../../services/hermes/file-provider'
 
 /** Read bundled manifest as a name→hash map from ~/.hermes/skills/.bundled_manifest */
 function readBundledManifest(manifestContent: string | null): Map<string, string> {
@@ -86,6 +87,11 @@ function readUsageStats(usageContent: string | null): Map<string, UsageStats> {
 
 function requestHermesDir(ctx: any): string {
   return isChatPlaneRequest(ctx) ? getRequestProfileDir(ctx) : getHermesDir()
+}
+
+function isInsideDirectory(rootDir: string, targetPath: string): boolean {
+  const rel = relative(resolve(rootDir), resolve(targetPath))
+  return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel))
 }
 
 async function readRequestConfig(ctx: any): Promise<Record<string, any>> {
@@ -288,7 +294,13 @@ export async function listFiles(ctx: any) {
   const hd = requestHermesDir(ctx)
   // Handle "misc" category: real skill dir is skills/<skill>, not skills/misc/<skill>
   const realDir = category === 'misc' ? skill : join(category, skill)
-  const skillDir = join(hd, 'skills', realDir)
+  const skillsRoot = resolve(hd, 'skills')
+  const skillDir = resolve(skillsRoot, realDir)
+  if (!isInsideDirectory(skillsRoot, skillDir) || isSensitivePath(realDir)) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return
+  }
   try {
     const allFiles = await listFilesRecursive(skillDir, '')
     const files = allFiles.filter(f => f.path !== 'SKILL.md')
@@ -307,8 +319,9 @@ export async function readFile_(ctx: any) {
   if (filePath.startsWith('misc/')) {
     realPath = filePath.slice(5)
   }
-  const fullPath = resolve(join(hd, 'skills', realPath))
-  if (!fullPath.startsWith(join(hd, 'skills'))) {
+  const skillsRoot = resolve(hd, 'skills')
+  const fullPath = resolve(skillsRoot, realPath)
+  if (!isInsideDirectory(skillsRoot, fullPath) || isSensitivePath(realPath)) {
     ctx.status = 403
     ctx.body = { error: 'Access denied' }
     return

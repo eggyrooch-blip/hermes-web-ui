@@ -322,6 +322,20 @@ custom_providers:
     ])
   })
 
+  it('does not read files from skill-prefix sibling directories in chat plane', async () => {
+    const siblingSecretDir = join(baseDir, 'profiles', 'g41a5b5g', 'skills-secret')
+    mkdirSync(siblingSecretDir, { recursive: true })
+    writeFileSync(join(siblingSecretDir, 'gitlab.token'), 'sibling-secret', 'utf-8')
+
+    const { readFile_ } = await import('../../packages/server/src/controllers/hermes/skills')
+    const ctx = mockCtx({ params: { path: '../skills-secret/gitlab.token' } })
+
+    await readFile_(ctx)
+
+    expect(ctx.status).toBe(403)
+    expect(ctx.body.content).toBeUndefined()
+  })
+
   it('proxies jobs through the bound profile and strips caller profile selectors in chat plane', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ jobs: [] }), {
       status: 200,
