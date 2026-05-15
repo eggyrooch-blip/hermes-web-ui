@@ -96,6 +96,26 @@ describe('chat plane access control', () => {
     expect(fileCtx.status).toBe(200)
   })
 
+  it('allows authenticated Feishu UAT self-service endpoints in chat plane', async () => {
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const statusCtx = mockCtx('/api/auth/feishu/uat/status', 'GET')
+    const startCtx = mockCtx('/api/auth/feishu/uat/start', 'POST')
+    const pollCtx = mockCtx('/api/auth/feishu/uat/sessions/sess-1', 'GET')
+    const cancelCtx = mockCtx('/api/auth/feishu/uat/sessions/sess-1', 'DELETE')
+    const next = vi.fn(async () => {})
+
+    await enforcePlaneAccess(statusCtx, next)
+    await enforcePlaneAccess(startCtx, next)
+    await enforcePlaneAccess(pollCtx, next)
+    await enforcePlaneAccess(cancelCtx, next)
+
+    expect(next).toHaveBeenCalledTimes(4)
+    expect(statusCtx.status).toBe(200)
+    expect(startCtx.status).toBe(200)
+    expect(pollCtx.status).toBe(200)
+    expect(cancelCtx.status).toBe(200)
+  })
+
   it('keeps sandboxed file management available when settings are explicitly enabled', async () => {
     const { enforcePlaneAccess } = await loadRequestContext({
       HERMES_WEB_PLANE: 'chat',
