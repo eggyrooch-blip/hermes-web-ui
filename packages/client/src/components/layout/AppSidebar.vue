@@ -87,6 +87,7 @@ async function handleFeishuConnectorClick() {
     feishuUatCode.value = session.user_code || '';
     if (session.verification_uri) {
       if (authWindow) {
+        authWindow.opener = null;
         authWindow.location.href = session.verification_uri;
       } else {
         window.location.assign(session.verification_uri);

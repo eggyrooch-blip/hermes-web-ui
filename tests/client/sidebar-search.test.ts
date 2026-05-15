@@ -16,6 +16,7 @@ const startFeishuUatAuthMock = vi.hoisted(() => vi.fn())
 const pollFeishuUatAuthMock = vi.hoisted(() => vi.fn())
 const authWindowMock = vi.hoisted(() => ({
   location: { href: '' },
+  opener: {},
   close: vi.fn(),
 }))
 const windowOpenMock = vi.hoisted(() => vi.fn(() => authWindowMock))
@@ -121,6 +122,7 @@ describe('AppSidebar search entry', () => {
     pollFeishuUatAuthMock.mockResolvedValue({ status: 'pending' })
     windowOpenMock.mockClear()
     authWindowMock.location.href = ''
+    authWindowMock.opener = {}
     authWindowMock.close.mockClear()
     fetchMock.mockReset()
   })
@@ -345,6 +347,7 @@ describe('AppSidebar search entry', () => {
 
     expect(startFeishuUatAuthMock).toHaveBeenCalledOnce()
     expect(windowOpenMock).toHaveBeenCalledWith('about:blank', '_blank')
+    expect(authWindowMock.opener).toBeNull()
     expect(authWindowMock.location.href).toBe('https://accounts.feishu.cn/device?user_code=ABCD-1234')
     expect(wrapper.find('.feishu-connector').classes()).toContain('connecting')
   })
