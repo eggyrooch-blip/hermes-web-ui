@@ -11,6 +11,14 @@ const getWebPlaneMock = vi.hoisted(() => vi.fn(() => 'both'))
 const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
 const setRuntimeModeMock = vi.hoisted(() => vi.fn())
 const fetchCurrentUserMock = vi.hoisted(() => vi.fn())
+const fetchFeishuUatStatusMock = vi.hoisted(() => vi.fn())
+const startFeishuUatAuthMock = vi.hoisted(() => vi.fn())
+const pollFeishuUatAuthMock = vi.hoisted(() => vi.fn())
+const authWindowMock = vi.hoisted(() => ({
+  location: { href: '' },
+  close: vi.fn(),
+}))
+const windowOpenMock = vi.hoisted(() => vi.fn(() => authWindowMock))
 const appStoreMock = vi.hoisted(() => ({
   sidebarOpen: true,
   connected: true,
@@ -22,6 +30,7 @@ const appStoreMock = vi.hoisted(() => ({
 }))
 const fetchMock = vi.fn()
 vi.stubGlobal('fetch', fetchMock)
+vi.stubGlobal('open', windowOpenMock)
 
 vi.mock('@/composables/useSessionSearch', () => ({
   useSessionSearch: () => ({
@@ -61,6 +70,9 @@ vi.mock('@/api/client', () => ({
 
 vi.mock('@/api/auth', () => ({
   fetchCurrentUser: fetchCurrentUserMock,
+  fetchFeishuUatStatus: fetchFeishuUatStatusMock,
+  startFeishuUatAuth: startFeishuUatAuthMock,
+  pollFeishuUatAuth: pollFeishuUatAuthMock,
 }))
 
 vi.mock('/logo.png', () => ({
@@ -98,6 +110,18 @@ describe('AppSidebar search entry', () => {
     appStoreMock.checkConnection.mockClear()
     setRuntimeModeMock.mockClear()
     fetchCurrentUserMock.mockRejectedValue(new Error('not logged in'))
+    fetchFeishuUatStatusMock.mockResolvedValue({ status: 'missing' })
+    startFeishuUatAuthMock.mockResolvedValue({
+      status: 'pending',
+      session_id: 'sess-1',
+      verification_uri: 'https://accounts.feishu.cn/device?user_code=ABCD-1234',
+      user_code: 'ABCD-1234',
+      interval: 10,
+    })
+    pollFeishuUatAuthMock.mockResolvedValue({ status: 'pending' })
+    windowOpenMock.mockClear()
+    authWindowMock.location.href = ''
+    authWindowMock.close.mockClear()
     fetchMock.mockReset()
   })
 
@@ -280,5 +304,48 @@ describe('AppSidebar search entry', () => {
 
     const profilesStore = useProfilesStore(pinia)
     expect(profilesStore.activeProfileName).toBe('g41a5b5g')
+  })
+
+  it('shows Feishu UAT connection state and starts one-click authorization from the sidebar', async () => {
+    getAuthModeMock.mockReturnValue('feishu-oauth-dev')
+    getWebPlaneMock.mockReturnValue('chat')
+    isUserModeMock.mockReturnValue(true)
+    fetchCurrentUserMock.mockResolvedValue({
+      openid: 'ou_bound',
+      profile: 'g41a5b5g',
+      role: 'user',
+      name: '陈先生',
+    })
+    fetchFeishuUatStatusMock.mockResolvedValue({ status: 'missing' })
+    const pinia = createPinia()
+
+    const wrapper = mount(AppSidebar, {
+      global: {
+        plugins: [pinia],
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+          NButton: true,
+        },
+      },
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    const connector = wrapper.find('.feishu-connector')
+    expect(connector.exists()).toBe(true)
+    expect(connector.classes()).toContain('missing')
+    expect(connector.attributes('title')).toBe('sidebar.feishuNotConnected')
+
+    await connector.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(startFeishuUatAuthMock).toHaveBeenCalledOnce()
+    expect(windowOpenMock).toHaveBeenCalledWith('about:blank', '_blank')
+    expect(authWindowMock.location.href).toBe('https://accounts.feishu.cn/device?user_code=ABCD-1234')
+    expect(wrapper.find('.feishu-connector').classes()).toContain('connecting')
   })
 })

@@ -3,8 +3,7 @@ import { ref, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { setApiKey, hasApiKey, setRuntimeMode } from "@/api/client";
-import { fetchAuthStatus, fetchCurrentUser, fetchFeishuUatStatus, loginWithPassword, pollFeishuUatAuth, startFeishuUatAuth } from "@/api/auth";
-import type { FeishuUatAuthSession } from "@/api/auth";
+import { fetchAuthStatus, fetchCurrentUser, loginWithPassword } from "@/api/auth";
 import { useProfilesStore } from "@/stores/hermes/profiles";
 
 const { t } = useI18n();
@@ -20,8 +19,6 @@ const password = ref("");
 const loading = ref(false);
 const authChecking = ref(true);
 const errorMsg = ref("");
-const feishuUatSession = ref<FeishuUatAuthSession | null>(null);
-const feishuUatError = ref("");
 
 // Login method: 'token', 'password', or 'feishu'
 const loginMethod = ref<"token" | "password" | "feishu">("token");
@@ -46,9 +43,7 @@ onMounted(async () => {
       try {
         const user = await fetchCurrentUser();
         profilesStore.setBoundProfile(user.profile, user);
-        if (await ensureFeishuUat()) {
-          router.replace("/hermes/chat");
-        }
+        router.replace("/hermes/chat");
       } catch {
         // No valid OAuth session cookie yet.
       } finally {
@@ -84,40 +79,6 @@ function handleFeishuLogin() {
   loading.value = true;
   errorMsg.value = "";
   window.location.assign("/api/auth/feishu/login");
-}
-
-async function ensureFeishuUat(): Promise<boolean> {
-  feishuUatSession.value = null;
-  feishuUatError.value = "";
-  const status = await fetchFeishuUatStatus();
-  if (status.status === "valid") return true;
-  const session = await startFeishuUatAuth();
-  feishuUatSession.value = session;
-  beginFeishuUatPolling(session);
-  return false;
-}
-
-function beginFeishuUatPolling(session: FeishuUatAuthSession) {
-  const intervalSeconds = Math.max(Number(session.interval || 3), 1);
-  window.setTimeout(async () => {
-    const currentSessionId = feishuUatSession.value?.session_id;
-    if (!currentSessionId || currentSessionId !== session.session_id) return;
-    try {
-      const next = await pollFeishuUatAuth(session.session_id);
-      feishuUatSession.value = { ...feishuUatSession.value, ...next };
-      if (next.status === "success") {
-        router.replace("/hermes/chat");
-        return;
-      }
-      if (next.status === "error" || next.status === "expired") {
-        feishuUatError.value = next.error || t("login.feishuUatFailed");
-        return;
-      }
-      beginFeishuUatPolling(session);
-    } catch (err: any) {
-      feishuUatError.value = err?.message || t("login.feishuUatFailed");
-    }
-  }, intervalSeconds * 1000);
 }
 
 async function handleTokenLogin() {
@@ -194,20 +155,6 @@ async function handlePasswordLogin() {
         <div class="wake-spinner" aria-hidden="true"></div>
         <h2>{{ t("login.wakingTitle") }}</h2>
         <p>{{ t("login.wakingDescription") }}</p>
-      </div>
-
-      <div v-else-if="feishuUatSession" class="wake-state feishu-uat-state" role="status" aria-live="polite">
-        <h2>{{ t("login.feishuUatTitle") }}</h2>
-        <p>{{ t("login.feishuUatDescription") }}</p>
-        <a
-          v-if="feishuUatSession.verification_uri"
-          class="login-btn uat-link"
-          :href="feishuUatSession.verification_uri"
-          target="_blank"
-          rel="noreferrer"
-        >{{ t("login.feishuUatOpen") }}</a>
-        <p v-if="feishuUatSession.user_code" class="uat-code">{{ feishuUatSession.user_code }}</p>
-        <p v-if="feishuUatError" class="login-error">{{ feishuUatError }}</p>
       </div>
 
       <!-- Method toggle -->

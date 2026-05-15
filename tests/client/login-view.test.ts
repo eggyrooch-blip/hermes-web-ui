@@ -155,12 +155,12 @@ describe('LoginView token login', () => {
 
     expect(mockFetch).not.toHaveBeenCalledWith('/api/hermes/sessions')
     expect(mockFetchCurrentUser).toHaveBeenCalledOnce()
-    expect(mockFetchFeishuUatStatus).toHaveBeenCalledOnce()
+    expect(mockFetchFeishuUatStatus).not.toHaveBeenCalled()
     expect(window.localStorage.getItem('hermes_active_profile_name')).toBe('researcher')
     expect(mockReplace).toHaveBeenCalledWith('/hermes/chat')
   })
 
-  it('shows Feishu UAT authorization when an existing OAuth session lacks tool authorization', async () => {
+  it('does not block WebUI login when an existing OAuth session lacks tool authorization', async () => {
     mockFetchAuthStatus.mockResolvedValue({
       hasPasswordLogin: false,
       authMode: 'feishu-oauth-dev',
@@ -174,12 +174,10 @@ describe('LoginView token login', () => {
     await wrapper.vm.$nextTick()
 
     expect(mockFetchCurrentUser).toHaveBeenCalledOnce()
-    expect(mockFetchFeishuUatStatus).toHaveBeenCalledOnce()
-    expect(mockStartFeishuUatAuth).toHaveBeenCalledOnce()
-    expect(wrapper.text()).toContain('login.feishuUatTitle')
-    expect(wrapper.text()).toContain('ABCD-1234')
-    expect(wrapper.find('a[href="https://accounts.feishu.cn/device"]').exists()).toBe(true)
-    expect(mockReplace).not.toHaveBeenCalledWith('/hermes/chat')
+    expect(mockFetchFeishuUatStatus).not.toHaveBeenCalled()
+    expect(mockStartFeishuUatAuth).not.toHaveBeenCalled()
+    expect(wrapper.text()).not.toContain('login.feishuUatTitle')
+    expect(mockReplace).toHaveBeenCalledWith('/hermes/chat')
   })
 
   it('shows a wake screen while validating an existing Feishu OAuth session', async () => {

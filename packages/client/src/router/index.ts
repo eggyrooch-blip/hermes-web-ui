@@ -1,6 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import { fetchFeishuUatStatus } from '@/api/auth'
-import { canAccessProtectedRoutes, getAuthMode, isUserMode, shouldSkipLoginPage } from '@/api/client'
+import { canAccessProtectedRoutes, isUserMode, shouldSkipLoginPage } from '@/api/client'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -126,19 +125,6 @@ router.beforeEach(async (to, _from, next) => {
   if (isUserMode() && to.meta.hiddenInChatPlane) {
     next({ name: 'hermes.chat' })
     return
-  }
-
-  if (getAuthMode() === 'feishu-oauth-dev') {
-    try {
-      const status = await fetchFeishuUatStatus()
-      if (status.status !== 'valid') {
-        next({ name: 'login', query: { uat: 'required', redirect: to.fullPath } })
-        return
-      }
-    } catch {
-      next({ name: 'login', query: { uat: 'required', redirect: to.fullPath } })
-      return
-    }
   }
 
   next()

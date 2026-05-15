@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useAppStore } from "@/stores/hermes/app";
 import { getAuthMode, getWebPlane, isUserMode, setRuntimeMode } from "@/api/client";
-import { fetchCurrentUser } from "@/api/auth";
+import { fetchCurrentUser, fetchFeishuUatStatus, pollFeishuUatAuth, startFeishuUatAuth } from "@/api/auth";
+import type { FeishuUatAuthSession } from "@/api/auth";
 import { useProfilesStore } from "@/stores/hermes/profiles";
 import ProfileSelector from "./ProfileSelector.vue";
 import LanguageSwitch from "./LanguageSwitch.vue";
@@ -28,6 +29,21 @@ const displayInitial = computed(() => (displayName.value || 'H').trim().slice(0,
 const showUserModeChrome = computed(() => isUserMode());
 const showAdminSurfaces = computed(() => !showUserModeChrome.value);
 const gatewayStandby = computed(() => showUserModeChrome.value && !appStore.connected);
+const showFeishuConnector = computed(() => getAuthMode() === 'feishu-oauth-dev');
+const feishuUatState = ref<'unknown' | 'checking' | 'connected' | 'missing' | 'connecting' | 'error'>('unknown');
+const feishuUatCode = ref('');
+const feishuUatError = ref('');
+let feishuUatTimer: number | null = null;
+
+const feishuConnectorTitle = computed(() => {
+  if (feishuUatState.value === 'connected') return t('sidebar.feishuConnected');
+  if (feishuUatState.value === 'connecting') return feishuUatCode.value
+    ? `${t('sidebar.feishuConnecting')} ${feishuUatCode.value}`
+    : t('sidebar.feishuConnecting');
+  if (feishuUatState.value === 'checking') return t('sidebar.feishuChecking');
+  if (feishuUatState.value === 'error') return feishuUatError.value || t('sidebar.feishuConnectFailed');
+  return t('sidebar.feishuNotConnected');
+});
 
 const collapsedGroups = reactive<Record<string, boolean>>({});
 
@@ -41,6 +57,73 @@ function isGroupCollapsed(key: string) {
 
 function handleNav(key: string) {
   router.push({ name: key });
+}
+
+async function refreshFeishuUatStatus() {
+  if (!showFeishuConnector.value) return;
+  feishuUatState.value = 'checking';
+  feishuUatError.value = '';
+  try {
+    const status = await fetchFeishuUatStatus();
+    feishuUatState.value = status.status === 'valid' ? 'connected' : 'missing';
+  } catch (err: any) {
+    feishuUatState.value = 'error';
+    feishuUatError.value = err?.message || t('sidebar.feishuConnectFailed');
+  }
+}
+
+async function handleFeishuConnectorClick() {
+  if (feishuUatState.value === 'connected' || feishuUatState.value === 'checking') {
+    await refreshFeishuUatStatus();
+    return;
+  }
+  if (feishuUatState.value === 'connecting') return;
+  const authWindow = window.open('about:blank', '_blank');
+  feishuUatState.value = 'connecting';
+  feishuUatError.value = '';
+  feishuUatCode.value = '';
+  try {
+    const session = await startFeishuUatAuth();
+    feishuUatCode.value = session.user_code || '';
+    if (session.verification_uri) {
+      if (authWindow) {
+        authWindow.location.href = session.verification_uri;
+      } else {
+        window.location.assign(session.verification_uri);
+      }
+    } else if (authWindow) {
+      authWindow.close();
+    }
+    beginFeishuUatPolling(session);
+  } catch (err: any) {
+    if (authWindow) authWindow.close();
+    feishuUatState.value = 'error';
+    feishuUatError.value = err?.message || t('sidebar.feishuConnectFailed');
+  }
+}
+
+function beginFeishuUatPolling(session: FeishuUatAuthSession) {
+  if (feishuUatTimer) window.clearTimeout(feishuUatTimer);
+  const intervalSeconds = Math.max(Number(session.interval || 3), 1);
+  feishuUatTimer = window.setTimeout(async () => {
+    try {
+      const next = await pollFeishuUatAuth(session.session_id);
+      if (next.status === 'success') {
+        feishuUatState.value = 'connected';
+        feishuUatCode.value = '';
+        return;
+      }
+      if (next.status === 'error' || next.status === 'expired') {
+        feishuUatState.value = 'error';
+        feishuUatError.value = next.error || t('sidebar.feishuConnectFailed');
+        return;
+      }
+      beginFeishuUatPolling(session);
+    } catch (err: any) {
+      feishuUatState.value = 'error';
+      feishuUatError.value = err?.message || t('sidebar.feishuConnectFailed');
+    }
+  }, intervalSeconds * 1000);
 }
 
 async function handleLogout() {
@@ -66,9 +149,14 @@ onMounted(async () => {
   try {
     const user = await fetchCurrentUser();
     profilesStore.setBoundProfile(user.profile, user);
+    await refreshFeishuUatStatus();
   } catch {
     // Keep the existing profile fallback for non-OAuth or expired sessions.
   }
+});
+
+onBeforeUnmount(() => {
+  if (feishuUatTimer) window.clearTimeout(feishuUatTimer);
 });
 </script>
 
@@ -265,6 +353,21 @@ onMounted(async () => {
         </div>
       </div>
     </nav>
+
+    <div v-if="showFeishuConnector" class="sidebar-integrations">
+      <button
+        type="button"
+        class="feishu-connector"
+        :class="feishuUatState"
+        :title="feishuConnectorTitle"
+        :aria-label="feishuConnectorTitle"
+        @click="handleFeishuConnectorClick"
+      >
+        <span class="feishu-logo-mark" aria-hidden="true">飞</span>
+        <span class="feishu-connector-label">{{ feishuConnectorTitle }}</span>
+        <span class="feishu-connector-dot" aria-hidden="true"></span>
+      </button>
+    </div>
 
     <div v-if="currentUser || showUserModeChrome" class="sidebar-user" :class="{ locked: showUserModeChrome }">
       <div v-if="showUserModeChrome" class="user-card-actions">
@@ -574,6 +677,87 @@ onMounted(async () => {
   border-top: 1px solid $border-color;
 }
 
+.sidebar-integrations {
+  display: flex;
+  padding: 8px 0 0;
+  margin: 8px 0 0;
+  border-top: 1px solid rgba(var(--accent-primary-rgb), 0.08);
+}
+
+.feishu-connector {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: $radius-sm;
+  color: $text-secondary;
+  background: transparent;
+  cursor: pointer;
+  transition: color $transition-fast, background $transition-fast, border-color $transition-fast;
+
+  &:hover {
+    color: $text-primary;
+    background: rgba(var(--accent-primary-rgb), 0.06);
+    border-color: rgba(var(--accent-primary-rgb), 0.12);
+  }
+
+  &.connected .feishu-connector-dot {
+    background: $success;
+    box-shadow: 0 0 0 3px rgba(var(--success-rgb), 0.14);
+  }
+
+  &.missing .feishu-connector-dot,
+  &.error .feishu-connector-dot,
+  &.unknown .feishu-connector-dot {
+    background: $error;
+    box-shadow: 0 0 0 3px rgba(var(--error-rgb, 239, 68, 68), 0.12);
+  }
+
+  &.checking .feishu-connector-dot,
+  &.connecting .feishu-connector-dot {
+    background: #d97706;
+    box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.12);
+  }
+}
+
+.feishu-logo-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #2b7fff 0%, #00b2ff 42%, #25c26e 100%);
+  flex-shrink: 0;
+}
+
+.feishu-connector-label {
+  min-width: 0;
+  flex: 1;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.feishu-connector-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: $text-muted;
+  flex-shrink: 0;
+}
+
 .sidebar-user {
   position: relative;
   display: flex;
@@ -830,6 +1014,30 @@ onMounted(async () => {
     .user-meta {
       display: none;
     }
+  }
+
+  .sidebar-integrations {
+    justify-content: center;
+    padding-top: 8px;
+  }
+
+  .feishu-connector {
+    width: 36px;
+    height: 36px;
+    min-height: 36px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .feishu-connector-label {
+    display: none;
+  }
+
+  .feishu-connector-dot {
+    position: absolute;
+    right: 5px;
+    bottom: 5px;
+    border: 2px solid $bg-sidebar;
   }
 }
 
