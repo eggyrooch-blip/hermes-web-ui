@@ -480,6 +480,37 @@ export async function setWorkspace(ctx: any) {
   ctx.body = { error: 'Workspace setting only supported in local session store mode' }
 }
 
+export async function setModel(ctx: any) {
+  const { model, provider } = ctx.request.body as { model?: string; provider?: string }
+  if (!model || typeof model !== 'string') {
+    ctx.status = 400
+    ctx.body = { error: 'model is required' }
+    return
+  }
+  if (provider !== undefined && provider !== null && typeof provider !== 'string') {
+    ctx.status = 400
+    ctx.body = { error: 'provider must be a string' }
+    return
+  }
+
+  const { updateSession, getSession, createSession } = await import('../../db/hermes/session-store')
+  const id = ctx.params.id
+  const existing = getSession(id)
+  if (existing && existing.profile !== getRequestProfile(ctx)) {
+    ctx.status = 404
+    ctx.body = { error: 'Session not found' }
+    return
+  }
+  if (!existing) {
+    createSession({ id, profile: getRequestProfile(ctx), title: '' })
+  }
+  updateSession(id, {
+    model: model.trim(),
+    provider: (provider || '').trim(),
+  } as any)
+  ctx.body = { ok: true }
+}
+
 export async function contextLength(ctx: any) {
   const profile = getRequestProfile(ctx)
   ctx.body = { context_length: getModelContextLength(profile) }

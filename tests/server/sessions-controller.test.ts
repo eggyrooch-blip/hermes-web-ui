@@ -15,6 +15,9 @@ const getLocalUsageStatsMock = vi.fn()
 const getActiveProfileNameMock = vi.fn()
 const loggerWarnMock = vi.fn()
 const getCompressionSnapshotMock = vi.fn()
+const localGetSessionMock = vi.fn()
+const localCreateSessionMock = vi.fn()
+const localUpdateSessionMock = vi.fn()
 
 vi.mock('../../packages/server/src/db/hermes/conversations-db', () => ({
   listConversationSummariesFromDb: listConversationSummariesFromDbMock,
@@ -50,6 +53,9 @@ vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
 // Mock useLocalSessionStore to return false so we test the CLI path
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   useLocalSessionStore: () => false,
+  getSession: localGetSessionMock,
+  createSession: localCreateSessionMock,
+  updateSession: localUpdateSessionMock,
 }))
 
 vi.mock('../../packages/server/src/db/hermes/usage-store', () => ({
@@ -109,6 +115,9 @@ describe('session conversations controller', () => {
     getActiveProfileNameMock.mockReset()
     getActiveProfileNameMock.mockReturnValue('default')
     loggerWarnMock.mockReset()
+    localGetSessionMock.mockReset()
+    localCreateSessionMock.mockReset()
+    localUpdateSessionMock.mockReset()
     delete process.env.HERMES_WEB_PLANE
     getCompressionSnapshotMock.mockReset()
   })
@@ -273,6 +282,45 @@ describe('session conversations controller', () => {
 
     expect(searchSessionSummariesMock).toHaveBeenCalledWith('hello', 'webui', 7, 'g41a5b5g')
     expect(ctx.body).toEqual({ results: [{ id: 'match', source: 'webui' }] })
+  })
+
+  it('updates local session model and provider for the request profile', async () => {
+    localGetSessionMock.mockReturnValue({
+      id: 'cli-session',
+      profile: 'default',
+      model: 'old-model',
+      provider: 'old-provider',
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'cli-session' },
+      request: { body: { model: 'gpt-5.4', provider: 'openai' } },
+      body: null,
+    }
+
+    await mod.setModel(ctx)
+
+    expect(localUpdateSessionMock).toHaveBeenCalledWith('cli-session', {
+      model: 'gpt-5.4',
+      provider: 'openai',
+    })
+    expect(ctx.body).toEqual({ ok: true })
+  })
+
+  it('rejects missing session model value', async () => {
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'cli-session' },
+      request: { body: { provider: 'openai' } },
+      body: null,
+    }
+
+    await mod.setModel(ctx)
+
+    expect(ctx.status).toBe(400)
+    expect(ctx.body).toEqual({ error: 'model is required' })
+    expect(localUpdateSessionMock).not.toHaveBeenCalled()
   })
 
   it('merges native state.db usage analytics with local Web UI usage for the requested period', async () => {

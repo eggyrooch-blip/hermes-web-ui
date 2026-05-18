@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 
 const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
 const switchModelMock = vi.hoisted(() => vi.fn())
+const setSessionModelMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)))
 const startRunViaSocketMock = vi.hoisted(() => vi.fn(() => ({ abort: vi.fn() })))
 const fetchSessionMock = vi.hoisted(() => vi.fn())
 const resumeSessionMock = vi.hoisted(() => vi.fn((_sessionId: string, onResumed: (data: any) => void) => {
@@ -37,6 +38,7 @@ vi.mock('@/api/hermes/sessions', () => ({
   deleteSession: vi.fn(),
   fetchSession: fetchSessionMock,
   fetchSessions: vi.fn(() => Promise.resolve([])),
+  setSessionModel: setSessionModelMock,
 }))
 
 import { useChatStore } from '@/stores/hermes/chat'
@@ -70,6 +72,7 @@ describe('chat store user-mode model selection', () => {
 
     await store.switchSessionModel('gpt-5.4', 'openai')
 
+    expect(setSessionModelMock).toHaveBeenCalledWith('session-1', 'gpt-5.4', 'openai')
     expect(store.activeSession?.model).toBe('gpt-5.4')
     expect(store.activeSession?.provider).toBe('openai')
     expect(switchModelMock).not.toHaveBeenCalled()
@@ -81,6 +84,7 @@ describe('chat store user-mode model selection', () => {
 
     await store.switchSessionModel('gpt-5.4', 'openai')
 
+    expect(setSessionModelMock).toHaveBeenCalledWith('session-1', 'gpt-5.4', 'openai')
     expect(switchModelMock).toHaveBeenCalledWith('gpt-5.4', 'openai')
   })
 
