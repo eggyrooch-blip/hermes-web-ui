@@ -71,10 +71,17 @@ async function getCachedHermesVersion(): Promise<string> {
   return pendingHermesVersion
 }
 
-export async function healthCheck(ctx: any) {
-  const raw = await getCachedHermesVersion()
-  const hermesVersion = raw.split('\n')[0].replace('Hermes Agent ', '') || ''
-  let gatewayOk = false
+async function isGatewayReachable(): Promise<boolean> {
+  if (config.webuiRunBroker && config.runBrokerUrl) {
+    try {
+      const brokerUrl = `${config.runBrokerUrl.replace(/\/$/, '')}/api/run-broker/credentials/feishu/uat/status`
+      const res = await fetch(brokerUrl, { signal: AbortSignal.timeout(5000) })
+      return res.status < 500
+    } catch {
+      return false
+    }
+  }
+
   try {
     const mgr = getGatewayManagerInstance()
     const upstream = mgr?.getUpstream()
@@ -82,8 +89,16 @@ export async function healthCheck(ctx: any) {
       throw new Error('GatewayManager not initialized')
     }
     const res = await fetch(`${upstream.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(5000) })
-    gatewayOk = res.ok
-  } catch { }
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+export async function healthCheck(ctx: any) {
+  const raw = await getCachedHermesVersion()
+  const hermesVersion = raw.split('\n')[0].replace('Hermes Agent ', '') || ''
+  const gatewayOk = await isGatewayReachable()
   ctx.body = {
     status: gatewayOk ? 'ok' : 'error',
     platform: 'hermes-agent',
