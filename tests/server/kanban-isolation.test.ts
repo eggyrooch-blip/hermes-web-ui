@@ -180,6 +180,7 @@ describe('kanban owner isolation', () => {
     expect(denied.body).toEqual({ error: 'You do not own this agent profile' })
     expect(mockAssignTask).not.toHaveBeenCalled()
 
+    mockGetTask.mockResolvedValue(taskDetail({ id: 't1', assignee: 'profA' }))
     const allowed = ctx({ openid: 'ouA', params: { id: 't1' }, body: { profile: 'profA' } })
     await ctrl.assign(allowed)
     expect(allowed.status).toBe(200)
@@ -276,6 +277,7 @@ describe('kanban owner isolation', () => {
 
   it('uses the same assign handler to allow owned profiles and deny unowned profiles', async () => {
     mockAssignTask.mockResolvedValue(undefined)
+    mockGetTask.mockResolvedValue(taskDetail({ id: 't1', assignee: 'profA' }))
     const ctrl = await loadController(dbPath)
 
     const allowed = ctx({ openid: 'ouA', params: { id: 't1' }, body: { profile: 'profA' } })

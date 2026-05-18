@@ -93,6 +93,15 @@ function ctx(overrides: Record<string, any> = {}) {
   } as any
 }
 
+function ownedTaskDetail(id: string, assignee = 'alice') {
+  return {
+    task: { id, status: 'todo', assignee, created_by: null, tenant: null },
+    runs: [],
+    comments: [],
+    events: [],
+  }
+}
+
 describe('kanban controller', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -136,6 +145,7 @@ describe('kanban controller', () => {
 
   it('proxies comment/log/diagnostics with explicit board context', async () => {
     const taskLog = { task_id: 'task-1', path: null, exists: true, size_bytes: 10, content: 'worker log', truncated: false }
+    mockGetTask.mockResolvedValue(ownedTaskDetail('task-1'))
     mockAddComment.mockResolvedValue({ ok: true, output: 'commented' })
     mockGetTaskLog.mockResolvedValue(taskLog)
     mockGetDiagnostics.mockResolvedValue([{ task_id: 'task-1' }])
@@ -157,6 +167,7 @@ describe('kanban controller', () => {
   })
 
   it('proxies links and bulk actions with explicit board context', async () => {
+    mockGetTask.mockImplementation(async (id: string) => ownedTaskDetail(id))
     mockLinkTasks.mockResolvedValue({ ok: true, output: 'linked' })
     mockUnlinkTasks.mockResolvedValue({ ok: true, output: 'unlinked' })
     mockBulkUpdateTasks.mockResolvedValue({ results: [{ id: 'task-1', ok: true }] })
@@ -239,6 +250,8 @@ describe('kanban controller', () => {
   })
 
   it('proxies recovery and dispatch actions with explicit board context', async () => {
+    mockGetTask.mockResolvedValue(ownedTaskDetail('task-1'))
+    mockListTasks.mockResolvedValue([{ id: 'task-1', assignee: 'alice', created_by: null, tenant: null }])
     mockReclaimTask.mockResolvedValue({ ok: true, output: 'reclaimed' })
     mockReassignTask.mockResolvedValue({ ok: true, output: 'reassigned' })
     mockSpecifyTask.mockResolvedValue([{ task_id: 'task-1' }])
@@ -290,7 +303,7 @@ describe('kanban controller', () => {
 
   it('enriches archived task details using the latest run profile', async () => {
     mockGetTask.mockResolvedValue({
-      task: { id: 'task-archived', status: 'archived' },
+      task: { id: 'task-archived', status: 'archived', assignee: 'reviewer', created_by: null },
       runs: [{ profile: 'reviewer' }],
       comments: [],
       events: [],
