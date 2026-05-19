@@ -22,6 +22,7 @@ import ConversationMonitorPane from "./ConversationMonitorPane.vue";
 import MessageList from "./MessageList.vue";
 import SessionListItem from "./SessionListItem.vue";
 import DrawerPanel from "./DrawerPanel.vue";
+import OutlinePanel from "./OutlinePanel.vue";
 
 const chatStore = useChatStore();
 const sessionBrowserPrefsStore = useSessionBrowserPrefsStore();
@@ -31,6 +32,7 @@ const { t } = useI18n();
 const showDrawer = ref(false);
 const drawerActiveTab = ref<"terminal" | "files">("files");
 const userModeChrome = computed(() => isUserMode());
+const showOutline = ref(false);
 
 const currentMode = ref<"chat" | "live">("chat");
 
@@ -768,6 +770,30 @@ async function handleWorkspaceConfirm() {
                 <NButton
                   quaternary
                   size="small"
+                  @click="showOutline = !showOutline"
+                  circle
+                >
+                  <template #icon>
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    >
+                      <path d="M3 12h18M3 6h18M3 18h18" />
+                    </svg>
+                  </template>
+                </NButton>
+              </template>
+              {{ t("chat.outlineTitle") }}
+            </NTooltip>
+            <NTooltip trigger="hover">
+              <template #trigger>
+                <NButton
+                  quaternary
+                  size="small"
                   @click="copySessionId()"
                   circle
                 >
@@ -811,7 +837,12 @@ async function handleWorkspaceConfirm() {
       </header>
 
       <template v-if="currentMode === 'chat'">
-        <MessageList />
+        <div class="chat-content-wrapper">
+          <div class="chat-main-content">
+            <MessageList />
+          </div>
+          <OutlinePanel v-if="showOutline" :messages="chatStore.messages" />
+        </div>
         <ChatInput />
       </template>
       <ConversationMonitorPane
@@ -1364,6 +1395,21 @@ async function handleWorkspaceConfirm() {
   flex-direction: column;
   overflow: hidden;
   min-width: 0;
+}
+
+.chat-content-wrapper {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-main-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .chat-header {

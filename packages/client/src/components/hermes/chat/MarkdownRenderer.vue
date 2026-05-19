@@ -20,8 +20,10 @@ import { sanitizeHtml } from '@/utils/sanitizeHtml'
 const props = withDefaults(defineProps<{
     content: string
     mentionNames?: string[]
+    headingIdPrefix?: string
 }>(), {
     mentionNames: () => [],
+    headingIdPrefix: '',
 })
 
 const { t } = useI18n()
@@ -80,6 +82,20 @@ function isImageArtifactPath(path: string): boolean {
 
 const renderedHtml = computed(() => {
   let html = md.render(repairNestedMarkdownFences(props.content))
+
+  const prefix = props.headingIdPrefix ? `${props.headingIdPrefix}-` : ''
+  let headingCounter = 0
+  html = html.replace(/<(h[1-6])([^>]*)>/g, (match, tag, attrs) => {
+    headingCounter++
+    const id = `${prefix}heading-${headingCounter}`
+    if (attrs.includes('id=')) {
+      return match.replace(/id="[^"]*"/, `id="${id}"`).replace(/id='[^']*'/, `id="${id}"`)
+    }
+    if (attrs.trim() === '') {
+      return `<${tag} id="${id}">`
+    }
+    return `<${tag} ${attrs.trim()} id="${id}">`
+  })
 
   const renderFileCard = (path: string, fileName: string) => `<div class="markdown-file-card" data-path="${path}" data-filename="${fileName}" title="${t('download.downloadFile')}">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
