@@ -79,11 +79,24 @@ export async function create(ctx: any) {
     const user = ctx.state?.user as { openid?: string; profile?: string } | undefined
     const userMode = config.webPlane === 'chat' && !!user?.openid
     const normalizedDescription = typeof description === 'string' ? description.trim() || undefined : undefined
-    const output = await hermesCli.createProfile(name, {
+    const cloneFrom = userMode && clone ? user?.profile?.trim() : undefined
+    if (userMode && clone && !cloneFrom) {
+      ctx.status = 400
+      ctx.body = { error: 'Cannot clone profile without a trusted source profile' }
+      return
+    }
+    const createOptions: {
+      clone: boolean
+      cloneFrom?: string
+      description?: string
+      noAlias: boolean
+    } = {
       clone: !!clone,
       description: normalizedDescription,
       noAlias: userMode,
-    })
+    }
+    if (cloneFrom) createOptions.cloneFrom = cloneFrom
+    const output = await hermesCli.createProfile(name, createOptions)
 
     // clone=true 时执行智能清理：
     //   - 删除 .env 中的独占平台凭据（Weixin / Telegram / Slack / ...）

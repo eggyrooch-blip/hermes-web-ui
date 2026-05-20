@@ -553,6 +553,7 @@ export async function getProfile(name: string): Promise<HermesProfileDetail> {
  */
 export interface CreateHermesProfileOptions {
   clone?: boolean
+  cloneFrom?: string
   description?: string
   noAlias?: boolean
 }
@@ -562,6 +563,9 @@ export async function createProfile(name: string, options: CreateHermesProfileOp
   const resolved = typeof options === 'boolean' ? { clone: options } : options
   const args = ['profile', 'create']
   if (resolved.clone) args.push('--clone')
+  if (resolved.clone && resolved.cloneFrom) {
+    args.push('--clone-from', validateProfileName(resolved.cloneFrom))
+  }
   if (resolved.noAlias) args.push('--no-alias')
   const description = resolved.description?.trim()
   if (description) args.push('--description', description)
