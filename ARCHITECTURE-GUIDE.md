@@ -23,6 +23,9 @@ related:
 > [!warning] 2026-05-20 gotcha — Feishu OAuth login behind Caddy must compare forwarded origin
 > 生产 `https://hermes.gotokeep.com` 由 Caddy 反代到 WebUI `127.0.0.1:8648`。Feishu login 为避免 state cookie 写到错误 host，会把 `/api/auth/feishu/login` canonicalize 到 `FEISHU_REDIRECT_URI` 的 origin；但在 Koa 未启用 proxy trust 时，`ctx.origin` 只看到本地 HTTP origin，若忽略 `X-Forwarded-Proto` / `X-Forwarded-Host`，公网登录会 302 到同一个 `https://hermes.gotokeep.com/api/auth/feishu/login` 并形成自循环。`controllers/auth.ts` 的 login canonicalization 必须优先用 forwarded origin 判断“外部请求是否已经在配置 origin 上”，只在真正 host/origin 不一致时才 redirect；`index.ts` 必须设置 `app.proxy = true`，否则 Koa/cookies 仍会把 Caddy 后面的本地 HTTP 当成非安全连接，写 `Secure` state cookie 时返回 500。
 
+> [!info] 2026-05-20 production locale default
+> 生产 WebUI 面向中文团队，首次打开时不能因浏览器/系统语言是英文而显示英文。`packages/client/src/i18n/index.ts` 的默认语言为 `DEFAULT_LOCALE='zh'`，`fallbackLocale` 也应保持中文；只在 `localStorage.hermes_locale` 已保存有效 locale 时尊重用户显式选择。不要重新引入 `navigator.languages` / `Accept-Language` 自动探测作为默认值。回归测试见 `tests/client/i18n-default-locale.test.ts`：英文浏览器、无保存值时必须得到 `zh`；保存 `en` 时仍为 `en`。
+
 > [!warning] 2026-05-18 `webui-upstream-safe-ports` — upstream 安全移植，不整支合并
 > 本轮在 ftask worktree `/Users/kite/code/hermes-web-ui.tasks/webui-upstream-safe-ports` 手工吸收 upstream 中对侧栏能力有价值且不冲突多租户目标的补丁。仍禁止整支 merge `EKKOLearnAI/main`：upstream 大规模替换 `chat-run-socket`/`run-chat`、删除本地 `request-context.ts`、`feishu-oauth.ts` 和 user-mode/Feishu/Run Broker 测试，会冲掉 `X-Hermes-Owner-Open-Id`、profile owner isolation、Feishu UAT/lark-cli connector 与本地文档。
 >
