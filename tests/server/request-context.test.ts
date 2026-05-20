@@ -96,6 +96,23 @@ describe('chat plane access control', () => {
     expect(fileCtx.status).toBe(200)
   })
 
+  it('allows owner-scoped group chat endpoints in chat plane', async () => {
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const listCtx = mockCtx('/api/hermes/group-chat/rooms', 'GET')
+    const createCtx = mockCtx('/api/hermes/group-chat/rooms', 'POST')
+    const updateCtx = mockCtx('/api/hermes/group-chat/rooms/room-1/config', 'PUT')
+    const next = vi.fn(async () => {})
+
+    await enforcePlaneAccess(listCtx, next)
+    await enforcePlaneAccess(createCtx, next)
+    await enforcePlaneAccess(updateCtx, next)
+
+    expect(next).toHaveBeenCalledTimes(3)
+    expect(listCtx.status).toBe(200)
+    expect(createCtx.status).toBe(200)
+    expect(updateCtx.status).toBe(200)
+  })
+
   it('allows authenticated Feishu UAT self-service endpoints in chat plane', async () => {
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
     const statusCtx = mockCtx('/api/auth/feishu/uat/status', 'GET')
@@ -141,7 +158,6 @@ describe('chat plane access control', () => {
       '/api/hermes/gateways',
       '/api/hermes/logs',
       '/api/hermes/channels',
-      '/api/hermes/group-chat/rooms',
       '/api/hermes/cron-history',
       '/api/hermes/model-context',
       '/api/hermes/auth/copilot/check-token',

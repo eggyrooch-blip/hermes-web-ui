@@ -37,15 +37,17 @@ describe('GroupChatView user mode', () => {
     storeMock.disconnect.mockClear()
   })
 
-  it('does not connect to group-chat backend in user mode', () => {
+  it('opens the group-chat panel in user mode', () => {
     isUserModeMock.mockReturnValue(true)
 
     const wrapper = mount(GroupChatView)
 
-    expect(storeMock.connect).not.toHaveBeenCalled()
-    expect(storeMock.loadRooms).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('groupChat.userModeTitle')
-    expect(wrapper.text()).not.toContain('GroupChatPanel')
+    expect(storeMock.connect).toHaveBeenCalledOnce()
+    expect(storeMock.loadRooms).toHaveBeenCalledOnce()
+    expect(wrapper.text()).toContain('GroupChatPanel')
+
+    wrapper.unmount()
+    expect(storeMock.disconnect).toHaveBeenCalledOnce()
   })
 
   it('keeps the existing group-chat backend flow outside user mode', () => {
