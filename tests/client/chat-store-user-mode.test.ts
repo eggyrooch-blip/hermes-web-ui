@@ -402,6 +402,82 @@ describe('chat store user-mode model selection', () => {
     expect(messages[3].reasoning).toBeUndefined()
   })
 
+  it('does not remove queued messages when a plain queue-length update arrives', async () => {
+    const store = useChatStore()
+    store.newChat()
+
+    await store.sendMessage('first running request')
+    await store.sendMessage('queued request one')
+    await store.sendMessage('queued request two')
+
+    const sid = store.activeSession!.id
+    const firstRunEvent = startRunViaSocketMock.mock.calls[0][1]
+
+    expect(store.queuedUserMessages.get(sid)?.map(m => m.content)).toEqual([
+      'queued request one',
+      'queued request two',
+    ])
+
+    firstRunEvent({
+      event: 'run.queued',
+      session_id: sid,
+      queue_length: 1,
+    })
+
+    expect(store.queuedUserMessages.get(sid)?.map(m => m.content)).toEqual([
+      'queued request one',
+      'queued request two',
+    ])
+    expect(store.activeSession!.messages.map(m => m.content)).toEqual([
+      'first running request',
+    ])
+    expect(store.queueLengths.get(sid)).toBe(1)
+  })
+
+  it('removes a queued message from the queue panel when the server dequeues it', async () => {
+    const store = useChatStore()
+    store.newChat()
+
+    await store.sendMessage('first running request')
+    await store.sendMessage('queued request one')
+    await store.sendMessage('queued request two')
+
+    const sid = store.activeSession!.id
+    const firstRunEvent = startRunViaSocketMock.mock.calls[0][1]
+    const dequeuedId = store.queuedUserMessages.get(sid)![0].id
+
+    firstRunEvent({
+      event: 'run.queued',
+      session_id: sid,
+      queue_length: 1,
+      dequeued_queue_id: dequeuedId,
+    })
+
+    expect(store.queuedUserMessages.get(sid)?.map(m => m.content)).toEqual([
+      'queued request two',
+    ])
+    expect(store.activeSession!.messages.map(m => m.content)).toEqual([
+      'first running request',
+      'queued request one',
+    ])
+    expect(store.queueLengths.get(sid)).toBe(1)
+
+    firstRunEvent({
+      event: 'run.started',
+      session_id: sid,
+      run_id: 'queued-run-1',
+      queue_length: 1,
+    })
+
+    expect(store.queuedUserMessages.get(sid)?.map(m => m.content)).toEqual([
+      'queued request two',
+    ])
+    expect(store.activeSession!.messages.map(m => m.content)).toEqual([
+      'first running request',
+      'queued request one',
+    ])
+  })
+
   it('keeps streamed run failure errors visible after the socket error callback', async () => {
     const store = useChatStore()
     store.newChat()
