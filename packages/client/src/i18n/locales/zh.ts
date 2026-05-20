@@ -710,6 +710,10 @@ export default {
       themeLight: '浅色',
       themeDark: '暗色',
       themeSystem: '跟随系统',
+      style: '风格',
+      styleHint: '选择标准墨水界面或涂鸦风格',
+      styleInk: '墨水',
+      styleComic: '涂鸦',
     },
     agent: {
       maxTurns: '最大轮次',

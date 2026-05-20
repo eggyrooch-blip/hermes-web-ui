@@ -698,6 +698,10 @@ export default {
       themeLight: '淺色',
       themeDark: '暗色',
       themeSystem: '跟隨系統',
+      style: '風格',
+      styleHint: '選擇標準墨水介面或塗鴉風格',
+      styleInk: '墨水',
+      styleComic: '塗鴉',
     },
     agent: {
       maxTurns: '最大輪次',

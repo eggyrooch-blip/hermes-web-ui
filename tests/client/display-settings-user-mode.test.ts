@@ -4,6 +4,8 @@ import { mount } from '@vue/test-utils'
 
 const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
 const saveSectionMock = vi.hoisted(() => vi.fn())
+const setBrightnessMock = vi.hoisted(() => vi.fn())
+const setStyleMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/client', () => ({
   isUserMode: isUserModeMock,
@@ -26,8 +28,10 @@ vi.mock('@/stores/hermes/settings', () => ({
 
 vi.mock('@/composables/useTheme', () => ({
   useTheme: () => ({
-    mode: 'dark',
-    setMode: vi.fn(),
+    brightness: 'dark',
+    style: 'ink',
+    setBrightness: setBrightnessMock,
+    setStyle: setStyleMock,
   }),
 }))
 
@@ -41,7 +45,7 @@ vi.mock('naive-ui', () => ({
   NSelect: {
     props: ['value', 'options'],
     emits: ['update:value'],
-    template: '<select class="theme-select"><slot /></select>',
+    template: '<button class="theme-select" @click="$emit(\'update:value\', options?.[1]?.value)">{{ options?.map(o => o.label).join(" ") }}</button>',
   },
   NSwitch: {
     props: ['value'],
@@ -60,6 +64,8 @@ describe('DisplaySettings user mode labels', () => {
   beforeEach(() => {
     isUserModeMock.mockReturnValue(false)
     saveSectionMock.mockClear()
+    setBrightnessMock.mockClear()
+    setStyleMock.mockClear()
   })
 
   it('labels show_cost as token usage instead of cost in chat plane user mode', () => {
@@ -71,5 +77,17 @@ describe('DisplaySettings user mode labels', () => {
     expect(wrapper.text()).toContain('settings.display.showTokenUsageHint')
     expect(wrapper.text()).not.toContain('settings.display.showCost')
     expect(wrapper.text()).not.toContain('settings.display.showCostHint')
+  })
+
+  it('exposes theme style selection in display settings', async () => {
+    const wrapper = mount(DisplaySettings)
+
+    expect(wrapper.text()).toContain('settings.display.style')
+    expect(wrapper.text()).toContain('settings.display.styleHint')
+    expect(wrapper.text()).toContain('settings.display.styleInk')
+    expect(wrapper.text()).toContain('settings.display.styleComic')
+
+    await wrapper.findAll('.theme-select')[1].trigger('click')
+    expect(setStyleMock).toHaveBeenCalledWith('comic')
   })
 })
