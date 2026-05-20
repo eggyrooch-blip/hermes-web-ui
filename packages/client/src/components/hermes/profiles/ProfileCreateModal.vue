@@ -166,15 +166,29 @@ function handleClose() {
 }
 
 .role-presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.role-presets :deep(.n-radio-button) {
+  width: 100%;
+  min-width: 0;
+  text-align: center;
+  justify-content: center;
+  border-radius: 6px;
+}
+
+.role-presets :deep(.n-radio-button:not(:first-child)) {
+  margin-left: 0;
 }
 
 .role-description {
   display: block;
-  margin: -8px 0 14px;
+  margin: -6px 0 16px;
   font-size: 12px;
   line-height: 1.45;
+  word-break: break-word;
 }
 </style>
