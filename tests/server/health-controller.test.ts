@@ -60,6 +60,32 @@ async function loadHealthControllerWithHermesVersionMock(getVersion: ReturnType<
   return import('../../packages/server/src/controllers/health')
 }
 
+async function loadHealthControllerInRunBrokerMode() {
+  vi.resetModules()
+  ;(globalThis as any).__APP_VERSION__ = 'test'
+
+  vi.doMock('../../packages/server/src/services/hermes/hermes-cli', () => ({
+    getVersion: vi.fn().mockResolvedValue('Hermes Agent v0.14.0\n'),
+  }))
+
+  vi.doMock('../../packages/server/src/services/gateway-bootstrap', () => ({
+    getGatewayManagerInstance: vi.fn(() => ({
+      getUpstream: () => 'http://127.0.0.1:9999',
+    })),
+  }))
+
+  vi.doMock('../../packages/server/src/config', () => ({
+    config: {
+      webPlane: 'chat',
+      authMode: 'feishu-oauth-dev',
+      webuiRunBroker: true,
+      runBrokerUrl: 'http://127.0.0.1:8876',
+    },
+  }))
+
+  return import('../../packages/server/src/controllers/health')
+}
+
 function createMockCtx() {
   return {
     body: null as any,
@@ -127,5 +153,27 @@ describe('health controller version metadata', () => {
     expect(getVersion).toHaveBeenCalledTimes(1)
     expect(ctxA.body.version).toBe('v0.11.0')
     expect(ctxB.body.version).toBe('v0.11.0')
+  })
+
+  it('uses run-broker reachability for chat-plane health when broker mode is enabled', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'http://127.0.0.1:8876/api/run-broker/credentials/feishu/uat/status') {
+        return { ok: false, status: 403 }
+      }
+      return { ok: false, status: 503 }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { healthCheck } = await loadHealthControllerInRunBrokerMode()
+    const ctx = createMockCtx()
+
+    await healthCheck(ctx)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8876/api/run-broker/credentials/feishu/uat/status',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    expect(ctx.body.status).toBe('ok')
+    expect(ctx.body.gateway).toBe('running')
   })
 })

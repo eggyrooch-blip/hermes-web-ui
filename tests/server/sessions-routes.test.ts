@@ -12,6 +12,7 @@ const removeMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const batchRemoveMock = vi.fn(async (ctx: any) => { ctx.body = { deleted: 0, failed: 0, errors: [] } })
 const renameMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const setWorkspaceMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
+const setModelMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const listWorkspaceFoldersMock = vi.fn(async (ctx: any) => { ctx.body = { folders: [] } })
 const usageBatchMock = vi.fn(async (ctx: any) => { ctx.body = {} })
 const usageSingleMock = vi.fn(async (ctx: any) => { ctx.body = { input_tokens: 0, output_tokens: 0 } })
@@ -32,6 +33,7 @@ vi.mock('../../packages/server/src/controllers/hermes/sessions', () => ({
   batchRemove: batchRemoveMock,
   rename: renameMock,
   setWorkspace: setWorkspaceMock,
+  setModel: setModelMock,
   listWorkspaceFolders: listWorkspaceFoldersMock,
   usageBatch: usageBatchMock,
   usageSingle: usageSingleMock,
@@ -72,6 +74,7 @@ describe('session routes', () => {
       '/api/hermes/sessions/:id/export',
       '/api/hermes/sessions/:id/usage',
       '/api/hermes/sessions/:id/rename',
+      '/api/hermes/sessions/:id/model',
     ]))
   })
 

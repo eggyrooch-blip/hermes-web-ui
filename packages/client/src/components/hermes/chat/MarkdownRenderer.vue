@@ -20,8 +20,10 @@ import { sanitizeHtml } from '@/utils/sanitizeHtml'
 const props = withDefaults(defineProps<{
     content: string
     mentionNames?: string[]
+    headingIdPrefix?: string
 }>(), {
     mentionNames: () => [],
+    headingIdPrefix: '',
 })
 
 const { t } = useI18n()
@@ -57,13 +59,21 @@ const previewUrl = ref<string | null>(null)
 let renderGeneration = 0
 let unmounted = false
 
+function isLocalFilePath(path: string): boolean {
+  return path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path) || !/^[a-z][a-z0-9+.-]*:/i.test(path)
+}
+
+function normalizeLocalFilePath(path: string): string {
+  return /^[a-zA-Z]:\\/.test(path) ? path.replace(/\\/g, '/') : path
+}
+
 function isDownloadableLocalPath(path: string): boolean {
   if (!path || path.startsWith('#') || path.startsWith('//')) return false
-  return !/^[a-z][a-z0-9+.-]*:/i.test(path)
+  return isLocalFilePath(path)
 }
 
 function getPathExtension(path: string): string {
-  return path.split('?')[0].split('#')[0].split('.').pop()?.toLowerCase() || ''
+  return normalizeLocalFilePath(path).split('?')[0].split('#')[0].split('.').pop()?.toLowerCase() || ''
 }
 
 function isImageArtifactPath(path: string): boolean {
@@ -72,6 +82,20 @@ function isImageArtifactPath(path: string): boolean {
 
 const renderedHtml = computed(() => {
   let html = md.render(repairNestedMarkdownFences(props.content))
+
+  const prefix = props.headingIdPrefix ? `${props.headingIdPrefix}-` : ''
+  let headingCounter = 0
+  html = html.replace(/<(h[1-6])([^>]*)>/g, (match, tag, attrs) => {
+    headingCounter++
+    const id = `${prefix}heading-${headingCounter}`
+    if (attrs.includes('id=')) {
+      return match.replace(/id="[^"]*"/, `id="${id}"`).replace(/id='[^']*'/, `id="${id}"`)
+    }
+    if (attrs.trim() === '') {
+      return `<${tag} id="${id}">`
+    }
+    return `<${tag} ${attrs.trim()} id="${id}">`
+  })
 
   const renderFileCard = (path: string, fileName: string) => `<div class="markdown-file-card" data-path="${path}" data-filename="${fileName}" title="${t('download.downloadFile')}">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -88,28 +112,26 @@ const renderedHtml = computed(() => {
 
   html = html.replace(/<img src="([^"]+)" alt="([^"]*)">/g, (match, path, alt) => {
     if (!isDownloadableLocalPath(path) || isImageArtifactPath(path)) return match
-    const fileName = (alt || path.split('/').pop() || path).trim()
-    return renderFileCard(path, fileName)
+    const normalizedPath = normalizeLocalFilePath(path)
+    const fileName = (alt || normalizedPath.split('/').pop() || normalizedPath).trim()
+    return renderFileCard(normalizedPath, fileName)
   })
 
   // Replace local image src paths with download URLs. Supports both legacy
-  // absolute paths (`/tmp/a.png`) and workspace-relative artifact paths (`a.png`).
-  html = html.replace(/src="([^"]+)"/g, (match, path) => {
+  // absolute paths (`/tmp/a.png`), Windows paths (`C:/tmp/a.png`), and
+  // workspace-relative artifact paths (`a.png`).
+  html = html.replace(/\bsrc=(["'])([^"']+)\1/g, (match, quote, path) => {
     if (!isDownloadableLocalPath(path)) return match
-    return `src="${getDownloadUrl(path)}"`
-  })
-
-  html = html.replace(/src='([^']+)'/g, (match, path) => {
-    if (!isDownloadableLocalPath(path)) return match
-    return `src='${getDownloadUrl(path)}'`
+    return `src=${quote}${getDownloadUrl(normalizeLocalFilePath(path))}${quote}`
   })
 
   // Replace local file links with file card UI or video player
   // Match <a href="/tmp/file.pdf">filename</a>, <a href="file.pdf">filename</a>,
-  // or video equivalents.
-  html = html.replace(/<a href="([^"]+)">([^<]+)<\/a>/g, (match, path, filename) => {
-    if (!isDownloadableLocalPath(path)) return match
+  // Windows paths (`C:/tmp/file.pdf`), or video equivalents.
+  html = html.replace(/<a href="([^"]+)">([^<]+)<\/a>/g, (match, rawPath, filename) => {
+    if (!isDownloadableLocalPath(rawPath)) return match
 
+    const path = normalizeLocalFilePath(rawPath)
     const fileName = filename.trim()
     const ext = path.split('.').pop()?.toLowerCase()
 
@@ -132,8 +154,10 @@ const renderedHtml = computed(() => {
   })
 
   if (props.mentionNames && props.mentionNames.length > 0) {
-    const escaped = props.mentionNames.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    const re = new RegExp(`(?<=[\\s>]|^)@(${escaped.join('|')})(?=\\s|$)`, 'gi')
+    const escaped = [...props.mentionNames]
+      .sort((a, b) => b.length - a.length)
+      .map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    const re = new RegExp(`(?<=[\\s>({\\[<]|^)@(${escaped.join('|')})(?=[\\s.,!?;:，。！？；：)\\]}>]|<|$)`, 'gi')
     html = html.replace(re, '<span class="mention-highlight">@$1</span>')
   }
   // SECURITY: sanitize after all string-level rewrites. The earlier replacements
@@ -347,13 +371,13 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
   }
 
   // File path links: intercept and download
-  if (href.startsWith('/')) {
+  if (isLocalFilePath(href)) {
     event.preventDefault()
     event.stopPropagation()
     const linkText = link.textContent || ''
     const fileName = linkText.startsWith('File: ') ? linkText.slice(6).trim() : linkText.trim()
     message.info(t('download.downloading'))
-    downloadFile(href, fileName || undefined).catch((err: Error) => {
+    downloadFile(normalizeLocalFilePath(href), fileName || undefined).catch((err: Error) => {
       message.error(err.message || t('download.downloadFailed'))
     })
   }

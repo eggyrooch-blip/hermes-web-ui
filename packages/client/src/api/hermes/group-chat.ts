@@ -30,6 +30,22 @@ export interface ChatMessage {
     senderName: string
     content: string
     timestamp: number
+    role?: string
+    tool_call_id?: string | null
+    tool_calls?: any[] | null
+    tool_name?: string | null
+    finish_reason?: string | null
+    reasoning?: string | null
+    reasoning_details?: string | null
+    reasoning_content?: string | null
+    isStreaming?: boolean
+    toolName?: string
+    toolCallId?: string
+    toolArgs?: string
+    toolPreview?: string
+    toolResult?: string
+    toolStatus?: 'running' | 'done' | 'error'
+    attachments?: Array<{ id: string; name: string; type: string; size: number; url: string }>
 }
 
 export interface MemberInfo {
@@ -123,6 +139,14 @@ export async function createRoom(data: {
     })
 }
 
+export async function cloneRoom(roomId: string, data?: { name?: string; inviteCode?: string }): Promise<{ room: RoomInfo; agents: RoomAgent[] }> {
+    return request(`/api/hermes/group-chat/rooms/${roomId}/clone`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data || {}),
+    })
+}
+
 export async function listRooms(): Promise<{ rooms: RoomInfo[] }> {
     return request('/api/hermes/group-chat/rooms')
 }
@@ -172,6 +196,12 @@ export async function deleteRoom(roomId: string): Promise<void> {
     })
 }
 
+export async function clearRoomContext(roomId: string): Promise<{ success: boolean; room: RoomInfo }> {
+    return request(`/api/hermes/group-chat/rooms/${roomId}/clear-context`, {
+        method: 'POST',
+    })
+}
+
 export async function updateRoomConfig(roomId: string, config: { triggerTokens?: number; maxHistoryTokens?: number; tailMessageCount?: number }): Promise<{ room: RoomInfo }> {
     return request(`/api/hermes/group-chat/rooms/${roomId}/config`, {
         method: 'PUT',
@@ -185,4 +215,3 @@ export async function forceCompress(roomId: string): Promise<{ success: boolean;
         method: 'POST',
     })
 }
-
