@@ -17,9 +17,32 @@ import { smartCloneCleanup } from '../../services/hermes/profile-credentials'
 import { config } from '../../config'
 import { listOwnedProfileMetadata, registerOwnedProfile } from '../../services/hermes/agent-ownership'
 import { provisionOwnedProfileViaBroker } from '../../services/hermes/profile-provisioning'
+import { getRequestProfile } from '../../services/request-context'
 
 export async function list(ctx: any) {
   try {
+    const user = ctx.state?.user as { openid?: string; profile?: string } | undefined
+    if (config.webPlane === 'chat' && user?.openid) {
+      const owned = listOwnedProfileMetadata(user.openid)
+      if (user.profile && !owned.has(user.profile)) {
+        owned.set(user.profile, { profileName: user.profile, kind: 'user', ownerOpenId: user.openid })
+      }
+      const activeProfileName = getRequestProfile(ctx)
+      ctx.body = {
+        profiles: Array.from(owned.values()).map(meta => ({
+          name: meta.profileName,
+          active: meta.profileName === activeProfileName,
+          model: '',
+          gateway: '',
+          alias: '',
+          ...(meta.displayLabel ? { displayLabel: meta.displayLabel } : {}),
+          ...(meta.kind ? { kind: meta.kind } : {}),
+          ...(meta.ownerOpenId ? { ownerOpenId: meta.ownerOpenId } : {}),
+        })),
+      }
+      return
+    }
+
     const profiles = await hermesCli.listProfiles()
 
     // Override active flag from the authoritative source (active_profile file)
@@ -38,28 +61,6 @@ export async function list(ctx: any) {
     profiles.forEach(p => {
       p.active = (p.name === activeProfileName)
     })
-
-    const user = ctx.state?.user as { openid?: string; profile?: string } | undefined
-    if (config.webPlane === 'chat' && user?.openid) {
-      const owned = listOwnedProfileMetadata(user.openid)
-      if (user.profile && !owned.has(user.profile)) {
-        owned.set(user.profile, { profileName: user.profile, kind: 'user', ownerOpenId: user.openid })
-      }
-      ctx.body = {
-        profiles: profiles
-          .filter(p => owned.has(p.name))
-          .map(p => {
-            const meta = owned.get(p.name)
-            return {
-              ...p,
-              ...(meta?.displayLabel ? { displayLabel: meta.displayLabel } : {}),
-              ...(meta?.kind ? { kind: meta.kind } : {}),
-              ...(meta?.ownerOpenId ? { ownerOpenId: meta.ownerOpenId } : {}),
-            }
-          }),
-      }
-      return
-    }
 
     ctx.body = { profiles }
   } catch (err: any) {

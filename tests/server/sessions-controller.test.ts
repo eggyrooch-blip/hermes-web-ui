@@ -190,6 +190,23 @@ describe('session conversations controller', () => {
     expect(ctx.body).toEqual({ sessions: [{ id: 'bound-session', source: 'feishu' }] })
   })
 
+  it('ignores an unowned requested profile header when listing chat-plane sessions', async () => {
+    process.env.HERMES_WEB_PLANE = 'chat'
+    listSessionSummariesMock.mockResolvedValue([{ id: 'bound-session', source: 'api_server' }])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: {},
+      state: { user: { openid: 'ou_test', profile: 'sunke', role: 'user' } },
+      get: (name: string) => name.toLowerCase() === 'x-hermes-profile' ? 'someone_else' : '',
+      body: null,
+    }
+    await mod.list(ctx)
+
+    expect(listSessionSummariesMock).toHaveBeenCalledWith(undefined, 2000, 'sunke')
+    expect(ctx.body).toEqual({ sessions: [{ id: 'bound-session', source: 'api_server' }] })
+  })
+
   it('keeps API Server chat sessions visible in chat-plane history', async () => {
     process.env.HERMES_WEB_PLANE = 'chat'
     listSessionSummariesMock.mockResolvedValue([
