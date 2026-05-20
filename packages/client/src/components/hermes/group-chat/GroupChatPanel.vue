@@ -8,6 +8,7 @@ import { useProfilesStore } from '@/stores/hermes/profiles'
 import { updateRoomConfig, forceCompress } from '@/api/hermes/group-chat'
 import GroupMessageList from './GroupMessageList.vue'
 import GroupChatInput from './GroupChatInput.vue'
+import { formatAgentProfileLabel, profileModelMap } from './agent-display'
 import ProfileCreateModal from '@/components/hermes/profiles/ProfileCreateModal.vue'
 
 const { t } = useI18n()
@@ -30,8 +31,20 @@ const cloneSourceRoomId = ref<string | null>(null)
 const cloneRoomName = ref('')
 const cloneInviteCode = ref('')
 
+const profileModels = computed(() => profileModelMap(profilesStore.profiles))
+
+function agentProfileLabel(profileName: string): string {
+    return formatAgentProfileLabel(profileName, profileModels.value)
+}
+
 const profileOptions = computed(() =>
-    profilesStore.profiles.map(p => ({ label: p.displayLabel ? `${p.displayLabel} · ${p.name}` : p.name, value: p.name }))
+    profilesStore.profiles.map(p => {
+        const profileLabel = agentProfileLabel(p.name)
+        const label = p.displayLabel && p.displayLabel !== p.name
+            ? `${p.displayLabel} · ${profileLabel}`
+            : profileLabel
+        return { label, value: p.name }
+    })
 )
 
 const avatarCache = new Map<string, string>()
@@ -334,7 +347,7 @@ watch(() => store.sortedMessages.length, async () => {
                                 <span class="agent-avatar" v-html="agentAvatarUrl(agent.name)" />
                                 <div class="agent-popover-info">
                                     <span class="agent-popover-name">{{ agent.name }}</span>
-                                    <span class="agent-popover-profile">{{ agent.profile }}</span>
+                                    <span class="agent-popover-profile">{{ agentProfileLabel(agent.profile) }}</span>
                                 </div>
                                 <button class="agent-popover-remove" @click="handleRemoveAgent(agent.id)">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>

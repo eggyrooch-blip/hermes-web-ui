@@ -17,6 +17,7 @@ import { smartCloneCleanup } from '../../services/hermes/profile-credentials'
 import { config } from '../../config'
 import { listOwnedProfileMetadata, registerOwnedProfile } from '../../services/hermes/agent-ownership'
 import { provisionOwnedProfileViaBroker } from '../../services/hermes/profile-provisioning'
+import { setProfileDefaultModel } from '../../services/hermes/profile-config'
 
 export async function list(ctx: any) {
   try {
@@ -69,7 +70,13 @@ export async function list(ctx: any) {
 }
 
 export async function create(ctx: any) {
-  const { name, clone, description } = ctx.request.body as { name?: string; clone?: boolean; description?: string }
+  const { name, clone, description, model, provider } = ctx.request.body as {
+    name?: string
+    clone?: boolean
+    description?: string
+    model?: string
+    provider?: string
+  }
   if (!name) {
     ctx.status = 400
     ctx.body = { error: 'Missing profile name' }
@@ -84,6 +91,11 @@ export async function create(ctx: any) {
       description: normalizedDescription,
       noAlias: userMode,
     })
+    const normalizedModel = typeof model === 'string' ? model.trim() || undefined : undefined
+    const normalizedProvider = typeof provider === 'string' ? provider.trim() || undefined : undefined
+    if (normalizedModel) {
+      await setProfileDefaultModel(name, normalizedModel, normalizedProvider)
+    }
 
     // clone=true 时执行智能清理：
     //   - 删除 .env 中的独占平台凭据（Weixin / Telegram / Slack / ...）

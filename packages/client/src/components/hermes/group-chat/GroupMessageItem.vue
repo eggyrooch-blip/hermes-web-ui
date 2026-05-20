@@ -3,11 +3,13 @@ import { computed } from 'vue'
 import multiavatar from '@multiavatar/multiavatar'
 import MarkdownRenderer from '../chat/MarkdownRenderer.vue'
 import type { ChatMessage, RoomAgent } from '@/api/hermes/group-chat'
+import { formatAgentSenderLabel } from './agent-display'
 
 const props = defineProps<{
     message: ChatMessage
     agents: RoomAgent[]
     currentUserId?: string
+    profileModels?: Map<string, string>
 }>()
 
 const isAgent = computed(() => {
@@ -32,6 +34,15 @@ const avatarSvg = computed(() => {
 })
 
 const mentionNames = computed(() => ['all', ...props.agents.map(a => a.name).filter(Boolean)])
+
+const senderLabel = computed(() => {
+    if (!isAgent.value) return props.message.senderName
+    return formatAgentSenderLabel(
+        props.message.senderName,
+        agentInfo.value?.profile,
+        props.profileModels || new Map(),
+    )
+})
 </script>
 
 <template>
@@ -43,7 +54,7 @@ const mentionNames = computed(() => ['all', ...props.agents.map(a => a.name).fil
 
         <div class="msg-body">
             <div class="msg-header">
-                <span class="sender-name">{{ message.senderName }}</span>
+                <span class="sender-name">{{ senderLabel }}</span>
                 <span v-if="isAgent && agentInfo?.description" class="agent-desc">{{ agentInfo.description }}</span>
             </div>
             <div class="msg-content" :class="{ 'agent-content': isAgent }">

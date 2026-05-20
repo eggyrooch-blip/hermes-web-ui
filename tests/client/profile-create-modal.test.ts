@@ -5,10 +5,17 @@ import ProfileCreateModal from '@/components/hermes/profiles/ProfileCreateModal.
 
 const profilesStoreMock = vi.hoisted(() => ({
   createProfile: vi.fn(),
+  activeProfile: { name: 'feishu_g41a5b5g', model: 'glm-4-plus' },
 }))
 
 vi.mock('@/stores/hermes/profiles', () => ({
   useProfilesStore: () => profilesStoreMock,
+}))
+
+const fetchAvailableModelsMock = vi.hoisted(() => vi.fn())
+
+vi.mock('@/api/hermes/system', () => ({
+  fetchAvailableModels: fetchAvailableModelsMock,
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -23,6 +30,7 @@ vi.mock('vue-i18n', () => ({
         'profiles.cloneCleanupNotice': 'Credentials will be cleaned after cloning',
         'profiles.createSuccess': `Created ${params?.name || ''}`,
         'profiles.createFailed': 'Create failed',
+        'profiles.model': 'Model',
         'profiles.rolePreset': 'Role preset',
         'profiles.rolePresetCoder': 'Coder',
         'profiles.rolePresetResearcher': 'Researcher',
@@ -79,10 +87,14 @@ vi.mock('naive-ui', () => {
       `,
     },
     NSelect: {
-      props: ['value'],
+      props: ['value', 'options'],
       emits: ['update:value'],
       inheritAttrs: false,
-      template: '<select :value="value" @change="$emit(\'update:value\', $event.target.value)"><option value="coder">Coder</option><option value="researcher">Researcher</option><option value="writer">Writer</option><option value="operator">Operator</option><option value="custom">Custom</option></select>',
+      template: `
+        <select :value="value" @change="$emit('update:value', $event.target.value)">
+          <option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option>
+        </select>
+      `,
     },
     useMessage: () => ({
       success: vi.fn(),
@@ -97,6 +109,16 @@ describe('ProfileCreateModal', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     profilesStoreMock.createProfile.mockResolvedValue({ success: true })
+    fetchAvailableModelsMock.mockResolvedValue({
+      default: 'glm-4-plus',
+      default_provider: 'zai',
+      groups: [
+        { provider: 'zai', label: 'zai', base_url: '', api_key: '', models: ['glm-4-plus', 'glm-5.1'] },
+      ],
+      allProviders: [
+        { provider: 'zai', label: 'zai', base_url: '', api_key: '', models: ['glm-4-plus', 'glm-5.1'] },
+      ],
+    })
   })
 
   it('renders upstream create modal with compact role preset select and passes coder description on create', async () => {
@@ -112,6 +134,25 @@ describe('ProfileCreateModal', () => {
     expect(profilesStoreMock.createProfile).toHaveBeenCalledWith('web_coder', {
       clone: false,
       description: 'Software engineering agent for coding, debugging, tests, repo navigation, and pull request work.',
+      model: 'glm-4-plus',
+      provider: 'zai',
     })
+  })
+
+  it('allows choosing the default model for the new profile', async () => {
+    const wrapper = mount(ProfileCreateModal)
+
+    await fetchAvailableModelsMock.mock.results[0].value
+    await wrapper.vm.$nextTick()
+
+    const selects = wrapper.findAll('select')
+    await selects[1].setValue('zai|||glm-5.1')
+    await wrapper.find('input[placeholder="profile name"]').setValue('model_profile')
+    await wrapper.findAll('button').find(button => button.text() === 'Create')!.trigger('click')
+
+    expect(profilesStoreMock.createProfile).toHaveBeenCalledWith('model_profile', expect.objectContaining({
+      model: 'glm-5.1',
+      provider: 'zai',
+    }))
   })
 })

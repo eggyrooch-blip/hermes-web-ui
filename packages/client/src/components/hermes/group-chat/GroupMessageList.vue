@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick } from 'vue'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
+import { useProfilesStore } from '@/stores/hermes/profiles'
+import { profileModelMap } from './agent-display'
 import GroupMessageItem from './GroupMessageItem.vue'
 
 const store = useGroupChatStore()
+const profilesStore = useProfilesStore()
 const listRef = ref<HTMLDivElement>()
 const isNearBottom = ref(true)
+const profileModels = computed(() => profileModelMap(profilesStore.profiles))
 
 function checkNearBottom(): void {
     if (!listRef.value) return
@@ -46,6 +50,7 @@ defineExpose({ scrollToBottom })
             :message="msg"
             :agents="store.agents"
             :current-user-id="store.userId"
+            :profile-models="profileModels"
         />
     </div>
 </template>

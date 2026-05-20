@@ -40,11 +40,16 @@ vi.mock('../../packages/server/src/services/hermes/profile-provisioning', () => 
   provisionOwnedProfileViaBroker: vi.fn(() => Promise.resolve(false)),
 }))
 
+vi.mock('../../packages/server/src/services/hermes/profile-config', () => ({
+  setProfileDefaultModel: vi.fn(() => Promise.resolve()),
+}))
+
 import * as hermesCli from '../../packages/server/src/services/hermes/hermes-cli'
 import { config } from '../../packages/server/src/config'
 import { create } from '../../packages/server/src/controllers/hermes/profiles'
 import { registerOwnedProfile } from '../../packages/server/src/services/hermes/agent-ownership'
 import { provisionOwnedProfileViaBroker } from '../../packages/server/src/services/hermes/profile-provisioning'
+import { setProfileDefaultModel } from '../../packages/server/src/services/hermes/profile-config'
 
 describe('Profile Routes', () => {
   beforeEach(() => {
@@ -203,6 +208,32 @@ describe('Profile Routes', () => {
         description: undefined,
         noAlias: false,
       })
+      expect(ctx.body.success).toBe(true)
+    })
+
+    it('sets the requested default model on the newly-created profile only', async () => {
+      vi.mocked(hermesCli.createProfile).mockResolvedValue('Profile created')
+
+      const ctx: any = {
+        request: {
+          body: {
+            name: 'model_profile',
+            clone: false,
+            model: 'glm-5.1',
+            provider: 'zai',
+          },
+        },
+        state: {
+          user: { openid: 'ou_owner', profile: 'feishu_g41a5b5g' },
+        },
+        status: 200,
+        body: undefined,
+      }
+      config.webPlane = 'chat'
+
+      await create(ctx)
+
+      expect(setProfileDefaultModel).toHaveBeenCalledWith('model_profile', 'glm-5.1', 'zai')
       expect(ctx.body.success).toBe(true)
     })
   })

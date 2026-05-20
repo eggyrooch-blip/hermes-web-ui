@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { NModal, NForm, NFormItem, NInput, NButton, NSwitch, NText, NSelect, useMessage } from 'naive-ui'
 import { useProfilesStore } from '@/stores/hermes/profiles'
+import { fetchAvailableModels, type AvailableModelGroup } from '@/api/hermes/system'
 import { useI18n } from 'vue-i18n'
 
 const emit = defineEmits<{
@@ -20,6 +21,8 @@ const clone = ref(false)
 const nameValidationMessage = ref('')
 const selectedRole = ref<'coder' | 'researcher' | 'writer' | 'operator' | 'custom'>('coder')
 const customDescription = ref('')
+const selectedModelKey = ref<string | null>(null)
+const availableModelGroups = ref<AvailableModelGroup[]>([])
 
 const rolePresets = [
   { value: 'coder', labelKey: 'profiles.rolePresetCoder', descriptionKey: 'profiles.rolePresetCoderDescription' },
@@ -38,6 +41,46 @@ const roleDescription = computed(() => {
   if (selectedRole.value === 'custom') return customDescription.value.trim()
   const preset = rolePresets.find(role => role.value === selectedRole.value)
   return preset ? t(preset.descriptionKey).trim() : ''
+})
+
+function modelKey(provider: string, model: string): string {
+  return `${provider}|||${model}`
+}
+
+function parseModelKey(key: string | null): { provider: string; model: string } | null {
+  if (!key) return null
+  const delimiter = key.indexOf('|||')
+  if (delimiter < 0) return null
+  const provider = key.slice(0, delimiter).trim()
+  const model = key.slice(delimiter + 3).trim()
+  if (!provider || !model) return null
+  return { provider, model }
+}
+
+const modelOptions = computed(() =>
+  availableModelGroups.value.flatMap(group =>
+    group.models.map(model => ({
+      label: `${model} · ${group.label || group.provider}`,
+      value: modelKey(group.provider, model),
+    })),
+  ),
+)
+
+const selectedModel = computed(() => parseModelKey(selectedModelKey.value))
+
+onMounted(async () => {
+  try {
+    const res = await fetchAvailableModels()
+    const groups = res.groups?.length ? res.groups : (res.allProviders || [])
+    availableModelGroups.value = groups || []
+    const preferredModel = profilesStore.activeProfile?.model || res.default
+    const preferredProvider = res.default_provider || groups.find(group => group.models.includes(preferredModel))?.provider
+    if (preferredModel && preferredProvider) {
+      selectedModelKey.value = modelKey(preferredProvider, preferredModel)
+    }
+  } catch {
+    // Model selection is an enhancement; profile creation should keep working.
+  }
 })
 
 function handleNameInput(value: string) {
@@ -67,6 +110,8 @@ async function handleSave() {
     const res = await profilesStore.createProfile(name.value.trim(), {
       clone: clone.value,
       description: roleDescription.value || undefined,
+      model: selectedModel.value?.model,
+      provider: selectedModel.value?.provider,
     })
     if (res.success) {
       const stripped = res.strippedCredentials ?? []
@@ -138,6 +183,14 @@ function handleClose() {
       <NText v-else depth="3" class="role-description">
         {{ roleDescription }}
       </NText>
+
+      <NFormItem v-if="modelOptions.length" :label="t('profiles.model')">
+        <NSelect
+          v-model:value="selectedModelKey"
+          :options="modelOptions"
+          filterable
+        />
+      </NFormItem>
 
       <NFormItem :label="t('profiles.cloneFromCurrent')">
         <NSwitch v-model:value="clone" />
