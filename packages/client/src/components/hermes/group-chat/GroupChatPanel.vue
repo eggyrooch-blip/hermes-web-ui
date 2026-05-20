@@ -31,7 +31,7 @@ const cloneRoomName = ref('')
 const cloneInviteCode = ref('')
 
 const profileOptions = computed(() =>
-    profilesStore.profiles.map(p => ({ label: p.name, value: p.name }))
+    profilesStore.profiles.map(p => ({ label: p.displayLabel ? `${p.displayLabel} · ${p.name}` : p.name, value: p.name }))
 )
 
 const avatarCache = new Map<string, string>()

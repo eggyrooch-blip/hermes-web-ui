@@ -10,7 +10,7 @@ const profilesStore = useProfilesStore()
 
 const options = computed(() =>
   profilesStore.profiles.map(p => ({
-    label: p.name,
+    label: p.displayLabel ? `${p.displayLabel} · ${p.name}` : p.name,
     value: p.name,
   })),
 )

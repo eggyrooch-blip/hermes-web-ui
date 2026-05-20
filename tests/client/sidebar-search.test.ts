@@ -250,6 +250,35 @@ describe('AppSidebar search entry', () => {
     expect(wrapper.text()).not.toContain('sidebar.disconnected')
   })
 
+  it('renders the upstream profile selector in user mode for owner-scoped profiles', () => {
+    getWebPlaneMock.mockReturnValue('chat')
+    isUserModeMock.mockReturnValue(true)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const profilesStore = useProfilesStore(pinia)
+    profilesStore.setBoundProfile('g41a5b5g', {
+      openid: 'ou_cf23e7c262afa4b7a006baa75f863ed5',
+      profile: 'g41a5b5g',
+      role: 'user',
+      name: '陈先生',
+    })
+
+    const wrapper = mount(AppSidebar, {
+      global: {
+        plugins: [pinia],
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+          NButton: true,
+        },
+      },
+    })
+
+    expect(wrapper.find('profile-selector-stub').exists()).toBe(true)
+  })
+
   it('clears the Feishu OAuth session cookie on logout', async () => {
     getAuthModeMock.mockReturnValue('feishu-oauth-dev')
     getWebPlaneMock.mockReturnValue('chat')

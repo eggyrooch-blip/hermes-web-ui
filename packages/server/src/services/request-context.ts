@@ -6,6 +6,7 @@ import { homedir } from 'os'
 import { DatabaseSync } from 'node:sqlite'
 import { config } from '../config'
 import { getActiveProfileName, getProfileDir } from './hermes/hermes-profile'
+import { ownerOwnsProfile } from './hermes/agent-ownership'
 
 export interface WebUser {
   openid: string
@@ -121,7 +122,13 @@ export async function trustedFeishuAuth(ctx: Context, next: Next): Promise<void>
 
 export function getRequestProfile(ctx: Context): string {
   const user = ctx.state?.user as WebUser | undefined
-  if (config.webPlane === 'chat' && user?.profile) return user.profile
+  if (config.webPlane === 'chat' && user?.profile) {
+    const requestedProfile = (ctx.get?.('x-hermes-profile') || (ctx.query?.profile as string) || '').trim()
+    if (requestedProfile && requestedProfile !== user.profile && ownerOwnsProfile(user.openid, requestedProfile)) {
+      return requestedProfile
+    }
+    return user.profile
+  }
   return (ctx.get?.('x-hermes-profile') || (ctx.query?.profile as string) || getActiveProfileName() || 'default')
 }
 

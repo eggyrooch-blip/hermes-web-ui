@@ -126,6 +126,76 @@ export function listOwnedProfileNames(openid: string): Set<string> {
     return owned
 }
 
+export type OwnedProfileMetadata = {
+    profileName: string
+    kind?: string
+    displayLabel?: string
+    ownerOpenId?: string
+}
+
+export function listOwnedProfileMetadata(openid: string): Map<string, OwnedProfileMetadata> {
+    const profiles = new Map<string, OwnedProfileMetadata>()
+    if (!isNonEmptyString(openid)) return profiles
+
+    const normalizedOpenid = openid.trim()
+
+    for (const dbPath of candidateMultitenancyDbs()) {
+        try {
+            if (!existsSync(dbPath) || statSync(dbPath).size === 0) continue
+            const db = new DatabaseSync(dbPath, { readOnly: true })
+            try {
+                const columns = new Set((db.prepare('PRAGMA table_info(multitenancy_routing)').all() as Array<{ name: string }>).map(column => column.name))
+                const disjuncts: string[] = []
+                const params: string[] = []
+
+                if (columns.has('owner_open_id')) {
+                    disjuncts.push('owner_open_id = ?')
+                    params.push(normalizedOpenid)
+                }
+
+                if (columns.has('provenance')) {
+                    disjuncts.push("(open_id = ? AND provenance = 'sync')")
+                    params.push(normalizedOpenid)
+                } else {
+                    disjuncts.push('open_id = ?')
+                    params.push(normalizedOpenid)
+                }
+
+                if (disjuncts.length === 0) continue
+
+                const selectColumns = [
+                    'profile_name',
+                    columns.has('kind') ? 'kind' : 'NULL AS kind',
+                    columns.has('display_label') ? 'display_label' : 'NULL AS display_label',
+                    columns.has('owner_open_id') ? 'owner_open_id' : 'NULL AS owner_open_id',
+                ]
+                const rows = db.prepare(
+                    `SELECT ${selectColumns.join(', ')}
+                     FROM multitenancy_routing
+                     WHERE active = 1
+                       AND (${disjuncts.join(' OR ')})`
+                ).all(...params) as Array<{ profile_name?: string; kind?: string; display_label?: string; owner_open_id?: string }>
+
+                for (const row of rows) {
+                    if (!isNonEmptyString(row.profile_name)) continue
+                    profiles.set(row.profile_name.trim(), {
+                        profileName: row.profile_name.trim(),
+                        ...(isNonEmptyString(row.kind) ? { kind: row.kind.trim() } : {}),
+                        ...(isNonEmptyString(row.display_label) ? { displayLabel: row.display_label.trim() } : {}),
+                        ...(isNonEmptyString(row.owner_open_id) ? { ownerOpenId: row.owner_open_id.trim() } : {}),
+                    })
+                }
+            } finally {
+                db.close()
+            }
+        } catch {
+            // Try the next candidate DB.
+        }
+    }
+
+    return profiles
+}
+
 export function registerOwnedProfile(openid: string, profileName: string, upstreamProfile?: string): boolean {
     if (!isNonEmptyString(openid) || !isNonEmptyString(profileName)) return false
 

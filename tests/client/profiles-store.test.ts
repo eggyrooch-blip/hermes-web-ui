@@ -55,6 +55,26 @@ describe('Profiles Store', () => {
     expect(localStorage.getItem('hermes_current_user')).toContain('张三')
   })
 
+  it('does not clobber an already selected owner profile when refreshing the bound Feishu user', () => {
+    localStorage.setItem('hermes_active_profile_name', 'feishu_group_alpha')
+    const store = useProfilesStore()
+    store.profiles = [
+      { name: 'g41a5b5g', active: false, model: 'gpt-4', gateway: 'running', alias: '' },
+      { name: 'feishu_group_alpha', active: true, model: 'gpt-4', gateway: 'running', alias: '', displayLabel: '研发群' },
+    ] as any
+
+    store.setBoundProfile('g41a5b5g', {
+      openid: 'ou_test',
+      profile: 'g41a5b5g',
+      role: 'user',
+      name: '张三',
+    })
+
+    expect(store.currentUser?.profile).toBe('g41a5b5g')
+    expect(store.activeProfileName).toBe('feishu_group_alpha')
+    expect(store.activeProfile?.name).toBe('feishu_group_alpha')
+  })
+
   it('fetchProfiles sets loading state', async () => {
     mockProfilesApi.fetchProfiles.mockImplementation(
       () => new Promise(resolve => setTimeout(() => resolve([]), 10))
@@ -88,6 +108,31 @@ describe('Profiles Store', () => {
     expect(store.activeProfileName).toBe('g41a5b5g')
     expect(store.activeProfile?.name).toBe('g41a5b5g')
     expect(store.profiles.map(p => p.name)).toEqual(['g41a5b5g', 'webui_child_research'])
+  })
+
+  it('switches the selected owner profile locally in user mode without changing the global Hermes active profile', async () => {
+    localStorage.setItem('hermes_web_plane', 'chat')
+    localStorage.setItem('hermes_current_user', JSON.stringify({
+      openid: 'ou_test',
+      profile: 'g41a5b5g',
+      role: 'user',
+      name: '张三',
+    }))
+
+    const store = useProfilesStore()
+    store.profiles = [
+      { name: 'g41a5b5g', active: true, model: 'gpt-4', gateway: 'running', alias: '' },
+      { name: 'feishu_group_alpha', active: false, model: 'gpt-4', gateway: 'running', alias: '', displayLabel: '研发群' },
+    ] as any
+    store.activeProfileName = 'g41a5b5g'
+
+    const ok = await store.switchProfile('feishu_group_alpha')
+
+    expect(ok).toBe(true)
+    expect(mockProfilesApi.switchProfile).not.toHaveBeenCalled()
+    expect(store.activeProfileName).toBe('feishu_group_alpha')
+    expect(store.activeProfile?.name).toBe('feishu_group_alpha')
+    expect(localStorage.getItem('hermes_active_profile_name')).toBe('feishu_group_alpha')
   })
 
   it('createProfile calls API and refreshes list', async () => {

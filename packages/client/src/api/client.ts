@@ -90,7 +90,9 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   // Inject active profile header for proxied gateway requests
   const profileName = getActiveProfileName()
   const authMode = getAuthMode()
-  if (authMode !== 'trusted-feishu' && authMode !== 'feishu-oauth-dev' && getWebPlane() !== 'chat' && profileName && profileName !== 'default') {
+  const webPlane = getWebPlane()
+  const canSendProfileHeader = authMode !== 'trusted-feishu' && (authMode !== 'feishu-oauth-dev' || webPlane === 'chat')
+  if (canSendProfileHeader && profileName && profileName !== 'default') {
     headers['X-Hermes-Profile'] = profileName
   }
 

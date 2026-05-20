@@ -15,7 +15,7 @@ import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
 import { logger } from '../../services/logger'
 import { smartCloneCleanup } from '../../services/hermes/profile-credentials'
 import { config } from '../../config'
-import { listOwnedProfileNames, registerOwnedProfile } from '../../services/hermes/agent-ownership'
+import { listOwnedProfileMetadata, registerOwnedProfile } from '../../services/hermes/agent-ownership'
 
 export async function list(ctx: any) {
   try {
@@ -40,9 +40,23 @@ export async function list(ctx: any) {
 
     const user = ctx.state?.user as { openid?: string; profile?: string } | undefined
     if (config.webPlane === 'chat' && user?.openid) {
-      const owned = listOwnedProfileNames(user.openid)
-      if (user.profile) owned.add(user.profile)
-      ctx.body = { profiles: profiles.filter(p => owned.has(p.name)) }
+      const owned = listOwnedProfileMetadata(user.openid)
+      if (user.profile && !owned.has(user.profile)) {
+        owned.set(user.profile, { profileName: user.profile, kind: 'user', ownerOpenId: user.openid })
+      }
+      ctx.body = {
+        profiles: profiles
+          .filter(p => owned.has(p.name))
+          .map(p => {
+            const meta = owned.get(p.name)
+            return {
+              ...p,
+              ...(meta?.displayLabel ? { displayLabel: meta.displayLabel } : {}),
+              ...(meta?.kind ? { kind: meta.kind } : {}),
+              ...(meta?.ownerOpenId ? { ownerOpenId: meta.ownerOpenId } : {}),
+            }
+          }),
+      }
       return
     }
 

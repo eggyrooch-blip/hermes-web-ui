@@ -6,6 +6,9 @@ export interface HermesProfile {
   model: string
   gateway: string
   alias: string
+  displayLabel?: string
+  kind?: string
+  ownerOpenId?: string
 }
 
 export interface HermesProfileDetail {

@@ -32,7 +32,7 @@ export const useProfilesStore = defineStore('profiles', () => {
   }
 
   function ensureBoundProfile() {
-    const name = currentUser.value?.profile || activeProfileName.value
+    const name = activeProfileName.value || currentUser.value?.profile
     if (!name) return
 
     activeProfileName.value = name
@@ -52,15 +52,19 @@ export const useProfilesStore = defineStore('profiles', () => {
     try {
       profiles.value = await profilesApi.fetchProfiles()
       if (shouldUseBoundProfileOnly()) {
-        const boundName = currentUser.value?.profile || activeProfileName.value
-        if (boundName && !profiles.value.some(p => p.name === boundName)) {
-          profiles.value.unshift({ name: boundName, active: true, model: '', gateway: '', alias: '' })
+        const fallbackName = currentUser.value?.profile || activeProfileName.value
+        let selectedName = activeProfileName.value || fallbackName
+        if (selectedName && !profiles.value.some(p => p.name === selectedName)) {
+          selectedName = fallbackName
         }
-        if (boundName) {
-          profiles.value = profiles.value.map(p => ({ ...p, active: p.name === boundName }))
-          activeProfile.value = profiles.value.find(p => p.name === boundName) ?? null
-          activeProfileName.value = boundName
-          localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, boundName)
+        if (fallbackName && !profiles.value.some(p => p.name === fallbackName)) {
+          profiles.value.unshift({ name: fallbackName, active: true, model: '', gateway: '', alias: '' })
+        }
+        if (selectedName) {
+          profiles.value = profiles.value.map(p => ({ ...p, active: p.name === selectedName }))
+          activeProfile.value = profiles.value.find(p => p.name === selectedName) ?? null
+          activeProfileName.value = selectedName
+          localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, selectedName)
         } else {
           activeProfile.value = profiles.value.find(p => p.active) ?? null
         }
@@ -92,16 +96,17 @@ export const useProfilesStore = defineStore('profiles', () => {
   }
 
   function setBoundProfile(name: string, user?: CurrentUser) {
-    activeProfileName.value = name
-    activeProfile.value = profiles.value.find(p => p.name === name) ?? {
-      name,
+    if (user) setCurrentUser(user)
+    const selectedName = activeProfileName.value || name
+    activeProfileName.value = selectedName
+    activeProfile.value = profiles.value.find(p => p.name === selectedName) ?? {
+      name: selectedName,
       active: true,
       model: '',
       gateway: '',
       alias: '',
     }
-    localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, name)
-    if (user) setCurrentUser(user)
+    localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, selectedName)
   }
 
   async function fetchProfileDetail(name: string) {
@@ -148,6 +153,19 @@ export const useProfilesStore = defineStore('profiles', () => {
   async function switchProfile(name: string) {
     switching.value = true
     try {
+      if (shouldUseBoundProfileOnly()) {
+        if (profiles.value.length === 0) {
+          await fetchProfiles()
+        }
+        const selected = profiles.value.find(p => p.name === name)
+        if (!selected) return false
+        profiles.value = profiles.value.map(p => ({ ...p, active: p.name === name }))
+        activeProfileName.value = name
+        activeProfile.value = { ...selected, active: true }
+        localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, name)
+        return true
+      }
+
       const ok = await profilesApi.switchProfile(name)
       if (ok) {
         // 保存旧值，用于可能的回滚

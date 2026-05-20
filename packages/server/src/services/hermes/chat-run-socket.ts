@@ -37,6 +37,7 @@ import {
   getFeishuSessionSecret,
   parseFeishuSessionCookie,
 } from '../feishu-oauth'
+import { ownerOwnsProfile } from './agent-ownership'
 import { handleBrokerRun as handleRunChatBrokerRun } from './run-chat/handle-broker-run'
 
 /**
@@ -576,8 +577,13 @@ export class ChatRunSocket {
       const sessionCookie = extractFeishuSessionFromCookieHeader(socket.handshake.headers?.cookie)
       const user = parseFeishuSessionCookie(sessionCookie, { secret: getFeishuSessionSecret() })
       if (!user) return next(new Error('Authentication failed'))
+      const requestedProfile = typeof socket.handshake.query?.profile === 'string'
+        ? socket.handshake.query.profile.trim()
+        : ''
       socket.data.user = user
-      socket.data.profile = user.profile
+      socket.data.profile = requestedProfile && requestedProfile !== user.profile && ownerOwnsProfile(user.openid, requestedProfile)
+        ? requestedProfile
+        : user.profile
       return next()
     }
 

@@ -22,7 +22,7 @@ const selectedKey = computed(() => route.name as string);
 const logoPath = '/logo.png';
 const currentUser = computed(() => profilesStore.currentUser);
 const displayName = computed(() => currentUser.value?.name || profilesStore.activeProfileName || '');
-const displayProfile = computed(() => currentUser.value?.profile || profilesStore.activeProfileName || '');
+const displayProfile = computed(() => profilesStore.activeProfileName || currentUser.value?.profile || '');
 const displayInitial = computed(() => (displayName.value || 'H').trim().slice(0, 1).toUpperCase());
 const showUserModeChrome = computed(() => isUserMode());
 const showAdminSurfaces = computed(() => !showUserModeChrome.value);
@@ -379,6 +379,8 @@ onBeforeUnmount(() => {
         <span class="feishu-connector-dot" aria-hidden="true"></span>
       </button>
     </div>
+
+    <ProfileSelector v-if="showUserModeChrome" class="user-profile-selector" />
 
     <div v-if="currentUser || showUserModeChrome" class="sidebar-user" :class="{ locked: showUserModeChrome }">
       <div v-if="showUserModeChrome" class="user-card-actions">

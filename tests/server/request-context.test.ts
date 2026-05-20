@@ -219,7 +219,7 @@ describe('multitenancy profile resolution', () => {
     process.env = originalEnv
   })
 
-  function makeRoutingDb(rows: Array<{ user_id: string; profile_name: string; open_id: string; active?: number }>) {
+  function makeRoutingDb(rows: Array<{ user_id: string; profile_name: string; open_id: string; active?: number; owner_open_id?: string; provenance?: string }>) {
     const dir = mkdtempSync(join(tmpdir(), 'hermes-routing-'))
     const dbPath = join(dir, 'multitenancy.db')
     const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite')
@@ -230,12 +230,14 @@ describe('multitenancy profile resolution', () => {
           user_id TEXT PRIMARY KEY NOT NULL,
           profile_name TEXT NOT NULL,
           open_id TEXT NOT NULL,
-          active INTEGER NOT NULL DEFAULT 1
+          active INTEGER NOT NULL DEFAULT 1,
+          owner_open_id TEXT,
+          provenance TEXT DEFAULT 'sync'
         );
       `)
-      const stmt = db.prepare('INSERT INTO multitenancy_routing (user_id, profile_name, open_id, active) VALUES (?, ?, ?, ?)')
+      const stmt = db.prepare('INSERT INTO multitenancy_routing (user_id, profile_name, open_id, active, owner_open_id, provenance) VALUES (?, ?, ?, ?, ?, ?)')
       for (const row of rows) {
-        stmt.run(row.user_id, row.profile_name, row.open_id, row.active ?? 1)
+        stmt.run(row.user_id, row.profile_name, row.open_id, row.active ?? 1, row.owner_open_id ?? row.open_id, row.provenance ?? 'sync')
       }
     } finally {
       db.close()
@@ -258,5 +260,41 @@ describe('multitenancy profile resolution', () => {
     })
 
     expect(resolveProfileForOpenId('ou_sunke')).toBeNull()
+  })
+
+  it('uses an owner-scoped selected profile header in chat plane', async () => {
+    const dbPath = makeRoutingDb([
+      { user_id: 'sunke', profile_name: 'feishu_sunke', open_id: 'ou_sunke' },
+      { user_id: 'group:alpha', profile_name: 'feishu_group_alpha', open_id: '', owner_open_id: 'ou_sunke', provenance: 'group' },
+    ])
+    const { getRequestProfile } = await loadRequestContext({
+      HERMES_WEB_PLANE: 'chat',
+      HERMES_MULTITENANCY_DB: dbPath,
+    })
+    const ctx = {
+      state: { user: { openid: 'ou_sunke', profile: 'feishu_sunke', role: 'user' } },
+      get: (name: string) => name.toLowerCase() === 'x-hermes-profile' ? 'feishu_group_alpha' : '',
+      query: {},
+    } as any
+
+    expect(getRequestProfile(ctx)).toBe('feishu_group_alpha')
+  })
+
+  it('falls back to the bound profile when the selected chat-plane profile is not owned', async () => {
+    const dbPath = makeRoutingDb([
+      { user_id: 'sunke', profile_name: 'feishu_sunke', open_id: 'ou_sunke' },
+      { user_id: 'other-group', profile_name: 'feishu_group_other', open_id: '', owner_open_id: 'ou_other', provenance: 'group' },
+    ])
+    const { getRequestProfile } = await loadRequestContext({
+      HERMES_WEB_PLANE: 'chat',
+      HERMES_MULTITENANCY_DB: dbPath,
+    })
+    const ctx = {
+      state: { user: { openid: 'ou_sunke', profile: 'feishu_sunke', role: 'user' } },
+      get: (name: string) => name.toLowerCase() === 'x-hermes-profile' ? 'feishu_group_other' : '',
+      query: {},
+    } as any
+
+    expect(getRequestProfile(ctx)).toBe('feishu_sunke')
   })
 })

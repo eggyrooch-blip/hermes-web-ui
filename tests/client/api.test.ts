@@ -148,5 +148,29 @@ describe('API Client', () => {
       const result = await request('/api/hermes/sessions')
       expect(result).toEqual(data)
     })
+
+    it('sends the selected owner profile header in chat-plane user mode', async () => {
+      localStorage.setItem('hermes_web_plane', 'chat')
+      localStorage.setItem('hermes_auth_mode', 'feishu-oauth-dev')
+      localStorage.setItem('hermes_active_profile_name', 'feishu_group_alpha')
+      mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({ sessions: [] }) })
+
+      await request('/api/hermes/sessions')
+
+      const [, options] = mockFetch.mock.calls[0]
+      expect(options.headers['X-Hermes-Profile']).toBe('feishu_group_alpha')
+    })
+
+    it('does not send the profile header for Feishu OAuth outside chat-plane', async () => {
+      localStorage.setItem('hermes_web_plane', 'both')
+      localStorage.setItem('hermes_auth_mode', 'feishu-oauth-dev')
+      localStorage.setItem('hermes_active_profile_name', 'feishu_group_alpha')
+      mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({ sessions: [] }) })
+
+      await request('/api/hermes/sessions')
+
+      const [, options] = mockFetch.mock.calls[0]
+      expect(options.headers['X-Hermes-Profile']).toBeUndefined()
+    })
   })
 })

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync } from 'fs'
 import { mkdir, rm, writeFile } from 'fs/promises'
 import { join, resolve } from 'path'
-import { homedir } from 'os'
+import { homedir, tmpdir } from 'os'
 import { ChatRunSocket, mapRunBrokerFrameForChat } from '../../packages/server/src/services/hermes/chat-run-socket'
 
 function createSocketServer() {
@@ -71,6 +72,82 @@ describe('ChatRunSocket gateway lifecycle', () => {
     await runHandler({ input: 'hello' })
 
     expect(handleRun).toHaveBeenCalledWith(socket, { input: 'hello' }, 'feishu_ou_bound')
+  })
+
+  it('binds Feishu OAuth socket runs to an owned selected profile when requested', async () => {
+    vi.resetModules()
+    const dir = mkdtempSync(join(tmpdir(), 'chat-run-owned-profile-'))
+    const dbPath = join(dir, 'multitenancy.db')
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(dbPath)
+    try {
+      db.exec(`
+        CREATE TABLE multitenancy_routing (
+          user_id TEXT PRIMARY KEY NOT NULL,
+          profile_name TEXT NOT NULL,
+          open_id TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1,
+          owner_open_id TEXT,
+          provenance TEXT DEFAULT 'sync'
+        );
+      `)
+      db.prepare('INSERT INTO multitenancy_routing (user_id, profile_name, open_id, active, owner_open_id, provenance) VALUES (?, ?, ?, ?, ?, ?)').run(
+        'group:alpha',
+        'feishu_group_alpha',
+        '',
+        1,
+        'ou_test',
+        'group',
+      )
+    } finally {
+      db.close()
+    }
+
+    vi.stubEnv('HERMES_AUTH_MODE', 'feishu-oauth-dev')
+    vi.stubEnv('FEISHU_SESSION_SECRET', 'socket-secret')
+    vi.stubEnv('HERMES_MULTITENANCY_DB', dbPath)
+
+    const { ChatRunSocket: OAuthChatRunSocket } = await import('../../packages/server/src/services/hermes/chat-run-socket')
+    const { createFeishuSessionCookie, FEISHU_SESSION_COOKIE } = await import('../../packages/server/src/services/feishu-oauth')
+    const { io, namespace } = createSocketServer()
+    const chatRun = new OAuthChatRunSocket(io as any, {
+      detectStatus: vi.fn(),
+      startApiOnly: vi.fn(),
+      getUpstream: vi.fn(),
+      getApiKey: vi.fn(),
+    })
+    const handleRun = vi.spyOn(chatRun as any, 'handleRun').mockResolvedValue(undefined)
+
+    chatRun.init()
+    const middleware = namespace.use.mock.calls[0][0]
+    const onConnection = namespace.on.mock.calls.find(([event]) => event === 'connection')?.[1]
+    const cookie = createFeishuSessionCookie({
+      openid: 'ou_test',
+      profile: 'feishu_ou_bound',
+      secret: 'socket-secret',
+    })
+    const socket = {
+      data: {},
+      handshake: {
+        auth: {},
+        query: { profile: 'feishu_group_alpha' },
+        headers: { cookie: `${FEISHU_SESSION_COOKIE}=${cookie}` },
+      },
+      on: vi.fn(),
+      emit: vi.fn(),
+      join: vi.fn(),
+      connected: true,
+    }
+
+    await new Promise<void>((resolvePromise, reject) => {
+      middleware(socket, (err?: Error) => err ? reject(err) : resolvePromise())
+    })
+    onConnection(socket)
+    const runHandler = socket.on.mock.calls.find(([event]) => event === 'run')?.[1]
+    await runHandler({ input: 'hello selected profile' })
+
+    expect(handleRun).toHaveBeenCalledWith(socket, { input: 'hello selected profile' }, 'feishu_group_alpha')
+    await rm(dir, { recursive: true, force: true })
   })
 
   it('starts a stopped request profile gateway before creating a run', async () => {
