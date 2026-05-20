@@ -113,6 +113,26 @@ describe('chat plane access control', () => {
     expect(updateCtx.status).toBe(200)
   })
 
+  it('allows owner-scoped profile listing and creation in chat plane but keeps profile admin actions blocked', async () => {
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const listCtx = mockCtx('/api/hermes/profiles', 'GET')
+    const createCtx = mockCtx('/api/hermes/profiles', 'POST')
+    const detailCtx = mockCtx('/api/hermes/profiles/other', 'GET')
+    const deleteCtx = mockCtx('/api/hermes/profiles/other', 'DELETE')
+    const next = vi.fn(async () => {})
+
+    await enforcePlaneAccess(listCtx, next)
+    await enforcePlaneAccess(createCtx, next)
+    await enforcePlaneAccess(detailCtx, next)
+    await enforcePlaneAccess(deleteCtx, next)
+
+    expect(next).toHaveBeenCalledTimes(2)
+    expect(listCtx.status).toBe(200)
+    expect(createCtx.status).toBe(200)
+    expect(detailCtx.status).toBe(403)
+    expect(deleteCtx.status).toBe(403)
+  })
+
   it('allows authenticated Feishu UAT self-service endpoints in chat plane', async () => {
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
     const statusCtx = mockCtx('/api/auth/feishu/uat/status', 'GET')
@@ -154,7 +174,6 @@ describe('chat plane access control', () => {
     })
     const allowed = [
       '/api/hermes/config',
-      '/api/hermes/profiles',
       '/api/hermes/gateways',
       '/api/hermes/logs',
       '/api/hermes/channels',

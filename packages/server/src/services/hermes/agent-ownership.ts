@@ -74,3 +74,107 @@ export function ownerOwnsProfile(openid: string, profileName: string): boolean {
 
     return false
 }
+
+export function listOwnedProfileNames(openid: string): Set<string> {
+    const owned = new Set<string>()
+    if (!isNonEmptyString(openid)) return owned
+
+    const normalizedOpenid = openid.trim()
+
+    for (const dbPath of candidateMultitenancyDbs()) {
+        try {
+            if (!existsSync(dbPath) || statSync(dbPath).size === 0) continue
+            const db = new DatabaseSync(dbPath, { readOnly: true })
+            try {
+                const columns = new Set((db.prepare('PRAGMA table_info(multitenancy_routing)').all() as Array<{ name: string }>).map(column => column.name))
+                const disjuncts: string[] = []
+                const params: string[] = []
+
+                if (columns.has('owner_open_id')) {
+                    disjuncts.push('owner_open_id = ?')
+                    params.push(normalizedOpenid)
+                }
+
+                if (columns.has('provenance')) {
+                    disjuncts.push("(open_id = ? AND provenance = 'sync')")
+                    params.push(normalizedOpenid)
+                } else {
+                    disjuncts.push('open_id = ?')
+                    params.push(normalizedOpenid)
+                }
+
+                if (disjuncts.length === 0) continue
+
+                const rows = db.prepare(
+                    `SELECT profile_name
+                     FROM multitenancy_routing
+                     WHERE active = 1
+                       AND (${disjuncts.join(' OR ')})`
+                ).all(...params) as Array<{ profile_name?: string }>
+
+                for (const row of rows) {
+                    if (isNonEmptyString(row.profile_name)) owned.add(row.profile_name.trim())
+                }
+            } finally {
+                db.close()
+            }
+        } catch {
+            // Try the next candidate DB.
+        }
+    }
+
+    return owned
+}
+
+export function registerOwnedProfile(openid: string, profileName: string, upstreamProfile?: string): boolean {
+    if (!isNonEmptyString(openid) || !isNonEmptyString(profileName)) return false
+
+    const normalizedOpenid = openid.trim()
+    const normalizedProfileName = profileName.trim()
+    const normalizedUpstream = isNonEmptyString(upstreamProfile) ? upstreamProfile.trim() : null
+
+    for (const dbPath of candidateMultitenancyDbs()) {
+        try {
+            if (!existsSync(dbPath) || statSync(dbPath).size === 0) continue
+            const db = new DatabaseSync(dbPath)
+            try {
+                const columns = new Set((db.prepare('PRAGMA table_info(multitenancy_routing)').all() as Array<{ name: string }>).map(column => column.name))
+                if (!columns.has('user_id') || !columns.has('profile_name') || !columns.has('open_id')) continue
+
+                const now = Date.now()
+                const userId = `webui:${normalizedOpenid}:${normalizedProfileName}`
+                const values = new Map<string, string | number | null>([
+                    ['user_id', userId],
+                    ['profile_name', normalizedProfileName],
+                    ['open_id', normalizedOpenid],
+                ])
+                if (columns.has('active')) values.set('active', 1)
+                if (columns.has('owner_open_id')) values.set('owner_open_id', normalizedOpenid)
+                if (columns.has('kind')) values.set('kind', 'agent')
+                if (columns.has('provenance')) values.set('provenance', 'webui-agent')
+                if (columns.has('display_label')) values.set('display_label', normalizedProfileName)
+                if (columns.has('upstream_profile')) values.set('upstream_profile', normalizedUpstream)
+                if (columns.has('synced_at')) values.set('synced_at', now)
+                if (columns.has('version')) values.set('version', 1)
+                if (columns.has('created_at')) values.set('created_at', now)
+                if (columns.has('updated_at')) values.set('updated_at', now)
+                if (columns.has('deleted_at')) values.set('deleted_at', null)
+
+                const insertColumns = Array.from(values.keys()).filter(column => columns.has(column))
+                const placeholders = insertColumns.map(() => '?').join(', ')
+                const updateColumns = insertColumns.filter(column => column !== 'user_id' && column !== 'created_at')
+                const updates = updateColumns.map(column => `${column} = excluded.${column}`).join(', ')
+                const sql = `INSERT INTO multitenancy_routing (${insertColumns.join(', ')}) VALUES (${placeholders})
+                             ON CONFLICT(user_id) DO UPDATE SET ${updates}`
+                db.prepare(sql).run(...insertColumns.map(column => values.get(column) ?? null))
+                return true
+            } finally {
+                db.close()
+            }
+        } catch {
+            // Try the next candidate DB.
+        }
+    }
+
+    return false
+}

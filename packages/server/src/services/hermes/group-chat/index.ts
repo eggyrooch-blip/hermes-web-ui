@@ -611,6 +611,13 @@ export class GroupChatServer {
         // because getToken() returns null in those modes — equivalent to the
         // C2 terminal-bypass bug.
         const { config, isAuthDisabled } = await import('../../../config')
+        const auth = socket.handshake.auth as { agentId?: string; agentSecret?: string } | undefined
+        const internalAgentId = typeof auth?.agentId === 'string' ? auth.agentId : ''
+        if (internalAgentId && auth?.agentSecret === this.agentSocketSecret) {
+            socket.data.internalAgent = true
+            socket.data.internalAgentId = internalAgentId
+            return next()
+        }
 
         if (config.authMode === 'trusted-feishu') {
             const { verifyTrustedFeishuHeaders, resolveProfileForOpenId } = await import('../../request-context')
@@ -688,7 +695,13 @@ export class GroupChatServer {
 
         const roomId = data.roomId || 'general'
         const persistedRoom = this.storage.getRoom(roomId)
-        if (persistedRoom?.owner_open_id && socket.data.openid !== persistedRoom.owner_open_id) {
+        const internalAgentId = typeof socket.data.internalAgentId === 'string' ? socket.data.internalAgentId : ''
+        const internalAgentBelongsToRoom = Boolean(
+            socket.data.internalAgent &&
+            internalAgentId &&
+            this.storage.getRoomAgents(roomId).some(agent => agent.agentId === internalAgentId),
+        )
+        if (persistedRoom?.owner_open_id && socket.data.openid !== persistedRoom.owner_open_id && !internalAgentBelongsToRoom) {
             ack?.({ error: 'Room not found' })
             return
         }

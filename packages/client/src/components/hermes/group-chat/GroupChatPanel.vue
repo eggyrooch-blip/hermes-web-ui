@@ -8,6 +8,7 @@ import { useProfilesStore } from '@/stores/hermes/profiles'
 import { updateRoomConfig, forceCompress } from '@/api/hermes/group-chat'
 import GroupMessageList from './GroupMessageList.vue'
 import GroupChatInput from './GroupChatInput.vue'
+import ProfileCreateModal from '@/components/hermes/profiles/ProfileCreateModal.vue'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -18,6 +19,7 @@ const showSidebar = ref(window.innerWidth > 768)
 const showCreateModal = ref(false)
 const showCloneModal = ref(false)
 const showAddAgentModal = ref(false)
+const showCreateAgentProfileModal = ref(false)
 const showCompressionModal = ref(false)
 const compressionConfig = ref({ triggerTokens: 100000, maxHistoryTokens: 32000, tailMessageCount: 20 })
 const isCompressing = ref(false)
@@ -172,6 +174,11 @@ async function confirmAddAgent() {
             message.error(t('common.saveFailed'))
         }
     }
+}
+
+async function handleAgentProfileCreated() {
+    showCreateAgentProfileModal.value = false
+    await profilesStore.fetchProfiles()
 }
 
 function handleOpenCompressionConfig() {
@@ -418,12 +425,17 @@ watch(() => store.sortedMessages.length, async () => {
                 <div class="modal">
                     <h3>{{ t('groupChat.addAgent') }}</h3>
                     <div class="form-group">
-                        <NSelect
-                            v-model:value="selectedProfile"
-                            :options="profileOptions"
-                            :placeholder="t('groupChat.selectProfile')"
-                            filterable
-                        />
+                        <div class="agent-profile-row">
+                            <NSelect
+                                v-model:value="selectedProfile"
+                                :options="profileOptions"
+                                :placeholder="t('groupChat.selectProfile')"
+                                filterable
+                            />
+                            <NButton class="agent-profile-create-btn" @click="showCreateAgentProfileModal = true">
+                                {{ t('profiles.create') }}
+                            </NButton>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label class="form-label">{{ t('groupChat.agentName') }}</label>
@@ -449,6 +461,11 @@ watch(() => store.sortedMessages.length, async () => {
                     </div>
                 </div>
             </div>
+            <ProfileCreateModal
+                v-if="showCreateAgentProfileModal"
+                @close="showCreateAgentProfileModal = false"
+                @saved="handleAgentProfileCreated"
+            />
             <div v-if="showCloneModal" class="modal-backdrop" @click.self="showCloneModal = false">
                 <div class="modal">
                     <h3>{{ t('groupChat.cloneRoom') }}</h3>
@@ -981,6 +998,13 @@ export default defineComponent({ components: { CreateRoomForm } })
 
 .form-group {
     margin-bottom: 16px;
+}
+
+.agent-profile-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
 }
 
 .modal-actions {

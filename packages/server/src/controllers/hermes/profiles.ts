@@ -14,6 +14,8 @@ import { SessionDeleter } from '../../services/hermes/session-deleter'
 import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
 import { logger } from '../../services/logger'
 import { smartCloneCleanup } from '../../services/hermes/profile-credentials'
+import { config } from '../../config'
+import { listOwnedProfileNames, registerOwnedProfile } from '../../services/hermes/agent-ownership'
 
 export async function list(ctx: any) {
   try {
@@ -35,6 +37,14 @@ export async function list(ctx: any) {
     profiles.forEach(p => {
       p.active = (p.name === activeProfileName)
     })
+
+    const user = ctx.state?.user as { openid?: string; profile?: string } | undefined
+    if (config.webPlane === 'chat' && user?.openid) {
+      const owned = listOwnedProfileNames(user.openid)
+      if (user.profile) owned.add(user.profile)
+      ctx.body = { profiles: profiles.filter(p => owned.has(p.name)) }
+      return
+    }
 
     ctx.body = { profiles }
   } catch (err: any) {
@@ -90,6 +100,10 @@ export async function create(ctx: any) {
       try { await mgr.start(name) } catch (err: any) {
         logger.error(err, 'Failed to start gateway for profile "%s"', name)
       }
+    }
+    const user = ctx.state?.user as { openid?: string; profile?: string } | undefined
+    if (config.webPlane === 'chat' && user?.openid) {
+      registerOwnedProfile(user.openid, name, user.profile)
     }
     ctx.body = {
       success: true,
