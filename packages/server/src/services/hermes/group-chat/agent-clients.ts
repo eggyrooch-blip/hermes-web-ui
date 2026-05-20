@@ -3,6 +3,10 @@ import { getToken } from '../../../services/auth'
 import type { GatewayManager } from '../gateway-manager'
 import { logger } from '../../../services/logger'
 import { updateUsage } from '../../../db/hermes/usage-store'
+import {
+    isAllAgentsMentioned,
+    stripMentionRoutingTokens,
+} from './mention-routing'
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -274,8 +278,14 @@ class AgentClient {
                 }
             }
 
-            // Strip @mention from input — agent already knows it was mentioned
-            const input = msg.content.replace(new RegExp(`@${this.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'gi'), '').trim() || msg.content
+            // Keep routing explicit while removing only the mention tokens that
+            // selected this agent. This avoids making @all look like an
+            // instruction for the model to fan out another routing cycle.
+            const routedPrefix = isAllAgentsMentioned(msg.content)
+                ? `群聊系统：这条消息通过 @all 提及所有 agent，你是其中之一，请直接回复。`
+                : `群聊系统：这条消息已经提及你（${this.name}），请直接回复；即使消息同时提及其他成员，也不要因此输出空回复。`
+            const routedText = stripMentionRoutingTokens(msg.content, this.name) || msg.content
+            const input = `${routedPrefix}\n\n原始消息：${routedText}`
             const responseRes = await fetch(`${upstream.replace(/\/$/, '')}/v1/responses`, {
                 method: 'POST',
                 headers: {
@@ -663,8 +673,10 @@ export class AgentClients {
         const senderAgent = msg.senderIsAgent ? agents.find(a => a.agentId === msg.senderId) : undefined
         const content = msg.content
 
+        const broadcast = isAllAgentsMentioned(content)
         const mentioned = agents.filter((agent) => {
             if (senderAgent && agent.agentId === senderAgent.agentId) return false
+            if (broadcast) return true
             const escapedName = escapeRegExp(agent.name)
             const pattern = senderAgent
                 ? new RegExp(`^\\s*@${escapedName}(?=$|[^A-Za-z0-9_-])`, 'i')

@@ -140,4 +140,35 @@ describe('Group chat mention routing', () => {
 
     expect(regexName.replyToMention).toHaveBeenCalledTimes(1)
   })
+
+  it('routes @all to every room agent except the agent sender', async () => {
+    const { clients, manager, koolie, bob, regexName } = await setupRoom()
+
+    await clients.processMentions('room-1', {
+      content: '@all 请分别给出建议。',
+      senderName: 'manager',
+      senderId: manager.agentId,
+      senderIsAgent: true,
+      timestamp: Date.now(),
+    } as any)
+
+    expect(manager.replyToMention).not.toHaveBeenCalled()
+    expect(koolie.replyToMention).toHaveBeenCalledTimes(1)
+    expect(bob.replyToMention).toHaveBeenCalledTimes(1)
+    expect(regexName.replyToMention).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not treat partial @all text as broadcast', async () => {
+    const { clients, koolie, bob } = await setupRoom()
+
+    await clients.processMentions('room-1', {
+      content: '@alligator 和 @koolie 看一下。',
+      senderName: 'Han',
+      senderId: 'user-han',
+      timestamp: Date.now(),
+    })
+
+    expect(koolie.replyToMention).toHaveBeenCalledTimes(1)
+    expect(bob.replyToMention).not.toHaveBeenCalled()
+  })
 })
