@@ -83,6 +83,7 @@ export class ContextEngine {
 
         const instructions = buildAgentInstructions({
             agentName: input.agentName,
+            agentProfile: input.agentProfile || input.profile,
             roomName: input.roomName,
             agentDescription: input.agentDescription,
             memberNames: input.memberNames,

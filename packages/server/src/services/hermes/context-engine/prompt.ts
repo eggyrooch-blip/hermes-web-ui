@@ -5,6 +5,7 @@ import { getSystemPrompt } from '../../../lib/llm-prompt'
 
 interface AgentInstructionsParams {
     agentName: string
+    agentProfile?: string
     roomName: string
     agentDescription: string
     memberNames: string[]
@@ -43,8 +44,12 @@ export function buildAgentInstructions(params: AgentInstructionsParams): string 
     const roleDescription = params.agentDescription?.trim()
         ? params.agentDescription
         : '专业的 AI 助手，随时准备协助解决问题。'
+    const profileLine = params.agentProfile?.trim()
+        ? `\n当前 profile：${params.agentProfile.trim()}\n`
+        : '\n'
 
-    const basePrompt = `你是"${params.agentName}"，群聊房间"${params.roomName}"中的 AI 助手。
+    const basePrompt = `你是"${params.agentName}"，群聊房间"${params.roomName}"中的 AI 助手。${profileLine}
+身份约束：你只代表"${params.agentName}"回复；不要声称自己是其它成员或其它 profile。
 
 你的角色：${roleDescription}
 

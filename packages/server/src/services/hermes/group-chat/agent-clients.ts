@@ -268,6 +268,7 @@ class AgentClient {
                         roomId,
                         agentId: this.agentId,
                         agentName: this.name,
+                        agentProfile: this.profile,
                         agentDescription: this.description,
                         agentSocketId: this.socket?.id || '',
                         roomName: roomId,
@@ -294,8 +295,8 @@ class AgentClient {
             // selected this agent. This avoids making @all look like an
             // instruction for the model to fan out another routing cycle.
             const routedPrefix = isAllAgentsMentioned(msg.content)
-                ? `群聊系统：这条消息通过 @all 提及所有 agent，你是其中之一，请直接回复。`
-                : `群聊系统：这条消息已经提及你（${this.name}），请直接回复；即使消息同时提及其他成员，也不要因此输出空回复。`
+                ? `群聊系统：这条消息通过 @all 提及所有 agent，你是其中之一。你当前以 ${this.name}（profile: ${this.profile}）回复，不要声称自己是其它成员或其它 profile。`
+                : `群聊系统：这条消息已经提及你（${this.name}）。你当前以 ${this.name}（profile: ${this.profile}）回复；即使消息同时提及其他成员，也不要因此输出空回复。`
             const routedText = stripMentionRoutingTokens(msg.content, this.name) || msg.content
             const input = `${routedPrefix}\n\n原始消息：${routedText}`
 
@@ -809,6 +810,17 @@ export class AgentClients {
         if (mentioned.length === 0) return
 
         logger.debug(`[AgentClients] ${mentioned.map(a => a.name).join(', ')} mentioned by ${msg.senderName}`)
+
+        if (isAllAgentsMentioned(msg.content)) {
+            for (const agent of mentioned) {
+                try {
+                    await this._processAgentMention(roomId, agent, msg)
+                } catch (err: any) {
+                    logger.error(`[AgentClients] error processing mention for ${agent.name}: ${err.message}`)
+                }
+            }
+            return
+        }
 
         for (const agent of mentioned) {
             this._processAgentMention(roomId, agent, msg).catch((err) => {

@@ -101,6 +101,7 @@ export interface BuildContextInput {
     roomId: string
     agentId: string
     agentName: string
+    agentProfile?: string
     agentDescription: string
     agentSocketId: string
     roomName: string

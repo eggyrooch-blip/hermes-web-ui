@@ -158,6 +158,54 @@ describe('Group chat mention routing', () => {
     expect(regexName.replyToMention).toHaveBeenCalledTimes(1)
   })
 
+  it('processes @all targets sequentially in room order', async () => {
+    const clients = new AgentClients()
+    ;(clients as any)._gatewayManager = {}
+
+    let finishFirstReply!: () => void
+    const first = createFakeAgent('first')
+    const second = createFakeAgent('second')
+    const third = createFakeAgent('third')
+    const starts: string[] = []
+
+    first.replyToMention = vi.fn().mockImplementation(() => {
+      starts.push('first')
+      return new Promise<void>((resolve) => {
+        finishFirstReply = resolve
+      })
+    })
+    second.replyToMention = vi.fn().mockImplementation(() => {
+      starts.push('second')
+      return Promise.resolve()
+    })
+    third.replyToMention = vi.fn().mockImplementation(() => {
+      starts.push('third')
+      return Promise.resolve()
+    })
+
+    await clients.addAgentToRoom('room-1', first as any)
+    await clients.addAgentToRoom('room-1', second as any)
+    await clients.addAgentToRoom('room-1', third as any)
+
+    const processing = clients.processMentions('room-1', {
+      content: '@all 排队报道 按顺序报。',
+      senderName: 'Han',
+      senderId: 'user-han',
+      timestamp: Date.now(),
+    })
+
+    await vi.waitFor(() => {
+      expect(first.replyToMention).toHaveBeenCalledTimes(1)
+    })
+    expect(second.replyToMention).not.toHaveBeenCalled()
+    expect(third.replyToMention).not.toHaveBeenCalled()
+
+    finishFirstReply()
+    await processing
+
+    expect(starts).toEqual(['first', 'second', 'third'])
+  })
+
   it('does not treat partial @all text as broadcast', async () => {
     const { clients, koolie, bob } = await setupRoom()
 
