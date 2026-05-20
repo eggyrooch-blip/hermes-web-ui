@@ -87,6 +87,7 @@ export default {
     profiles: '用户',
     plugins: '插件',
     skills: '技能',
+    credentials: '凭证',
     memory: '记忆',
     logs: '日志',
     usage: '用量',

@@ -1,7 +1,12 @@
 import type { Socket } from 'socket.io'
+import { existsSync, readdirSync, readFileSync } from 'fs'
+import type { Dirent } from 'fs'
+import { join } from 'path'
+import yaml from 'js-yaml'
 import { getSystemPrompt } from '../../../lib/llm-prompt'
 import { getSession } from '../../../db/hermes/session-store'
 import { config } from '../../../config'
+import { getProfileDir } from '../hermes-profile'
 import { buildBrokerMessagesForSession, contentBlocksToString } from './content-blocks'
 import { readSseFrames } from './sse-utils'
 import type { ContentBlock, ResponseRunState, SessionMessage, SessionState } from './types'
@@ -30,8 +35,21 @@ type BuildRunBrokerRequestOptions = {
   instructions?: string
   workspace?: string | null
   messages?: SessionMessage[]
+  profileDir?: string
   buildInput?: (input: string | ContentBlock[], profile: string) => Promise<any>
   appendInputToMessages?: boolean
+}
+
+type ProfileSkillRuntimeEntry = {
+  name: string
+  slug: string
+  description: string
+  dir: string
+  text: string
+}
+
+const PROFILE_SKILL_SLASH_ALIASES: Record<string, string> = {
+  hades: 'kep-hades-cli',
 }
 
 export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOptions): Promise<Record<string, any>> {
@@ -50,16 +68,20 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
     appendInputToMessages = true,
   } = options
   const userKey = ownerOpenId?.trim() || profile
-  const content = contentBlocksToString(input).trim()
+  let content = contentBlocksToString(input).trim()
+  const skillRuntime = options.profileDir ? buildProfileSkillRuntimeContext(options.profileDir, content, sessionId) : null
+  if (skillRuntime?.content) content = skillRuntime.content
   const metadata: Record<string, any> = {
     source: 'hermes-web-ui',
   }
   if (model) metadata.model = model
   if (provider) metadata.provider = provider
   if (sessionId) metadata.conversation = `webui:${sessionId}`
-  metadata.instructions = instructions
-    ? `${getSystemPrompt()}\n${instructions}`
-    : getSystemPrompt()
+  metadata.instructions = [
+    getSystemPrompt(),
+    instructions,
+    skillRuntime?.instructions,
+  ].filter(Boolean).join('\n')
 
   if (workspace) {
     const workspaceCtx = `[Current working directory: ${workspace}]`
@@ -68,7 +90,7 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
       : `\n${workspaceCtx}`
   }
 
-  const builtInput = buildInput ? await buildInput(input, profile) : content
+  const builtInput = buildInput ? await buildInput(skillRuntime?.content ? content : input, profile) : content
   if (builtInput !== content) {
     metadata.input = builtInput
   }
@@ -88,6 +110,153 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
       ...buildBrokerMessagesForSession(messages),
       ...(appendInputToMessages && content ? [{ role: 'user', content }] : []),
     ],
+  }
+}
+
+function buildProfileSkillRuntimeContext(profileDir: string, inputText: string, sessionId?: string): { content?: string; instructions?: string } | null {
+  const skills = scanProfileRuntimeSkills(profileDir)
+  if (!skills.length) return null
+  const slash = buildProfileSkillSlashInvocation(skills, inputText, sessionId)
+  if (slash) return { content: slash }
+
+  const relevant = skills.filter(skill => shouldInjectProfileSkill(skill, inputText)).slice(0, 2)
+  if (!relevant.length) return null
+  return {
+    instructions: relevant.map(skill => formatProfileSkillBlock(
+      skill,
+      `The current WebUI message appears to match profile skill "${skill.name}". Follow this skill when it applies.`,
+      '',
+      sessionId,
+    )).join('\n\n'),
+  }
+}
+
+function buildProfileSkillSlashInvocation(skills: ProfileSkillRuntimeEntry[], inputText: string, sessionId?: string): string | undefined {
+  const raw = inputText.trim()
+  if (!raw.startsWith('/')) return undefined
+  const [head, ...rest] = raw.split(/\s+/)
+  const command = normalizeProfileSkillSlug(head.slice(1))
+  if (!command || command.includes('/')) return undefined
+  const target = PROFILE_SKILL_SLASH_ALIASES[command] || command
+  const skill = skills.find(item => item.slug === target || normalizeProfileSkillSlug(item.name) === target)
+  if (!skill) return undefined
+  return formatProfileSkillBlock(
+    skill,
+    `The user has invoked the "${skill.name}" skill, indicating they want you to follow its instructions. The full profile-local skill content is loaded below.`,
+    rest.join(' '),
+    sessionId,
+  )
+}
+
+function formatProfileSkillBlock(skill: ProfileSkillRuntimeEntry, activationNote: string, userInstruction = '', sessionId?: string): string {
+  const rendered = renderProfileSkillText(skill.text, skill.dir, sessionId)
+  const parts = [
+    `[SYSTEM: ${activationNote}]`,
+    '',
+    rendered.trim(),
+    '',
+    `[Skill directory: ${skill.dir}]`,
+    'Resolve any relative paths in this skill against that directory. Run scripts by absolute path and do not expose credential values.',
+  ]
+  if (userInstruction) {
+    parts.push('', `The user has provided the following instruction alongside the skill invocation: ${userInstruction}`)
+  }
+  return parts.join('\n')
+}
+
+function renderProfileSkillText(text: string, skillDir: string, sessionId?: string): string {
+  return text
+    .replaceAll('{baseDir}', skillDir)
+    .replaceAll('${HERMES_SKILL_DIR}', skillDir)
+    .replaceAll('${SESSION_ID}', sessionId || '')
+}
+
+function shouldInjectProfileSkill(skill: ProfileSkillRuntimeEntry, inputText: string): boolean {
+  if (!isPreloadProfileSkill(skill)) return false
+  const haystack = `${skill.name}\n${skill.description}\n${skill.text}`.toLowerCase()
+  const input = inputText.toLowerCase()
+  if (skill.name === 'keep-record' || haystack.includes('record_tool') || haystack.includes('keep health')) {
+    return /keep|记录|记一下|登记|打卡|饮食|吃|早餐|午餐|中午|晚餐|体重|体脂|围度|运动|睡眠|生理|肥肠|鸡蛋|鸡腿|青椒/.test(input)
+  }
+  if (skill.name === 'kep-hades-cli' || haystack.includes('hades')) {
+    return /hades|投放|广告|计划|campaign|申请/.test(input)
+  }
+  return false
+}
+
+function isPreloadProfileSkill(skill: ProfileSkillRuntimeEntry): boolean {
+  return /(?:^|\n)\s*preload:\s*true\b/i.test(skill.text) || /(?:^|\n)\s*lazyLoad:\s*false\b/i.test(skill.text)
+}
+
+function scanProfileRuntimeSkills(profileDir: string): ProfileSkillRuntimeEntry[] {
+  const root = join(profileDir, 'skills')
+  const disabled = getDisabledProfileSkills(profileDir)
+  const out: ProfileSkillRuntimeEntry[] = []
+  const visit = (dir: string, depth: number) => {
+    if (depth > 4) return
+    for (const entry of safeListDirents(dir)) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+      const child = join(dir, entry.name)
+      const skillPath = join(child, 'SKILL.md')
+      if (existsSync(skillPath)) {
+        const text = readSmallText(skillPath)
+        const meta = parseSkillFrontmatter(text)
+        const name = String(meta.name || entry.name).trim()
+        if (!name || disabled.has(name)) continue
+        out.push({
+          name,
+          slug: normalizeProfileSkillSlug(name),
+          description: String(meta.description || '').trim(),
+          dir: child,
+          text,
+        })
+      } else {
+        visit(child, depth + 1)
+      }
+    }
+  }
+  visit(root, 0)
+  return out
+}
+
+function parseSkillFrontmatter(text: string): Record<string, any> {
+  const match = text.match(/^---\s*\n([\s\S]*?)\n---/)
+  if (!match) return {}
+  try {
+    return (yaml.load(match[1]) as Record<string, any>) || {}
+  } catch {
+    return {}
+  }
+}
+
+function getDisabledProfileSkills(profileDir: string): Set<string> {
+  const configPath = join(profileDir, 'config.yaml')
+  try {
+    const cfg = yaml.load(readSmallText(configPath)) as any
+    return new Set((Array.isArray(cfg?.skills?.disabled) ? cfg.skills.disabled : []).map((item: unknown) => String(item)))
+  } catch {
+    return new Set()
+  }
+}
+
+function normalizeProfileSkillSlug(value: string): string {
+  return value.toLowerCase().replace(/[_\s]+/g, '-').replace(/[^a-z0-9-]+/g, '').replace(/-+/g, '-').replace(/^-|-$/g, '')
+}
+
+function safeListDirents(dir: string): Dirent[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+}
+
+function readSmallText(path: string): string {
+  try {
+    const stat = existsSync(path) ? readFileSync(path, 'utf-8') : ''
+    return stat.length > 256_000 ? stat.slice(0, 256_000) : stat
+  } catch {
+    return ''
   }
 }
 
@@ -333,6 +502,7 @@ export async function handleBrokerRun(
     instructions,
     workspace: sessionRow?.workspace || null,
     messages: session_id ? context.sessionMap.get(session_id)?.messages || [] : [],
+    profileDir: getProfileDir(profile),
     buildInput: context.buildInput,
     appendInputToMessages: false,
   })

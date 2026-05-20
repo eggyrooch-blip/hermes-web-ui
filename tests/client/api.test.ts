@@ -131,6 +131,23 @@ describe('API Client', () => {
       expect(hasApiKey()).toBe(true)
     })
 
+    it('can preserve a local BFF 401 error without clearing the preview token', async () => {
+      setApiKey('preview-token')
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        text: () => Promise.resolve('{"error":"Feishu user session is required for Lark-cli authorization"}'),
+      })
+
+      await expect(request('/api/auth/skill-credentials/lark-cli/start', {
+        method: 'POST',
+        skipAuthRedirect: true,
+      })).rejects.toThrow('Feishu user session is required for Lark-cli authorization')
+      expect(hasApiKey()).toBe(true)
+      expect(router.replace).not.toHaveBeenCalled()
+    })
+
     it('throws error on non-401 failure', async () => {
       mockFetch.mockResolvedValue({
         ok: false,

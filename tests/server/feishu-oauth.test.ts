@@ -325,7 +325,7 @@ describe('Feishu OAuth controller', () => {
     })
   })
 
-  it('keeps Feishu UAT routes protected behind WebUI authentication', async () => {
+  it('keeps Feishu UAT and skill credential routes protected behind WebUI authentication', async () => {
     const { authPublicRoutes, authProtectedRoutes } = await import('../../packages/server/src/routes/auth')
     const protectedPaths = new Set(authProtectedRoutes.stack.map((route: any) => route.path))
     const publicPaths = new Set(authPublicRoutes.stack.map((route: any) => route.path))
@@ -333,7 +333,11 @@ describe('Feishu OAuth controller', () => {
     expect(protectedPaths.has('/api/auth/feishu/uat/status')).toBe(true)
     expect(protectedPaths.has('/api/auth/feishu/uat/start')).toBe(true)
     expect(protectedPaths.has('/api/auth/feishu/uat/sessions/:sessionId')).toBe(true)
+    expect(protectedPaths.has('/api/auth/skill-credentials')).toBe(true)
+    expect(protectedPaths.has('/api/auth/skill-credentials/:id/start')).toBe(true)
+    expect(protectedPaths.has('/api/auth/skill-credentials/:id/complete')).toBe(true)
     expect(publicPaths.has('/api/auth/feishu/uat/status')).toBe(false)
     expect(publicPaths.has('/api/auth/feishu/uat/start')).toBe(false)
+    expect(publicPaths.has('/api/auth/skill-credentials')).toBe(false)
   })
 })

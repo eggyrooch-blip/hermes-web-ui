@@ -74,12 +74,17 @@ function getActiveProfileName(): string | null {
   }
 }
 
-export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+interface HermesRequestInit extends RequestInit {
+  skipAuthRedirect?: boolean
+}
+
+export async function request<T>(path: string, options: HermesRequestInit = {}): Promise<T> {
   const base = getBaseUrl()
   const url = `${base}${path}`
+  const { skipAuthRedirect, ...fetchOptions } = options
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...options.headers as Record<string, string>,
+    ...fetchOptions.headers as Record<string, string>,
   }
 
   const apiKey = getApiKey()
@@ -100,7 +105,7 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   // server prefers the cookie when both are present (services/auth.ts), so
   // this is the migration foothold for the v0.7.0 retirement of the
   // localStorage Bearer token. Cookie path: same-origin only.
-  const res = await fetch(url, { ...options, headers, credentials: 'same-origin' })
+  const res = await fetch(url, { ...fetchOptions, headers, credentials: 'same-origin' })
 
   // Global 401 handler — only redirect to login for local BFF endpoints
   // Proxied gateway requests should not trigger logout
@@ -108,7 +113,7 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
     !path.startsWith('/api/hermes/jobs') &&
     !path.startsWith('/api/hermes/skills')
 
-  if (res.status === 401 && isLocalBff) {
+  if (res.status === 401 && isLocalBff && !skipAuthRedirect) {
     clearApiKey()
     if (router.currentRoute.value.name !== 'login') {
       router.replace({ name: 'login' })

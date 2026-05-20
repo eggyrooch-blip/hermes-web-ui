@@ -5,6 +5,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 
 const openSessionSearchMock = vi.hoisted(() => vi.fn())
+const pushMock = vi.hoisted(() => vi.fn())
 const replaceMock = vi.hoisted(() => vi.fn())
 const getAuthModeMock = vi.hoisted(() => vi.fn(() => 'token'))
 const getWebPlaneMock = vi.hoisted(() => vi.fn(() => 'both'))
@@ -49,7 +50,7 @@ vi.mock('vue-router', async (importOriginal) => {
   return {
     ...actual,
     useRoute: () => ({ name: 'hermes.chat' }),
-    useRouter: () => ({ push: vi.fn(), replace: replaceMock }),
+    useRouter: () => ({ push: pushMock, replace: replaceMock }),
   }
 })
 
@@ -104,6 +105,7 @@ describe('AppSidebar search entry', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     openSessionSearchMock.mockClear()
+    pushMock.mockClear()
     replaceMock.mockClear()
     getAuthModeMock.mockReturnValue('token')
     getWebPlaneMock.mockReturnValue('both')
@@ -450,6 +452,29 @@ describe('AppSidebar search entry', () => {
     expect(windowOpenMock).not.toHaveBeenCalled()
     expect(startFeishuUatAuthMock).not.toHaveBeenCalled()
     expect(wrapper.find('.feishu-connector').text()).not.toContain('ABCD-1234')
+  })
+
+  it('shows credentials in the Agent group navigation', async () => {
+    const wrapper = mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+          NButton: true,
+        },
+      },
+    })
+
+    const agentGroup = wrapper.findAll('.nav-group')[1]
+    expect(agentGroup.text()).toContain('sidebar.credentials')
+
+    const credentialsButton = agentGroup.findAll('.nav-item').find(node => node.text().includes('sidebar.credentials'))
+    expect(credentialsButton).toBeTruthy()
+    await credentialsButton!.trigger('click')
+
+    expect(pushMock).toHaveBeenCalledWith({ name: 'hermes.credentials' })
   })
 
   it('uses short group labels and keeps group folding active when collapsed', async () => {
