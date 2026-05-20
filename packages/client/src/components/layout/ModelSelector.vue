@@ -2,34 +2,13 @@
 import { ref, computed } from 'vue'
 import { NModal, NInput, NSelect } from 'naive-ui'
 import { useAppStore } from '@/stores/hermes/app'
-import { useChatStore } from '@/stores/hermes/chat'
 import { useI18n } from 'vue-i18n'
 import { getProviderLogo } from '@/utils/providerLogo'
-import { isUserMode } from '@/api/client'
-
-const props = withDefaults(defineProps<{ variant?: 'sidebar' | 'compact' }>(), {
-  variant: 'sidebar',
-})
 
 const { t } = useI18n()
 const appStore = useAppStore()
-const chatStore = useChatStore()
-
-// In compact (chat) mode, the source of truth for what will actually be
-// sent is session.model (chat.ts:655 prefers it over the global default).
-const displayModel = computed(() => {
-  if (props.variant === 'compact' && chatStore.activeSession?.model) {
-    return chatStore.activeSession.model
-  }
-  return appStore.selectedModel
-})
-
-const displayProvider = computed(() => {
-  if (props.variant === 'compact' && chatStore.activeSession?.provider) {
-    return chatStore.activeSession.provider
-  }
-  return appStore.selectedProvider
-})
+const displayModel = computed(() => appStore.selectedModel)
+const displayProvider = computed(() => appStore.selectedProvider)
 
 const currentLogo = computed(() => getProviderLogo(displayProvider.value))
 
@@ -82,24 +61,10 @@ function isGroupCollapsed(provider: string) {
   return !!collapsedGroups.value[provider]
 }
 
-async function applyModelChange(model: string, provider: string) {
-  // In compact (chat input) mode, also update the active session so the
-  // next message uses the new model — appStore.switchModel only updates
-  // the global default, but chat.ts:655 reads session.model first.
-  if (props.variant === 'compact' && !chatStore.activeSession && isUserMode()) {
-    chatStore.newChat()
-  }
-  if (props.variant === 'compact' && chatStore.activeSession) {
-    await chatStore.switchSessionModel(model, provider)
-  } else {
-    await appStore.switchModel(model, provider)
-  }
-}
-
 async function handleSelect(model: string, provider: string) {
   const meta = appStore.modelGroups.find(g => g.provider === provider)?.model_meta?.[model]
   if (meta?.disabled) return
-  await applyModelChange(model, provider)
+  await appStore.switchModel(model, provider)
   showModal.value = false
   searchQuery.value = ''
 }
@@ -110,7 +75,7 @@ async function handleCustomSubmit() {
   // 拦截 disabled 模型，避免 custom input 绕过列表里的灰显限制
   const meta = appStore.modelGroups.find(g => g.provider === customProvider.value)?.model_meta?.[model]
   if (meta?.disabled) return
-  await applyModelChange(model, customProvider.value)
+  await appStore.switchModel(model, customProvider.value)
   showModal.value = false
   searchQuery.value = ''
   customInput.value = ''
@@ -126,8 +91,8 @@ function openModal() {
 </script>
 
 <template>
-  <div class="model-selector" :class="{ compact: props.variant === 'compact' }">
-    <div v-if="props.variant === 'sidebar'" class="model-label">{{ t('models.title') }}</div>
+  <div class="model-selector">
+    <div class="model-label">{{ t('models.title') }}</div>
     <button class="model-trigger" :title="displayModel" @click="openModal">
       <span
         class="model-logo"
@@ -278,44 +243,6 @@ function openModal() {
 .model-arrow {
   flex-shrink: 0;
   color: $text-muted;
-}
-
-// Compact variant: used inside chat input top bar
-.model-selector.compact {
-  padding: 0;
-  margin: 0;
-  display: inline-flex;
-  flex-shrink: 1;
-  min-width: 0;
-  max-width: 220px;
-
-  .model-trigger {
-    padding: 3px 8px 3px 4px;
-    border-radius: 999px;
-    background: transparent;
-    border-color: transparent;
-    font-size: 12px;
-    gap: 5px;
-
-    &:hover {
-      background: rgba(var(--accent-primary-rgb), 0.08);
-      border-color: transparent;
-    }
-  }
-
-  .model-logo {
-    width: 16px;
-    height: 16px;
-    border-radius: 3px;
-    font-size: 9px;
-  }
-
-  .model-name {
-    font-family: $font-code;
-    font-size: 11.5px;
-    color: $text-secondary;
-    max-width: 160px;
-  }
 }
 
 .model-search {

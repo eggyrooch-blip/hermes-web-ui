@@ -7,6 +7,7 @@ import { getAuthMode, getWebPlane, isUserMode, setRuntimeMode } from "@/api/clie
 import { fetchCurrentUser, fetchFeishuUatStatus, pollFeishuUatAuth, startFeishuUatAuth } from "@/api/auth";
 import type { FeishuUatAuthSession, FeishuUatStatus } from "@/api/auth";
 import { useProfilesStore } from "@/stores/hermes/profiles";
+import ModelSelector from "./ModelSelector.vue";
 import ProfileSelector from "./ProfileSelector.vue";
 import LanguageSwitch from "./LanguageSwitch.vue";
 import ThemeSwitch from "./ThemeSwitch.vue";
@@ -381,6 +382,7 @@ onBeforeUnmount(() => {
     </div>
 
     <ProfileSelector v-if="showUserModeChrome" class="user-profile-selector" />
+    <ModelSelector />
 
     <div v-if="currentUser || showUserModeChrome" class="sidebar-user" :class="{ locked: showUserModeChrome }">
       <div v-if="showUserModeChrome" class="user-card-actions">

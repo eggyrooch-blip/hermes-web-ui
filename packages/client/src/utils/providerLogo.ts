@@ -1,5 +1,5 @@
 // Provider logo helper — maps provider keys to a brand-colored badge.
-// Used by ModelSelector to give the chat-input model picker a visual cue.
+// Used by ModelSelector to give the sidebar model picker a visual cue.
 
 export interface ProviderLogo {
   bg: string

@@ -2,8 +2,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 
-const isUserModeMock = vi.hoisted(() => vi.fn(() => true))
-
 const appStoreMock = vi.hoisted(() => ({
   selectedModel: 'default-model',
   selectedProvider: 'default-provider',
@@ -16,14 +14,6 @@ const appStoreMock = vi.hoisted(() => ({
 
 const chatStoreMock = vi.hoisted(() => ({
   activeSession: null as Record<string, any> | null,
-  newChat: vi.fn(() => {
-    chatStoreMock.activeSession = { id: 'session-1', model: undefined, provider: undefined }
-  }),
-  switchSessionModel: vi.fn(),
-}))
-
-vi.mock('@/api/client', () => ({
-  isUserMode: isUserModeMock,
 }))
 
 vi.mock('@/stores/hermes/app', () => ({
@@ -66,20 +56,15 @@ import ModelSelector from '@/components/layout/ModelSelector.vue'
 describe('ModelSelector user mode', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    isUserModeMock.mockReturnValue(true)
     chatStoreMock.activeSession = null
   })
 
-  it('creates a session-local selection instead of writing the default model when compact selector has no active session', async () => {
-    const wrapper = mount(ModelSelector, {
-      props: { variant: 'compact' },
-    })
+  it('updates the profile default model from the sidebar selector', async () => {
+    const wrapper = mount(ModelSelector)
 
     await wrapper.find('.model-trigger').trigger('click')
     await wrapper.find('.model-item').trigger('click')
 
-    expect(chatStoreMock.newChat).toHaveBeenCalledOnce()
-    expect(chatStoreMock.switchSessionModel).toHaveBeenCalledWith('gpt-5.4', 'openai')
-    expect(appStoreMock.switchModel).not.toHaveBeenCalled()
+    expect(appStoreMock.switchModel).toHaveBeenCalledWith('gpt-5.4', 'openai')
   })
 })

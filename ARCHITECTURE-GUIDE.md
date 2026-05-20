@@ -44,6 +44,11 @@ related:
 >
 > 2026-05-20 15:xx 追加 user-mode profile 创建能力：继续复用 upstream `ProfileCreateModal` / `ProfileSelector` / `/api/hermes/profiles`，只做 additive 字段。创建弹窗新增 coder/researcher/writer/operator/custom 角色预设，实际只写 Hermes CLI 已支持的 `--description`，不新增 WebUI 私有角色表；chat-plane 创建时 WebUI 调 `hermes profile create --no-alias --description ...`，再调用 multitenancy Run Broker `/api/run-broker/profiles` 登记 owner-scoped `agent_id`，broker 不可用时才走旧 `registerOwnedProfile()` 本地开发 fallback。普通用户仍不暴露 admin import/export/delete/rename/restart。验证：profile create/selector/store/controller focused 6 files / 29 tests passed，`pnpm run build` passed；`i18n:check` 仍因既有多语言 key 长期发散失败，不是本次新增 key 独有。
 
+> [!info] 2026-05-20 `restore-upstream-model-ui` — 模型选择回到 upstream 侧栏语义
+> 本分支按用户要求撤销早期“把模型选择从侧栏挪到聊天框”的本地改动：`ChatInput.vue` 不再渲染 compact `ModelSelector`，`AppSidebar.vue` 在 user-mode/chat-plane 下也保留 upstream 风格的侧栏模型选择器。前端 `ModelSelector` 重新只写 profile/default model（`appStore.switchModel`），聊天发送 payload 直接读取当前 `appStore.selectedModel/selectedProvider`，不再让新建 session 或历史 session 的 `model/provider` 覆盖侧栏选择。
+>
+> 边界保持不变：不整支 merge upstream，不启用 full bridge/agent-bridge，不改变 Feishu OAuth、Run Broker owner header、多租户 profile ACL 或 chat-plane 管理入口隐藏。当前验证为 focused model/sidebar/chat-store tests 24 passed，`npm run build` passed；生产 66 未发布。
+
 > [!warning] 2026-05-14 Cron 投递语义
 > WebUI 创建定时任务时，主流场景是投递到飞书，而不是投递到本地 WebUI。生产默认用户身份是 `sunke` UAT profile；job 写入 `profiles/sunke/cron/jobs.json`，由 `hermes-gateway.service` 的 multitenancy cron worker 执行并通过 Feishu adapter 投递给 owner open_id。投递成功后 multitenancy 会 mirror 到 `multitenancy_sessions`，这样用户基于飞书推送继续对话时有上下文。
 >

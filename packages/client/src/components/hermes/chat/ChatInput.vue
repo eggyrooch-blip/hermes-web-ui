@@ -8,7 +8,6 @@ import { setModelContext } from '@/api/hermes/model-context'
 import { NButton, NTooltip, NSwitch, NModal, NInputNumber, useMessage } from 'naive-ui'
 import { computed, ref, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import ModelSelector from '@/components/layout/ModelSelector.vue'
 
 const chatStore = useChatStore()
 const { t } = useI18n()
@@ -286,8 +285,6 @@ function isImage(type: string): boolean {
           :round="false"
         />
       </div>
-
-      <ModelSelector variant="compact" />
 
       <span v-if="totalTokens > 0" class="context-info" :class="{ 'context-warning': usagePercent > 80 }">
         {{ formatTokens(totalTokens) }} /
