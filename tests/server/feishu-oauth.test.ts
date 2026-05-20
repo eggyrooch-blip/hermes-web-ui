@@ -190,6 +190,24 @@ describe('Feishu OAuth controller', () => {
     expect(redirect).toHaveBeenCalledWith(expect.stringContaining('https://open.feishu.cn/open-apis/authen/v1/index'))
   })
 
+  it('canonicalizes Feishu login to the configured redirect origin before setting state', async () => {
+    const { feishuLogin } = await import('../../packages/server/src/controllers/auth')
+    const setCookie = vi.fn()
+    const redirect = vi.fn()
+    const ctx: any = {
+      origin: 'http://127.0.0.1:8648',
+      path: '/api/auth/feishu/login',
+      search: '',
+      cookies: { set: setCookie },
+      redirect,
+    }
+
+    await feishuLogin(ctx)
+
+    expect(setCookie).not.toHaveBeenCalled()
+    expect(redirect).toHaveBeenCalledWith('http://localhost:8648/api/auth/feishu/login')
+  })
+
   it('rejects callback when state does not match the state cookie', async () => {
     const { feishuCallback } = await import('../../packages/server/src/controllers/auth')
     const ctx: any = {
