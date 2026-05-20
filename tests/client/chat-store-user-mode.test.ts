@@ -65,16 +65,15 @@ describe('chat store user-mode model selection', () => {
     })
   })
 
-  it('keeps compact model changes session-local in chat plane user mode', async () => {
+  it('does not stamp new chats with a session-local model override', async () => {
     isUserModeMock.mockReturnValue(true)
     const store = useChatStore()
-    setActiveTestSession(store)
 
-    await store.switchSessionModel('gpt-5.4', 'openai')
+    store.newChat()
 
-    expect(setSessionModelMock).toHaveBeenCalledWith('session-1', 'gpt-5.4', 'openai')
-    expect(store.activeSession?.model).toBe('gpt-5.4')
-    expect(store.activeSession?.provider).toBe('openai')
+    expect(store.activeSession?.model).toBeUndefined()
+    expect(store.activeSession?.provider).toBeUndefined()
+    expect(setSessionModelMock).not.toHaveBeenCalled()
     expect(switchModelMock).not.toHaveBeenCalled()
   })
 
@@ -88,7 +87,7 @@ describe('chat store user-mode model selection', () => {
     expect(switchModelMock).toHaveBeenCalledWith('gpt-5.4', 'openai')
   })
 
-  it('includes the session provider in chat run payloads', async () => {
+  it('uses the current default model in chat run payloads instead of stale session overrides', async () => {
     const store = useChatStore()
     store.newChat()
     store.activeSession!.model = 'gpt-5.4'
@@ -98,8 +97,8 @@ describe('chat store user-mode model selection', () => {
 
     expect(startRunViaSocketMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        model: 'gpt-5.4',
-        provider: 'openai',
+        model: 'default-model',
+        provider: 'default-provider',
       }),
       expect.any(Function),
       expect.any(Function),

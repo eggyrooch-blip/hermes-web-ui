@@ -203,6 +203,27 @@ describe('AppSidebar search entry', () => {
     expect(wrapper.text()).not.toContain('sidebar.profiles')
   })
 
+  it('keeps the upstream model selector visible in chat plane user mode', () => {
+    getWebPlaneMock.mockReturnValue('chat')
+    isUserModeMock.mockReturnValue(true)
+
+    const wrapper = mount(AppSidebar, {
+      global: {
+        plugins: [createPinia()],
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+          NButton: true,
+        },
+      },
+    })
+
+    expect(wrapper.find('model-selector-stub').exists()).toBe(true)
+    expect(wrapper.find('profile-selector-stub').exists()).toBe(true)
+  })
+
   it('shows only name and profile in the user identity card', () => {
     getWebPlaneMock.mockReturnValue('chat')
     isUserModeMock.mockReturnValue(true)

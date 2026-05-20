@@ -560,10 +560,6 @@ export const useChatStore = defineStore('chat', () => {
 
   function newChat() {
     const session = createSession()
-    // Inherit current global model
-    const appStore = useAppStore()
-    session.model = appStore.selectedModel || undefined
-    session.provider = appStore.selectedProvider || undefined
     switchSession(session.id)
   }
 
@@ -763,13 +759,11 @@ export const useChatStore = defineStore('chat', () => {
 
       const appStore = useAppStore()
       await appStore.waitForModelsForRun()
-      const sessionModel = activeSession.value?.model || appStore.selectedModel
-      const sessionProvider = activeSession.value?.provider || appStore.selectedProvider
       const runPayload = {
         input,
         session_id: sid,
-        model: sessionModel || undefined,
-        provider: sessionProvider || undefined,
+        model: appStore.selectedModel || undefined,
+        provider: appStore.selectedProvider || undefined,
         queue_id: userMsg.id,
       }
 
