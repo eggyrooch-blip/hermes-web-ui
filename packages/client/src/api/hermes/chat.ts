@@ -52,6 +52,8 @@ export interface RunEvent {
   session_id?: string
   /** Queue length from run.queued event */
   queue_length?: number
+  /** Queue item id that just left the pending queue to start execution. */
+  dequeued_queue_id?: string
 }
 
 // ============================

@@ -642,4 +642,50 @@ describe('ChatRunSocket gateway lifecycle', () => {
       { maxAttempts: 10, delayMs: 500 },
     )
   })
+
+  it('tags queue-length updates with the dequeued queue id only when starting a queued run', () => {
+    const { io, room } = createSocketServer()
+    const gatewayManager = {
+      detectStatus: vi.fn(),
+      startApiOnly: vi.fn(),
+      getUpstream: vi.fn(() => 'http://127.0.0.1:8654'),
+      getApiKey: vi.fn(() => null),
+    }
+    const chatRun = new ChatRunSocket(io as any, gatewayManager)
+    const handleRun = vi.spyOn(chatRun as any, 'handleRun').mockResolvedValue(undefined)
+    ;(chatRun as any).sessionMap.set('queued-session', {
+      messages: [],
+      isWorking: false,
+      events: [],
+      queue: [
+        {
+          queue_id: 'queued-message-1',
+          input: 'queued body',
+          model: 'gpt-5.4',
+          provider: 'openai',
+          instructions: 'be brief',
+          profile: 'sunke',
+        },
+      ],
+      profile: 'sunke',
+    })
+    const socket = { connected: true, emit: vi.fn(), join: vi.fn() }
+
+    const dequeued = (chatRun as any).dequeueNextQueuedRun(socket, 'queued-session')
+
+    expect(dequeued).toBe(true)
+    expect(room.emit).toHaveBeenCalledWith('run.queued', {
+      event: 'run.queued',
+      session_id: 'queued-session',
+      queue_length: 0,
+      dequeued_queue_id: 'queued-message-1',
+    })
+    expect(handleRun).toHaveBeenCalledWith(socket, {
+      input: 'queued body',
+      session_id: 'queued-session',
+      model: 'gpt-5.4',
+      provider: 'openai',
+      instructions: 'be brief',
+    }, 'sunke', true)
+  })
 })

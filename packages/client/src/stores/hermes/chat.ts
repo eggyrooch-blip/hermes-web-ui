@@ -652,10 +652,12 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
-  function showNextQueuedUserMessage(sessionId: string) {
+  function showDequeuedUserMessage(sessionId: string, queueId: string) {
     const queue = queuedUserMessages.value.get(sessionId)
     if (!queue?.length) return
-    const next = queue.shift()!
+    const index = queue.findIndex(message => message.id === queueId)
+    if (index < 0) return
+    const [next] = queue.splice(index, 1)
     if (queue.length > 0) {
       queuedUserMessages.value.set(sessionId, queue)
     } else {
@@ -663,6 +665,22 @@ export const useChatStore = defineStore('chat', () => {
     }
     addMessage(sessionId, { ...next, queued: false })
     updateSessionTitle(sessionId)
+  }
+
+  function syncQueuedUserMessagesToServerLength(sessionId: string, queueLength: unknown, dequeuedQueueId?: unknown) {
+    if (typeof dequeuedQueueId === 'string' && dequeuedQueueId) {
+      showDequeuedUserMessage(sessionId, dequeuedQueueId)
+    }
+
+    const numericLength = Number(queueLength)
+    if (!Number.isFinite(numericLength)) return
+    const serverLength = Math.max(0, numericLength)
+
+    if (serverLength > 0) {
+      queueLengths.value.set(sessionId, serverLength)
+    } else {
+      queueLengths.value.delete(sessionId)
+    }
   }
 
   function updateSessionTitle(sessionId: string) {
@@ -787,10 +805,6 @@ export const useChatStore = defineStore('chat', () => {
       let runHadToolActivity = false
       let activeAssistantMessageId: string | null = null
 
-      const startNextQueuedUser = () => {
-        showNextQueuedUserMessage(sid)
-      }
-
       const closeStreamingAssistant = () => {
         const msgs = getSessionMsgs(sid)
         msgs.forEach(m => {
@@ -813,16 +827,11 @@ export const useChatStore = defineStore('chat', () => {
               runProducedAssistantText = false
               runHadToolActivity = false
               closeStreamingAssistant()
-              startNextQueuedUser()
-              if ((evt as any).queue_length > 0) {
-                queueLengths.value.set(sid, (evt as any).queue_length)
-              } else {
-                queueLengths.value.delete(sid)
-              }
+              syncQueuedUserMessagesToServerLength(sid, (evt as any).queue_length, (evt as any).dequeued_queue_id)
               break
 
             case 'run.queued': {
-              queueLengths.value.set(sid, (evt as any).queue_length || 0)
+              syncQueuedUserMessagesToServerLength(sid, (evt as any).queue_length, (evt as any).dequeued_queue_id)
               break
             }
 
@@ -1233,10 +1242,6 @@ export const useChatStore = defineStore('chat', () => {
       unregisterSessionHandlers(sid)
     }
 
-    const startNextQueuedUser = () => {
-      showNextQueuedUserMessage(sid)
-    }
-
     const closeStreamingAssistant = () => {
       const msgs = getSessionMsgs(sid)
       msgs.forEach(m => {
@@ -1254,7 +1259,7 @@ export const useChatStore = defineStore('chat', () => {
       if (evt.session_id && evt.session_id !== sid) return
       switch (evt.event) {
         case 'run.queued': {
-          queueLengths.value.set(sid, (evt as any).queue_length || 0)
+          syncQueuedUserMessagesToServerLength(sid, (evt as any).queue_length, (evt as any).dequeued_queue_id)
           break
         }
 
@@ -1264,12 +1269,7 @@ export const useChatStore = defineStore('chat', () => {
           runProducedAssistantText = false
           runHadToolActivity = false
           closeStreamingAssistant()
-          startNextQueuedUser()
-          if ((evt as any).queue_length > 0) {
-            queueLengths.value.set(sid, (evt as any).queue_length)
-          } else {
-            queueLengths.value.delete(sid)
-          }
+          syncQueuedUserMessagesToServerLength(sid, (evt as any).queue_length, (evt as any).dequeued_queue_id)
           break
 
         case 'compression.started': {
