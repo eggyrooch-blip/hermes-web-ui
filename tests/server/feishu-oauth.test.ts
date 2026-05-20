@@ -199,6 +199,7 @@ describe('Feishu OAuth controller', () => {
       path: '/api/auth/feishu/login',
       search: '',
       cookies: { set: setCookie },
+      get: vi.fn().mockReturnValue(''),
       redirect,
     }
 
@@ -206,6 +207,38 @@ describe('Feishu OAuth controller', () => {
 
     expect(setCookie).not.toHaveBeenCalled()
     expect(redirect).toHaveBeenCalledWith('http://localhost:8648/api/auth/feishu/login')
+  })
+
+  it('does not canonicalize proxied Feishu login requests that already match the configured redirect origin', async () => {
+    process.env.FEISHU_REDIRECT_URI = 'https://hermes.gotokeep.com/api/auth/feishu/callback'
+    vi.resetModules()
+    const { feishuLogin } = await import('../../packages/server/src/controllers/auth')
+    const setCookie = vi.fn()
+    const redirect = vi.fn()
+    const ctx: any = {
+      origin: 'http://127.0.0.1:8648',
+      path: '/api/auth/feishu/login',
+      search: '',
+      protocol: 'http',
+      secure: false,
+      cookies: { set: setCookie },
+      get: vi.fn((name: string) => {
+        const headers: Record<string, string> = {
+          'x-forwarded-proto': 'https',
+          'x-forwarded-host': 'hermes.gotokeep.com',
+        }
+        return headers[name.toLowerCase()] || ''
+      }),
+      redirect,
+    }
+
+    await feishuLogin(ctx)
+
+    expect(setCookie).toHaveBeenCalledWith('hermes_feishu_state', expect.any(String), expect.objectContaining({
+      secure: true,
+    }))
+    expect(redirect).toHaveBeenCalledWith(expect.stringContaining('https://open.feishu.cn/open-apis/authen/v1/index'))
+    expect(redirect).not.toHaveBeenCalledWith('https://hermes.gotokeep.com/api/auth/feishu/login')
   })
 
   it('rejects callback when state does not match the state cookie', async () => {
