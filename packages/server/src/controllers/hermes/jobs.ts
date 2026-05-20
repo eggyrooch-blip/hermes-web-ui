@@ -413,6 +413,10 @@ export async function resume(ctx: Context) {
 }
 
 export async function run(ctx: Context) {
+  if (shouldUseJobsBroker(ctx)) {
+    await brokerRequest(ctx, `/api/run-broker/jobs/${ctx.params.id}/run`)
+    return
+  }
   if (isChatPlaneRequest(ctx)) {
     ctx.status = 403
     ctx.body = {

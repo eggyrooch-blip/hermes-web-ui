@@ -39,6 +39,9 @@ describe('Hermes jobs execution boundary', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     config.webPlane = 'chat'
+    config.webuiJobsBroker = false
+    config.runBrokerUrl = ''
+    config.runBrokerKey = ''
   })
 
   it('blocks chat-plane manual job run instead of executing through profile apiserver', async () => {

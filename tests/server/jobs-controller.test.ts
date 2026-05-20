@@ -11,7 +11,7 @@ const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
 import { config } from '../../packages/server/src/config'
-import { create, list, update } from '../../packages/server/src/controllers/hermes/jobs'
+import { create, list, run, update } from '../../packages/server/src/controllers/hermes/jobs'
 
 function createMockCtx(overrides: Record<string, any> = {}) {
   const ctx: any = {
@@ -201,6 +201,52 @@ describe('Hermes jobs controller proxy', () => {
     expect(options.headers).toMatchObject({
       'X-Hermes-Profile': 'sunke',
       'X-Hermes-User-Key': 'ou_cf23e7c262afa4b7a006baa75f863ed5',
+    })
+  })
+
+  it('routes chat-plane manual job runs through the multitenancy broker when enabled', async () => {
+    config.webPlane = 'chat'
+    config.webuiJobsBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+    config.runBrokerKey = 'broker-secret'
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({
+        job: {
+          id: 'abc123abc123',
+          state: 'scheduled',
+          next_run_at: '2026-05-20T07:00:00Z',
+        },
+        queued: true,
+      }),
+    })
+
+    const ctx = createMockCtx({
+      req: { method: 'POST' },
+      request: { body: {} },
+      params: { id: 'abc123abc123' },
+      state: { user: { openid: 'ou_cf23e7c262afa4b7a006baa75f863ed5', profile: 'sunke', role: 'user' } },
+    })
+
+    await run(ctx)
+
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(url).toBe('http://127.0.0.1:8766/api/run-broker/jobs/abc123abc123/run')
+    expect(options.headers).toMatchObject({
+      Authorization: 'Bearer broker-secret',
+      'X-Hermes-Profile': 'sunke',
+      'X-Hermes-User-Key': 'ou_cf23e7c262afa4b7a006baa75f863ed5',
+    })
+    expect(ctx.status).toBe(200)
+    expect(ctx.body).toEqual({
+      job: {
+        id: 'abc123abc123',
+        state: 'scheduled',
+        next_run_at: '2026-05-20T07:00:00Z',
+      },
+      queued: true,
     })
   })
 })
