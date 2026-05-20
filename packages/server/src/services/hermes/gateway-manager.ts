@@ -268,6 +268,12 @@ function buildHttpUrl(host: string, port: number): string {
   return `http://${formatHostForUrl(host)}:${port}`
 }
 
+function readEnvValue(content: string, key: string): string | undefined {
+  const pattern = new RegExp(`^\\s*${key}\\s*=\\s*"?([^"\\n#]+)"?`, 'm')
+  const match = content.match(pattern)
+  return match?.[1]?.trim()
+}
+
 // ============================
 // GatewayManager
 // ============================
@@ -326,6 +332,20 @@ export class GatewayManager {
       const host = isAllowedUpstreamHost(rawHost) ? rawHost : defaultHost
       if (host !== rawHost) {
         logger.warn('Profile %s requested upstream host %s which is not in the allowlist; falling back to %s', name, rawHost, defaultHost)
+      }
+      const envPath = join(this.profileDir(name), '.env')
+      if (existsSync(envPath)) {
+        const envContent = readFileSync(envPath, 'utf-8')
+        const envPortRaw = readEnvValue(envContent, 'API_SERVER_PORT')
+        const envHostRaw = readEnvValue(envContent, 'API_SERVER_HOST')
+        const envPort = envPortRaw ? parseInt(envPortRaw, 10) : NaN
+        const envHost = envHostRaw && isAllowedUpstreamHost(envHostRaw) ? envHostRaw : host
+        if (envHostRaw && envHostRaw !== envHost) {
+          logger.warn('Profile %s requested upstream host %s in .env which is not in the allowlist; falling back to %s', name, envHostRaw, host)
+        }
+        if (envPort > 0 && envPort <= 65535) {
+          return { port: envPort, host: envHost }
+        }
       }
       // 端口超出合法范围时回退到默认值
       return { port: port > 0 && port <= 65535 ? port : 8642, host }

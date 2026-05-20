@@ -3,6 +3,12 @@ import { getToken } from '../../../services/auth'
 import type { GatewayManager } from '../gateway-manager'
 import { logger } from '../../../services/logger'
 import { updateUsage } from '../../../db/hermes/usage-store'
+import { config } from '../../../config'
+import {
+    buildRunBrokerHeaders,
+    buildRunBrokerRequest,
+    mapRunBrokerFrameForChat,
+} from '../run-chat/handle-broker-run'
 import {
     isAllAgentsMentioned,
     stripMentionRoutingTokens,
@@ -234,6 +240,11 @@ class AgentClient {
             // Build compressed context if context engine is available
             let conversationHistory: Array<{ role: string; content: string }> = []
             let instructions: string | undefined
+            let roomInfo: any
+
+            if (this.storage) {
+                try { roomInfo = this.storage.getRoom(roomId) } catch { /* ignore */ }
+            }
 
             if (this.contextEngine && this.storage) {
                 try {
@@ -245,7 +256,6 @@ class AgentClient {
                     const members = roomMembers.map((m: any) => ({ userId: m.userId, name: m.name, description: m.description }))
 
                     // Get room compression config
-                    const roomInfo = this.storage.getRoom(roomId)
                     const compression = roomInfo ? {
                         triggerTokens: roomInfo.triggerTokens,
                         maxHistoryTokens: roomInfo.maxHistoryTokens,
@@ -286,6 +296,12 @@ class AgentClient {
                 : `群聊系统：这条消息已经提及你（${this.name}），请直接回复；即使消息同时提及其他成员，也不要因此输出空回复。`
             const routedText = stripMentionRoutingTokens(msg.content, this.name) || msg.content
             const input = `${routedPrefix}\n\n原始消息：${routedText}`
+
+            if (config.webuiRunBroker) {
+                await this.replyViaRunBroker(roomId, msg, input, conversationHistory, instructions, roomInfo, onStatus)
+                return
+            }
+
             const responseRes = await fetch(`${upstream.replace(/\/$/, '')}/v1/responses`, {
                 method: 'POST',
                 headers: {
@@ -371,6 +387,124 @@ class AgentClient {
             this.stopTyping(roomId)
             onStatus?.('ready')
         }
+    }
+
+    private async replyViaRunBroker(
+        roomId: string,
+        msg: { content: string; senderName: string; senderId: string; timestamp: number },
+        input: string,
+        conversationHistory: Array<{ role: string; content: string }>,
+        instructions: string | undefined,
+        roomInfo: any,
+        onStatus?: (status: 'compressing' | 'replying' | 'ready') => void,
+    ): Promise<void> {
+        const brokerUrl = config.runBrokerUrl?.replace(/\/$/, '')
+        if (!brokerUrl) {
+            logger.error(`[AgentClients] ${this.name}: HERMES_RUN_BROKER_URL is required when HERMES_WEBUI_RUN_BROKER=1`)
+            this.stopTyping(roomId)
+            onStatus?.('ready')
+            return
+        }
+
+        const ownerOpenId = typeof roomInfo?.owner_open_id === 'string' && roomInfo.owner_open_id.trim()
+            ? roomInfo.owner_open_id.trim()
+            : undefined
+        const sessionId = `group-chat:${roomId}:${this.agentId}`
+        const messages = conversationHistory.map((entry, index) => ({
+            id: index + 1,
+            session_id: sessionId,
+            role: entry.role,
+            content: entry.content,
+            timestamp: Math.floor((msg.timestamp || Date.now()) / 1000) + index,
+        }))
+        const request = await buildRunBrokerRequest({
+            input,
+            profile: this.profile,
+            ownerOpenId,
+            sessionId,
+            instructions,
+            messages: messages as any,
+        })
+        request.metadata = {
+            ...(request.metadata || {}),
+            source: 'hermes-web-ui-group-chat',
+            room_id: roomId,
+            agent_id: this.agentId,
+            agent_name: this.name,
+        }
+
+        const res = await fetch(`${brokerUrl}/api/run-broker/runs`, {
+            method: 'POST',
+            headers: buildRunBrokerHeaders({
+                runBrokerKey: config.runBrokerKey,
+                ownerOpenId,
+            }),
+            body: JSON.stringify(request),
+        })
+
+        if (!res.ok) {
+            const text = await res.text().catch(() => '')
+            logger.error(`[AgentClients] ${this.name}: run broker response failed (${res.status}): ${text}`)
+            this.stopTyping(roomId)
+            onStatus?.('ready')
+            return
+        }
+
+        if (!res.body) {
+            logger.error(`[AgentClients] ${this.name}: run broker response stream missing`)
+            this.stopTyping(roomId)
+            onStatus?.('ready')
+            return
+        }
+
+        let fullContent = ''
+        for await (const frame of readSseFrames(res.body)) {
+            let parsed: any
+            try {
+                parsed = JSON.parse(frame.data)
+            } catch {
+                continue
+            }
+
+            const mapped = mapRunBrokerFrameForChat(parsed, frame.event)
+            if (mapped.type === 'ignore') continue
+
+            if (mapped.type === 'emit' && mapped.appendFinalText) {
+                fullContent += mapped.payload.delta || ''
+                continue
+            }
+
+            if (mapped.type === 'terminal') {
+                if (mapped.event === 'run.failed') {
+                    logger.error(`[AgentClients] ${this.name}: run broker response failed`)
+                    this.stopTyping(roomId)
+                    onStatus?.('ready')
+                    return
+                }
+
+                const finalText = fullContent || mapped.payload.output || ''
+                const usage = mapped.payload.usage || {}
+                updateUsage(roomId, {
+                    inputTokens: usage.input_tokens ?? usage.inputTokens ?? 0,
+                    outputTokens: usage.output_tokens ?? usage.outputTokens ?? 0,
+                    cacheReadTokens: usage.cache_read_tokens ?? usage.cacheReadTokens ?? 0,
+                    cacheWriteTokens: usage.cache_write_tokens ?? usage.cacheWriteTokens ?? 0,
+                    reasoningTokens: usage.reasoning_tokens ?? usage.reasoningTokens ?? 0,
+                    model: usage.model || '',
+                    profile: this.profile,
+                })
+                if (finalText) {
+                    this.stopTyping(roomId)
+                    this.sendMessage(roomId, finalText)
+                }
+                onStatus?.('ready')
+                return
+            }
+        }
+
+        logger.warn(`[AgentClients] ${this.name}: run broker stream ended without terminal event`)
+        this.stopTyping(roomId)
+        onStatus?.('ready')
     }
 
     private bindEvents(): void {
