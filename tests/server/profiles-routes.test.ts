@@ -141,10 +141,66 @@ describe('Profile Routes', () => {
 
       expect(hermesCli.createProfile).toHaveBeenCalledWith('web_coder', {
         clone: true,
+        cloneFrom: 'feishu_g41a5b5g',
         description: 'Software engineering agent for coding and tests.',
         noAlias: true,
       })
       expect(ctx.body.success).toBe(true)
+    })
+
+    it('clones from the trusted chat-plane user profile instead of server active_profile', async () => {
+      vi.mocked(hermesCli.createProfile).mockResolvedValue('Profile created')
+
+      const ctx: any = {
+        request: {
+          body: {
+            name: 'coder1',
+            clone: true,
+            description: 'Software engineering agent.',
+          },
+        },
+        state: {
+          user: { openid: 'ou_owner', profile: 'sunke' },
+        },
+        status: 200,
+        body: undefined,
+      }
+      config.webPlane = 'chat'
+
+      await create(ctx)
+
+      expect(hermesCli.createProfile).toHaveBeenCalledWith('coder1', {
+        clone: true,
+        cloneFrom: 'sunke',
+        description: 'Software engineering agent.',
+        noAlias: true,
+      })
+      expect(ctx.body.success).toBe(true)
+    })
+
+    it('rejects chat-plane clone when the authenticated user has no source profile', async () => {
+      vi.mocked(hermesCli.createProfile).mockResolvedValue('Profile created')
+
+      const ctx: any = {
+        request: {
+          body: {
+            name: 'coder1',
+            clone: true,
+          },
+        },
+        state: {
+          user: { openid: 'ou_owner' },
+        },
+        status: 200,
+        body: undefined,
+      }
+      config.webPlane = 'chat'
+
+      await create(ctx)
+
+      expect(hermesCli.createProfile).not.toHaveBeenCalled()
+      expect(ctx.status).toBe(400)
+      expect(ctx.body.error).toContain('trusted source profile')
     })
 
     it('registers chat-plane profile ownership through the multitenancy broker before fallback', async () => {
