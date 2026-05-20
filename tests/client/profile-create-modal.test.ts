@@ -78,14 +78,11 @@ vi.mock('naive-ui', () => {
         />
       `,
     },
-    NRadioGroup: {
+    NSelect: {
       props: ['value'],
       emits: ['update:value'],
-      template: '<div><slot /></div>',
-    },
-    NRadioButton: {
-      props: ['value'],
-      template: '<button type="button"><slot /></button>',
+      inheritAttrs: false,
+      template: '<select :value="value" @change="$emit(\'update:value\', $event.target.value)"><option value="coder">Coder</option><option value="researcher">Researcher</option><option value="writer">Writer</option><option value="operator">Operator</option><option value="custom">Custom</option></select>',
     },
     useMessage: () => ({
       success: vi.fn(),
@@ -102,11 +99,11 @@ describe('ProfileCreateModal', () => {
     profilesStoreMock.createProfile.mockResolvedValue({ success: true })
   })
 
-  it('renders upstream create modal with role presets and passes coder description on create', async () => {
+  it('renders upstream create modal with compact role preset select and passes coder description on create', async () => {
     const wrapper = mount(ProfileCreateModal)
 
     expect(wrapper.text()).toContain('Role preset')
-    expect(wrapper.text()).toContain('Coder')
+    expect(wrapper.find('select').exists()).toBe(true)
     expect(wrapper.text()).toContain('Software engineering agent')
 
     await wrapper.find('input[placeholder="profile name"]').setValue('web_coder')
