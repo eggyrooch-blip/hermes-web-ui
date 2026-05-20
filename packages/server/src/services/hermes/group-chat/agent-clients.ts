@@ -813,17 +813,6 @@ export class AgentClients {
 
         logger.debug(`[AgentClients] ${mentioned.map(a => a.name).join(', ')} mentioned by ${msg.senderName}`)
 
-        if (isAllAgentsMentioned(msg.content)) {
-            for (const agent of mentioned) {
-                try {
-                    await this._processAgentMention(roomId, agent, msg)
-                } catch (err: any) {
-                    logger.error(`[AgentClients] error processing mention for ${agent.name}: ${err.message}`)
-                }
-            }
-            return
-        }
-
         for (const agent of mentioned) {
             this._processAgentMention(roomId, agent, msg).catch((err) => {
                 logger.error(`[AgentClients] error processing mention for ${agent.name}: ${err.message}`)
