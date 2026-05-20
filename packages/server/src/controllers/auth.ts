@@ -26,7 +26,29 @@ import {
 } from '../services/hermes/skill-credentials'
 
 function cookieSecure(ctx: Context): boolean {
-  return ctx.protocol === 'https' || ctx.secure
+  const forwardedProto = firstForwardedHeader(getHeader(ctx, 'x-forwarded-proto')).toLowerCase()
+  return ctx.protocol === 'https' || ctx.secure || forwardedProto === 'https'
+}
+
+function getHeader(ctx: Context, name: string): string {
+  return typeof ctx.get === 'function' ? ctx.get(name) : ''
+}
+
+function firstForwardedHeader(value: string): string {
+  return value.split(',')[0]?.trim() || ''
+}
+
+function externalRequestOrigin(ctx: Context): string {
+  const forwardedProto = firstForwardedHeader(getHeader(ctx, 'x-forwarded-proto'))
+  const forwardedHost = firstForwardedHeader(getHeader(ctx, 'x-forwarded-host'))
+  if (forwardedProto && forwardedHost) {
+    try {
+      return new URL(`${forwardedProto}://${forwardedHost}`).origin
+    } catch {
+      // Fall through to Koa's origin below.
+    }
+  }
+  return typeof ctx.origin === 'string' ? ctx.origin : ''
 }
 
 function setFeishuCookie(ctx: Context, name: string, value: string, maxAgeSeconds: number) {
@@ -40,7 +62,7 @@ function setFeishuCookie(ctx: Context, name: string, value: string, maxAgeSecond
 }
 
 function maybeCanonicalFeishuLoginRedirect(ctx: Context): string | null {
-  const requestOrigin = typeof ctx.origin === 'string' ? ctx.origin : ''
+  const requestOrigin = externalRequestOrigin(ctx)
   if (!requestOrigin || !config.feishuRedirectUri) return null
 
   try {
