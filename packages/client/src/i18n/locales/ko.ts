@@ -564,6 +564,10 @@ export default {
       themeLight: '라이트',
       themeDark: '다크',
       themeSystem: '시스템',
+      style: '스타일',
+      styleHint: '표준 잉크 UI 또는 코믹 스타일 선택',
+      styleInk: '잉크',
+      styleComic: '코믹',
     },
     agent: {
       maxTurns: '최대 턴 수',

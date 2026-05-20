@@ -718,6 +718,10 @@ export default {
       themeLight: 'Light',
       themeDark: 'Dark',
       themeSystem: 'System',
+      style: 'Style',
+      styleHint: 'Choose the standard ink UI or comic style',
+      styleInk: 'Ink',
+      styleComic: 'Comic',
     },
     agent: {
       maxTurns: 'Max Turns',

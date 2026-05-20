@@ -4,13 +4,13 @@ import { NSwitch, NSelect, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { isUserMode } from '@/api/client'
 import { useSettingsStore } from '@/stores/hermes/settings'
-import { useTheme, type BrightnessMode } from '@/composables/useTheme'
+import { useTheme, type BrightnessMode, type ThemeStyle } from '@/composables/useTheme'
 import SettingRow from './SettingRow.vue'
 
 const settingsStore = useSettingsStore()
 const message = useMessage()
 const { t } = useI18n()
-const { brightness, setBrightness } = useTheme()
+const { brightness, style, setBrightness, setStyle } = useTheme()
 const showCostLabel = computed(() => isUserMode() ? 'settings.display.showTokenUsage' : 'settings.display.showCost')
 const showCostHint = computed(() => isUserMode() ? 'settings.display.showTokenUsageHint' : 'settings.display.showCostHint')
 
@@ -18,6 +18,10 @@ const themeOptions = [
   { label: t('settings.display.themeLight'), value: 'light' },
   { label: t('settings.display.themeDark'), value: 'dark' },
   { label: t('settings.display.themeSystem'), value: 'system' },
+]
+const styleOptions = [
+  { label: t('settings.display.styleInk'), value: 'ink' },
+  { label: t('settings.display.styleComic'), value: 'comic' },
 ]
 
 async function save(values: Record<string, any>) {
@@ -34,12 +38,19 @@ function handleThemeChange(val: string) {
   setBrightness(m)
   save({ skin: m })
 }
+
+function handleStyleChange(val: string) {
+  setStyle(val as ThemeStyle)
+}
 </script>
 
 <template>
   <section class="settings-section">
     <SettingRow :label="t('settings.display.theme')" :hint="t('settings.display.themeHint')">
       <NSelect :value="brightness" :options="themeOptions" size="small" :consistent-menu-width="false" class="input-sm" @update:value="handleThemeChange" />
+    </SettingRow>
+    <SettingRow :label="t('settings.display.style')" :hint="t('settings.display.styleHint')">
+      <NSelect :value="style" :options="styleOptions" size="small" :consistent-menu-width="false" class="input-sm" @update:value="handleStyleChange" />
     </SettingRow>
     <SettingRow :label="t('settings.display.streaming')" :hint="t('settings.display.streamingHint')">
       <NSwitch :value="settingsStore.display.streaming" @update:value="v => save({ streaming: v })" />
