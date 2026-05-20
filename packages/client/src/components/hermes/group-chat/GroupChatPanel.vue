@@ -140,12 +140,20 @@ async function handleSendMessage(content: string) {
 }
 
 async function handleAddAgent() {
+    if (!store.currentRoomId) {
+        message.warning(t('groupChat.selectOrCreate'))
+        return
+    }
     await profilesStore.fetchProfiles()
     showAddAgentModal.value = true
 }
 
 async function confirmAddAgent() {
-    if (!selectedProfile.value || !store.currentRoomId) return
+    if (!store.currentRoomId) {
+        message.warning(t('groupChat.selectOrCreate'))
+        return
+    }
+    if (!selectedProfile.value) return
     try {
         await store.addAgentToRoom(store.currentRoomId, {
             profile: selectedProfile.value,
@@ -333,7 +341,12 @@ watch(() => store.sortedMessages.length, async () => {
                             <span class="agent-avatar" v-html="agentAvatarUrl(store.userName || store.userId)" />
                         </span>
                     </div>
-                    <button class="icon-btn" :title="t('groupChat.addAgent')" @click="handleAddAgent">
+                    <button
+                        class="icon-btn"
+                        :disabled="!store.currentRoomId"
+                        :title="store.currentRoomId ? t('groupChat.addAgent') : t('groupChat.selectOrCreate')"
+                        @click="handleAddAgent"
+                    >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                     </button>
                     <button class="icon-btn" :title="t('groupChat.compressionConfig')" @click="handleOpenCompressionConfig">
@@ -431,7 +444,7 @@ watch(() => store.sortedMessages.length, async () => {
                     <div class="modal-actions">
                         <NSpace justify="end">
                             <NButton @click="showAddAgentModal = false">{{ t('common.cancel') }}</NButton>
-                            <NButton type="primary" :disabled="!selectedProfile" @click="confirmAddAgent">{{ t('common.add') }}</NButton>
+                            <NButton type="primary" :disabled="!selectedProfile || !store.currentRoomId" @click="confirmAddAgent">{{ t('common.add') }}</NButton>
                         </NSpace>
                     </div>
                 </div>
