@@ -30,6 +30,21 @@ function setFeishuCookie(ctx: Context, name: string, value: string, maxAgeSecond
   })
 }
 
+function maybeCanonicalFeishuLoginRedirect(ctx: Context): string | null {
+  const requestOrigin = typeof ctx.origin === 'string' ? ctx.origin : ''
+  if (!requestOrigin || !config.feishuRedirectUri) return null
+
+  try {
+    const configuredOrigin = new URL(config.feishuRedirectUri).origin
+    if (configuredOrigin === requestOrigin) return null
+    const canonical = new URL('/api/auth/feishu/login', configuredOrigin)
+    canonical.search = ctx.search || ''
+    return canonical.toString()
+  } catch {
+    return null
+  }
+}
+
 function maskOpenId(openid: string): string {
   return openid.length <= 8 ? '***' : `***${openid.slice(-8)}`
 }
@@ -187,6 +202,11 @@ export async function feishuLogin(ctx: Context) {
   if (!config.feishuAppId || !config.feishuRedirectUri) {
     ctx.status = 500
     ctx.body = { error: 'Feishu OAuth is not configured' }
+    return
+  }
+  const canonicalLoginUrl = maybeCanonicalFeishuLoginRedirect(ctx)
+  if (canonicalLoginUrl) {
+    ctx.redirect(canonicalLoginUrl)
     return
   }
 
