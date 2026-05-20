@@ -92,6 +92,7 @@ export async function bootstrap() {
   const authToken = await getToken()
   await initLoginLimiter()
   const app = new Koa()
+  app.proxy = true
 
   await initGatewayManager()
   console.log('[bootstrap] gateway manager initialized')
