@@ -1710,6 +1710,7 @@ export class ChatRunSocket {
       event: 'run.queued',
       session_id: sessionId,
       queue_length: state.queue.length,
+      dequeued_queue_id: next.queue_id,
     })
     void this.handleRun(socket, {
       input: next.input,
@@ -1754,6 +1755,7 @@ export class ChatRunSocket {
       this.emitToSession(socket, sessionId, 'run.queued', {
         event: 'run.queued',
         queue_length: state.queue.length,
+        dequeued_queue_id: next.queue_id,
       })
       state.events = []
       void this.handleRun(socket, {
