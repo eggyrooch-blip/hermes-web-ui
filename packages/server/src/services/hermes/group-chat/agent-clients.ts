@@ -875,8 +875,7 @@ export class AgentClients {
 
         // Process the last queued mention only (most recent, discards stale intermediate ones)
         const last = queue[queue.length - 1]
-        this._processingRooms.add(agentKey)
-        this._processAgentMention(roomId, last.agent, last.msg).catch((err) => {
+        await this._processAgentMention(roomId, last.agent, last.msg).catch((err) => {
             logger.error(`[AgentClients] error processing queued mention: ${err.message}`)
         })
     }

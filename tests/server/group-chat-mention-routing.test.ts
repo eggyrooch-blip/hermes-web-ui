@@ -171,4 +171,39 @@ describe('Group chat mention routing', () => {
     expect(koolie.replyToMention).toHaveBeenCalledTimes(1)
     expect(bob.replyToMention).not.toHaveBeenCalled()
   })
+
+  it('drains the last queued mention after an agent finishes replying', async () => {
+    const clients = new AgentClients()
+    ;(clients as any)._gatewayManager = {}
+
+    let finishFirstReply!: () => void
+    const slow = createFakeAgent('slow')
+    slow.replyToMention = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((resolve) => {
+        finishFirstReply = resolve
+      }))
+      .mockResolvedValue(undefined)
+    await clients.addAgentToRoom('room-1', slow as any)
+
+    await clients.processMentions('room-1', {
+      content: '@slow 第一条。',
+      senderName: 'Han',
+      senderId: 'user-han',
+      timestamp: Date.now(),
+    })
+    await clients.processMentions('room-1', {
+      content: '@all 第二条。',
+      senderName: 'Han',
+      senderId: 'user-han',
+      timestamp: Date.now(),
+    })
+
+    expect(slow.replyToMention).toHaveBeenCalledTimes(1)
+
+    finishFirstReply()
+    await vi.waitFor(() => {
+      expect(slow.replyToMention).toHaveBeenCalledTimes(2)
+    })
+    expect(slow.replyToMention.mock.calls[1][1].content).toBe('@all 第二条。')
+  })
 })
