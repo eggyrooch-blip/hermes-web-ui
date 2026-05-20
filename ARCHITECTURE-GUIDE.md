@@ -50,6 +50,8 @@ related:
 > 本分支按用户要求撤销早期“把模型选择从侧栏挪到聊天框”的本地改动：`ChatInput.vue` 不再渲染 compact `ModelSelector`，`AppSidebar.vue` 在 user-mode/chat-plane 下也保留 upstream 风格的侧栏模型选择器。前端 `ModelSelector` 重新只写 profile/default model（`appStore.switchModel`），聊天发送 payload 直接读取当前 `appStore.selectedModel/selectedProvider`，不再让新建 session 或历史 session 的 `model/provider` 覆盖侧栏选择。
 >
 > 边界保持不变：不整支 merge upstream，不启用 full bridge/agent-bridge，不改变 Feishu OAuth、Run Broker owner header、多租户 profile ACL 或 chat-plane 管理入口隐藏。当前验证为 focused model/sidebar/chat-store tests 24 passed，`npm run build` passed；生产 66 未发布。
+>
+> 2026-05-20 追加：user-mode 身份卡 `ThemeSwitch` 只保留 Light/Dark brightness toggle，移除 `title="Comic style"` 的快捷按钮；主题风格切换仍保留在 Settings > Display，不把身份卡当第二个风格入口。回归 `theme-switch` focused test 覆盖该按钮不存在。
 
 > [!warning] 2026-05-14 Cron 投递语义
 > WebUI 创建定时任务时，主流场景是投递到飞书，而不是投递到本地 WebUI。生产默认用户身份是 `sunke` UAT profile；job 写入 `profiles/sunke/cron/jobs.json`，由 `hermes-gateway.service` 的 multitenancy cron worker 执行并通过 Feishu adapter 投递给 owner open_id。投递成功后 multitenancy 会 mirror 到 `multitenancy_sessions`，这样用户基于飞书推送继续对话时有上下文。

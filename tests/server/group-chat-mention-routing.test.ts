@@ -158,7 +158,7 @@ describe('Group chat mention routing', () => {
     expect(regexName.replyToMention).toHaveBeenCalledTimes(1)
   })
 
-  it('processes @all targets sequentially in room order', async () => {
+  it('fans out @all targets without waiting for earlier agents to finish', async () => {
     const clients = new AgentClients()
     ;(clients as any)._gatewayManager = {}
 
@@ -197,8 +197,8 @@ describe('Group chat mention routing', () => {
     await vi.waitFor(() => {
       expect(first.replyToMention).toHaveBeenCalledTimes(1)
     })
-    expect(second.replyToMention).not.toHaveBeenCalled()
-    expect(third.replyToMention).not.toHaveBeenCalled()
+    expect(second.replyToMention).toHaveBeenCalledTimes(1)
+    expect(third.replyToMention).toHaveBeenCalledTimes(1)
 
     finishFirstReply()
     await processing

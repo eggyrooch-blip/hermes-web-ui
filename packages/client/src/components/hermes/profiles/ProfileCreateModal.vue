@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { NModal, NForm, NFormItem, NInput, NButton, NSwitch, NText, NRadioGroup, NRadioButton, useMessage } from 'naive-ui'
+import { NModal, NForm, NFormItem, NInput, NButton, NSwitch, NText, NSelect, useMessage } from 'naive-ui'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useI18n } from 'vue-i18n'
 
@@ -28,6 +28,11 @@ const rolePresets = [
   { value: 'operator', labelKey: 'profiles.rolePresetOperator', descriptionKey: 'profiles.rolePresetOperatorDescription' },
   { value: 'custom', labelKey: 'profiles.rolePresetCustom', descriptionKey: '' },
 ] as const
+
+const roleOptions = computed(() => rolePresets.map(role => ({
+  label: t(role.labelKey),
+  value: role.value,
+})))
 
 const roleDescription = computed(() => {
   if (selectedRole.value === 'custom') return customDescription.value.trim()
@@ -114,15 +119,10 @@ function handleClose() {
       </NText>
 
       <NFormItem :label="t('profiles.rolePreset')">
-        <NRadioGroup v-model:value="selectedRole" class="role-presets">
-          <NRadioButton
-            v-for="role in rolePresets"
-            :key="role.value"
-            :value="role.value"
-          >
-            {{ t(role.labelKey) }}
-          </NRadioButton>
-        </NRadioGroup>
+        <NSelect
+          v-model:value="selectedRole"
+          :options="roleOptions"
+        />
       </NFormItem>
       <NFormItem
         v-if="selectedRole === 'custom'"
@@ -163,25 +163,6 @@ function handleClose() {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-}
-
-.role-presets {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
-  gap: 8px;
-  width: 100%;
-}
-
-.role-presets :deep(.n-radio-button) {
-  width: 100%;
-  min-width: 0;
-  text-align: center;
-  justify-content: center;
-  border-radius: 6px;
-}
-
-.role-presets :deep(.n-radio-button:not(:first-child)) {
-  margin-left: 0;
 }
 
 .role-description {
