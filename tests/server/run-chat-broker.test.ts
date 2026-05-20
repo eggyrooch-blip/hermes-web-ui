@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   buildRunBrokerRequest,
   buildRunBrokerHeaders,
@@ -7,6 +10,39 @@ import {
 } from '../../packages/server/src/services/hermes/run-chat/handle-broker-run'
 
 describe('run-chat broker compatibility module', () => {
+  const roots: string[] = []
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  function makeProfile() {
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-run-chat-profile-'))
+    roots.push(profileDir)
+    mkdirSync(join(profileDir, 'skills', 'Keep', 'kep-hades-cli'), { recursive: true })
+    mkdirSync(join(profileDir, 'skills', 'Keep', 'keep-record'), { recursive: true })
+    writeFileSync(join(profileDir, 'skills', 'Keep', 'kep-hades-cli', 'SKILL.md'), [
+      '---',
+      'name: kep-hades-cli',
+      'description: Query Hades 投放管理系统 through kep-cli.',
+      '---',
+      '# Hades CLI',
+      'Run `/Users/kite/.hermes/bin/hades-cli --profile "$KEP_PROFILE" --env online misc get --id <id> --output json`.',
+    ].join('\n'), 'utf-8')
+    writeFileSync(join(profileDir, 'skills', 'Keep', 'keep-record', 'SKILL.md'), [
+      '---',
+      'name: keep-record',
+      'description: Record diet, weight, exercise, sleep, and other Keep health data.',
+      '---',
+      '# Keep record',
+      'preload: true',
+      'Use `node {baseDir}/scripts/mcp-call.js record_tool \'{"text":"..."}\'` for diet records.',
+    ].join('\n'), 'utf-8')
+    return profileDir
+  }
+
   it('builds broker requests with owner identity, channel, session history and metadata', async () => {
     const request = await buildRunBrokerRequest({
       input: 'hello broker',
@@ -46,6 +82,37 @@ describe('run-chat broker compatibility module', () => {
     }))
     expect(request.metadata.instructions).toContain('[Current working directory: /workspace/project]')
     expect(request.metadata.instructions).toContain('answer briefly')
+  })
+
+  it('rewrites profile-local skill slash commands before sending WebUI broker runs', async () => {
+    const profileDir = makeProfile()
+    const request = await buildRunBrokerRequest({
+      input: '/hades get 69df030c1f01cb45ba7ff585',
+      profile: 'feishu_sunke',
+      profileDir,
+    })
+
+    expect(request.content).toContain('invoked the "kep-hades-cli" skill')
+    expect(request.content).toContain('69df030c1f01cb45ba7ff585')
+    expect(request.content).toContain('hades-cli')
+    expect(request.messages.at(-1)).toMatchObject({
+      role: 'user',
+      content: expect.stringContaining('kep-hades-cli'),
+    })
+  })
+
+  it('injects relevant profile-local preload skills for natural WebUI requests', async () => {
+    const profileDir = makeProfile()
+    const request = await buildRunBrokerRequest({
+      input: '在keep 记录下中午吃的肥肠面+鸡蛋+鸡腿+青椒',
+      profile: 'feishu_sunke',
+      profileDir,
+    })
+
+    expect(request.content).toBe('在keep 记录下中午吃的肥肠面+鸡蛋+鸡腿+青椒')
+    expect(request.metadata.instructions).toContain('profile skill "keep-record"')
+    expect(request.metadata.instructions).toContain('record_tool')
+    expect(request.metadata.instructions).toContain(join(profileDir, 'skills', 'Keep', 'keep-record'))
   })
 
   it('builds broker headers without leaking profile identity into owner identity', () => {

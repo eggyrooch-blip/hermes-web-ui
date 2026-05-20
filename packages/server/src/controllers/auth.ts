@@ -15,6 +15,15 @@ import {
 import { getGatewayManagerInstance } from '../services/gateway-bootstrap'
 import { logger } from '../services/logger'
 import type { WebUser } from '../services/request-context'
+import { getRequestProfile } from '../services/request-context'
+import { getProfileDir } from '../services/hermes/hermes-profile'
+import {
+  completeKeepRecordAuth,
+  getSkillCredentialStartAction,
+  listSkillCredentialStatuses,
+  startKepCliAuth,
+  startKeepRecordAuth,
+} from '../services/hermes/skill-credentials'
 
 function cookieSecure(ctx: Context): boolean {
   return ctx.protocol === 'https' || ctx.secure
@@ -59,6 +68,11 @@ function getAuthenticatedFeishuUser(ctx: Context): WebUser {
   return user
 }
 
+function getOptionalFeishuUser(ctx: Context): WebUser | undefined {
+  const user = ctx.state?.user as WebUser | undefined
+  return user?.profile && user?.openid ? user : undefined
+}
+
 function brokerHeaders(): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
@@ -83,6 +97,24 @@ async function pipeBrokerJson(ctx: Context, res: Response): Promise<void> {
 function handleUatProxyError(ctx: Context, err: any): void {
   ctx.status = typeof err?.status === 'number' ? err.status : 500
   ctx.body = { error: err?.message || 'Feishu UAT auth failed' }
+}
+
+async function fetchFeishuUatStatusForUser(user: WebUser, requiredScopes = ''): Promise<Record<string, any>> {
+  const params = new URLSearchParams()
+  params.set('profile_name', user.profile)
+  params.set('user_key', user.openid)
+  if (requiredScopes) params.set('required_scopes', requiredScopes)
+  const res = await fetch(brokerUrl(`/api/run-broker/credentials/feishu/uat/status?${params.toString()}`), {
+    method: 'GET',
+    headers: brokerHeaders(),
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err: any = new Error(body?.error || 'Feishu UAT status failed')
+    err.status = res.status
+    throw err
+  }
+  return body
 }
 
 export async function wakeBoundProfileGateway(profile: string): Promise<void> {
@@ -285,16 +317,123 @@ export async function feishuLogout(ctx: Context) {
 export async function feishuUatStatus(ctx: Context) {
   try {
     const user = getAuthenticatedFeishuUser(ctx)
-    const params = new URLSearchParams()
-    params.set('profile_name', user.profile)
-    params.set('user_key', user.openid)
     const requiredScopes = typeof ctx.query.required_scopes === 'string' ? ctx.query.required_scopes : ''
-    if (requiredScopes) params.set('required_scopes', requiredScopes)
-    const res = await fetch(brokerUrl(`/api/run-broker/credentials/feishu/uat/status?${params.toString()}`), {
-      method: 'GET',
-      headers: brokerHeaders(),
+    ctx.status = 200
+    ctx.body = await fetchFeishuUatStatusForUser(user, requiredScopes)
+  } catch (err: any) {
+    handleUatProxyError(ctx, err)
+  }
+}
+
+export async function skillCredentialsStatus(ctx: Context) {
+  try {
+    const user = getOptionalFeishuUser(ctx)
+    const profileName = user?.profile || getRequestProfile(ctx)
+    let larkStatus: Record<string, any> | null = null
+    if (user) {
+      try {
+        larkStatus = await fetchFeishuUatStatusForUser(user)
+      } catch (err) {
+        logger.warn(err, 'Failed to load Lark-cli credential status for credentials page')
+      }
+    }
+    ctx.status = 200
+    ctx.body = await listSkillCredentialStatuses({
+      profileName,
+      profileDir: getProfileDir(profileName),
+      user,
+      larkStatus,
     })
-    await pipeBrokerJson(ctx, res)
+  } catch (err: any) {
+    handleUatProxyError(ctx, err)
+  }
+}
+
+export async function skillCredentialStart(ctx: Context) {
+  try {
+    const user = getOptionalFeishuUser(ctx)
+    const profileName = user?.profile || getRequestProfile(ctx)
+    const id = String(ctx.params?.id || '').trim()
+    if (!id) {
+      ctx.status = 400
+      ctx.body = { error: 'credential id is required' }
+      return
+    }
+    const normalized = id.toLowerCase() === 'lark_cli' ? 'lark-cli' : id.toLowerCase()
+    if (normalized === 'lark-cli') {
+      if (!user) {
+        ctx.status = 401
+        ctx.body = { error: 'Feishu user session is required for Lark-cli authorization' }
+        return
+      }
+      const body = (ctx.request.body || {}) as { scope?: unknown }
+      const payload: Record<string, string> = {
+        profile_name: user.profile,
+        user_key: user.openid,
+      }
+      if (typeof body.scope === 'string' && body.scope.trim()) payload.scope = body.scope.trim()
+      const res = await fetch(brokerUrl('/api/run-broker/feishu-auth/sessions'), {
+        method: 'POST',
+        headers: brokerHeaders(),
+        body: JSON.stringify(payload),
+      })
+      await pipeBrokerJson(ctx, res)
+      return
+    }
+    if (normalized === 'keep-record') {
+      ctx.status = 200
+      ctx.body = await startKeepRecordAuth({
+        id,
+        profileName,
+        profileDir: getProfileDir(profileName),
+      })
+      return
+    }
+    if (normalized === 'kep-cli' || normalized === 'keep-cli') {
+      ctx.status = 200
+      ctx.body = await startKepCliAuth({
+        id,
+        profileName,
+        profileDir: getProfileDir(profileName),
+      })
+      return
+    }
+    ctx.status = 200
+    ctx.body = await getSkillCredentialStartAction({
+      id,
+      profileName,
+      profileDir: getProfileDir(profileName),
+    })
+  } catch (err: any) {
+    handleUatProxyError(ctx, err)
+  }
+}
+
+export async function skillCredentialComplete(ctx: Context) {
+  try {
+    const user = getOptionalFeishuUser(ctx)
+    const profileName = user?.profile || getRequestProfile(ctx)
+    const id = String(ctx.params?.id || '').trim()
+    const normalized = id.toLowerCase() === 'lark_cli' ? 'lark-cli' : id.toLowerCase()
+    if (normalized !== 'keep-record') {
+      ctx.status = 400
+      ctx.body = { error: 'credential completion is not supported for this skill' }
+      return
+    }
+    const body = (ctx.request.body || {}) as { qrcode_id?: unknown }
+    const qrcodeId = typeof body.qrcode_id === 'string' ? body.qrcode_id.trim() : ''
+    if (!qrcodeId) {
+      ctx.status = 400
+      ctx.body = { error: 'qrcode_id is required' }
+      return
+    }
+    ctx.status = 200
+    ctx.body = await completeKeepRecordAuth({
+      id,
+      profileName,
+      profileDir: getProfileDir(profileName),
+      qrcodeId,
+    })
   } catch (err: any) {
     handleUatProxyError(ctx, err)
   }

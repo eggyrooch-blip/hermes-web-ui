@@ -9,6 +9,7 @@ import {
     buildRunBrokerRequest,
     mapRunBrokerFrameForChat,
 } from '../run-chat/handle-broker-run'
+import { getProfileDir } from '../hermes-profile'
 import {
     isAllAgentsMentioned,
     resolveMentionTargets,
@@ -429,6 +430,7 @@ class AgentClient {
             agentId: brokerAgentId,
             instructions,
             messages: messages as any,
+            profileDir: getProfileDir(this.profile),
         })
         request.metadata = {
             ...(request.metadata || {}),

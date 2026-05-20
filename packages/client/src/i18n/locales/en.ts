@@ -86,6 +86,7 @@ export default {
     models: 'Models',
     profiles: 'Profiles',
     skills: 'Skills',
+    credentials: 'Credentials',
     plugins: 'Plugins',
     memory: 'Memory',
     logs: 'Logs',

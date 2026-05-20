@@ -147,6 +147,7 @@ function forbiddenInChatPlane(ctx: Context): boolean {
 
   if (path === '/api/auth/status' || path === '/api/auth/me' || path === '/api/auth/feishu/logout' || path === '/health' || path === '/upload') return false
   if (path.startsWith('/api/auth/feishu/uat/')) return false
+  if (path.startsWith('/api/auth/skill-credentials')) return false
   if (path.startsWith('/api/hermes/sessions')) return false
   if (path.startsWith('/api/hermes/search/sessions')) return false
   if (path.startsWith('/api/hermes/usage/stats')) return false
