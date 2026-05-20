@@ -26,6 +26,11 @@ related:
 > [!info] 2026-05-20 production locale default
 > 生产 WebUI 面向中文团队，首次打开时不能因浏览器/系统语言是英文而显示英文。`packages/client/src/i18n/index.ts` 的默认语言为 `DEFAULT_LOCALE='zh'`，`fallbackLocale` 也应保持中文；只在 `localStorage.hermes_locale` 已保存有效 locale 时尊重用户显式选择。不要重新引入 `navigator.languages` / `Accept-Language` 自动探测作为默认值。回归测试见 `tests/client/i18n-default-locale.test.ts`：英文浏览器、无保存值时必须得到 `zh`；保存 `en` 时仍为 `en`。
 
+> [!info] 2026-05-20 chat-plane profile clone + queue dequeue fixes
+> chat-plane 的 profile 创建不能再裸用 `hermes profile create --clone` 从当前服务进程 active profile 克隆；生产 WebUI 常驻在 `active_profile=multitenancy_router`，裸 clone 会复制 router/profile shell 并触发凭证清理，表现为新 profile 缺少 Feishu/Lark-cli 基础身份。`controllers/hermes/profiles.ts` 在 chat-plane + OAuth user 场景必须把可信 `ctx.state.user.profile` 传给 `HermesCliService.createProfile({ cloneFrom })`，并由 CLI 参数 `--clone-from <profile>` 明确从用户自己的 profile 克隆；缺可信 source profile 时 fail closed。admin/non-chat-plane 保持原语义。
+>
+> Socket.IO 消息队列浮层不能只按 `run.queued.queue_length` 推断本地 queued user message 已开始执行，因为 `run.queued` 同时用于入队、取消和出队后的长度广播。server 只有在 `dequeueNextQueuedRun()` 或 abort 后实际 `state.queue.shift()` 时才附带 `dequeued_queue_id`；client 只有收到该 id 且匹配本地 `queuedUserMessages` 时，才把对应 user message 从浮层移入正文。普通 queue length update 只更新 badge/count，避免多 tab 或取消队列项时误把未执行消息显示成已执行。回归见 `tests/client/chat-store-user-mode.test.ts` 和 `tests/server/chat-run-socket.test.ts`。
+
 > [!warning] 2026-05-18 `webui-upstream-safe-ports` — upstream 安全移植，不整支合并
 > 本轮在 ftask worktree `/Users/kite/code/hermes-web-ui.tasks/webui-upstream-safe-ports` 手工吸收 upstream 中对侧栏能力有价值且不冲突多租户目标的补丁。仍禁止整支 merge `EKKOLearnAI/main`：upstream 大规模替换 `chat-run-socket`/`run-chat`、删除本地 `request-context.ts`、`feishu-oauth.ts` 和 user-mode/Feishu/Run Broker 测试，会冲掉 `X-Hermes-Owner-Open-Id`、profile owner isolation、Feishu UAT/lark-cli connector 与本地文档。
 >
