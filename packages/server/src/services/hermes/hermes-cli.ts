@@ -551,10 +551,20 @@ export async function getProfile(name: string): Promise<HermesProfileDetail> {
 /**
  * Create a new profile
  */
-export async function createProfile(name: string, clone?: boolean): Promise<string> {
+export interface CreateHermesProfileOptions {
+  clone?: boolean
+  description?: string
+  noAlias?: boolean
+}
+
+export async function createProfile(name: string, options: CreateHermesProfileOptions | boolean = {}): Promise<string> {
   validateProfileName(name)
+  const resolved = typeof options === 'boolean' ? { clone: options } : options
   const args = ['profile', 'create']
-  if (clone) args.push('--clone')
+  if (resolved.clone) args.push('--clone')
+  if (resolved.noAlias) args.push('--no-alias')
+  const description = resolved.description?.trim()
+  if (description) args.push('--description', description)
   args.push('--', name)
 
   try {

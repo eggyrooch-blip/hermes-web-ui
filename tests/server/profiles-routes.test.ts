@@ -16,11 +16,43 @@ vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({
   importProfile: vi.fn(),
 }))
 
+vi.mock('../../packages/server/src/services/gateway-bootstrap', () => ({
+  getGatewayManagerInstance: () => ({
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+  }),
+}))
+
+vi.mock('../../packages/server/src/services/hermes/profile-credentials', () => ({
+  smartCloneCleanup: vi.fn(() => ({
+    strippedCredentials: [],
+    disabledPlatforms: [],
+    strippedConfigCredentials: [],
+  })),
+}))
+
+vi.mock('../../packages/server/src/services/hermes/agent-ownership', () => ({
+  listOwnedProfileMetadata: vi.fn(() => new Map()),
+  registerOwnedProfile: vi.fn(() => true),
+}))
+
+vi.mock('../../packages/server/src/services/hermes/profile-provisioning', () => ({
+  provisionOwnedProfileViaBroker: vi.fn(() => Promise.resolve(false)),
+}))
+
 import * as hermesCli from '../../packages/server/src/services/hermes/hermes-cli'
+import { config } from '../../packages/server/src/config'
+import { create } from '../../packages/server/src/controllers/hermes/profiles'
+import { registerOwnedProfile } from '../../packages/server/src/services/hermes/agent-ownership'
+import { provisionOwnedProfileViaBroker } from '../../packages/server/src/services/hermes/profile-provisioning'
 
 describe('Profile Routes', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    config.webPlane = 'both'
+    config.runBrokerUrl = ''
+    config.runBrokerKey = ''
+    vi.mocked(provisionOwnedProfileViaBroker).mockResolvedValue(false)
   })
 
   describe('ensureApiServerConfig (via active profile switch)', () => {
@@ -82,6 +114,96 @@ describe('Profile Routes', () => {
       await hermesCli.renameProfile('old', 'new')
 
       expect(hermesCli.renameProfile).toHaveBeenCalledWith('old', 'new')
+    })
+  })
+
+  describe('create controller', () => {
+    it('passes role description and no-alias to Hermes CLI for chat-plane users', async () => {
+      vi.mocked(hermesCli.createProfile).mockResolvedValue('Profile created')
+
+      const ctx: any = {
+        request: {
+          body: {
+            name: 'web_coder',
+            clone: true,
+            description: 'Software engineering agent for coding and tests.',
+          },
+        },
+        state: {
+          user: { openid: 'ou_owner', profile: 'feishu_g41a5b5g' },
+        },
+        status: 200,
+        body: undefined,
+      }
+      config.webPlane = 'chat'
+
+      await create(ctx)
+
+      expect(hermesCli.createProfile).toHaveBeenCalledWith('web_coder', {
+        clone: true,
+        description: 'Software engineering agent for coding and tests.',
+        noAlias: true,
+      })
+      expect(ctx.body.success).toBe(true)
+    })
+
+    it('registers chat-plane profile ownership through the multitenancy broker before fallback', async () => {
+      vi.mocked(hermesCli.createProfile).mockResolvedValue('Profile created')
+      vi.mocked(provisionOwnedProfileViaBroker).mockResolvedValue(true)
+
+      const ctx: any = {
+        request: {
+          body: {
+            name: 'web_operator',
+            clone: false,
+            description: 'Operations agent for recurring tasks.',
+          },
+        },
+        state: {
+          user: { openid: 'ou_owner', profile: 'feishu_g41a5b5g' },
+        },
+        status: 200,
+        body: undefined,
+      }
+      config.webPlane = 'chat'
+
+      await create(ctx)
+
+      expect(provisionOwnedProfileViaBroker).toHaveBeenCalledWith({
+        ownerOpenId: 'ou_owner',
+        profileName: 'web_operator',
+        upstreamProfile: 'feishu_g41a5b5g',
+        displayLabel: 'web_operator',
+        description: 'Operations agent for recurring tasks.',
+      })
+      expect(registerOwnedProfile).not.toHaveBeenCalled()
+      expect(ctx.body.success).toBe(true)
+    })
+
+    it('keeps admin-plane profile creation compatible without no-alias', async () => {
+      vi.mocked(hermesCli.createProfile).mockResolvedValue('Profile created')
+
+      const ctx: any = {
+        request: {
+          body: {
+            name: 'admin_profile',
+            clone: false,
+          },
+        },
+        state: {},
+        status: 200,
+        body: undefined,
+      }
+      config.webPlane = 'both'
+
+      await create(ctx)
+
+      expect(hermesCli.createProfile).toHaveBeenCalledWith('admin_profile', {
+        clone: false,
+        description: undefined,
+        noAlias: false,
+      })
+      expect(ctx.body.success).toBe(true)
     })
   })
 })

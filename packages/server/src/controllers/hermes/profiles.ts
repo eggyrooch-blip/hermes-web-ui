@@ -16,6 +16,7 @@ import { logger } from '../../services/logger'
 import { smartCloneCleanup } from '../../services/hermes/profile-credentials'
 import { config } from '../../config'
 import { listOwnedProfileMetadata, registerOwnedProfile } from '../../services/hermes/agent-ownership'
+import { provisionOwnedProfileViaBroker } from '../../services/hermes/profile-provisioning'
 
 export async function list(ctx: any) {
   try {
@@ -68,14 +69,21 @@ export async function list(ctx: any) {
 }
 
 export async function create(ctx: any) {
-  const { name, clone } = ctx.request.body as { name?: string; clone?: boolean }
+  const { name, clone, description } = ctx.request.body as { name?: string; clone?: boolean; description?: string }
   if (!name) {
     ctx.status = 400
     ctx.body = { error: 'Missing profile name' }
     return
   }
   try {
-    const output = await hermesCli.createProfile(name, clone)
+    const user = ctx.state?.user as { openid?: string; profile?: string } | undefined
+    const userMode = config.webPlane === 'chat' && !!user?.openid
+    const normalizedDescription = typeof description === 'string' ? description.trim() || undefined : undefined
+    const output = await hermesCli.createProfile(name, {
+      clone: !!clone,
+      description: normalizedDescription,
+      noAlias: userMode,
+    })
 
     // clone=true 时执行智能清理：
     //   - 删除 .env 中的独占平台凭据（Weixin / Telegram / Slack / ...）
@@ -115,9 +123,17 @@ export async function create(ctx: any) {
         logger.error(err, 'Failed to start gateway for profile "%s"', name)
       }
     }
-    const user = ctx.state?.user as { openid?: string; profile?: string } | undefined
-    if (config.webPlane === 'chat' && user?.openid) {
-      registerOwnedProfile(user.openid, name, user.profile)
+    if (userMode && user?.openid) {
+      const provisioned = await provisionOwnedProfileViaBroker({
+        ownerOpenId: user.openid,
+        profileName: name,
+        upstreamProfile: user.profile,
+        displayLabel: name,
+        description: normalizedDescription,
+      })
+      if (!provisioned) {
+        registerOwnedProfile(user.openid, name, user.profile)
+      }
     }
     ctx.body = {
       success: true,

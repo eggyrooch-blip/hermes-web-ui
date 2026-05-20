@@ -224,7 +224,7 @@ export function registerOwnedProfile(openid: string, profileName: string, upstre
                 const values = new Map<string, string | number | null>([
                     ['user_id', userId],
                     ['profile_name', normalizedProfileName],
-                    ['open_id', normalizedOpenid],
+                    ['open_id', userId],
                 ])
                 if (columns.has('active')) values.set('active', 1)
                 if (columns.has('owner_open_id')) values.set('owner_open_id', normalizedOpenid)
@@ -232,6 +232,7 @@ export function registerOwnedProfile(openid: string, profileName: string, upstre
                 if (columns.has('provenance')) values.set('provenance', 'webui-agent')
                 if (columns.has('display_label')) values.set('display_label', normalizedProfileName)
                 if (columns.has('upstream_profile')) values.set('upstream_profile', normalizedUpstream)
+                if (columns.has('agent_id')) values.set('agent_id', userId)
                 if (columns.has('synced_at')) values.set('synced_at', now)
                 if (columns.has('version')) values.set('version', 1)
                 if (columns.has('created_at')) values.set('created_at', now)
