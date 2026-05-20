@@ -51,6 +51,10 @@ vi.mock('../../packages/server/src/services/logger', () => ({
   },
 }))
 
+vi.mock('../../packages/server/src/services/hermes/agent-ownership', () => ({
+  resolveOwnedProfileAgentId: vi.fn(() => 'routing-agent-1'),
+}))
+
 import { config } from '../../packages/server/src/config'
 import { AgentClients } from '../../packages/server/src/services/hermes/group-chat/agent-clients'
 
@@ -125,12 +129,14 @@ describe('group-chat agent run broker compatibility', () => {
         Authorization: 'Bearer broker-secret',
         'X-Hermes-Owner-Open-Id': 'ou_owner',
         'X-Hermes-Feishu-OpenId': 'ou_owner',
+        'X-Hermes-Agent-Id': 'routing-agent-1',
       }),
     }))
     const request = JSON.parse((global.fetch as any).mock.calls[0][1].body)
     expect(request).toEqual(expect.objectContaining({
       channel: 'webui',
       profile_name: 'feishu_g41a5b5g',
+      agent_id: 'routing-agent-1',
       user_key: 'ou_owner',
       credential_subject: 'ou_owner',
       delivery_mode: 'socket',

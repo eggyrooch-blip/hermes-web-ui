@@ -131,6 +131,7 @@ export type OwnedProfileMetadata = {
     kind?: string
     displayLabel?: string
     ownerOpenId?: string
+    agentId?: string
 }
 
 export function listOwnedProfileMetadata(openid: string): Map<string, OwnedProfileMetadata> {
@@ -168,13 +169,14 @@ export function listOwnedProfileMetadata(openid: string): Map<string, OwnedProfi
                     columns.has('kind') ? 'kind' : 'NULL AS kind',
                     columns.has('display_label') ? 'display_label' : 'NULL AS display_label',
                     columns.has('owner_open_id') ? 'owner_open_id' : 'NULL AS owner_open_id',
+                    columns.has('agent_id') ? 'agent_id' : 'NULL AS agent_id',
                 ]
                 const rows = db.prepare(
                     `SELECT ${selectColumns.join(', ')}
                      FROM multitenancy_routing
                      WHERE active = 1
                        AND (${disjuncts.join(' OR ')})`
-                ).all(...params) as Array<{ profile_name?: string; kind?: string; display_label?: string; owner_open_id?: string }>
+                ).all(...params) as Array<{ profile_name?: string; kind?: string; display_label?: string; owner_open_id?: string; agent_id?: string }>
 
                 for (const row of rows) {
                     if (!isNonEmptyString(row.profile_name)) continue
@@ -183,6 +185,7 @@ export function listOwnedProfileMetadata(openid: string): Map<string, OwnedProfi
                         ...(isNonEmptyString(row.kind) ? { kind: row.kind.trim() } : {}),
                         ...(isNonEmptyString(row.display_label) ? { displayLabel: row.display_label.trim() } : {}),
                         ...(isNonEmptyString(row.owner_open_id) ? { ownerOpenId: row.owner_open_id.trim() } : {}),
+                        ...(isNonEmptyString(row.agent_id) ? { agentId: row.agent_id.trim() } : {}),
                     })
                 }
             } finally {
@@ -194,6 +197,11 @@ export function listOwnedProfileMetadata(openid: string): Map<string, OwnedProfi
     }
 
     return profiles
+}
+
+export function resolveOwnedProfileAgentId(openid: string, profileName: string): string | undefined {
+    if (!isNonEmptyString(openid) || !isNonEmptyString(profileName)) return undefined
+    return listOwnedProfileMetadata(openid).get(profileName.trim())?.agentId
 }
 
 export function registerOwnedProfile(openid: string, profileName: string, upstreamProfile?: string): boolean {

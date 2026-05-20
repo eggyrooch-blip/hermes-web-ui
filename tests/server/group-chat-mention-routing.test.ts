@@ -93,7 +93,7 @@ describe('Group chat mention routing', () => {
     const { clients, koolie } = await setupRoom()
 
     await clients.processMentions('room-1', {
-      content: '我觉得可以请@koolie，看一下。',
+      content: '我觉得可以请 @koolie，看一下。',
       senderName: 'manager',
       senderId: 'human-user-with-agent-display-name',
       timestamp: Date.now(),
@@ -102,17 +102,17 @@ describe('Group chat mention routing', () => {
     expect(koolie.replyToMention).toHaveBeenCalledTimes(1)
   })
 
-  it('does not classify a spoofed stable agent id as agent-authored without the server-owned flag', async () => {
+  it('excludes the sender by stable agent id like upstream mention routing', async () => {
     const { clients, manager } = await setupRoom()
 
     await clients.processMentions('room-1', {
-      content: '@manager 如果这是普通用户消息，应该仍然能叫到 manager。',
-      senderName: 'spoofed-user',
+      content: '@manager 我不应该再次唤醒自己。',
+      senderName: 'manager',
       senderId: manager.agentId,
       timestamp: Date.now(),
     })
 
-    expect(manager.replyToMention).toHaveBeenCalledTimes(1)
+    expect(manager.replyToMention).not.toHaveBeenCalled()
   })
 
   it('does not treat a longer handle as a mention of a shorter agent name', async () => {

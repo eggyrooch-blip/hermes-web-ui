@@ -11,8 +11,10 @@ import {
 } from '../run-chat/handle-broker-run'
 import {
     isAllAgentsMentioned,
+    resolveMentionTargets,
     stripMentionRoutingTokens,
 } from './mention-routing'
+import { resolveOwnedProfileAgentId } from '../agent-ownership'
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -409,6 +411,7 @@ class AgentClient {
         const ownerOpenId = typeof roomInfo?.owner_open_id === 'string' && roomInfo.owner_open_id.trim()
             ? roomInfo.owner_open_id.trim()
             : undefined
+        const brokerAgentId = ownerOpenId ? resolveOwnedProfileAgentId(ownerOpenId, this.profile) : undefined
         const sessionId = `group-chat:${roomId}:${this.agentId}`
         const messages = conversationHistory.map((entry, index) => ({
             id: index + 1,
@@ -422,6 +425,7 @@ class AgentClient {
             profile: this.profile,
             ownerOpenId,
             sessionId,
+            agentId: brokerAgentId,
             instructions,
             messages: messages as any,
         })
@@ -438,6 +442,7 @@ class AgentClient {
             headers: buildRunBrokerHeaders({
                 runBrokerKey: config.runBrokerKey,
                 ownerOpenId,
+                agentId: brokerAgentId,
             }),
             body: JSON.stringify(request),
         })
@@ -799,24 +804,8 @@ export class AgentClients {
      * If the room is already processing (compressing/replying), queue the mention.
      */
     async processMentions(roomId: string, msg: MentionMessage): Promise<void> {
-        if (!this._gatewayManager) return
-
         const agents = this.getAgents(roomId)
-        if (agents.length === 0) return
-
-        const senderAgent = msg.senderIsAgent ? agents.find(a => a.agentId === msg.senderId) : undefined
-        const content = msg.content
-
-        const broadcast = isAllAgentsMentioned(content)
-        const mentioned = agents.filter((agent) => {
-            if (senderAgent && agent.agentId === senderAgent.agentId) return false
-            if (broadcast) return true
-            const escapedName = escapeRegExp(agent.name)
-            const pattern = senderAgent
-                ? new RegExp(`^\\s*@${escapedName}(?=$|[^A-Za-z0-9_-])`, 'i')
-                : new RegExp(`(^|[^A-Za-z0-9_@-])@${escapedName}(?=$|[^A-Za-z0-9_-])`, 'i')
-            return pattern.test(content)
-        })
+        const mentioned = resolveMentionTargets(agents, msg.content, msg.senderId)
         if (mentioned.length === 0) return
 
         logger.debug(`[AgentClients] ${mentioned.map(a => a.name).join(', ')} mentioned by ${msg.senderName}`)

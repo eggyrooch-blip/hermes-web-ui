@@ -26,6 +26,7 @@ type BuildRunBrokerRequestOptions = {
   sessionId?: string
   model?: string
   provider?: string
+  agentId?: string
   instructions?: string
   workspace?: string | null
   messages?: SessionMessage[]
@@ -41,6 +42,7 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
     sessionId,
     model,
     provider,
+    agentId,
     instructions,
     workspace,
     messages = [],
@@ -74,6 +76,7 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
   return {
     channel: 'webui',
     profile_name: profile,
+    ...(agentId ? { agent_id: agentId } : {}),
     user_key: userKey,
     content,
     session_id: sessionId,
@@ -88,15 +91,17 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
   }
 }
 
-export function buildRunBrokerHeaders(options: { runBrokerKey?: string; ownerOpenId?: string }): Record<string, string> {
+export function buildRunBrokerHeaders(options: { runBrokerKey?: string; ownerOpenId?: string; agentId?: string }): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const key = options.runBrokerKey?.trim()
   const ownerOpenId = options.ownerOpenId?.trim()
+  const agentId = options.agentId?.trim()
   if (key) headers.Authorization = `Bearer ${key}`
   if (ownerOpenId) {
     headers['X-Hermes-Owner-Open-Id'] = ownerOpenId
     headers['X-Hermes-Feishu-OpenId'] = ownerOpenId
   }
+  if (agentId) headers['X-Hermes-Agent-Id'] = agentId
   return headers
 }
 
