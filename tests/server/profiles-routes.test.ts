@@ -42,8 +42,8 @@ vi.mock('../../packages/server/src/services/hermes/profile-provisioning', () => 
 
 import * as hermesCli from '../../packages/server/src/services/hermes/hermes-cli'
 import { config } from '../../packages/server/src/config'
-import { create } from '../../packages/server/src/controllers/hermes/profiles'
-import { registerOwnedProfile } from '../../packages/server/src/services/hermes/agent-ownership'
+import { create, list } from '../../packages/server/src/controllers/hermes/profiles'
+import { listOwnedProfileMetadata, registerOwnedProfile } from '../../packages/server/src/services/hermes/agent-ownership'
 import { provisionOwnedProfileViaBroker } from '../../packages/server/src/services/hermes/profile-provisioning'
 
 describe('Profile Routes', () => {
@@ -53,6 +53,7 @@ describe('Profile Routes', () => {
     config.runBrokerUrl = ''
     config.runBrokerKey = ''
     vi.mocked(provisionOwnedProfileViaBroker).mockResolvedValue(false)
+    vi.mocked(listOwnedProfileMetadata).mockReturnValue(new Map())
   })
 
   describe('ensureApiServerConfig (via active profile switch)', () => {
@@ -118,6 +119,49 @@ describe('Profile Routes', () => {
   })
 
   describe('create controller', () => {
+    it('lists chat-plane owned profiles without invoking the slow global Hermes profile list', async () => {
+      config.webPlane = 'chat'
+      vi.mocked(hermesCli.listProfiles).mockRejectedValue(new Error('profile list should not run'))
+      vi.mocked(listOwnedProfileMetadata).mockReturnValue(new Map([
+        ['sunke', { profileName: 'sunke', kind: 'user', ownerOpenId: 'ou_owner' }],
+        ['team_room', { profileName: 'team_room', kind: 'group', ownerOpenId: 'ou_owner', displayLabel: '团队群' }],
+      ]))
+
+      const ctx: any = {
+        state: {
+          user: { openid: 'ou_owner', profile: 'sunke', role: 'user' },
+        },
+        body: undefined,
+      }
+
+      await list(ctx)
+
+      expect(hermesCli.listProfiles).not.toHaveBeenCalled()
+      expect(ctx.body).toEqual({
+        profiles: [
+          {
+            name: 'sunke',
+            active: true,
+            model: '',
+            gateway: '',
+            alias: '',
+            kind: 'user',
+            ownerOpenId: 'ou_owner',
+          },
+          {
+            name: 'team_room',
+            active: false,
+            model: '',
+            gateway: '',
+            alias: '',
+            displayLabel: '团队群',
+            kind: 'group',
+            ownerOpenId: 'ou_owner',
+          },
+        ],
+      })
+    })
+
     it('passes role description and no-alias to Hermes CLI for chat-plane users', async () => {
       vi.mocked(hermesCli.createProfile).mockResolvedValue('Profile created')
 

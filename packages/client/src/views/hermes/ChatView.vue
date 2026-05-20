@@ -13,13 +13,12 @@ const settingsStore = useSettingsStore()
 
 onMounted(async () => {
   appStore.loadModels()
-  // 先加载 profile，确保缓存 key 使用正确的 profile name；同时预取显示设置，
-  // 让聊天完成提示音不依赖用户先打开 Settings 页面。
-  await Promise.all([
-    profilesStore.fetchProfiles(),
-    settingsStore.fetchSettings(),
-  ])
-  chatStore.loadSessions()
+  // Chat session isolation is enforced server-side from the Feishu session and
+  // owner/profile ACL. Do not block visible chat history on the slower profile
+  // list; production profile discovery can involve multitenancy metadata.
+  void chatStore.loadSessions()
+  void profilesStore.fetchProfiles()
+  void settingsStore.fetchSettings()
 })
 </script>
 
