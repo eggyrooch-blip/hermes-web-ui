@@ -22,5 +22,7 @@ describe('group-chat context prompt', () => {
 
     expect(instructions).toContain('当前 profile：hello')
     expect(instructions).toContain('不要声称自己是其它成员或其它 profile')
+    expect(instructions).toContain('当你收到群聊任务时，说明系统已经判断你需要回复')
+    expect(instructions).toContain('不要主动 @ 任何人，除非最新消息明确要求你转交')
   })
 })
