@@ -10,6 +10,10 @@ import {
 } from '../../services/hermes/file-provider'
 import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 
+function withAbsolutePath<T extends { path: string }>(entry: T): T & { absolutePath: string } {
+  return { ...entry, absolutePath: resolveHermesPath(entry.path) }
+}
+
 export const fileRoutes = new Router()
 
 function handleError(ctx: any, err: any) {
@@ -68,7 +72,7 @@ fileRoutes.get('/api/hermes/files/list', async (ctx) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
       return a.name.localeCompare(b.name)
     })
-    ctx.body = { entries, path: relativePath }
+    ctx.body = { entries: entries.map(withAbsolutePath), path: relativePath, absolutePath: absPath }
   } catch (err: any) {
     handleError(ctx, err)
   }
@@ -88,7 +92,7 @@ fileRoutes.get('/api/hermes/files/stat', async (ctx) => {
     const absPath = resolveFilePath(relativePath, rootDir)
     const provider = await createRequestFileProvider(rootDir)
     const info = await provider.stat(absPath)
-    ctx.body = info
+    ctx.body = withAbsolutePath(info)
   } catch (err: any) {
     handleError(ctx, err)
   }

@@ -1,7 +1,10 @@
 import { WebSocketServer } from 'ws'
 import type { Server as HttpServer, IncomingMessage } from 'http'
-import { accessSync, chmodSync, constants as fsConstants, existsSync, mkdirSync } from 'fs'
-import { dirname, join } from 'path'
+import { accessSync, chmodSync, constants as fsConstants, existsSync } from 'fs'
+import { dirname, join, isAbsolute, resolve as resolvePath } from 'path'
+import { homedir } from 'os'
+import { getActiveProfileDir } from '../../services/hermes/hermes-profile'
+import { getTerminalConfig, type TerminalConfig } from '../../services/hermes/file-provider'
 import { getToken } from '../../services/auth'
 import { logger } from '../../services/logger'
 import { config, parseBool } from '../../config'
@@ -14,7 +17,6 @@ import {
   getFeishuSessionSecret,
   FEISHU_SESSION_COOKIE,
 } from '../../services/feishu-oauth'
-import { getActiveProfileDir } from '../../services/hermes/hermes-profile'
 
 /**
  * Terminal feature is OFF by default. Set HERMES_TERMINAL_ENABLED=1 to opt in.
@@ -102,16 +104,6 @@ async function authenticateUpgrade(req: IncomingMessage, url: URL): Promise<Term
   return { ok: true, principal: `token:****${authToken.slice(-4)}` }
 }
 
-function resolveTerminalCwd(): string {
-  // Sandbox the shell into <profile-dir>/terminal so it cannot read $HOME
-  // dotfiles by default. Caller can still cd elsewhere — this is only the
-  // initial working directory. If we cannot create the sandbox we fail closed:
-  // a degraded "/tmp" fallback would silently weaken the C1 sandbox claim.
-  const dir = join(getActiveProfileDir(), 'terminal')
-  mkdirSync(dir, { recursive: true })
-  return dir
-}
-
 let pty: any = null
 
 function ensureNodePtySpawnHelperExecutable() {
@@ -166,6 +158,22 @@ function findShell(): string {
 
 function shellName(shell: string): string {
   return shell.split('/').pop() || 'shell'
+}
+
+export function resolveTerminalCwd(
+  cfg: Pick<TerminalConfig, 'cwd'> = getTerminalConfig(),
+  profileDir = getActiveProfileDir(),
+): string {
+  const configured = cfg.cwd?.trim()
+  const fallback = existsSync(profileDir) ? profileDir : homedir()
+  if (!configured) return fallback
+
+  const cwd = isAbsolute(configured) ? configured : resolvePath(profileDir, configured)
+  if (!existsSync(cwd)) {
+    logger.warn({ cwd }, 'Configured terminal cwd does not exist; falling back to Hermes profile directory')
+    return fallback
+  }
+  return cwd
 }
 
 // ─── Session types ──────────────────────────────────────────────
