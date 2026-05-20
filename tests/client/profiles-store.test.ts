@@ -68,7 +68,7 @@ describe('Profiles Store', () => {
     expect(store.loading).toBe(false)
   })
 
-  it('uses the bound Feishu profile in user mode without calling the admin profiles API', async () => {
+  it('uses owner-scoped profiles in user mode and keeps the bound Feishu profile active', async () => {
     localStorage.setItem('hermes_web_plane', 'chat')
     localStorage.setItem('hermes_current_user', JSON.stringify({
       openid: 'ou_test',
@@ -76,16 +76,18 @@ describe('Profiles Store', () => {
       role: 'user',
       name: '张三',
     }))
+    mockProfilesApi.fetchProfiles.mockResolvedValue([
+      { name: 'g41a5b5g', active: false, model: 'gpt-4', gateway: 'running', alias: '' },
+      { name: 'webui_child_research', active: false, model: 'gpt-4', gateway: 'running', alias: '' },
+    ])
 
     const store = useProfilesStore()
     await store.fetchProfiles()
 
-    expect(mockProfilesApi.fetchProfiles).not.toHaveBeenCalled()
+    expect(mockProfilesApi.fetchProfiles).toHaveBeenCalled()
     expect(store.activeProfileName).toBe('g41a5b5g')
     expect(store.activeProfile?.name).toBe('g41a5b5g')
-    expect(store.profiles).toEqual([
-      expect.objectContaining({ name: 'g41a5b5g', active: true }),
-    ])
+    expect(store.profiles.map(p => p.name)).toEqual(['g41a5b5g', 'webui_child_research'])
   })
 
   it('createProfile calls API and refreshes list', async () => {

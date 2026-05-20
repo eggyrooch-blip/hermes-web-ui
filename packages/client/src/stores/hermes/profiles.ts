@@ -48,24 +48,35 @@ export const useProfilesStore = defineStore('profiles', () => {
   }
 
   async function fetchProfiles() {
-    if (shouldUseBoundProfileOnly()) {
-      ensureBoundProfile()
-      return
-    }
-
     loading.value = true
     try {
       profiles.value = await profilesApi.fetchProfiles()
-      activeProfile.value = profiles.value.find(p => p.active) ?? null
-      // 同步缓存 profile name，供其他 store 启动时读取
-      if (activeProfile.value) {
-        activeProfileName.value = activeProfile.value.name
-        localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, activeProfile.value.name)
+      if (shouldUseBoundProfileOnly()) {
+        const boundName = currentUser.value?.profile || activeProfileName.value
+        if (boundName && !profiles.value.some(p => p.name === boundName)) {
+          profiles.value.unshift({ name: boundName, active: true, model: '', gateway: '', alias: '' })
+        }
+        if (boundName) {
+          profiles.value = profiles.value.map(p => ({ ...p, active: p.name === boundName }))
+          activeProfile.value = profiles.value.find(p => p.name === boundName) ?? null
+          activeProfileName.value = boundName
+          localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, boundName)
+        } else {
+          activeProfile.value = profiles.value.find(p => p.active) ?? null
+        }
+      } else {
+        activeProfile.value = profiles.value.find(p => p.active) ?? null
+        // 同步缓存 profile name，供其他 store 启动时读取
+        if (activeProfile.value) {
+          activeProfileName.value = activeProfile.value.name
+          localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, activeProfile.value.name)
+        }
+        // 清理所有会话缓存（不再使用 localStorage 缓存）
+        clearAllSessionCaches()
       }
-      // 清理所有会话缓存（不再使用 localStorage 缓存）
-      clearAllSessionCaches()
     } catch (err) {
       console.error('Failed to fetch profiles:', err)
+      if (shouldUseBoundProfileOnly()) ensureBoundProfile()
     } finally {
       loading.value = false
     }

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { defineComponent } from 'vue'
+import { defineComponent, nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 
 const warningMock = vi.hoisted(() => vi.fn())
@@ -60,7 +60,10 @@ vi.mock('naive-ui', () => ({
   NSpace: { template: '<div><slot /></div>' },
   NInput: { template: '<input />' },
   NInputNumber: { template: '<input />' },
-  NSelect: { template: '<select />' },
+  NSelect: defineComponent({
+    props: ['options', 'value'],
+    template: '<select><option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option></select>',
+  }),
   NPopover: { template: '<div><slot name="trigger" /><slot /></div>' },
   NPopconfirm: { template: '<div><slot name="trigger" /><slot /></div>' },
 }))
@@ -75,6 +78,10 @@ vi.mock('@/components/hermes/group-chat/GroupChatInput.vue', () => ({
 
 vi.mock('@/components/hermes/group-chat/CreateRoomForm.vue', () => ({
   default: { template: '<div>CreateRoomForm</div>' },
+}))
+
+vi.mock('@/components/hermes/profiles/ProfileCreateModal.vue', () => ({
+  default: { emits: ['saved', 'close'], template: '<div class="profile-create-modal">ProfileCreateModal</div>' },
 }))
 
 import GroupChatPanel from '@/components/hermes/group-chat/GroupChatPanel.vue'
@@ -111,5 +118,18 @@ describe('GroupChatPanel empty room state', () => {
     await wrapper.find('button[title="groupChat.createRoom"]').trigger('click')
 
     expect(document.body.querySelector('.modal')).not.toBeNull()
+  })
+
+  it('renders the existing profile creation flow from the add-agent modal', async () => {
+    storeMock.currentRoomId = 'room-1'
+    const wrapper = mount(GroupChatPanel, { attachTo: document.body })
+
+    await wrapper.find('button[title="groupChat.addAgent"]').trigger('click')
+    const createButton = document.body.querySelector('.agent-profile-create-btn') as HTMLButtonElement | null
+    expect(createButton).not.toBeNull()
+    createButton!.click()
+    await nextTick()
+
+    expect(document.body.querySelector('.profile-create-modal')).not.toBeNull()
   })
 })
