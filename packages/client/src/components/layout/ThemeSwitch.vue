@@ -5,7 +5,7 @@ const { isDark, toggleBrightness } = useTheme()
 </script>
 
 <template>
-  <div style="display: flex; gap: 4px; align-items: center;">
+  <div class="theme-switch-container" style="display: flex; gap: 4px; align-items: center;">
     <button class="theme-switch" :title="isDark ? 'Light mode' : 'Dark mode'" @click="toggleBrightness">
       <!-- Sun icon (shown in dark mode) -->
       <svg v-if="isDark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

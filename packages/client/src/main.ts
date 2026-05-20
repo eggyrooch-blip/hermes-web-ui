@@ -5,11 +5,18 @@ import { i18n } from './i18n'
 import App from './App.vue'
 import './styles/global.scss'
 
-// Apply dark class before mount to prevent FOUC
+// Apply theme classes before mount to prevent FOUC.
+const savedBrightness = localStorage.getItem('hermes_brightness') || 'system'
+const savedStyle = localStorage.getItem('hermes_style') || 'ink'
 const savedTheme = localStorage.getItem('hermes_theme') || 'system'
 const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-if (savedTheme === 'dark' || (savedTheme === 'system' && prefersDark)) {
+const isDark = savedBrightness === 'dark' || savedTheme === 'dark' || ((savedBrightness === 'system' || savedTheme === 'system') && prefersDark)
+const isComic = savedStyle === 'comic'
+if (isDark) {
   document.documentElement.classList.add('dark')
+}
+if (isComic) {
+  document.documentElement.classList.add('comic')
 }
 
 // Read token from URL BEFORE router initializes (hash router strips params).
