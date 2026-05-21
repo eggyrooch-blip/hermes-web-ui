@@ -185,6 +185,56 @@ describe('kanban controller', () => {
     vi.unstubAllGlobals()
   })
 
+  it('loads chat-plane kanban task details from the owner-scoped broker task list', async () => {
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => new Response(JSON.stringify({
+      tasks: [
+        { id: 'other-task', title: 'Other', status: 'todo', assignee: 'owner_writer', tenant: 'ouX' },
+        { id: 'task-1', title: 'Created task', status: 'ready', assignee: 'owner_writer', tenant: 'ouX' },
+      ],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    config.webPlane = 'chat'
+    config.webuiRunBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+    config.runBrokerKey = 'broker-secret'
+
+    const c = ctx({
+      params: { id: 'task-1' },
+      query: { board: 'project-a' },
+      search: '?board=project-a&profile=evil&token=secret',
+      req: { method: 'GET' },
+      set: vi.fn(),
+    })
+    await ctrl.get(c)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8766/api/run-broker/kanban/tasks?board=project-a&includeArchived=true',
+      expect.objectContaining({
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer broker-secret',
+          'X-Hermes-Owner-Open-Id': 'ouX',
+        },
+        body: undefined,
+      }),
+    )
+    expect(mockGetTask).not.toHaveBeenCalled()
+    expect(c.body).toEqual({
+      task: { id: 'task-1', title: 'Created task', status: 'ready', assignee: 'owner_writer', tenant: 'ouX' },
+      latest_summary: null,
+      comments: [],
+      events: [],
+      runs: [],
+      parents: [],
+      children: [],
+    })
+    vi.unstubAllGlobals()
+  })
+
   it('proxies chat-plane kanban capabilities through the broker', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       capabilities: {

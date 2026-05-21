@@ -142,6 +142,7 @@ type PositiveIntegerResult = { value?: number; error?: string }
 type StringResult = { value?: string; error?: string }
 type BooleanResult = { value?: boolean; error?: string }
 type BodyResult = { body: Record<string, unknown>; error?: string }
+type BrokerJsonResult = { status: number; contentType: string; body: unknown }
 
 function optionalPositiveInteger(value: unknown, name: string, max: number): PositiveIntegerResult {
   if (value === undefined || value === null || value === '') return {}
@@ -275,18 +276,28 @@ async function readUpstreamError(res: Response): Promise<unknown> {
   return { error: text || `Upstream error: ${res.status} ${res.statusText}` }
 }
 
-async function brokerRequest(ctx: Context, brokerPath: string, method?: string): Promise<void> {
-  if (!config.runBrokerUrl) {
-    ctx.status = 503
-    ctx.set?.('Content-Type', 'application/json')
-    ctx.body = { error: 'HERMES_RUN_BROKER_URL is required for Kanban broker mode' }
-    return
-  }
-
+function brokerSearchParams(ctx: Context): URLSearchParams {
   const params = new URLSearchParams(ctx.search || '')
   params.delete('token')
   params.delete('profile')
   params.delete('x-hermes-profile')
+  return params
+}
+
+async function brokerJsonRequest(
+  ctx: Context,
+  brokerPath: string,
+  method?: string,
+  searchParams?: URLSearchParams,
+): Promise<BrokerJsonResult | null> {
+  if (!config.runBrokerUrl) {
+    ctx.status = 503
+    ctx.set?.('Content-Type', 'application/json')
+    ctx.body = { error: 'HERMES_RUN_BROKER_URL is required for Kanban broker mode' }
+    return null
+  }
+
+  const params = searchParams ?? brokerSearchParams(ctx)
   const search = params.toString()
   const url = `${config.runBrokerUrl.replace(/\/+$/, '')}${brokerPath}${search ? `?${search}` : ''}`
   const requestMethod = method || ctx.req?.method || ctx.method || 'GET'
@@ -310,19 +321,62 @@ async function brokerRequest(ctx: Context, brokerPath: string, method?: string):
     ctx.status = 502
     ctx.set?.('Content-Type', 'application/json')
     ctx.body = { error: `Broker error: ${e.message}` }
-    return
+    return null
   }
 
   if (!res.ok) {
     ctx.status = res.status
     ctx.set?.('Content-Type', 'application/json')
     ctx.body = await readUpstreamError(res)
+    return null
+  }
+
+  return {
+    status: res.status,
+    contentType: res.headers.get('content-type') || 'application/json',
+    body: await res.json(),
+  }
+}
+
+async function brokerRequest(ctx: Context, brokerPath: string, method?: string): Promise<void> {
+  const res = await brokerJsonRequest(ctx, brokerPath, method)
+  if (!res) return
+  ctx.status = res.status
+  ctx.set?.('Content-Type', res.contentType)
+  ctx.body = res.body
+}
+
+async function brokerTaskDetail(ctx: Context, taskId: string, board: string): Promise<void> {
+  const params = new URLSearchParams()
+  params.set('board', board)
+  params.set('includeArchived', 'true')
+  const res = await brokerJsonRequest(ctx, '/api/run-broker/kanban/tasks', 'GET', params)
+  if (!res) return
+
+  const body = res.body as { tasks?: unknown }
+  const tasks = Array.isArray(body.tasks) ? body.tasks : []
+  const task = tasks.find((item): item is Record<string, unknown> => (
+    !!item && typeof item === 'object' && String((item as Record<string, unknown>).id || '') === taskId
+  ))
+  if (!task) {
+    ctx.status = 404
+    ctx.set?.('Content-Type', 'application/json')
+    ctx.body = { error: 'Task not found' }
     return
   }
 
-  ctx.status = res.status
-  ctx.set?.('Content-Type', res.headers.get('content-type') || 'application/json')
-  ctx.body = await res.json()
+  const result = typeof task.result === 'string' && task.result.trim() ? task.result : null
+  ctx.status = 200
+  ctx.set?.('Content-Type', 'application/json')
+  ctx.body = {
+    task,
+    latest_summary: result,
+    comments: [],
+    events: [],
+    runs: [],
+    parents: [],
+    children: [],
+  }
 }
 
 export async function listBoards(ctx: Context) {
@@ -436,6 +490,11 @@ export async function get(ctx: Context) {
   if (!openid) return
   const board = requestBoard(ctx)
   if (!board) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerTaskDetail(ctx, ctx.params.id, board)
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   try {
     const detail = await kanbanCli.getTask(ctx.params.id, { board })
     if (!detail) {

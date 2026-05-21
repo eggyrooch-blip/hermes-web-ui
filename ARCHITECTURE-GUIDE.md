@@ -25,6 +25,9 @@ related:
 >
 > chat-plane allowlist 只打开上述 owner-scoped BFF 能力；`events`、`artifact`、`diagnostics`、board create/delete 等仍保持 blocked。这样当前开发环境不再因为 `/api/hermes/kanban` 在 chat plane 被整体 403 而无法创建任务，同时不把旧全局 CLI 看板执行面暴露给普通 WebUI 用户。生产 66 是否具备该能力仍以实际发布 HEAD/build 为准。
 
+> [!info] 2026-05-21 worktree — chat-plane Kanban task detail hotfix
+> `webui-kanban-task-detail-chat-plane` 修补上面薄 BFF 的详情缺口：创建任务后前端抽屉会调用 `GET /api/hermes/kanban/:id`，因此 chat-plane allowlist 允许单段 task id 的 GET，但继续阻断 `/events`、`/artifact`、`/diagnostics`、`/:id/log`、board 管理等未 owner-scoped 的接口。controller 在 chat-plane + `HERMES_WEBUI_RUN_BROKER=1` 时不回退旧 CLI，而是复用 multitenancy 既有 `/api/run-broker/kanban/tasks?includeArchived=true` owner-scoped 列表，按 id 找当前 open_id 可见任务并合成抽屉需要的 detail shape（`comments/events/runs/parents/children` 为空）。生产 66 尚未发布本 worktree，需 review/ship 后再按标准发布路径验证。
+
 > [!warning] 2026-05-20 gotcha — Feishu OAuth login behind Caddy must compare forwarded origin
 > 生产 `https://hermes.gotokeep.com` 由 Caddy 反代到 WebUI `127.0.0.1:8648`。Feishu login 为避免 state cookie 写到错误 host，会把 `/api/auth/feishu/login` canonicalize 到 `FEISHU_REDIRECT_URI` 的 origin；但在 Koa 未启用 proxy trust 时，`ctx.origin` 只看到本地 HTTP origin，若忽略 `X-Forwarded-Proto` / `X-Forwarded-Host`，公网登录会 302 到同一个 `https://hermes.gotokeep.com/api/auth/feishu/login` 并形成自循环。`controllers/auth.ts` 的 login canonicalization 必须优先用 forwarded origin 判断“外部请求是否已经在配置 origin 上”，只在真正 host/origin 不一致时才 redirect；`index.ts` 必须设置 `app.proxy = true`，否则 Koa/cookies 仍会把 Caddy 后面的本地 HTTP 当成非安全连接，写 `Secure` state cookie 时返回 500。
 

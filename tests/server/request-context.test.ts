@@ -117,29 +117,46 @@ describe('chat plane access control', () => {
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
     const listCtx = mockCtx('/api/hermes/kanban', 'GET')
     const createCtx = mockCtx('/api/hermes/kanban', 'POST')
+    const detailCtx = mockCtx('/api/hermes/kanban/task-1', 'GET')
     const assigneesCtx = mockCtx('/api/hermes/kanban/assignees', 'GET')
     const dispatchCtx = mockCtx('/api/hermes/kanban/dispatch', 'POST')
     const eventsCtx = mockCtx('/api/hermes/kanban/events', 'GET')
     const artifactCtx = mockCtx('/api/hermes/kanban/artifact', 'GET')
+    const logCtx = mockCtx('/api/hermes/kanban/task-1/log', 'GET')
     const boardCreateCtx = mockCtx('/api/hermes/kanban/boards', 'POST')
     const next = vi.fn(async () => {})
 
     await enforcePlaneAccess(listCtx, next)
     await enforcePlaneAccess(createCtx, next)
+    await enforcePlaneAccess(detailCtx, next)
     await enforcePlaneAccess(assigneesCtx, next)
     await enforcePlaneAccess(dispatchCtx, next)
     await enforcePlaneAccess(eventsCtx, next)
     await enforcePlaneAccess(artifactCtx, next)
+    await enforcePlaneAccess(logCtx, next)
     await enforcePlaneAccess(boardCreateCtx, next)
 
-    expect(next).toHaveBeenCalledTimes(4)
+    expect(next).toHaveBeenCalledTimes(5)
     expect(listCtx.status).toBe(200)
     expect(createCtx.status).toBe(200)
+    expect(detailCtx.status).toBe(200)
     expect(assigneesCtx.status).toBe(200)
     expect(dispatchCtx.status).toBe(200)
     expect(eventsCtx.status).toBe(403)
     expect(artifactCtx.status).toBe(403)
+    expect(logCtx.status).toBe(403)
     expect(boardCreateCtx.status).toBe(403)
+  })
+
+  it('fails closed for malformed chat-plane kanban task ids', async () => {
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const ctx = mockCtx('/api/hermes/kanban/%E0%A4%A', 'GET')
+    const next = vi.fn(async () => {})
+
+    await enforcePlaneAccess(ctx, next)
+
+    expect(next).not.toHaveBeenCalled()
+    expect(ctx.status).toBe(403)
   })
 
   it('allows owner-scoped profile listing and creation in chat plane but keeps profile admin actions blocked', async () => {
