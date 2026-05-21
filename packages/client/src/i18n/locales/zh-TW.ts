@@ -149,8 +149,6 @@ export default {
     contextUsed: '上下文已用:',
     sessions: '工作階段',
     webUiSessions: '工作階段',
-    sessionScopeHint: '這裡只顯示目前工作階段；CLI、Telegram、Discord、Cron 等頻道工作階段在歷史中以唯讀方式查看。',
-    openHistory: '開啟歷史',
     hermesHistory: 'Hermes 歷史',
     historyScopeHint: '這裡按來源以唯讀方式查看 Hermes 歷史工作階段。',
     noSessions: '目前無工作階段',

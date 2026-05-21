@@ -210,6 +210,23 @@ describe('ChatPanel user-mode gateway state', () => {
     expect(wrapper.find('.chat-wake-hint').exists()).toBe(false)
   })
 
+  it('does not render the session scope hint above the chat session list', () => {
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: {
+            props: ['to'],
+            template: '<a><slot /></a>',
+          },
+        },
+      },
+    })
+
+    expect(wrapper.find('.session-scope-note').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('chat.sessionScopeHint')
+    expect(wrapper.text()).not.toContain('chat.openHistory')
+  })
+
   it('does not override MessageItem bubble colors in user mode', () => {
     const source = readFileSync(
       join(process.cwd(), 'packages/client/src/components/hermes/chat/ChatPanel.vue'),
