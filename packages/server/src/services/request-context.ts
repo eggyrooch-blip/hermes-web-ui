@@ -167,6 +167,18 @@ function isChatPlaneKanbanTaskDetail(path: string, method: string): boolean {
   }
 }
 
+function isChatPlaneKanbanTaskAction(path: string, method: string): boolean {
+  if (method === 'POST' && (path === '/api/hermes/kanban/complete' || path === '/api/hermes/kanban/unblock')) return true
+  if (method !== 'POST') return false
+  const match = path.match(/^\/api\/hermes\/kanban\/([^/]+)\/(block|assign)$/)
+  if (!match) return false
+  try {
+    return !CHAT_PLANE_KANBAN_DETAIL_BLOCKLIST.has(decodeURIComponent(match[1]).toLowerCase())
+  } catch {
+    return false
+  }
+}
+
 function forbiddenInChatPlane(ctx: Context): boolean {
   if (config.webPlane !== 'chat') return false
   const path = ctx.path
@@ -188,6 +200,7 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   if (path === '/api/hermes/kanban/assignees' && method === 'GET') return false
   if (path === '/api/hermes/kanban/dispatch' && method === 'POST') return false
   if (isChatPlaneKanbanTaskDetail(path, method)) return false
+  if (isChatPlaneKanbanTaskAction(path, method)) return false
   if (path === '/api/hermes/profiles' && (method === 'GET' || method === 'POST')) return false
   if (path === '/api/hermes/config/credentials') return true
   if (config.chatPlaneAllowSettings && path === '/api/hermes/config' && (method === 'GET' || method === 'PUT')) return false
