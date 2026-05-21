@@ -140,6 +140,33 @@ export function isChatPlaneRequest(_ctx?: Context): boolean {
   return config.webPlane === 'chat'
 }
 
+const CHAT_PLANE_KANBAN_DETAIL_BLOCKLIST = new Set([
+  'artifact',
+  'assignees',
+  'boards',
+  'capabilities',
+  'complete',
+  'diagnostics',
+  'dispatch',
+  'events',
+  'links',
+  'search-sessions',
+  'stats',
+  'tasks',
+  'unblock',
+])
+
+function isChatPlaneKanbanTaskDetail(path: string, method: string): boolean {
+  if (method !== 'GET') return false
+  const match = path.match(/^\/api\/hermes\/kanban\/([^/]+)$/)
+  if (!match) return false
+  try {
+    return !CHAT_PLANE_KANBAN_DETAIL_BLOCKLIST.has(decodeURIComponent(match[1]).toLowerCase())
+  } catch {
+    return false
+  }
+}
+
 function forbiddenInChatPlane(ctx: Context): boolean {
   if (config.webPlane !== 'chat') return false
   const path = ctx.path
@@ -160,6 +187,7 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   if (path === '/api/hermes/kanban/stats' && method === 'GET') return false
   if (path === '/api/hermes/kanban/assignees' && method === 'GET') return false
   if (path === '/api/hermes/kanban/dispatch' && method === 'POST') return false
+  if (isChatPlaneKanbanTaskDetail(path, method)) return false
   if (path === '/api/hermes/profiles' && (method === 'GET' || method === 'POST')) return false
   if (path === '/api/hermes/config/credentials') return true
   if (config.chatPlaneAllowSettings && path === '/api/hermes/config' && (method === 'GET' || method === 'PUT')) return false
