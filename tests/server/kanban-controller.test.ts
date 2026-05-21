@@ -28,6 +28,7 @@ const mockSearchSessions = vi.hoisted(() => vi.fn())
 const mockGetSessionDetail = vi.hoisted(() => vi.fn())
 const mockGetExactSessionDetail = vi.hoisted(() => vi.fn())
 const mockFindLatestExactSessionId = vi.hoisted(() => vi.fn())
+const mockOwnerOwnsProfile = vi.hoisted(() => vi.fn())
 
 vi.mock('fs/promises', () => ({
   readFile: mockReadFile,
@@ -76,7 +77,7 @@ vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
 }))
 
 vi.mock('../../packages/server/src/services/hermes/agent-ownership', () => ({
-  ownerOwnsProfile: () => true,
+  ownerOwnsProfile: mockOwnerOwnsProfile,
 }))
 
 import * as ctrl from '../../packages/server/src/controllers/hermes/kanban'
@@ -110,6 +111,7 @@ describe('kanban controller', () => {
     config.webuiRunBroker = false
     config.runBrokerUrl = ''
     config.runBrokerKey = ''
+    mockOwnerOwnsProfile.mockReturnValue(true)
   })
 
   it('lists boards and tasks with explicit/default board context', async () => {
@@ -329,6 +331,44 @@ describe('kanban controller', () => {
     expect(c.status).toBe(503)
     expect(c.body).toEqual({ error: 'HERMES_WEBUI_RUN_BROKER is required for Kanban in chat plane' })
     expect(mockListTasks).not.toHaveBeenCalled()
+  })
+
+  it('keeps chat-plane kanban drawer actions owner-scoped', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    config.webPlane = 'chat'
+    config.webuiRunBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+    mockGetTask.mockImplementation(async (id: string) => ownedTaskDetail(id, 'alice'))
+    mockCompleteTasks.mockResolvedValue(undefined)
+    mockBlockTask.mockResolvedValue(undefined)
+    mockUnblockTasks.mockResolvedValue(undefined)
+    mockAssignTask.mockResolvedValue(undefined)
+
+    const completeCtx = ctx({ query: { board: 'project-a' }, request: { body: { task_ids: ['task-1'], summary: 'done' } } })
+    await ctrl.complete(completeCtx)
+    expect(mockCompleteTasks).toHaveBeenCalledWith(['task-1'], 'done', { board: 'project-a' })
+
+    const blockCtx = ctx({ query: { board: 'project-a' }, params: { id: 'task-1' }, request: { body: { reason: 'wait' } } })
+    await ctrl.block(blockCtx)
+    expect(mockBlockTask).toHaveBeenCalledWith('task-1', 'wait', { board: 'project-a' })
+
+    const unblockCtx = ctx({ query: { board: 'project-a' }, request: { body: { task_ids: ['task-1'] } } })
+    await ctrl.unblock(unblockCtx)
+    expect(mockUnblockTasks).toHaveBeenCalledWith(['task-1'], { board: 'project-a' })
+
+    const assignCtx = ctx({ query: { board: 'project-a' }, params: { id: 'task-1' }, request: { body: { profile: 'alice' } } })
+    await ctrl.assign(assignCtx)
+    expect(mockAssignTask).toHaveBeenCalledWith('task-1', 'alice', { board: 'project-a' })
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    mockOwnerOwnsProfile.mockImplementation((_openid: string, profile: string) => profile !== 'mallory')
+    const deniedAssignCtx = ctx({ query: { board: 'project-a' }, params: { id: 'task-1' }, request: { body: { profile: 'mallory' } } })
+    await ctrl.assign(deniedAssignCtx)
+    expect(deniedAssignCtx.status).toBe(403)
+    expect(deniedAssignCtx.body).toEqual({ error: 'You do not own this agent profile' })
+
+    vi.unstubAllGlobals()
   })
 
   it('proxies comment/log/diagnostics with explicit board context', async () => {
