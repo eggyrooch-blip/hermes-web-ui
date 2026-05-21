@@ -31,6 +31,9 @@ related:
 > [!info] 2026-05-21 worktree — chat-plane Kanban drawer actions
 > `webui-kanban-task-actions-chat-plane` 补齐上面详情抽屉后续动作的 chat-plane allowlist：允许当前抽屉实际会调用的 `POST /api/hermes/kanban/complete`、`POST /api/hermes/kanban/unblock`、`POST /api/hermes/kanban/:id/block`、`POST /api/hermes/kanban/:id/assign`，继续阻断 comments、links、bulk、events、artifact、diagnostics、task log、board 管理等更大 API 面。这些动作仍走现有 controller 的 `requireOwnedTasks` 与 `ownerOwnsProfile` guard，只有当前 Feishu open_id 拥有的任务和目标 profile 才能执行；不新增客户端 tenant/owner 信任边界。
 
+> [!info] 2026-05-21 production UI copy — chat session scope hint removed
+> 聊天侧栏会话列表不再渲染“这里只显示当前会话；CLI、Telegram、Discord、Cron 等通道会话在历史中只读查看。”这一提示，也不再展示紧随其后的“打开历史”链接。删除只影响 ChatPanel 可见文案和死 i18n key；`HistoryView` 自己的历史范围说明、只读历史查看、session/history 数据过滤和权限逻辑均不改变。
+
 > [!warning] 2026-05-20 gotcha — Feishu OAuth login behind Caddy must compare forwarded origin
 > 生产 `https://hermes.gotokeep.com` 由 Caddy 反代到 WebUI `127.0.0.1:8648`。Feishu login 为避免 state cookie 写到错误 host，会把 `/api/auth/feishu/login` canonicalize 到 `FEISHU_REDIRECT_URI` 的 origin；但在 Koa 未启用 proxy trust 时，`ctx.origin` 只看到本地 HTTP origin，若忽略 `X-Forwarded-Proto` / `X-Forwarded-Host`，公网登录会 302 到同一个 `https://hermes.gotokeep.com/api/auth/feishu/login` 并形成自循环。`controllers/auth.ts` 的 login canonicalization 必须优先用 forwarded origin 判断“外部请求是否已经在配置 origin 上”，只在真正 host/origin 不一致时才 redirect；`index.ts` 必须设置 `app.proxy = true`，否则 Koa/cookies 仍会把 Caddy 后面的本地 HTTP 当成非安全连接，写 `Secure` state cookie 时返回 500。
 
