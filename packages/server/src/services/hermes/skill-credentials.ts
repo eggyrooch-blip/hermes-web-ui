@@ -561,7 +561,7 @@ function scanProfileSkills(profileDir: string): ProfileSkill[] {
     for (const entry of safeDirEntries(dir)) {
       if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue
       const fullPath = join(dir, entry.name)
-      if (entry.isDirectory()) {
+      if (isDirectoryLikeSync(fullPath, entry)) {
         visit(fullPath, depth + 1)
         continue
       }
@@ -580,6 +580,16 @@ function scanProfileSkills(profileDir: string): ProfileSkill[] {
   }
   visit(root, 0)
   return results
+}
+
+function isDirectoryLikeSync(path: string, entry: Dirent): boolean {
+  if (entry.isDirectory()) return true
+  if (!entry.isSymbolicLink()) return false
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
+  }
 }
 
 function findKeepRecordSkill(skills: ProfileSkill[]): ProfileSkill | undefined {

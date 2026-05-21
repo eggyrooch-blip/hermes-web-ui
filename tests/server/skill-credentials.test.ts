@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'fs'
 import { dirname, join } from 'path'
 import { tmpdir } from 'os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -166,6 +166,37 @@ describe('skill credential status', () => {
     const serialized = JSON.stringify(result)
     expect(serialized).not.toContain('keep-secret-token')
     expect(serialized).not.toContain('gitlab-secret-token')
+  })
+
+  it('detects kep-cli-backed skills installed as multitenancy directory symlinks', async () => {
+    const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const hermesHome = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-symlink-home-'))
+    roots.push(hermesHome)
+    const profileDir = join(hermesHome, 'profiles', 'sunke')
+    const sharedSkillDir = join(hermesHome, 'skills', 'Keep', 'kep-hades-cli')
+    mkdirSync(sharedSkillDir, { recursive: true })
+    mkdirSync(join(profileDir, 'skills', 'Keep'), { recursive: true })
+    writeFileSync(join(sharedSkillDir, 'SKILL.md'), [
+      '---',
+      'name: kep-hades-cli',
+      'metadata:',
+      '  hermes:',
+      '    tags: [kep-cli, hades]',
+      '---',
+      'Run kep-auth --profile "$KEP_PROFILE" --env online status before queries.',
+    ].join('\n'), 'utf-8')
+    symlinkSync(sharedSkillDir, join(profileDir, 'skills', 'Keep', 'kep-hades-cli'), 'dir')
+
+    const result = await listSkillCredentialStatuses({
+      profileName: 'sunke',
+      profileDir,
+    })
+
+    expect(result.credentials.find(item => item.id === 'kep-cli')).toMatchObject({
+      installed: true,
+      status: 'needs_auth',
+    })
+    expect(result.credentials.find(item => item.id === 'kep-cli')?.detail).not.toBe('No kep-cli backed skill is installed for this profile.')
   })
 
   it('checks kep-auth live status instead of treating keyring material as connected', async () => {
