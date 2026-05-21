@@ -37,6 +37,9 @@ related:
 > [!info] 2026-05-20 production locale default
 > 生产 WebUI 面向中文团队，首次打开时不能因浏览器/系统语言是英文而显示英文。`packages/client/src/i18n/index.ts` 的默认语言为 `DEFAULT_LOCALE='zh'`，`fallbackLocale` 也应保持中文；只在 `localStorage.hermes_locale` 已保存有效 locale 时尊重用户显式选择。不要重新引入 `navigator.languages` / `Accept-Language` 自动探测作为默认值。回归测试见 `tests/client/i18n-default-locale.test.ts`：英文浏览器、无保存值时必须得到 `zh`；保存 `en` 时仍为 `en`。
 
+> [!info] 2026-05-21 credentials skill scanner follows symlink dirs
+> `/credentials` 的 `skill-credentials.ts` 有自己的 profile skill scanner，不会自动继承 `/skills` 页面 controller 的扫描修复。multitenancy 管理的 profile skills 通常是 `profiles/<profile>/skills/<category>/<skill> -> ~/.hermes/skills/<category>/<skill>` 的目录 symlink；这里必须对 symlink target 执行 `statSync().isDirectory()` 后继续递归，否则 `kep-hades-cli` 这类带 `tags: [kep-cli]` 的 skill 会被误判未安装，`kep-cli` 卡片显示 disabled。回归见 `tests/server/skill-credentials.test.ts` 的 symlink kep-cli case。
+
 > [!info] 2026-05-20 chat-plane profile clone + queue dequeue fixes
 > chat-plane 的 profile 创建不能再裸用 `hermes profile create --clone` 从当前服务进程 active profile 克隆；生产 WebUI 常驻在 `active_profile=multitenancy_router`，裸 clone 会复制 router/profile shell 并触发凭证清理，表现为新 profile 缺少 Feishu/Lark-cli 基础身份。`controllers/hermes/profiles.ts` 在 chat-plane + OAuth user 场景必须把可信 `ctx.state.user.profile` 传给 `HermesCliService.createProfile({ cloneFrom })`，并由 CLI 参数 `--clone-from <profile>` 明确从用户自己的 profile 克隆；缺可信 source profile 时 fail closed。admin/non-chat-plane 保持原语义。
 >
