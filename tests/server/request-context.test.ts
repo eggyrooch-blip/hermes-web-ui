@@ -113,6 +113,35 @@ describe('chat plane access control', () => {
     expect(updateCtx.status).toBe(200)
   })
 
+  it('allows only owner-scoped kanban BFF endpoints in chat plane', async () => {
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const listCtx = mockCtx('/api/hermes/kanban', 'GET')
+    const createCtx = mockCtx('/api/hermes/kanban', 'POST')
+    const assigneesCtx = mockCtx('/api/hermes/kanban/assignees', 'GET')
+    const dispatchCtx = mockCtx('/api/hermes/kanban/dispatch', 'POST')
+    const eventsCtx = mockCtx('/api/hermes/kanban/events', 'GET')
+    const artifactCtx = mockCtx('/api/hermes/kanban/artifact', 'GET')
+    const boardCreateCtx = mockCtx('/api/hermes/kanban/boards', 'POST')
+    const next = vi.fn(async () => {})
+
+    await enforcePlaneAccess(listCtx, next)
+    await enforcePlaneAccess(createCtx, next)
+    await enforcePlaneAccess(assigneesCtx, next)
+    await enforcePlaneAccess(dispatchCtx, next)
+    await enforcePlaneAccess(eventsCtx, next)
+    await enforcePlaneAccess(artifactCtx, next)
+    await enforcePlaneAccess(boardCreateCtx, next)
+
+    expect(next).toHaveBeenCalledTimes(4)
+    expect(listCtx.status).toBe(200)
+    expect(createCtx.status).toBe(200)
+    expect(assigneesCtx.status).toBe(200)
+    expect(dispatchCtx.status).toBe(200)
+    expect(eventsCtx.status).toBe(403)
+    expect(artifactCtx.status).toBe(403)
+    expect(boardCreateCtx.status).toBe(403)
+  })
+
   it('allows owner-scoped profile listing and creation in chat plane but keeps profile admin actions blocked', async () => {
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
     const listCtx = mockCtx('/api/hermes/profiles', 'GET')
