@@ -203,4 +203,44 @@ describe('MessageItem tool details', () => {
     expect(wrapper.find('.tool-scope').text()).toBe('profile sandbox')
     expect(wrapper.find('.tool-status-badge').text()).toBe('chat.toolDone')
   })
+
+  it('renders assistant MEDIA image directives as chat thumbnails and hides the raw directive', () => {
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: {
+          id: 'assistant-media-image',
+          role: 'assistant',
+          content: '图片已生成\nMEDIA:/workspace/Downloads/generated_art.png\n请查看',
+          timestamp: Date.now(),
+        } satisfies Message,
+      },
+    })
+
+    const image = wrapper.find('.msg-attachment.image img')
+    expect(image.exists()).toBe(true)
+    expect(image.attributes('src')).toContain('path=Downloads%2Fgenerated_art.png')
+    expect(wrapper.text()).toContain('图片已生成')
+    expect(wrapper.text()).toContain('请查看')
+    expect(wrapper.text()).not.toContain('MEDIA:')
+    expect(wrapper.text()).not.toContain('/workspace/Downloads/generated_art.png')
+  })
+
+  it('renders assistant MEDIA document directives as file cards and hides server paths', () => {
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: {
+          id: 'assistant-media-file',
+          role: 'assistant',
+          content: '方案已保存\nMEDIA:/home/hermes/.hermes/profiles/sunke/workspace/Downloads/report.md',
+          timestamp: Date.now(),
+        } satisfies Message,
+      },
+    })
+
+    expect(wrapper.find('.msg-attachment-file').exists()).toBe(true)
+    expect(wrapper.find('.att-name').text()).toBe('report.md')
+    expect(wrapper.text()).toContain('方案已保存')
+    expect(wrapper.text()).not.toContain('MEDIA:')
+    expect(wrapper.text()).not.toContain('/home/hermes/.hermes')
+  })
 })

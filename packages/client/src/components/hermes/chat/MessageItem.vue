@@ -20,6 +20,17 @@ import { useGlobalSpeech } from "@/composables/useSpeech";
 import { useVoiceSettings } from "@/composables/useVoiceSettings";
 
 const TOOL_PAYLOAD_DISPLAY_LIMIT = 2000;
+const MEDIA_DIRECTIVE_RE = /(^|\n)\s*[`"']?MEDIA:\s*([^\s`"']+)[`"']?\s*(?=\n|$)/g;
+const IMAGE_EXTENSIONS = new Set([
+  ".apng",
+  ".avif",
+  ".gif",
+  ".jpeg",
+  ".jpg",
+  ".png",
+  ".svg",
+  ".webp",
+]);
 
 const props = defineProps<{ message: Message; highlight?: boolean; headingIdPrefix?: string }>();
 const { t } = useI18n();
@@ -202,6 +213,88 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+function fileNameFromPath(path: string): string {
+  const clean = path.split(/[?#]/)[0] || path;
+  return decodeURIComponent(clean.split("/").filter(Boolean).pop() || "download");
+}
+
+function extensionFromName(name: string): string {
+  const idx = name.lastIndexOf(".");
+  return idx >= 0 ? name.slice(idx).toLowerCase() : "";
+}
+
+function mediaTypeForName(name: string): string {
+  const ext = extensionFromName(name);
+  if (IMAGE_EXTENSIONS.has(ext)) return `image/${ext.slice(1).replace("jpg", "jpeg")}`;
+  if (ext === ".md" || ext === ".markdown") return "text/markdown";
+  if (ext === ".txt") return "text/plain";
+  if (ext === ".pdf") return "application/pdf";
+  return "application/octet-stream";
+}
+
+function normalizeAssistantMediaPath(rawPath: string): string | null {
+  let path = rawPath.trim().replace(/^[`"']|[`"']$/g, "");
+  path = path.replace(/[),.;:]+$/g, "");
+  if (!path) return null;
+  if (path === "/workspace") return null;
+  if (path.startsWith("/workspace/")) return path.slice("/workspace/".length);
+  if (path.startsWith("workspace/")) return path.slice("workspace/".length);
+  const workspaceIdx = path.indexOf("/workspace/");
+  if (path.startsWith("/") && workspaceIdx >= 0) {
+    return path.slice(workspaceIdx + "/workspace/".length);
+  }
+  if (!path.startsWith("/") && !path.split("/").includes("..")) return path;
+  return null;
+}
+
+function stripAssistantMediaDirectives(content: string): string {
+  return content.replace(MEDIA_DIRECTIVE_RE, "$1").trim();
+}
+
+type AssistantMediaFile = {
+  id: string;
+  name: string;
+  path: string;
+  type: string;
+  size: number;
+  url: string;
+};
+
+const assistantMediaFiles = computed<AssistantMediaFile[]>(() => {
+  if (props.message.role !== "assistant") return [];
+  const content = props.message.content || "";
+  const files: AssistantMediaFile[] = [];
+  const seen = new Set<string>();
+  for (const match of content.matchAll(MEDIA_DIRECTIVE_RE)) {
+    const path = normalizeAssistantMediaPath(match[2] || "");
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    const name = fileNameFromPath(path);
+    const type = mediaTypeForName(name);
+    files.push({
+      id: `assistant-media:${path}`,
+      name,
+      path,
+      type,
+      size: 0,
+      url: getDownloadUrl(path, name),
+    });
+  }
+  return files;
+});
+
+const hasAssistantMediaFiles = computed(() => assistantMediaFiles.value.length > 0);
+
+const assistantDisplayContent = computed(() => stripAssistantMediaDirectives(props.message.content || ""));
+const assistantThinkingBody = computed(() => stripAssistantMediaDirectives(parsedThinking.value.body || ""));
+
+function handleAssistantMediaDownload(att: AssistantMediaFile) {
+  toast.info(t("download.downloading"));
+  downloadFile(att.path, att.name).catch((err: Error) => {
+    toast.error(err.message || t("download.downloadFailed"));
+  });
 }
 
 /**
@@ -639,6 +732,47 @@ onBeforeUnmount(() => {
                 </template>
               </div>
             </div>
+            <div v-if="hasAssistantMediaFiles" class="msg-attachments">
+              <div
+                v-for="att in assistantMediaFiles"
+                :key="att.id"
+                class="msg-attachment"
+                :class="{ image: isImage(att.type) }"
+              >
+                <template v-if="isImage(att.type)">
+                  <img
+                    :src="att.url"
+                    :alt="att.name"
+                    class="msg-attachment-thumb"
+                    @click="previewUrl = att.url"
+                  />
+                </template>
+                <template v-else>
+                  <div class="msg-attachment-file" @click="handleAssistantMediaDownload(att)" style="cursor: pointer;" :title="t('download.downloadFile')">
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    >
+                      <path
+                        d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+                      />
+                      <polyline points="14 2 14 8 20 8" />
+                    </svg>
+                    <span class="att-name">{{ att.name }}</span>
+                    <span class="att-size">{{ formatSize(att.size) }}</span>
+                    <svg class="att-download-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="7 10 12 15 17 10" />
+                      <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                  </div>
+                </template>
+              </div>
+            </div>
             <div
               v-if="hasThinking"
               class="thinking-block"
@@ -677,8 +811,8 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <MarkdownRenderer
-              v-if="parsedThinking.body && message.role === 'assistant'"
-              :content="parsedThinking.body"
+              v-if="assistantThinkingBody && message.role === 'assistant'"
+              :content="assistantThinkingBody"
               :heading-id-prefix="effectiveHeadingIdPrefix"
             />
 
@@ -725,8 +859,8 @@ onBeforeUnmount(() => {
 
             <!-- Render assistant message content -->
             <MarkdownRenderer
-              v-if="message.role === 'assistant' && message.content && !parsedThinking.body"
-              :content="message.content"
+              v-if="message.role === 'assistant' && assistantDisplayContent && !parsedThinking.body"
+              :content="assistantDisplayContent"
               :heading-id-prefix="effectiveHeadingIdPrefix"
             />
 
