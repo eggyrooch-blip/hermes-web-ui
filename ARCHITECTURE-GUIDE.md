@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-05-20
+updated: 2026-05-21
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.5.16)
 audience: Claude PAI / 孙可
@@ -33,6 +33,9 @@ related:
 
 > [!info] 2026-05-21 production UI copy — chat session scope hint removed
 > 聊天侧栏会话列表不再渲染“这里只显示当前会话；CLI、Telegram、Discord、Cron 等通道会话在历史中只读查看。”这一提示，也不再展示紧随其后的“打开历史”链接。删除只影响 ChatPanel 可见文案和死 i18n key；`HistoryView` 自己的历史范围说明、只读历史查看、session/history 数据过滤和权限逻辑均不改变。
+
+> [!info] 2026-05-21 production media — assistant `MEDIA:` renders inline
+> WebUI assistant 消息现在解析裸 `MEDIA:` 指令并渲染为聊天内附件：图片扩展名显示缩略图，其他文件显示下载卡片；原始 `MEDIA:` 行和服务器绝对路径不会进入 markdown 正文。前端只接受 workspace 口径路径：`/workspace/...`、`workspace/...`、普通 workspace 相对路径，或包含 `/workspace/` 的服务器绝对路径并截断为相对路径；其他绝对路径不渲染，避免把任意服务器文件暴露给 `/api/hermes/download`。后端 multitenancy 负责把 profile 生成物发布到 `workspace/Downloads` 并在 WebUI SSE 中改写为 `/workspace/...`。
 
 > [!warning] 2026-05-20 gotcha — Feishu OAuth login behind Caddy must compare forwarded origin
 > 生产 `https://hermes.gotokeep.com` 由 Caddy 反代到 WebUI `127.0.0.1:8648`。Feishu login 为避免 state cookie 写到错误 host，会把 `/api/auth/feishu/login` canonicalize 到 `FEISHU_REDIRECT_URI` 的 origin；但在 Koa 未启用 proxy trust 时，`ctx.origin` 只看到本地 HTTP origin，若忽略 `X-Forwarded-Proto` / `X-Forwarded-Host`，公网登录会 302 到同一个 `https://hermes.gotokeep.com/api/auth/feishu/login` 并形成自循环。`controllers/auth.ts` 的 login canonicalization 必须优先用 forwarded origin 判断“外部请求是否已经在配置 origin 上”，只在真正 host/origin 不一致时才 redirect；`index.ts` 必须设置 `app.proxy = true`，否则 Koa/cookies 仍会把 Caddy 后面的本地 HTTP 当成非安全连接，写 `Secure` state cookie 时返回 500。
