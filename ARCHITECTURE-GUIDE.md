@@ -36,6 +36,9 @@ related:
 >
 > Socket.IO 消息队列浮层不能只按 `run.queued.queue_length` 推断本地 queued user message 已开始执行，因为 `run.queued` 同时用于入队、取消和出队后的长度广播。server 只有在 `dequeueNextQueuedRun()` 或 abort 后实际 `state.queue.shift()` 时才附带 `dequeued_queue_id`；client 只有收到该 id 且匹配本地 `queuedUserMessages` 时，才把对应 user message 从浮层移入正文。普通 queue length update 只更新 badge/count，避免多 tab 或取消队列项时误把未执行消息显示成已执行。回归见 `tests/client/chat-store-user-mode.test.ts` 和 `tests/server/chat-run-socket.test.ts`。
 
+> [!info] 2026-05-21 gotcha — profile skills 多数是目录 symlink
+> multitenancy 生产分发的 managed skills 多数是 `profiles/<profile>/skills/<category>/<skill> -> ~/.hermes/skills/...` 目录 symlink。WebUI 的 `GET /api/hermes/skills` 和 chat-plane 的 profile-local skill slash 注入都必须把“指向目录的 symlink”当成目录扫描；Node `Dirent.isDirectory()` 对 symlink 返回 false，直接用它会让页面只剩真实目录 skill（例如 `keep-record` 和少数个人 skill），并让 WebUI `/kep-prd-analysis ...` 不加载 profile-local skill。当前实现用 `stat` / `statSync` 跟随 symlink target，仅当 target 是目录时参与扫描，普通文件 symlink 不进入。
+
 > [!warning] 2026-05-18 `webui-upstream-safe-ports` — upstream 安全移植，不整支合并
 > 本轮在 ftask worktree `/Users/kite/code/hermes-web-ui.tasks/webui-upstream-safe-ports` 手工吸收 upstream 中对侧栏能力有价值且不冲突多租户目标的补丁。仍禁止整支 merge `EKKOLearnAI/main`：upstream 大规模替换 `chat-run-socket`/`run-chat`、删除本地 `request-context.ts`、`feishu-oauth.ts` 和 user-mode/Feishu/Run Broker 测试，会冲掉 `X-Hermes-Owner-Open-Id`、profile owner isolation、Feishu UAT/lark-cli connector 与本地文档。
 >

@@ -1,5 +1,5 @@
 import type { Socket } from 'socket.io'
-import { existsSync, readdirSync, readFileSync } from 'fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
 import type { Dirent } from 'fs'
 import { join } from 'path'
 import yaml from 'js-yaml'
@@ -195,7 +195,7 @@ function scanProfileRuntimeSkills(profileDir: string): ProfileSkillRuntimeEntry[
   const visit = (dir: string, depth: number) => {
     if (depth > 4) return
     for (const entry of safeListDirents(dir)) {
-      if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+      if (!isDirectoryLikeSync(dir, entry) || entry.name.startsWith('.')) continue
       const child = join(dir, entry.name)
       const skillPath = join(child, 'SKILL.md')
       if (existsSync(skillPath)) {
@@ -217,6 +217,16 @@ function scanProfileRuntimeSkills(profileDir: string): ProfileSkillRuntimeEntry[
   }
   visit(root, 0)
   return out
+}
+
+function isDirectoryLikeSync(parentDir: string, entry: Dirent): boolean {
+  if (entry.isDirectory()) return true
+  if (!entry.isSymbolicLink()) return false
+  try {
+    return statSync(join(parentDir, entry.name)).isDirectory()
+  } catch {
+    return false
+  }
 }
 
 function parseSkillFrontmatter(text: string): Record<string, any> {

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -99,6 +99,30 @@ describe('run-chat broker compatibility module', () => {
       role: 'user',
       content: expect.stringContaining('kep-hades-cli'),
     })
+  })
+
+  it('rewrites profile-local skill slash commands installed as directory symlinks', async () => {
+    const profileDir = makeProfile()
+    const sharedSkill = join(profileDir, '..', 'shared', 'Keep', 'kep-prd-analysis')
+    mkdirSync(sharedSkill, { recursive: true })
+    writeFileSync(join(sharedSkill, 'SKILL.md'), [
+      '---',
+      'name: kep-prd-analysis',
+      'description: Analyze Keep PRDs.',
+      '---',
+      '# KEP PRD analysis',
+      'Read the PRD and build a technical plan.',
+    ].join('\n'), 'utf-8')
+    symlinkSync(sharedSkill, join(profileDir, 'skills', 'Keep', 'kep-prd-analysis'), 'dir')
+
+    const request = await buildRunBrokerRequest({
+      input: '/kep-prd-analysis 260',
+      profile: 'feishu_sunke',
+      profileDir,
+    })
+
+    expect(request.content).toContain('invoked the "kep-prd-analysis" skill')
+    expect(request.content).toContain('260')
   })
 
   it('injects relevant profile-local preload skills for natural WebUI requests', async () => {

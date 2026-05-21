@@ -1,4 +1,4 @@
-import { readdir, readFile } from 'fs/promises'
+import { readdir, readFile, stat } from 'fs/promises'
 import { isAbsolute, join, relative, resolve } from 'path'
 import { createHash } from 'crypto'
 import YAML from 'js-yaml'
@@ -59,6 +59,16 @@ async function dirHash(directory: string): Promise<string> {
   return hash
 }
 
+async function isDirectoryLike(parentDir: string, entry: import('fs').Dirent): Promise<boolean> {
+  if (entry.isDirectory()) return true
+  if (!entry.isSymbolicLink()) return false
+  try {
+    return (await stat(join(parentDir, entry.name))).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 /** Determine the source type of a skill */
 function getSkillSource(
   dirName: string,
@@ -112,7 +122,7 @@ async function readRequestConfig(ctx: any): Promise<Record<string, any>> {
  * or by containing subdirectories with SKILL.md (three-level pattern).
  * Skills without a parent category (flat skills) are grouped under the "misc" category.
  */
-async function scanSkillsDir(
+export async function scanSkillsDir(
   skillsDir: string,
   bundledManifest: Map<string, string>,
   hubNames: Set<string>,
@@ -121,9 +131,11 @@ async function scanSkillsDir(
   chatPlane: boolean,
 ) {
   const allEntries = await readdir(skillsDir, { withFileTypes: true })
-  const dirNames = allEntries
-    .filter(e => e.isDirectory() && !e.name.startsWith('.'))
-    .map(e => e.name)
+  const dirNames: string[] = []
+  for (const entry of allEntries) {
+    if (entry.name.startsWith('.')) continue
+    if (await isDirectoryLike(skillsDir, entry)) dirNames.push(entry.name)
+  }
 
   // Classify directories: categories vs. flat skills
   const categoryDirs: { name: string; description: string }[] = []
@@ -134,7 +146,10 @@ async function scanSkillsDir(
     const hasDesc = await safeReadFile(join(catDir, 'DESCRIPTION.md'))
     const hasSkillMd = await safeReadFile(join(catDir, 'SKILL.md'))
     const subEntries = await readdir(catDir, { withFileTypes: true })
-    const subDirs = subEntries.filter(se => se.isDirectory())
+    const subDirs = []
+    for (const se of subEntries) {
+      if (await isDirectoryLike(catDir, se)) subDirs.push(se)
+    }
 
     // Priority: SKILL.md at top level → flat skill
     //           DESCRIPTION.md or subdirs (without SKILL.md) → category
@@ -161,7 +176,7 @@ async function scanSkillsDir(
     const subEntries = await readdir(catDir, { withFileTypes: true })
     const skills: any[] = []
     for (const se of subEntries) {
-      if (!se.isDirectory()) continue
+      if (!await isDirectoryLike(catDir, se)) continue
       const skillMd = await safeReadFile(join(catDir, se.name, 'SKILL.md'))
       if (skillMd) {
         const source = getSkillSource(se.name, bundledManifest, hubNames)
