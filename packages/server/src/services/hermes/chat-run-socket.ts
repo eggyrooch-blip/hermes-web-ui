@@ -39,6 +39,7 @@ import {
 } from '../feishu-oauth'
 import { ownerOwnsProfile } from './agent-ownership'
 import { handleBrokerRun as handleRunChatBrokerRun } from './run-chat/handle-broker-run'
+import { rewriteAssistantMediaDirectives } from './media-directives'
 
 /**
  * Content block types for Anthropic-compatible message format
@@ -1374,7 +1375,16 @@ export class ChatRunSocket {
           const finalOutput = parsed.response || parsed
           const completedHermesSessionId = finalOutput.session_id || finalOutput.sessionId || hermesSessionId
           if (session_id && completedHermesSessionId) this.hermesSessionIds.set(session_id, String(completedHermesSessionId))
-          const finalText = extractResponseText(finalOutput)
+          const rawFinalText = extractResponseText(finalOutput)
+          let finalText = rawFinalText
+          let parsedContent: string | undefined
+          if (upstreamEvent === 'response.completed' && session_id) {
+            const rewritten = this.rewriteRunAssistantMedia(session_id, runMarker, profile, rawFinalText)
+            if (rewritten && rewritten !== rawFinalText) {
+              finalText = rewritten
+              parsedContent = rewritten
+            }
+          }
           if (upstreamEvent === 'response.completed' && session_id) {
             const usage = finalOutput.usage || {}
             updateUsage(session_id, {
@@ -1393,6 +1403,7 @@ export class ChatRunSocket {
             run_id: responseId || finalOutput.id,
             response_id: responseId || finalOutput.id,
             output: finalText,
+            ...(parsedContent !== undefined ? { parsed_content: parsedContent } : {}),
             usage: finalOutput.usage,
             error: finalOutput.error || parsed.error,
             queue_remaining: queueLen,
@@ -1605,6 +1616,12 @@ export class ChatRunSocket {
     for (const msg of state.messages) {
       if (msg.runMarker !== run.runMarker) continue
       if (msg.role === 'user') continue
+      if (msg.role === 'assistant' && state.profile && msg.content) {
+        msg.content = rewriteAssistantMediaDirectives({
+          content: msg.content,
+          profileDir: getProfileDir(state.profile),
+        })
+      }
       addMessage({
         session_id: sessionId,
         role: msg.role,
@@ -1622,6 +1639,32 @@ export class ChatRunSocket {
     }
     logger.info('[chat-run-socket] flushResponseRunToDb: flushed %d messages for session %s',
       flushed, sessionId)
+  }
+
+  private rewriteRunAssistantMedia(
+    sessionId: string,
+    runMarker: string | undefined,
+    profile: string,
+    fallbackContent: string,
+  ): string | undefined {
+    const state = this.sessionMap.get(sessionId)
+    if (!state) return fallbackContent
+    const profileDir = getProfileDir(profile)
+    let latestAssistant: SessionMessage | undefined
+    for (let i = state.messages.length - 1; i >= 0; i -= 1) {
+      const msg = state.messages[i]
+      if (msg.runMarker !== runMarker || msg.role !== 'assistant' || msg.tool_calls?.length) continue
+      latestAssistant = msg
+      break
+    }
+    if (!latestAssistant) {
+      return rewriteAssistantMediaDirectives({ content: fallbackContent, profileDir })
+    }
+    latestAssistant.content = rewriteAssistantMediaDirectives({
+      content: latestAssistant.content || fallbackContent,
+      profileDir,
+    })
+    return latestAssistant.content
   }
 
   // --- Abort handler ---

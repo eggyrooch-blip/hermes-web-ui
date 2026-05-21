@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync } from 'fs'
+import { existsSync, mkdtempSync } from 'fs'
 import { mkdir, rm, writeFile } from 'fs/promises'
 import { join, resolve } from 'path'
 import { homedir, tmpdir } from 'os'
@@ -599,6 +599,62 @@ describe('ChatRunSocket gateway lifecycle', () => {
       expect(body.input).toContain('HERMES_FILE_E2E_20260514_2230')
       expect(body.input).toContain('42')
       expect(body.input).not.toBe('[File: sheet.xlsx]')
+    } finally {
+      await rm(profileDir, { recursive: true, force: true })
+    }
+  })
+
+  it('publishes API Server assistant MEDIA paths before completion reaches the client', async () => {
+    const profile = 'vitest-media-profile'
+    const profileDir = resolve(homedir(), '.hermes', 'profiles', profile)
+    const source = join(profileDir, 'home', 'particle_animation.gif')
+    await mkdir(join(profileDir, 'home'), { recursive: true })
+    await writeFile(source, Buffer.from('GIF89a'))
+
+    try {
+      const { io, room } = createSocketServer()
+      const gatewayManager = {
+        detectStatus: vi.fn().mockResolvedValue({ profile, running: true, url: 'http://127.0.0.1:8654' }),
+        startApiOnly: vi.fn(),
+        getUpstream: vi.fn(() => 'http://127.0.0.1:8654'),
+        getApiKey: vi.fn(() => null),
+      }
+      const encoder = new TextEncoder()
+      const finalText = `生成完成！\n\nMEDIA:${source}\n\nDone`
+      const fetchMock = vi.fn(async () => new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"type":"response.created","response":{"id":"run-media","status":"in_progress"}}\n\n'))
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'response.output_text.delta', delta: finalText })}\n\n`))
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+            type: 'response.completed',
+            response: {
+              id: 'run-media',
+              output: [{ type: 'message', content: [{ type: 'output_text', text: finalText }] }],
+            },
+          })}\n\n`))
+          controller.close()
+        },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      }))
+      vi.stubGlobal('fetch', fetchMock)
+
+      const chatRun = new ChatRunSocket(io as any, gatewayManager)
+      const socket = { connected: true, emit: vi.fn(), join: vi.fn() }
+
+      await (chatRun as any).handleRun(socket, {
+        input: 'generate gif',
+        session_id: 'session-media',
+      }, profile)
+
+      const completed = room.emit.mock.calls.find(([event]) => event === 'run.completed')?.[1]
+      expect(completed.parsed_content).toContain('MEDIA:/workspace/Downloads/particle_animation.gif')
+      expect(completed.parsed_content).not.toContain(profileDir)
+      expect(existsSync(join(profileDir, 'workspace', 'Downloads', 'particle_animation.gif'))).toBe(true)
+      const state = (chatRun as any).sessionMap.get('session-media')
+      const assistant = state.messages.find((message: any) => message.role === 'assistant')
+      expect(assistant.content).toContain('MEDIA:/workspace/Downloads/particle_animation.gif')
     } finally {
       await rm(profileDir, { recursive: true, force: true })
     }
