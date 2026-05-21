@@ -80,6 +80,7 @@ vi.mock('../../packages/server/src/services/hermes/agent-ownership', () => ({
 }))
 
 import * as ctrl from '../../packages/server/src/controllers/hermes/kanban'
+import { config } from '../../packages/server/src/config'
 
 function ctx(overrides: Record<string, any> = {}) {
   return {
@@ -105,6 +106,10 @@ function ownedTaskDetail(id: string, assignee = 'alice') {
 describe('kanban controller', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    config.webPlane = 'both'
+    config.webuiRunBroker = false
+    config.runBrokerUrl = ''
+    config.runBrokerKey = ''
   })
 
   it('lists boards and tasks with explicit/default board context', async () => {
@@ -141,6 +146,139 @@ describe('kanban controller', () => {
     const defaultCtx = ctx({ query: { status: 'ready' } })
     await ctrl.list(defaultCtx)
     expect(mockListTasks).toHaveBeenLastCalledWith({ board: 'default', status: 'ready', assignee: undefined, tenant: undefined, includeArchived: false })
+  })
+
+  it('uses the multitenancy run broker for owner-scoped chat-plane kanban', async () => {
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => new Response(JSON.stringify({
+      tasks: [{ id: 'task-1', assignee: 'owner_writer', tenant: 'ouX' }],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    config.webPlane = 'chat'
+    config.webuiRunBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+    config.runBrokerKey = 'broker-secret'
+
+    const c = ctx({
+      query: { board: 'project-a', assignee: 'owner_writer', tenant: 'spoofed' },
+      search: '?board=project-a&assignee=owner_writer&tenant=spoofed&profile=evil&token=secret',
+      req: { method: 'GET' },
+      set: vi.fn(),
+    })
+    await ctrl.list(c)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8766/api/run-broker/kanban/tasks?board=project-a&assignee=owner_writer&tenant=spoofed',
+      expect.objectContaining({
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer broker-secret',
+          'X-Hermes-Owner-Open-Id': 'ouX',
+        },
+        body: undefined,
+      }),
+    )
+    expect(c.body).toEqual({ tasks: [{ id: 'task-1', assignee: 'owner_writer', tenant: 'ouX' }] })
+    vi.unstubAllGlobals()
+  })
+
+  it('proxies chat-plane kanban capabilities through the broker', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      capabilities: {
+        source: 'hermes-multitenancy-run-broker',
+        supports: { dispatch: true, events: false },
+        missing: ['events'],
+        capabilities: [],
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    config.webPlane = 'chat'
+    config.webuiRunBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+
+    const c = ctx({
+      req: { method: 'GET' },
+      set: vi.fn(),
+    })
+    await ctrl.capabilities(c)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8766/api/run-broker/kanban/capabilities',
+      expect.objectContaining({
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Hermes-Owner-Open-Id': 'ouX',
+        },
+      }),
+    )
+    expect(mockGetCapabilities).not.toHaveBeenCalled()
+    expect(c.body).toEqual({
+      capabilities: {
+        source: 'hermes-multitenancy-run-broker',
+        supports: { dispatch: true, events: false },
+        missing: ['events'],
+        capabilities: [],
+      },
+    })
+    vi.unstubAllGlobals()
+  })
+
+  it('strips client tenant and owner fields before creating chat-plane kanban tasks via broker', async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(JSON.parse(String(init.body))).toEqual({
+        title: 'Good',
+        assignee: 'owner_writer',
+      })
+      return new Response(JSON.stringify({
+        task: { id: 'task-created', tenant: 'ouX', assignee: 'owner_writer' },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    config.webPlane = 'chat'
+    config.webuiRunBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+
+    const c = ctx({
+      query: { board: 'default' },
+      search: '?board=default',
+      req: { method: 'POST' },
+      request: { body: { title: 'Good', assignee: 'owner_writer', tenant: 'ou_other', owner_open_id: 'ou_other' } },
+      set: vi.fn(),
+    })
+    await ctrl.create(c)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8766/api/run-broker/kanban/tasks?board=default',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(c.body).toEqual({ task: { id: 'task-created', tenant: 'ouX', assignee: 'owner_writer' } })
+    vi.unstubAllGlobals()
+  })
+
+  it('does not fall back to the legacy CLI in chat-plane kanban when broker mode is disabled', async () => {
+    config.webPlane = 'chat'
+    config.webuiRunBroker = false
+    const c = ctx({
+      query: { board: 'default' },
+      req: { method: 'GET' },
+      set: vi.fn(),
+    })
+
+    await ctrl.list(c)
+
+    expect(c.status).toBe(503)
+    expect(c.body).toEqual({ error: 'HERMES_WEBUI_RUN_BROKER is required for Kanban in chat plane' })
+    expect(mockListTasks).not.toHaveBeenCalled()
   })
 
   it('proxies comment/log/diagnostics with explicit board context', async () => {

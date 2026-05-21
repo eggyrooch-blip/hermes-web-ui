@@ -2,8 +2,10 @@ import type { Context } from 'koa'
 import { readFile } from 'fs/promises'
 import { isAbsolute, relative, resolve, normalize } from 'path'
 import { homedir } from 'os'
+import { config } from '../../config'
 import * as kanbanCli from '../../services/hermes/hermes-kanban'
 import { ownerOwnsProfile } from '../../services/hermes/agent-ownership'
+import { isChatPlaneRequest, type WebUser } from '../../services/request-context'
 import {
   searchSessionSummariesWithProfile,
   getSessionDetailFromDbWithProfile,
@@ -125,6 +127,16 @@ const MAX_LOG_TAIL_BYTES = 1_000_000
 const MAX_DISPATCH_TASKS = 100
 const MAX_DISPATCH_FAILURE_LIMIT = 100
 const MAX_BULK_TASKS = 100
+const BROKER_TIMEOUT_MS = 30_000
+const CHAT_PLANE_KANBAN_BODY_BLOCKLIST = new Set([
+  'tenant',
+  'owner_open_id',
+  'owner_profile',
+  'profile',
+  'x-hermes-profile',
+  'token',
+  'authorization',
+])
 
 type PositiveIntegerResult = { value?: number; error?: string }
 type StringResult = { value?: string; error?: string }
@@ -221,9 +233,106 @@ function rejectBadRequest(ctx: Context, error?: string): boolean {
   return true
 }
 
+function getChatPlaneOpenId(ctx: Context): string | undefined {
+  if (!isChatPlaneRequest(ctx)) return undefined
+  const user = ctx.state?.user as WebUser | undefined
+  const openid = user?.openid?.trim()
+  return openid || undefined
+}
+
+function shouldUseKanbanBroker(ctx: Context): boolean {
+  return isChatPlaneRequest(ctx) && config.webuiRunBroker
+}
+
+function rejectMissingKanbanBroker(ctx: Context): boolean {
+  if (!isChatPlaneRequest(ctx) || config.webuiRunBroker) return false
+  ctx.status = 503
+  ctx.set?.('Content-Type', 'application/json')
+  ctx.body = { error: 'HERMES_WEBUI_RUN_BROKER is required for Kanban in chat plane' }
+  return true
+}
+
+function sanitizeChatPlaneKanbanBody(ctx: Context, value: unknown): unknown {
+  if (!isChatPlaneRequest(ctx) || !value || typeof value !== 'object' || Array.isArray(value)) return value
+  const sanitized: Record<string, unknown> = {}
+  for (const [key, fieldValue] of Object.entries(value as Record<string, unknown>)) {
+    if (CHAT_PLANE_KANBAN_BODY_BLOCKLIST.has(key)) continue
+    sanitized[key] = fieldValue
+  }
+  return sanitized
+}
+
+async function readUpstreamError(res: Response): Promise<unknown> {
+  const contentType = res.headers.get('content-type') || ''
+  if (contentType.includes('application/json')) {
+    try {
+      return await res.json()
+    } catch {
+      // Fall through to stable error shape.
+    }
+  }
+  const text = await res.text().catch(() => '')
+  return { error: text || `Upstream error: ${res.status} ${res.statusText}` }
+}
+
+async function brokerRequest(ctx: Context, brokerPath: string, method?: string): Promise<void> {
+  if (!config.runBrokerUrl) {
+    ctx.status = 503
+    ctx.set?.('Content-Type', 'application/json')
+    ctx.body = { error: 'HERMES_RUN_BROKER_URL is required for Kanban broker mode' }
+    return
+  }
+
+  const params = new URLSearchParams(ctx.search || '')
+  params.delete('token')
+  params.delete('profile')
+  params.delete('x-hermes-profile')
+  const search = params.toString()
+  const url = `${config.runBrokerUrl.replace(/\/+$/, '')}${brokerPath}${search ? `?${search}` : ''}`
+  const requestMethod = method || ctx.req?.method || ctx.method || 'GET'
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const openid = getChatPlaneOpenId(ctx)
+  if (openid) headers['X-Hermes-Owner-Open-Id'] = openid
+  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
+  const body = requestMethod !== 'GET' && requestMethod !== 'HEAD'
+    ? JSON.stringify(sanitizeChatPlaneKanbanBody(ctx, ctx.request.body || {}))
+    : undefined
+
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: requestMethod,
+      headers,
+      body,
+      signal: AbortSignal.timeout(BROKER_TIMEOUT_MS),
+    })
+  } catch (e: any) {
+    ctx.status = 502
+    ctx.set?.('Content-Type', 'application/json')
+    ctx.body = { error: `Broker error: ${e.message}` }
+    return
+  }
+
+  if (!res.ok) {
+    ctx.status = res.status
+    ctx.set?.('Content-Type', 'application/json')
+    ctx.body = await readUpstreamError(res)
+    return
+  }
+
+  ctx.status = res.status
+  ctx.set?.('Content-Type', res.headers.get('content-type') || 'application/json')
+  ctx.body = await res.json()
+}
+
 export async function listBoards(ctx: Context) {
   const openid = requireOpenId(ctx)
   if (!openid) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/kanban/boards')
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   const includeArchived = firstQueryValue(ctx.query.includeArchived as string | string[] | undefined) === 'true'
   try {
     const boards = await kanbanCli.listBoards({ includeArchived })
@@ -284,6 +393,11 @@ export async function archiveBoard(ctx: Context) {
 export async function capabilities(ctx: Context) {
   const openid = requireOpenId(ctx)
   if (!openid) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/kanban/capabilities')
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   try {
     const capabilities = await kanbanCli.getCapabilities()
     ctx.body = { capabilities }
@@ -296,6 +410,11 @@ export async function capabilities(ctx: Context) {
 export async function list(ctx: Context) {
   const openid = requireOpenId(ctx)
   if (!openid) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/kanban/tasks')
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   const status = firstQueryValue(ctx.query.status as string | string[] | undefined)
   const assignee = firstQueryValue(ctx.query.assignee as string | string[] | undefined)
   const tenant = firstQueryValue(ctx.query.tenant as string | string[] | undefined)
@@ -385,6 +504,11 @@ export async function get(ctx: Context) {
 export async function create(ctx: Context) {
   const openid = requireOpenId(ctx)
   if (!openid) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/kanban/tasks', 'POST')
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   const bodyResult = requestBody(ctx)
   if (rejectBadRequest(ctx, bodyResult.error)) return
   const payload = bodyResult.body
@@ -733,6 +857,11 @@ export async function specify(ctx: Context) {
 export async function dispatch(ctx: Context) {
   const openid = requireOpenId(ctx)
   if (!openid) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/kanban/dispatch', 'POST')
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   const bodyResult = requestBody(ctx)
   if (rejectBadRequest(ctx, bodyResult.error)) return
   const body = bodyResult.body
@@ -762,6 +891,11 @@ export async function dispatch(ctx: Context) {
 export async function stats(ctx: Context) {
   const openid = requireOpenId(ctx)
   if (!openid) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/kanban/stats')
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   const board = requestBoard(ctx)
   if (!board) return
   try {
@@ -776,6 +910,11 @@ export async function stats(ctx: Context) {
 export async function assignees(ctx: Context) {
   const openid = requireOpenId(ctx)
   if (!openid) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/kanban/assignees')
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   const board = requestBoard(ctx)
   if (!board) return
   try {
