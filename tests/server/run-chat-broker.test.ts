@@ -84,6 +84,33 @@ describe('run-chat broker compatibility module', () => {
     expect(request.metadata.instructions).toContain('answer briefly')
   })
 
+  it('uses an explicit per-turn idempotency key for WebUI broker runs', async () => {
+    const first = await buildRunBrokerRequest({
+      input: 'same text',
+      profile: 'sunke',
+      ownerOpenId: 'ou_owner',
+      sessionId: 'session-a',
+      idempotencyKey: 'webui:session-a:turn-1',
+    })
+    const second = await buildRunBrokerRequest({
+      input: 'same text',
+      profile: 'sunke',
+      ownerOpenId: 'ou_owner',
+      sessionId: 'session-b',
+      idempotencyKey: 'webui:session-b:turn-1',
+    })
+
+    expect(first).toMatchObject({
+      content: 'same text',
+      idempotency_key: 'webui:session-a:turn-1',
+    })
+    expect(second).toMatchObject({
+      content: 'same text',
+      idempotency_key: 'webui:session-b:turn-1',
+    })
+    expect(first.idempotency_key).not.toBe(second.idempotency_key)
+  })
+
   it('rewrites profile-local skill slash commands before sending WebUI broker runs', async () => {
     const profileDir = makeProfile()
     const request = await buildRunBrokerRequest({

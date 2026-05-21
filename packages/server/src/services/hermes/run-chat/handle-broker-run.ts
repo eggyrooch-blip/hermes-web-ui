@@ -36,6 +36,7 @@ type BuildRunBrokerRequestOptions = {
   workspace?: string | null
   messages?: SessionMessage[]
   profileDir?: string
+  idempotencyKey?: string
   buildInput?: (input: string | ContentBlock[], profile: string) => Promise<any>
   appendInputToMessages?: boolean
 }
@@ -63,6 +64,7 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
     agentId,
     instructions,
     workspace,
+    idempotencyKey,
     messages = [],
     buildInput,
     appendInputToMessages = true,
@@ -102,6 +104,7 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
     user_key: userKey,
     content,
     session_id: sessionId,
+    ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
     delivery_mode: 'socket',
     credential_subject: userKey,
     requires_host_tools: true,
@@ -513,6 +516,7 @@ export async function handleBrokerRun(
     workspace: sessionRow?.workspace || null,
     messages: session_id ? context.sessionMap.get(session_id)?.messages || [] : [],
     profileDir: getProfileDir(profile),
+    idempotencyKey: runMarker ? `webui:${session_id || 'no-session'}:${runMarker}` : undefined,
     buildInput: context.buildInput,
     appendInputToMessages: false,
   })
