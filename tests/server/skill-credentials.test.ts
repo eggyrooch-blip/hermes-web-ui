@@ -324,6 +324,38 @@ describe('skill credential status', () => {
     expect(JSON.stringify(result)).not.toContain('ou_sunke')
   })
 
+  it('does not treat bot-only Lark-cli runtime availability as personal user authorization', async () => {
+    const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = makeProfile()
+
+    const result = await listSkillCredentialStatuses({
+      profileName: 'sunyinglun',
+      profileDir,
+      user: {
+        openid: 'ou_sunyinglun',
+        profile: 'sunyinglun',
+        role: 'user',
+        name: '孙迎仑',
+      },
+      larkStatus: {
+        status: 'missing',
+        lark_cli: {
+          available: true,
+          default_identity: 'bot',
+        },
+      },
+    })
+
+    expect(result.credentials.find(item => item.id === 'lark-cli')).toMatchObject({
+      status: 'needs_auth',
+      detail: 'Lark-cli needs user authorization for private Lark resources.',
+      action: {
+        label: '授权',
+      },
+    })
+    expect(result.credentials.find(item => item.id === 'lark-cli')?.default_identity).toBeUndefined()
+  })
+
   it('returns safe action metadata for starting credential flows', async () => {
     const { getSkillCredentialStartAction } = await import('../../packages/server/src/services/hermes/skill-credentials')
     const profileDir = makeProfile()

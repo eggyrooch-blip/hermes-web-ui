@@ -310,10 +310,13 @@ function larkCliStatus(options: ListSkillCredentialOptions): SkillCredentialEntr
   const status = options.larkStatus || {}
   const larkCli = status.lark_cli || {}
   const localUat = localFeishuUatStatus(options.profileDir)
-  const connected = status.status === 'valid' || Boolean(larkCli.available) || localUat.connected
-  const defaultIdentity = typeof larkCli.default_identity === 'string'
-    ? larkCli.default_identity
-    : localUat.connected ? 'user' : undefined
+  const hasUserAuthorization = status.status === 'valid' || localUat.connected || larkCli.default_identity === 'user'
+  const connected = options.user ? hasUserAuthorization : hasUserAuthorization || Boolean(larkCli.available)
+  const defaultIdentity = connected
+    ? typeof larkCli.default_identity === 'string'
+      ? larkCli.default_identity
+      : localUat.connected ? 'user' : undefined
+    : undefined
   return {
     id: 'lark-cli',
     title: 'Lark-cli',
@@ -323,7 +326,7 @@ function larkCliStatus(options: ListSkillCredentialOptions): SkillCredentialEntr
     account_hint: connected ? safeAccountHint(options.user?.name) : undefined,
     default_identity: defaultIdentity,
     detail: connected
-      ? localUat.connected && !options.larkStatus ? 'Profile-local Lark-cli user authorization is available.' : 'Lark-cli credential is available for this skill runtime.'
+      ? hasUserAuthorization ? 'Lark-cli user authorization is available for this profile.' : 'Lark-cli credential is available for this skill runtime.'
       : 'Lark-cli needs user authorization for private Lark resources.',
     action: {
       kind: 'feishu_device_flow',
