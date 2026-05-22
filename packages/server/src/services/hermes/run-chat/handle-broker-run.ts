@@ -482,6 +482,34 @@ export type HandleBrokerRunContext = {
   buildInput: (input: string | ContentBlock[], profile: string) => Promise<any>
 }
 
+function appendBrokerFailureMessage(
+  context: HandleBrokerRunContext,
+  sessionId: string | undefined,
+  runMarker: string | undefined,
+  error: string,
+) {
+  if (!sessionId) return
+  const state = context.sessionMap.get(sessionId)
+  if (!state) return
+  const alreadyHasRunOutput = state.messages.some(message => (
+    message.runMarker === runMarker && message.role !== 'user'
+  ))
+  if (alreadyHasRunOutput) return
+
+  context.getResponseRunState(state, runMarker)
+  const detail = error.trim() || 'Run broker failed'
+  const content = `运行失败：${detail.slice(0, 2000)}`
+  state.messages.push({
+    id: state.messages.length + 1,
+    session_id: sessionId,
+    runMarker,
+    role: 'assistant',
+    content,
+    finish_reason: 'error',
+    timestamp: Math.floor(Date.now() / 1000),
+  })
+}
+
 export async function handleBrokerRun(
   socket: Socket,
   data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string },
@@ -494,10 +522,12 @@ export async function handleBrokerRun(
   const brokerUrl = config.runBrokerUrl
   if (!brokerUrl) {
     const queueLen = session_id ? context.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+    const error = 'HERMES_RUN_BROKER_URL is required when HERMES_WEBUI_RUN_BROKER=1'
+    appendBrokerFailureMessage(context, session_id, runMarker, error)
     if (session_id) await context.markCompleted(socket, session_id, { event: 'run.failed' })
     emit('run.failed', {
       event: 'run.failed',
-      error: 'HERMES_RUN_BROKER_URL is required when HERMES_WEBUI_RUN_BROKER=1',
+      error,
       queue_remaining: queueLen,
     })
     return
@@ -543,15 +573,19 @@ export async function handleBrokerRun(
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       const queueLen = session_id ? context.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+      const error = `Run broker ${res.status}: ${text}`
+      appendBrokerFailureMessage(context, session_id, runMarker, error)
       if (session_id) await context.markCompleted(socket, session_id, { event: 'run.failed' })
-      emit('run.failed', { event: 'run.failed', error: `Run broker ${res.status}: ${text}`, queue_remaining: queueLen })
+      emit('run.failed', { event: 'run.failed', error, queue_remaining: queueLen })
       if (session_id && queueLen > 0) context.dequeueNextQueuedRun(socket, session_id)
       return
     }
     if (!res.body) {
       const queueLen = session_id ? context.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+      const error = 'Run broker response stream missing'
+      appendBrokerFailureMessage(context, session_id, runMarker, error)
       if (session_id) await context.markCompleted(socket, session_id, { event: 'run.failed' })
-      emit('run.failed', { event: 'run.failed', error: 'Run broker response stream missing', queue_remaining: queueLen })
+      emit('run.failed', { event: 'run.failed', error, queue_remaining: queueLen })
       if (session_id && queueLen > 0) context.dequeueNextQueuedRun(socket, session_id)
       return
     }
@@ -688,6 +722,14 @@ export async function handleBrokerRun(
         const eventRunId = mapped.payload.run_id || mapped.payload.response_id
         if (eventRunId) runId = String(eventRunId)
         const queueLen = session_id ? context.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+        if (mapped.event === 'run.failed') {
+          appendBrokerFailureMessage(
+            context,
+            session_id,
+            runMarker,
+            mapped.payload.error || mapped.payload.output || 'Run broker failed',
+          )
+        }
         if (session_id) await context.markCompleted(socket, session_id, { event: mapped.event, run_id: runId })
         emit(mapped.event, {
           ...mapped.payload,
@@ -700,21 +742,25 @@ export async function handleBrokerRun(
     }
 
     const queueLen = session_id ? context.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+    const error = 'Run broker stream ended without a terminal event'
+    appendBrokerFailureMessage(context, session_id, runMarker, error)
     if (session_id) await context.markCompleted(socket, session_id, { event: 'run.failed', run_id: runId })
     emit('run.failed', {
       event: 'run.failed',
       run_id: runId,
       response_id: runId,
-      error: 'Run broker stream ended without a terminal event',
+      error,
       queue_remaining: queueLen,
     })
     if (session_id && queueLen > 0) context.dequeueNextQueuedRun(socket, session_id)
   } catch (err: any) {
     const queueLen = session_id ? context.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+    const error = err?.name === 'AbortError' ? 'aborted' : err?.message || String(err)
+    appendBrokerFailureMessage(context, session_id, runMarker, error)
     if (session_id) await context.markCompleted(socket, session_id, { event: 'run.failed' })
     emit('run.failed', {
       event: 'run.failed',
-      error: err?.name === 'AbortError' ? 'aborted' : err?.message || String(err),
+      error,
       queue_remaining: queueLen,
     })
     if (session_id && queueLen > 0) context.dequeueNextQueuedRun(socket, session_id)

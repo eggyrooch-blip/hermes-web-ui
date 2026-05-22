@@ -108,6 +108,8 @@ related:
 
 > 2026-05-21 gotcha：WebUI 走 Run Broker 时必须显式传 per-turn `idempotency_key`，不能依赖 broker 默认 `channel/profile/user/content_hash` 去重。默认内容 hash 适合 Feishu 同一消息重复投递，但 WebUI 用户常会在新会话或失败后用完全相同文本重试；如果不传 per-turn key，broker 会返回 duplicate `done`，表现为只落 user message、不生成 assistant 回复。`handleBrokerRun()` 现在使用本轮 `runMarker` 构造 `webui:<session_id>:<runMarker>`，同内容跨 session/跨轮次不再互相吞掉。
 
+> 2026-05-22 gotcha：WebUI broker 启动失败不能再只 emit `run.failed` 后 flush 0 条消息。生产 `baiguannan` 的图片追问复现出用户消息已入库、Socket.IO run 失败但历史无 assistant/tool/error 的静默失败；`handleBrokerRun()` 在 broker URL 缺失、非 2xx、无 stream、terminal `run.failed`、stream 无终止事件和 fetch/abort 异常路径上，若当前 run 尚无 assistant/tool 输出，会先追加一条 `assistant` / `finish_reason=error` 的可见错误消息，再交给 `markCompleted()` 的既有 `flushResponseRunToDb()` 写入 DB。这样即使前端错过 `run.failed` 事件，刷新历史也能看到失败原因，不再留下 orphan user message。
+
 > [!info] 2026-05-15 WebUI Feishu UAT ensure
 > WebUI 的飞书 OAuth 登录仍只负责 `open_id -> profile` 身份绑定，不把 OAuth access token 当工具 UAT 使用，也不把 UAT 存入 cookie/localStorage/WebUI DB。OAuth 登录成功后直接进入 WebUI；UAT 是登录后的侧栏连接状态，不再是进入 `/hermes/chat` 的门禁。左下角飞书连接按钮会调用受保护 BFF 接口 `GET /api/auth/feishu/uat/status`；若 multitenancy credential vault 中当前 `profile + open_id` 缺少有效 UAT 或 scope 不足，按钮显示红点。点击红点会调用 `POST /api/auth/feishu/uat/start`，打开等价于 `/feishu_auth` 的 device-flow 授权链接，并轮询 `/api/auth/feishu/uat/sessions/:sessionId`；授权成功后红点变绿点。
 >

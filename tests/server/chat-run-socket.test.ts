@@ -375,6 +375,175 @@ describe('ChatRunSocket gateway lifecycle', () => {
     }))
   })
 
+  it('persists a visible assistant error when the broker run fails before streaming', async () => {
+    vi.resetModules()
+    vi.stubEnv('HERMES_WEBUI_RUN_BROKER', '1')
+    vi.stubEnv('HERMES_RUN_BROKER_URL', 'http://127.0.0.1:8766')
+    const { ChatRunSocket: BrokerChatRunSocket } = await import('../../packages/server/src/services/hermes/chat-run-socket')
+    const { getSessionDetail } = await import('../../packages/server/src/db/hermes/session-store')
+
+    const { io, room } = createSocketServer()
+    const sessionId = `session-broker-fail-${Date.now()}`
+    const gatewayManager = {
+      detectStatus: vi.fn(),
+      startApiOnly: vi.fn(),
+      getUpstream: vi.fn(() => {
+        throw new Error('profile apiserver should not be used')
+      }),
+      getApiKey: vi.fn(() => null),
+    }
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('owner credential denied', {
+      status: 503,
+      headers: { 'content-type': 'text/plain' },
+    })))
+
+    const chatRun = new BrokerChatRunSocket(io as any, gatewayManager)
+    const socket = {
+      data: { user: { openid: 'ou_webui_user' } },
+      connected: true,
+      emit: vi.fn(),
+      join: vi.fn(),
+    }
+
+    await (chatRun as any).handleRun(socket, {
+      input: [
+        { type: 'text', text: '页面效果还是错的呢？你看看？' },
+        { type: 'image', name: 'page.png', path: 'uploads/page.png', media_type: 'image/png' },
+      ],
+      session_id: sessionId,
+    }, 'baiguannan')
+
+    const state = (chatRun as any).sessionMap.get(sessionId)
+    const assistantError = state.messages.find((message: any) => (
+      message.role === 'assistant' && message.finish_reason === 'error'
+    ))
+
+    expect(assistantError).toEqual(expect.objectContaining({
+      session_id: sessionId,
+      content: expect.stringContaining('Run broker 503'),
+    }))
+    expect(getSessionDetail(sessionId)?.messages).toEqual([
+      expect.objectContaining({ role: 'user' }),
+      expect.objectContaining({
+        role: 'assistant',
+        finish_reason: 'error',
+        content: expect.stringContaining('Run broker 503'),
+      }),
+    ])
+    expect(room.emit).toHaveBeenCalledWith('run.failed', expect.objectContaining({
+      session_id: sessionId,
+      error: expect.stringContaining('Run broker 503'),
+    }))
+  })
+
+  it('persists a visible assistant error when the broker stream emits run.failed before content', async () => {
+    vi.resetModules()
+    vi.stubEnv('HERMES_WEBUI_RUN_BROKER', '1')
+    vi.stubEnv('HERMES_RUN_BROKER_URL', 'http://127.0.0.1:8766')
+    const { ChatRunSocket: BrokerChatRunSocket } = await import('../../packages/server/src/services/hermes/chat-run-socket')
+    const { getSessionDetail } = await import('../../packages/server/src/db/hermes/session-store')
+
+    const { io, room } = createSocketServer()
+    const sessionId = `session-broker-stream-fail-${Date.now()}`
+    const gatewayManager = {
+      detectStatus: vi.fn(),
+      startApiOnly: vi.fn(),
+      getUpstream: vi.fn(() => {
+        throw new Error('profile apiserver should not be used')
+      }),
+      getApiKey: vi.fn(() => null),
+    }
+    const encoder = new TextEncoder()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"kind":"error","run_id":"run-fail","error":"owner credential denied"}\n\n'))
+        controller.close()
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    })))
+
+    const chatRun = new BrokerChatRunSocket(io as any, gatewayManager)
+    const socket = {
+      data: { user: { openid: 'ou_webui_user' } },
+      connected: true,
+      emit: vi.fn(),
+      join: vi.fn(),
+    }
+
+    await (chatRun as any).handleRun(socket, {
+      input: [
+        { type: 'text', text: '页面效果还是错的呢？你看看？' },
+        { type: 'image', name: 'page.png', path: 'uploads/page.png', media_type: 'image/png' },
+      ],
+      session_id: sessionId,
+    }, 'baiguannan')
+
+    expect(getSessionDetail(sessionId)?.messages).toEqual([
+      expect.objectContaining({ role: 'user' }),
+      expect.objectContaining({
+        role: 'assistant',
+        finish_reason: 'error',
+        content: expect.stringContaining('owner credential denied'),
+      }),
+    ])
+    expect(room.emit).toHaveBeenCalledWith('run.failed', expect.objectContaining({
+      session_id: sessionId,
+      error: 'owner credential denied',
+    }))
+  })
+
+  it('does not add a generic failure message after broker content already streamed', async () => {
+    vi.resetModules()
+    vi.stubEnv('HERMES_WEBUI_RUN_BROKER', '1')
+    vi.stubEnv('HERMES_RUN_BROKER_URL', 'http://127.0.0.1:8766')
+    const { ChatRunSocket: BrokerChatRunSocket } = await import('../../packages/server/src/services/hermes/chat-run-socket')
+    const { getSessionDetail } = await import('../../packages/server/src/db/hermes/session-store')
+
+    const { io } = createSocketServer()
+    const sessionId = `session-broker-partial-fail-${Date.now()}`
+    const gatewayManager = {
+      detectStatus: vi.fn(),
+      startApiOnly: vi.fn(),
+      getUpstream: vi.fn(() => {
+        throw new Error('profile apiserver should not be used')
+      }),
+      getApiKey: vi.fn(() => null),
+    }
+    const encoder = new TextEncoder()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"kind":"content","text":"我先看一下页面。","run_id":"run-partial"}\n\n'))
+        controller.enqueue(encoder.encode('data: {"kind":"error","run_id":"run-partial","error":"tool runtime failed"}\n\n'))
+        controller.close()
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    })))
+
+    const chatRun = new BrokerChatRunSocket(io as any, gatewayManager)
+    const socket = {
+      data: { user: { openid: 'ou_webui_user' } },
+      connected: true,
+      emit: vi.fn(),
+      join: vi.fn(),
+    }
+
+    await (chatRun as any).handleRun(socket, {
+      input: '页面效果还是错的呢？你看看？',
+      session_id: sessionId,
+    }, 'baiguannan')
+
+    const assistantMessages = getSessionDetail(sessionId)?.messages.filter(message => message.role === 'assistant')
+    expect(assistantMessages).toHaveLength(1)
+    expect(assistantMessages?.[0]).toEqual(expect.objectContaining({
+      content: '我先看一下页面。',
+    }))
+    expect(assistantMessages?.[0].content).not.toContain('运行失败')
+  })
+
   it('maps broker thinking frames to reasoning and preserves tool metadata', () => {
     expect(mapRunBrokerFrameForChat({
       kind: 'thinking',
