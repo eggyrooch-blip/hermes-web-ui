@@ -567,3 +567,16 @@ Test files live in `tests/client/` and `tests/server/`. Configuration is in root
 - **新路由必须在 `proxyMiddleware` 之前注册**（`routes/index.ts:75-78`）。`/api/hermes/*` 有 catch-all proxy 兜底——把新路由放在 `proxyRoutes` 之后会被直接 forward 到 hermes gateway，导致本地 BFF 逻辑根本不执行。
 - **chat plane 下 `getRequestProfile(ctx)` 强制 `user.profile`**（`services/request-context.ts:121-125`）。不要尝试用 `X-Hermes-Profile` header 或 `?profile=` query 在 chat plane 下覆盖飞书账号绑定的 profile——服务端忽略，前端调试也无效。
 - **唯一发往 hermes gateway 的 fetch 在 `proxy-handler.ts:259`** + **chat-run socket 的 `chat-run-socket.ts:921`**。要给上游加新 header（如 `X-Hermes-Open-Id`）只改 `buildProxyHeaders()`（`proxy-handler.ts:84`）这一处；其它路径不能绕过 SSRF allowlist (`gateway-manager.ts:87 isAllowedUpstreamHost`)。
+
+<!-- ftask:managed v1 — auto-generated; edit OUTSIDE this block -->
+# Agent rules — hermes-web-ui (managed by ftask)
+
+- This repo is part of sunke's agent-OS. Agents NEVER run git directly here — use `bun ~/.claude/PAI/TOOLS/ftask.ts`.
+- Base branch: `main`. Feature work happens in a `ftask new <slug>` worktree, never on `main` directly.
+- Test gate: `ftask ship` runs `bun run test` (auto-detected) in the rebased worktree and BLOCKS the merge if it fails.
+- When you fix a bug found while troubleshooting (a 排障), add a regression test that FAILS without the fix BEFORE `ftask ship`, and record the root cause as one line under "Known gotchas" below.
+- Global protocol: `~/.claude/CLAUDE.md` (Claude) and `~/.codex/AGENTS.md` (Codex) — "AGENT-OS" section. User cheatsheet: `~/code/AGENT-OS.md`.
+
+## Known gotchas
+- WebUI MarkdownRenderer used plain markdown-it without a math renderer, so `$...$` / `$$...$$` LaTeX in research answers displayed raw until KaTeX support was added.
+<!-- /ftask:managed -->
