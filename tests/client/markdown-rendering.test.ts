@@ -279,6 +279,47 @@ describe('MarkdownRenderer', () => {
     expect(img.attributes('alt')).toBe('桌面截图')
   })
 
+  it('renders block LaTeX math instead of showing raw dollar delimiters', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: [
+          '### Rubric 评分公式',
+          '',
+          '$$S(x, y) = \\frac{\\sum_{k=1}^{K} w_{x,k} \\cdot Judge(r_{x,k}, y)}{\\sum_{k: w_{x,k}>0} w_{x,k}}$$',
+        ].join('\n'),
+      },
+    })
+
+    expect(wrapper.find('.katex-display').exists()).toBe(true)
+    expect(wrapper.find('.markdown-body').text()).not.toContain('$$')
+    expect(wrapper.find('.markdown-body').text()).toContain('S')
+    expect(wrapper.find('.markdown-body').text()).toContain('Judge')
+  })
+
+  it('renders inline LaTeX math inside list items', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '- 每个 rubric item $r_{x,k}$ 相当于一个单元测试\n- 权重 \\(w_{x,k}\\) 可正可负',
+      },
+    })
+
+    expect(wrapper.findAll('.katex').length).toBeGreaterThanOrEqual(2)
+    expect(wrapper.find('.markdown-body').text()).not.toContain('$r_{x,k}$')
+    expect(wrapper.find('.markdown-body').text()).not.toContain('\\(w_{x,k}\\)')
+  })
+
+  it('does not render dollar-delimited text inside code fences as math', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '```ts\nconst text = "Price is $5 and formula text is $r_{x,k}$."\n```',
+      },
+    })
+
+    expect(wrapper.find('.hljs-code-block').exists()).toBe(true)
+    expect(wrapper.find('.katex').exists()).toBe(false)
+    expect(wrapper.find('code.hljs').text()).toContain('$r_{x,k}$')
+  })
+
   it('keeps tilde-fenced markdown examples with nested tilde fences intact', () => {
     const wrapper = mount(MarkdownRenderer, {
       props: {

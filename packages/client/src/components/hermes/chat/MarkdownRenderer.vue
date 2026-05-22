@@ -4,6 +4,8 @@ import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 import type MarkdownIt from 'markdown-it'
 import MarkdownItConstructor from 'markdown-it'
+import katex from 'katex'
+import 'katex/dist/katex.min.css'
 import { handleCodeBlockCopyClick, renderHighlightedCodeBlock } from './highlight'
 import { repairNestedMarkdownFences } from './markdownFenceRepair'
 import {
@@ -37,6 +39,129 @@ const md: MarkdownIt = new MarkdownItConstructor({
     return renderHighlightedCodeBlock(str, lang, t('common.copy'))
   },
 })
+
+function renderMathToHtml(source: string, displayMode: boolean): string {
+  return katex.renderToString(source, {
+    displayMode,
+    strict: 'ignore',
+    throwOnError: false,
+    trust: false,
+  })
+}
+
+function findUnescaped(source: string, marker: string, from: number, limit?: number): number {
+  const max = limit ?? source.length
+  let pos = from
+  while (pos < max) {
+    const found = source.indexOf(marker, pos)
+    if (found < 0 || found >= max) return -1
+
+    let backslashes = 0
+    for (let i = found - 1; i >= 0 && source[i] === '\\'; i -= 1) {
+      backslashes += 1
+    }
+    if (backslashes % 2 === 0) return found
+    pos = found + marker.length
+  }
+  return -1
+}
+
+function installMathRenderer(markdown: MarkdownIt): void {
+  markdown.inline.ruler.before('escape', 'math_paren_inline', (state, silent) => {
+    const start = state.pos
+    if (state.src[start] !== '\\' || state.src[start + 1] !== '(') return false
+
+    const end = findUnescaped(state.src, '\\)', start + 2)
+    if (end < 0) return false
+    const content = state.src.slice(start + 2, end).trim()
+    if (!content) return false
+
+    if (!silent) {
+      const token = state.push('math_inline', 'math', 0)
+      token.content = content
+      token.markup = '\\('
+    }
+    state.pos = end + 2
+    return true
+  })
+
+  markdown.inline.ruler.before('emphasis', 'math_dollar_inline', (state, silent) => {
+    const start = state.pos
+    if (state.src[start] !== '$' || state.src[start + 1] === '$') return false
+    const next = state.src[start + 1]
+    if (!next || /[\s\d]/.test(next)) return false
+
+    const end = findUnescaped(state.src, '$', start + 1)
+    if (end < 0 || state.src[end + 1] === '$') return false
+    const content = state.src.slice(start + 1, end).trim()
+    if (!content) return false
+
+    if (!silent) {
+      const token = state.push('math_inline', 'math', 0)
+      token.content = content
+      token.markup = '$'
+    }
+    state.pos = end + 1
+    return true
+  })
+
+  markdown.block.ruler.before('paragraph', 'math_block', (state, startLine, endLine, silent) => {
+    const start = state.bMarks[startLine] + state.tShift[startLine]
+    const max = state.eMarks[startLine]
+    const line = state.src.slice(start, max)
+
+    const marker = line.startsWith('$$') ? '$$' : line.startsWith('\\[') ? '\\[' : ''
+    if (!marker) return false
+
+    const closer = marker === '$$' ? '$$' : '\\]'
+    const sameLineEnd = findUnescaped(state.src, closer, start + marker.length, max)
+    if (sameLineEnd >= 0) {
+      const tail = state.src.slice(sameLineEnd + closer.length, max)
+      if (tail.trim()) return false
+      if (!silent) {
+        const token = state.push('math_block', 'math', 0)
+        token.block = true
+        token.content = state.src.slice(start + marker.length, sameLineEnd).trim()
+        token.markup = marker
+        token.map = [startLine, startLine + 1]
+      }
+      state.line = startLine + 1
+      return true
+    }
+
+    let nextLine = startLine + 1
+    const lines = [line.slice(marker.length)]
+    for (; nextLine < endLine; nextLine += 1) {
+      const lineStart = state.bMarks[nextLine] + state.tShift[nextLine]
+      const lineEnd = state.eMarks[nextLine]
+      const current = state.src.slice(lineStart, lineEnd)
+      const closeIndex = findUnescaped(current, closer, 0)
+      if (closeIndex >= 0) {
+        if (current.slice(closeIndex + closer.length).trim()) return false
+        lines.push(current.slice(0, closeIndex))
+        if (!silent) {
+          const token = state.push('math_block', 'math', 0)
+          token.block = true
+          token.content = lines.join('\n').trim()
+          token.markup = marker
+          token.map = [startLine, nextLine + 1]
+        }
+        state.line = nextLine + 1
+        return true
+      }
+      lines.push(current)
+    }
+
+    return false
+  }, {
+    alt: ['paragraph', 'reference', 'blockquote', 'list'],
+  })
+
+  markdown.renderer.rules.math_inline = (tokens, idx) => renderMathToHtml(tokens[idx].content, false)
+  markdown.renderer.rules.math_block = (tokens, idx) => `${renderMathToHtml(tokens[idx].content, true)}\n`
+}
+
+installMathRenderer(md)
 
 const defaultFenceRenderer = md.renderer.rules.fence?.bind(md.renderer.rules)
 
