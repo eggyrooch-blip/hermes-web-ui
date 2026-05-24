@@ -16,6 +16,8 @@ export default {
     credentialsRequired: 'Please enter username and password',
     invalidCredentials: 'Invalid username or password',
     tooManyAttempts: 'Too many failed attempts, please try again later',
+    lockResetHint: 'If this is your server, clear the login lock with:',
+    defaultLoginResetHint: 'To reset the default admin password, run:',
     passwordMismatch: 'Passwords do not match',
     passwordTooShort: 'Password must be at least 6 characters',
     setupSuccess: 'Password login configured successfully',

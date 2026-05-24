@@ -197,4 +197,27 @@ describe('LoginView token login', () => {
     expect(wrapper.find('form.login-form').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('login.feishuLogin')
   })
+
+  it('shows recovery commands when password login is rate limited', async () => {
+    mockFetchAuthStatus.mockResolvedValue({ hasPasswordLogin: true })
+    const err: any = new Error('Too many attempts')
+    err.status = 429
+    mockLoginWithPassword.mockRejectedValue(err)
+
+    const wrapper = mount(LoginView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    const inputs = wrapper.findAll('input.login-input')
+    await inputs[0].setValue('admin')
+    await inputs[1].setValue('bad-password')
+    await wrapper.find('form.login-form').trigger('submit')
+
+    expect(wrapper.find('.login-error').text()).toBe('login.tooManyAttempts')
+    const hint = wrapper.find('.login-lock-hint')
+    expect(hint.exists()).toBe(true)
+    expect(hint.text()).toContain('login.lockResetHint')
+    expect(hint.text()).toContain('hermes-web-ui clear-login-locks --restart')
+    expect(hint.text()).toContain('hermes-web-ui reset-default-login')
+  })
 })

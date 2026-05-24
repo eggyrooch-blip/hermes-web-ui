@@ -16,6 +16,8 @@ export default {
     credentialsRequired: 'Bitte Benutzername und Passwort eingeben',
     invalidCredentials: 'Ungultiger Benutzername oder Passwort',
     tooManyAttempts: 'Zu viele fehlgeschlagene Versuche, bitte versuchen Sie es spater erneut',
+    lockResetHint: 'Wenn dies Ihr Server ist, loschen Sie die Login-Sperre mit:',
+    defaultLoginResetHint: 'Zum Zurucksetzen des Standard-admin-Passworts ausfuhren:',
     passwordMismatch: 'Passworter stimmen nicht uberein',
     passwordTooShort: 'Passwort muss mindestens 6 Zeichen lang sein',
     setupSuccess: 'Passwort-Login erfolgreich konfiguriert',

@@ -16,6 +16,8 @@ export default {
     credentialsRequired: '请输入用户名和密码',
     invalidCredentials: '用户名或密码错误',
     tooManyAttempts: '登录失败次数过多，请稍后重试',
+    lockResetHint: '如果这是你的服务器，可以执行以下命令清除登录锁定：',
+    defaultLoginResetHint: '如需重置默认 admin 密码，可以执行：',
     passwordMismatch: '两次密码不一致',
     passwordTooShort: '密码长度至少 6 个字符',
     setupSuccess: '密码登录配置成功',

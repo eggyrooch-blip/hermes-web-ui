@@ -16,6 +16,8 @@ export default {
     credentialsRequired: 'Veuillez entrer le nom d\'utilisateur et le mot de passe',
     invalidCredentials: 'Nom d\'utilisateur ou mot de passe incorrect',
     tooManyAttempts: 'Trop de tentatives echouees, veuillez reessayer plus tard',
+    lockResetHint: 'Si c\'est votre serveur, effacez le verrouillage de connexion avec :',
+    defaultLoginResetHint: 'Pour reinitialiser le mot de passe admin par defaut, executez :',
     passwordMismatch: 'Les mots de passe ne correspondent pas',
     passwordTooShort: 'Le mot de passe doit contenir au moins 6 caracteres',
     setupSuccess: 'Login par mot de passe configure avec succes',
