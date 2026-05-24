@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 
 const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
 const fetchEntriesMock = vi.hoisted(() => vi.fn())
+const ensureProfileSelectionMock = vi.hoisted(() => vi.fn(async () => undefined))
 const filesStoreMock = vi.hoisted(() => ({
   editingFile: null,
   previewFile: null,
@@ -17,6 +18,10 @@ const filesStoreMock = vi.hoisted(() => ({
 
 vi.mock('@/api/client', () => ({
   isUserMode: isUserModeMock,
+}))
+
+vi.mock('@/utils/hermes/profile-ready', () => ({
+  ensureProfileSelection: ensureProfileSelectionMock,
 }))
 
 vi.mock('@/stores/hermes/files', () => ({
@@ -70,6 +75,19 @@ describe('FilesView user mode', () => {
       { name: 'note.md', path: 'note.md', isDir: false, size: 128, modTime: '2026-05-07T00:00:00Z' },
     ]
     fetchEntriesMock.mockClear()
+    ensureProfileSelectionMock.mockReset()
+    ensureProfileSelectionMock.mockResolvedValue(undefined)
+  })
+
+  it('initializes the active profile before loading the profile workspace root', async () => {
+    mount(FilesView)
+    await flushPromises()
+
+    expect(ensureProfileSelectionMock).toHaveBeenCalled()
+    expect(fetchEntriesMock).toHaveBeenCalledWith('')
+    expect(ensureProfileSelectionMock.mock.invocationCallOrder[0]).toBeLessThan(
+      fetchEntriesMock.mock.invocationCallOrder[0],
+    )
   })
 
   it('shows a workspace-scoped page header in user mode', () => {

@@ -15,6 +15,10 @@ vi.mock('@/api/hermes/skills', () => ({
   saveMemory: saveMemoryMock,
 }))
 
+vi.mock('@/utils/hermes/profile-ready', () => ({
+  ensureProfileSelection: vi.fn(async () => undefined),
+}))
+
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string) => key,

@@ -6,6 +6,7 @@ import SkillList from '@/components/hermes/skills/SkillList.vue'
 import SkillDetail from '@/components/hermes/skills/SkillDetail.vue'
 import { fetchSkills, type SkillCategory, type SkillSource, type SkillInfo } from '@/api/hermes/skills'
 import { isUserMode } from '@/api/client'
+import { ensureProfileSelection } from '@/utils/hermes/profile-ready'
 
 type SourceFilter = SkillSource | 'modified'
 
@@ -89,6 +90,7 @@ onUnmounted(() => {
 async function loadSkills() {
   loading.value = true
   try {
+    await ensureProfileSelection()
     const data = await fetchSkills()
     categories.value = data.categories
     archived.value = data.archived

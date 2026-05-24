@@ -24,6 +24,10 @@ vi.mock('@/api/hermes/sessions', () => ({
   fetchUsageStats: fetchUsageStatsMock,
 }))
 
+vi.mock('@/utils/hermes/profile-ready', () => ({
+  ensureProfileSelection: vi.fn(async () => undefined),
+}))
+
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string, params?: Record<string, unknown>) => params ? `${key}:${JSON.stringify(params)}` : key,

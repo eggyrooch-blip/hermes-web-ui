@@ -16,13 +16,19 @@ import PrivacySettings from "@/components/hermes/settings/PrivacySettings.vue";
 import ModelSettings from "@/components/hermes/settings/ModelSettings.vue";
 import AccountSettings from "@/components/hermes/settings/AccountSettings.vue";
 import VoiceSettings from "@/components/hermes/settings/VoiceSettings.vue";
+import { ensureProfileSelection } from "@/utils/hermes/profile-ready";
 
 const settingsStore = useSettingsStore();
 const { t } = useI18n();
 const showAdminSettings = computed(() => !isUserMode());
 
+async function loadSettings() {
+  await ensureProfileSelection();
+  await settingsStore.fetchSettings();
+}
+
 onMounted(() => {
-  settingsStore.fetchSettings();
+  void loadSettings();
 });
 </script>
 

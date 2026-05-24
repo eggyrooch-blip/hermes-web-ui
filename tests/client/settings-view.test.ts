@@ -9,6 +9,10 @@ vi.mock('@/api/client', () => ({
   isUserMode: isUserModeMock,
 }))
 
+vi.mock('@/utils/hermes/profile-ready', () => ({
+  ensureProfileSelection: vi.fn(async () => undefined),
+}))
+
 vi.mock('@/stores/hermes/settings', () => ({
   useSettingsStore: () => ({
     loading: false,

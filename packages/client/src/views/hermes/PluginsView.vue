@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { NAlert, NButton, NEmpty, NInput, NSelect, NSpin, NTag, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { fetchPlugins, type HermesPluginInfo, type HermesPluginsMetadata } from '@/api/hermes/plugins'
+import { ensureProfileSelection } from '@/utils/hermes/profile-ready'
 
 const { t, te } = useI18n()
 const message = useMessage()
@@ -58,6 +59,7 @@ async function loadPlugins() {
   loading.value = true
   error.value = ''
   try {
+    await ensureProfileSelection()
     const data = await fetchPlugins()
     plugins.value = data.plugins ?? []
     warnings.value = data.warnings ?? []
