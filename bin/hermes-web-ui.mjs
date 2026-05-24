@@ -2,20 +2,29 @@
 import { spawn, execSync } from 'child_process'
 import { resolve, dirname, join } from 'path'
 import { fileURLToPath } from 'url'
-import { readFileSync, writeFileSync, unlinkSync, mkdirSync, openSync, chmodSync, statSync } from 'fs'
-import { randomBytes } from 'crypto'
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync, openSync, chmodSync, statSync, existsSync, realpathSync } from 'fs'
+import { randomBytes, scryptSync } from 'crypto'
 import { homedir } from 'os'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+const __filename = fileURLToPath(import.meta.url)
 const serverEntry = resolve(__dirname, '..', 'dist', 'server', 'index.js')
 const pkgDir = resolve(__dirname, '..')
 const pkg = JSON.parse(readFileSync(resolve(pkgDir, 'package.json'), 'utf-8'))
 const VERSION = pkg.version
-const PID_DIR = resolve(homedir(), '.hermes-web-ui')
+const WEB_UI_HOME = process.env.HERMES_WEB_UI_HOME?.trim()
+  ? resolve(process.env.HERMES_WEB_UI_HOME.trim())
+  : resolve(homedir(), '.hermes-web-ui')
+const PID_DIR = WEB_UI_HOME
 const PID_FILE = join(PID_DIR, 'server.pid')
 const LOG_FILE = join(PID_DIR, 'server.log')
 const TOKEN_FILE = join(PID_DIR, '.token')
+const LOGIN_LOCK_FILE = join(WEB_UI_HOME, '.login-lock.json')
+const CREDENTIALS_FILE = join(WEB_UI_HOME, '.credentials')
 const DEFAULT_PORT = 8648
+const DEFAULT_USERNAME = 'admin'
+const DEFAULT_PASSWORD = '123456'
+const SCRYPT_OPTIONS = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }
 
 // ─── Auto-fix node-pty native module ──────────────────────────
 function ensureNativeModules() {
@@ -319,6 +328,61 @@ function showStatus() {
   }
 }
 
+function clearLoginLocks(options = {}) {
+  const { silent = false, checkRunning = true } = options
+  const serverRunning = checkRunning ? !!getPid() : false
+  let removed = false
+
+  try {
+    unlinkSync(LOGIN_LOCK_FILE)
+    removed = true
+    if (!silent) console.log(`  ✓ Removed login lock file: ${LOGIN_LOCK_FILE}`)
+  } catch (err) {
+    if (err?.code === 'ENOENT') {
+      if (!silent) console.log(`  ✓ No login lock file found: ${LOGIN_LOCK_FILE}`)
+    } else {
+      if (!silent) console.log(`  ✗ Failed to remove login lock file: ${err.message}`)
+      throw err
+    }
+  }
+
+  if (!silent && serverRunning) {
+    console.log('  ⚠ hermes-web-ui is running; restart it to clear in-memory login locks.')
+    console.log('    Run: hermes-web-ui restart')
+  }
+
+  return { path: LOGIN_LOCK_FILE, removed, serverRunning }
+}
+
+function hashPassword(password, salt) {
+  return scryptSync(password, salt, 64, SCRYPT_OPTIONS).toString('hex')
+}
+
+function resetDefaultLogin(options = {}) {
+  const { silent = false } = options
+  mkdirSync(WEB_UI_HOME, { recursive: true })
+  const existed = existsSync(CREDENTIALS_FILE)
+  const salt = randomBytes(16).toString('hex')
+  const credentials = {
+    username: DEFAULT_USERNAME,
+    password_hash: hashPassword(DEFAULT_PASSWORD, salt),
+    salt,
+    created_at: Date.now(),
+  }
+  writeFileSync(CREDENTIALS_FILE, JSON.stringify(credentials, null, 2) + '\n', { mode: 0o600 })
+  if (!silent) {
+    console.log(`  ✓ ${existed ? 'Reset' : 'Created'} default login: ${DEFAULT_USERNAME} / ${DEFAULT_PASSWORD}`)
+    console.log(`    Credentials: ${CREDENTIALS_FILE}`)
+  }
+  return {
+    path: CREDENTIALS_FILE,
+    username: DEFAULT_USERNAME,
+    password: DEFAULT_PASSWORD,
+    action: existed ? 'updated' : 'created',
+  }
+}
+
+function main() {
 const command = process.argv[2] || 'start'
 
 if (['-v', '--version', 'version'].includes(command)) {
@@ -337,13 +401,17 @@ Commands:
   stop               Stop the server
   restart [port]     Restart the server
   status             Show server status
+  clear-login-locks  Delete the login IP lock file
+  reset-default-login Create or reset the default login (${DEFAULT_USERNAME} / ${DEFAULT_PASSWORD})
   update             Update to latest version and restart
+  upgrade            Alias for update
   version            Show version number
 
 Options:
   -v, --version      Show version number
   -h, --help         Show this help message
   --port <port>      Specify port (used with start/restart)
+  --restart          Restart after clear-login-locks
 `)
   process.exit(0)
 }
@@ -384,6 +452,19 @@ switch (command) {
   case 'status':
     showStatus()
     break
+  case 'clear-login-locks': {
+    const restartAfterClear = process.argv.includes('--restart')
+    const result = clearLoginLocks()
+    if (restartAfterClear && result.serverRunning) {
+      const port = getRunningPort() ?? getPort()
+      stopDaemon()
+      setTimeout(() => startDaemon(port), 500)
+    }
+    break
+  }
+  case 'reset-default-login':
+    resetDefaultLogin()
+    break
   case 'update':
   case 'upgrade':
     doUpdate()
@@ -399,4 +480,14 @@ switch (command) {
     child.on('exit', (code) => process.exit(code ?? 1))
     process.on('SIGTERM', () => child.kill('SIGTERM'))
     process.on('SIGINT', () => child.kill('SIGINT'))
+}
+}
+
+if (process.argv[1] && realpathSync(resolve(process.argv[1])) === __filename) {
+  main()
+}
+
+export {
+  clearLoginLocks,
+  resetDefaultLogin,
 }
