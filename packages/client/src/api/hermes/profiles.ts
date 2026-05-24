@@ -9,6 +9,14 @@ export interface HermesProfile {
   displayLabel?: string
   kind?: string
   ownerOpenId?: string
+  avatar?: ProfileAvatar | null
+}
+
+export interface ProfileAvatar {
+  type: 'generated' | 'image'
+  seed?: string
+  dataUrl?: string
+  updatedAt?: number
 }
 
 export interface HermesProfileDetail {
@@ -20,6 +28,7 @@ export interface HermesProfileDetail {
   skills: number
   hasEnv: boolean
   hasSoulMd: boolean
+  avatar?: ProfileAvatar | null
 }
 
 export async function fetchProfiles(): Promise<HermesProfile[]> {
