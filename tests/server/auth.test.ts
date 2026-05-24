@@ -66,6 +66,14 @@ describe('Auth Service', () => {
       await expect(getToken()).resolves.toBeNull()
     })
 
+    it('returns null in Feishu OAuth mode so password/token auth cannot become the production identity source', async () => {
+      process.env.HERMES_AUTH_MODE = 'feishu-oauth-dev'
+      const { getToken, mocks } = await loadAuth()
+
+      await expect(getToken()).resolves.toBeNull()
+      expect(mocks.readFile).not.toHaveBeenCalled()
+    })
+
     it('returns AUTH_TOKEN env var if set', async () => {
       process.env.AUTH_TOKEN = 'my-custom-token'
       const { getToken, mocks } = await loadAuth()
@@ -209,6 +217,24 @@ describe('Auth Service', () => {
       await middleware(ctx, next)
 
       expect(next).toHaveBeenCalledOnce()
+    })
+
+    it('does not accept a bearer token as user identity in Feishu OAuth mode', async () => {
+      process.env.HERMES_AUTH_MODE = 'feishu-oauth-dev'
+      process.env.FEISHU_SESSION_SECRET = 'session-secret'
+      const { requireAuth } = await loadAuth()
+      const middleware = requireAuth('secret')
+      const ctx = {
+        ...createMockCtx('/api/hermes/sessions', { authorization: 'Bearer secret' }),
+        cookies: { get: vi.fn().mockReturnValue('') },
+      }
+      const next = vi.fn(async () => {})
+
+      await middleware(ctx, next)
+
+      expect(ctx.status).toBe(401)
+      expect(ctx.body).toEqual({ error: 'Unauthorized' })
+      expect(next).not.toHaveBeenCalled()
     })
 
     it('returns 401 JSON on auth failure', async () => {
