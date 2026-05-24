@@ -22,6 +22,10 @@ export function getRunBrokerKey(env: Record<string, string | undefined> = proces
   return env.HERMES_RUN_BROKER_KEY?.trim() || ''
 }
 
+export function getWebUiHome(env: Record<string, string | undefined> = process.env): string {
+  return env.HERMES_WEB_UI_HOME?.trim() || resolve(homedir(), '.hermes-web-ui')
+}
+
 export function getJobsBrokerEnabled(env: Record<string, string | undefined> = process.env): boolean {
   const explicit = env.HERMES_WEBUI_JOBS_BROKER
   if (explicit !== undefined) return parseBool(explicit)

@@ -1,5 +1,5 @@
-import { createReadStream, createWriteStream, existsSync, unlinkSync, writeFileSync } from 'fs'
-import { mkdir, unlink } from 'fs/promises'
+import { createReadStream, createWriteStream, existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'fs'
+import { mkdir, unlink, writeFile } from 'fs/promises'
 import { basename, extname, join } from 'path'
 import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
@@ -14,10 +14,93 @@ import { SessionDeleter } from '../../services/hermes/session-deleter'
 import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
 import { logger } from '../../services/logger'
 import { smartCloneCleanup } from '../../services/hermes/profile-credentials'
-import { config } from '../../config'
-import { listOwnedProfileMetadata, registerOwnedProfile } from '../../services/hermes/agent-ownership'
+import { config, getWebUiHome } from '../../config'
+import { listOwnedProfileMetadata, ownerOwnsProfile, registerOwnedProfile } from '../../services/hermes/agent-ownership'
 import { provisionOwnedProfileViaBroker } from '../../services/hermes/profile-provisioning'
 import { getRequestProfile } from '../../services/request-context'
+
+interface ProfileAvatarMeta {
+  type: 'generated' | 'image'
+  seed?: string
+  file?: string
+  mime?: string
+  updatedAt?: number
+}
+
+interface ProfileAvatarResponse {
+  type: 'generated' | 'image'
+  seed?: string
+  dataUrl?: string
+  updatedAt?: number
+}
+
+function profileMetadataDir(name: string): string {
+  const segment = Buffer.from(name || 'default', 'utf-8').toString('base64url')
+  return join(getWebUiHome(), 'profile-metadata', segment)
+}
+
+function profileAvatarMetaPath(name: string): string {
+  return join(profileMetadataDir(name), 'avatar.json')
+}
+
+function profileAvatarImagePath(name: string, file = 'avatar.bin'): string {
+  return join(profileMetadataDir(name), file)
+}
+
+function readProfileAvatar(name: string): ProfileAvatarResponse | null {
+  const metaPath = profileAvatarMetaPath(name)
+  if (!existsSync(metaPath)) return null
+  try {
+    const meta = JSON.parse(readFileSync(metaPath, 'utf-8')) as ProfileAvatarMeta
+    if (meta.type === 'generated') {
+      return {
+        type: 'generated',
+        seed: typeof meta.seed === 'string' ? meta.seed : name,
+        updatedAt: meta.updatedAt,
+      }
+    }
+    if (meta.type === 'image' && meta.file && meta.mime) {
+      const imagePath = profileAvatarImagePath(name, meta.file)
+      if (!existsSync(imagePath)) return null
+      const data = readFileSync(imagePath).toString('base64')
+      return {
+        type: 'image',
+        dataUrl: `data:${meta.mime};base64,${data}`,
+        updatedAt: meta.updatedAt,
+      }
+    }
+  } catch (err) {
+    logger.warn(err, '[profiles] failed to read avatar metadata for profile "%s"', name)
+  }
+  return null
+}
+
+function withProfileAvatar<T extends { name: string }>(profile: T): T & { avatar?: ProfileAvatarResponse } {
+  const avatar = readProfileAvatar(profile.name)
+  return avatar ? { ...profile, avatar } : profile
+}
+
+function parseAvatarDataUrl(dataUrl: string): { mime: string; buffer: Buffer } {
+  const match = dataUrl.match(/^data:(image\/(?:png|jpeg|webp));base64,([a-zA-Z0-9+/=]+)$/)
+  if (!match) throw new Error('Avatar image must be a PNG, JPEG, or WebP data URL')
+  const buffer = Buffer.from(match[2], 'base64')
+  if (buffer.length > 1024 * 1024) throw new Error('Avatar image must be 1MB or smaller')
+  return { mime: match[1], buffer }
+}
+
+function ensureCanWriteProfileMetadata(ctx: any, name: string): boolean {
+  if (config.webPlane !== 'chat') return true
+  const user = ctx.state?.user as { openid?: string; profile?: string } | undefined
+  if (!user?.openid) {
+    ctx.status = 401
+    ctx.body = { error: 'Unauthorized' }
+    return false
+  }
+  if (name === user.profile || ownerOwnsProfile(user.openid, name)) return true
+  ctx.status = 403
+  ctx.body = { error: `Profile "${name}" is not available for this user` }
+  return false
+}
 
 export async function list(ctx: any) {
   try {
@@ -29,7 +112,7 @@ export async function list(ctx: any) {
       }
       const activeProfileName = getRequestProfile(ctx)
       ctx.body = {
-        profiles: Array.from(owned.values()).map(meta => ({
+        profiles: Array.from(owned.values()).map(meta => withProfileAvatar({
           name: meta.profileName,
           active: meta.profileName === activeProfileName,
           model: '',
@@ -62,7 +145,7 @@ export async function list(ctx: any) {
       p.active = (p.name === activeProfileName)
     })
 
-    ctx.body = { profiles }
+    ctx.body = { profiles: profiles.map(profile => withProfileAvatar(profile)) }
   } catch (err: any) {
     ctx.status = 500
     ctx.body = { error: err.message }
@@ -165,11 +248,53 @@ export async function create(ctx: any) {
 export async function get(ctx: any) {
   try {
     const profile = await hermesCli.getProfile(ctx.params.name)
-    ctx.body = { profile }
+    ctx.body = { profile: withProfileAvatar(profile) }
   } catch (err: any) {
     ctx.status = err.message.includes('not found') ? 404 : 500
     ctx.body = { error: err.message }
   }
+}
+
+export async function updateAvatar(ctx: any) {
+  const name = String(ctx.params.name || '').trim() || 'default'
+  if (!ensureCanWriteProfileMetadata(ctx, name)) return
+  const body = ctx.request.body as { type?: string; seed?: string; dataUrl?: string }
+  try {
+    const dir = profileMetadataDir(name)
+    await mkdir(dir, { recursive: true })
+    const updatedAt = Date.now()
+
+    if (body.type === 'generated') {
+      const seed = String(body.seed || name).trim() || name
+      const meta: ProfileAvatarMeta = { type: 'generated', seed, updatedAt }
+      rmSync(profileAvatarImagePath(name), { force: true })
+      await writeFile(profileAvatarMetaPath(name), `${JSON.stringify(meta, null, 2)}\n`, { mode: 0o600 })
+      ctx.body = { avatar: readProfileAvatar(name) }
+      return
+    }
+
+    if (body.type === 'image' && typeof body.dataUrl === 'string') {
+      const { mime, buffer } = parseAvatarDataUrl(body.dataUrl)
+      const meta: ProfileAvatarMeta = { type: 'image', file: 'avatar.bin', mime, updatedAt }
+      await writeFile(profileAvatarImagePath(name), buffer, { mode: 0o600 })
+      await writeFile(profileAvatarMetaPath(name), `${JSON.stringify(meta, null, 2)}\n`, { mode: 0o600 })
+      ctx.body = { avatar: readProfileAvatar(name) }
+      return
+    }
+
+    ctx.status = 400
+    ctx.body = { error: 'Invalid avatar payload' }
+  } catch (err: any) {
+    ctx.status = 400
+    ctx.body = { error: err.message }
+  }
+}
+
+export async function deleteAvatar(ctx: any) {
+  const name = String(ctx.params.name || '').trim() || 'default'
+  if (!ensureCanWriteProfileMetadata(ctx, name)) return
+  rmSync(profileMetadataDir(name), { recursive: true, force: true })
+  ctx.body = { success: true }
 }
 
 export async function remove(ctx: any) {

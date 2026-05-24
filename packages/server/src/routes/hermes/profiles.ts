@@ -5,6 +5,8 @@ export const profileRoutes = new Router()
 
 profileRoutes.get('/api/hermes/profiles', ctrl.list)
 profileRoutes.post('/api/hermes/profiles', ctrl.create)
+profileRoutes.put('/api/hermes/profiles/:name/avatar', ctrl.updateAvatar)
+profileRoutes.delete('/api/hermes/profiles/:name/avatar', ctrl.deleteAvatar)
 profileRoutes.get('/api/hermes/profiles/:name', ctrl.get)
 profileRoutes.delete('/api/hermes/profiles/:name', ctrl.remove)
 profileRoutes.post('/api/hermes/profiles/:name/rename', ctrl.rename)
