@@ -13,6 +13,7 @@ import {
 } from "naive-ui";
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import router from "@/router";
 import { getSourceLabel } from "@/shared/session-display";
 import { copyToClipboard } from "@/utils/clipboard";
 import { isUserMode } from "@/api/client";
@@ -53,7 +54,25 @@ const showSessions = ref(
 let mobileQuery: MediaQueryList | null = null;
 const isMobile = ref(false);
 
+function sessionProfile(sessionId: string): string {
+  return chatStore.sessions.find((item) => item.id === sessionId)?.profile || "";
+}
+
+function sessionRoute(sessionId: string) {
+  const profile = sessionProfile(sessionId);
+  return {
+    name: "hermes.session",
+    params: { sessionId },
+    query: profile ? { profile } : undefined,
+  };
+}
+
+function sessionHref(sessionId: string) {
+  return router.resolve(sessionRoute(sessionId)).href;
+}
+
 function handleSessionClick(sessionId: string) {
+  void router.push(sessionRoute(sessionId));
   chatStore.switchSession(sessionId);
   if (mobileQuery?.matches) showSessions.value = false;
 }
@@ -628,6 +647,7 @@ async function handleWorkspaceConfirm() {
             :streaming="chatStore.isSessionLive(s.id)"
             :selectable="isBatchMode"
             :selected="isSessionSelected(s.id)"
+            :to="sessionHref(s.id)"
             @select="handleSessionClick(s.id)"
             @contextmenu="handleContextMenu($event, s.id)"
             @delete="handleDeleteSession(s.id)"
@@ -666,6 +686,7 @@ async function handleWorkspaceConfirm() {
               :streaming="chatStore.isSessionLive(s.id)"
               :selectable="isBatchMode"
               :selected="isSessionSelected(s.id)"
+              :to="sessionHref(s.id)"
               @select="handleSessionClick(s.id)"
               @contextmenu="handleContextMenu($event, s.id)"
               @delete="handleDeleteSession(s.id)"
