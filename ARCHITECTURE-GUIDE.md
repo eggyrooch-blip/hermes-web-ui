@@ -20,6 +20,9 @@ related:
 > ⚠️ 别把它跟同名笔记里的 `hermes-webui (nesquena)` 混了——那是另一条嵌入式单体 Python 实现，对比详见 [[对比 — hermes-webui (nesquena) vs hermes-web-ui (EKKO) 架构 2026-05-06]]。
 > 当前本机开发入口是 `/Users/kite/code/hermes-web-ui`；生产入口是 `root@10.250.1.66` 的 `hermes-web-ui.service`，监听 `0.0.0.0:8648`。不要用旧 launchd PID 判断生产状态。
 
+> [!info] 2026-05-24 worktree — upstream 0.6 baseline request-profile adapter
+> `webui-upstream-060-baseline` 第一批只接 upstream-compatible 的 request-profile 形状，不切执行路径。新增 `packages/server/src/middleware/user-auth.ts`，在既有 `requireAuth` 与 `enforcePlaneAccess` 之后把 Feishu/multitenancy `request-context` 解析出的 profile 写入 `ctx.state.profile = { name }`，并把现有 `ctx.state.user.openid/profile` 补成 upstream 风格的 `id/username/profiles` 字段。`routes/index.ts` 注册该 middleware 后，后续 upstream controller 可读取 `ctx.state.profile`，但身份来源仍是 Feishu OAuth/open_id，profile ACL 仍由 `getRequestProfile()` / `ownerOwnsProfile()` 决定。明确未吸收 upstream 删除 `feishu-oauth.ts` / `request-context.ts`，也未启用 `agent-bridge`、未改 Run Broker、Credentials/UAT、group chat、cron/jobs/kanban 或生产发布路径。
+
 > [!warning] 2026-05-22 已发布 — Credentials 页区分 bot runtime 与 user UAT
 > `webui-lark-cli-user-auth-status` 已发布到生产。Credentials 页的 Lark-cli 卡片不能把 runtime 能以 bot 身份工作误显示为个人用户「已认证」；在 `ctx.state.user` 存在的 chat-plane 场景，只有 Feishu UAT status valid、profile-local UAT connected，或 lark-cli readiness 明确 `default_identity=user` 时才显示 authenticated。`default_identity=bot` 只说明 bot runtime 可用，个人用户仍显示 `needs_auth` 和「授权」按钮。
 >
