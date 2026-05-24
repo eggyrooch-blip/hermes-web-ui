@@ -433,6 +433,7 @@ export default {
       builtin: 'Builtin',
       hub: 'Hub',
       local: 'Local',
+      external: 'External',
     },
   },
 

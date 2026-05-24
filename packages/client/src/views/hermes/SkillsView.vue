@@ -148,6 +148,9 @@ watch(visibleSkillEntries, syncSelectedSkill)
         <button class="legend-item" :class="{ active: sourceFilter === 'local' }" @click="toggleFilter('local')">
           <span class="legend-dot dot-local" />{{ t('skills.source.local') }}
         </button>
+        <button class="legend-item" :class="{ active: sourceFilter === 'external' }" @click="toggleFilter('external')">
+          <span class="legend-dot dot-external" />{{ t('skills.source.external') }}
+        </button>
         <button class="legend-item" :class="{ active: sourceFilter === 'modified' }" @click="toggleFilter('modified')">
           <span class="modified-icon">✎</span>{{ t('skills.modified') }}
         </button>
@@ -257,6 +260,7 @@ watch(visibleSkillEntries, syncSelectedSkill)
 .legend-dot.dot-builtin { background: #888; }
 .legend-dot.dot-hub { background: #4a90d9; }
 .legend-dot.dot-local { background: #66bb6a; }
+.legend-dot.dot-external { background: #f59e0b; }
 
 .modified-icon {
   font-size: 11px;

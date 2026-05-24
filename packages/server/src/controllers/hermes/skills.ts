@@ -1,10 +1,12 @@
 import { readdir, readFile, stat } from 'fs/promises'
 import { isAbsolute, join, relative, resolve } from 'path'
 import { createHash } from 'crypto'
+import { homedir } from 'os'
 import YAML from 'js-yaml'
 import {
   readConfigYaml, updateConfigYaml,
   safeReadFile, extractDescription, listFilesRecursive, getHermesDir,
+  type SkillSource,
 } from '../../services/config-helpers'
 import { pinSkill } from '../../services/hermes/hermes-cli'
 import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
@@ -74,7 +76,7 @@ function getSkillSource(
   dirName: string,
   bundledManifest: Map<string, string>,
   hubNames: Set<string>,
-): 'builtin' | 'hub' | 'local' {
+): SkillSource {
   if (bundledManifest.has(dirName)) return 'builtin'
   if (hubNames.has(dirName)) return 'hub'
   return 'local'
@@ -102,6 +104,44 @@ function requestHermesDir(ctx: any): string {
 function isInsideDirectory(rootDir: string, targetPath: string): boolean {
   const rel = relative(resolve(rootDir), resolve(targetPath))
   return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel))
+}
+
+function expandConfiguredPath(value: string): string {
+  const expandedEnv = value.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, braced, bare) => {
+    return process.env[braced || bare] || ''
+  })
+  if (expandedEnv === '~') return homedir()
+  if (expandedEnv.startsWith('~/')) return join(homedir(), expandedEnv.slice(2))
+  return expandedEnv
+}
+
+export async function resolveExternalSkillsDirs(config: Record<string, any>, localSkillsDir: string): Promise<string[]> {
+  const rawDirs = config.skills?.external_dirs
+  const entries = typeof rawDirs === 'string'
+    ? [rawDirs]
+    : Array.isArray(rawDirs)
+      ? rawDirs
+      : []
+  const localResolved = resolve(localSkillsDir)
+  const seen = new Set<string>()
+  const dirs: string[] = []
+
+  for (const rawEntry of entries) {
+    const entry = String(rawEntry || '').trim()
+    if (!entry) continue
+    const resolved = resolve(expandConfiguredPath(entry))
+    if (resolved === localResolved || seen.has(resolved)) continue
+    try {
+      const info = await stat(resolved)
+      if (!info.isDirectory()) continue
+    } catch {
+      continue
+    }
+    seen.add(resolved)
+    dirs.push(resolved)
+  }
+
+  return dirs
 }
 
 async function readRequestConfig(ctx: any): Promise<Record<string, any>> {
@@ -237,6 +277,85 @@ export async function scanSkillsDir(
   return categories
 }
 
+export async function scanExternalSkillsDir(
+  skillsDir: string,
+  disabledList: string[],
+  usageStats: Map<string, UsageStats>,
+) {
+  const categories = await scanSkillsDir(skillsDir, new Map(), new Set(), disabledList, usageStats, true)
+  return categories.map(category => ({
+    ...category,
+    skills: category.skills.map((skill: any) => ({
+      ...skill,
+      source: 'external' as SkillSource,
+      modified: undefined,
+    })),
+  }))
+}
+
+function collectSkillNames(categories: any[]): Set<string> {
+  const names = new Set<string>()
+  for (const category of categories) {
+    for (const skill of category.skills || []) {
+      if (skill?.name) names.add(skill.name)
+    }
+  }
+  return names
+}
+
+export function mergeExternalCategories(categories: any[], externalCategories: any[]): any[] {
+  const byName = new Map<string, any>()
+  for (const category of categories) {
+    byName.set(category.name, { ...category, skills: [...category.skills] })
+  }
+
+  const seenSkills = collectSkillNames(categories)
+  for (const externalCategory of externalCategories) {
+    const target = byName.get(externalCategory.name) || {
+      name: externalCategory.name,
+      description: externalCategory.description,
+      skills: [],
+    }
+    for (const skill of externalCategory.skills || []) {
+      if (seenSkills.has(skill.name)) continue
+      seenSkills.add(skill.name)
+      target.skills.push(skill)
+    }
+    if (target.skills.length > 0) byName.set(target.name, target)
+  }
+
+  const merged = [...byName.values()]
+    .filter(category => category.skills.length > 0)
+    .sort((a, b) => a.name.localeCompare(b.name))
+  for (const category of merged) {
+    category.skills.sort((a: any, b: any) => a.name.localeCompare(b.name))
+  }
+  return merged
+}
+
+async function findSkillDirInRoot(rootDir: string, category: string, skillName: string): Promise<string | null> {
+  const skillDir = resolve(rootDir, category === 'misc' ? skillName : join(category, skillName))
+  if (!isInsideDirectory(rootDir, skillDir)) return null
+  const skillMd = await safeReadFile(join(skillDir, 'SKILL.md'))
+  return skillMd !== null ? skillDir : null
+}
+
+async function resolveSkillDirFromConfig(
+  config: Record<string, any>,
+  localSkillsDir: string,
+  category: string,
+  skillName: string,
+): Promise<string | null> {
+  const localSkillDir = await findSkillDirInRoot(localSkillsDir, category, skillName)
+  if (localSkillDir) return localSkillDir
+
+  for (const externalDir of await resolveExternalSkillsDirs(config, localSkillsDir)) {
+    const externalSkillDir = await findSkillDirInRoot(externalDir, category, skillName)
+    if (externalSkillDir) return externalSkillDir
+  }
+  return null
+}
+
 export async function list(ctx: any) {
   const chatPlane = isChatPlaneRequest(ctx)
   const skillsDir = join(requestHermesDir(ctx), 'skills')
@@ -250,7 +369,11 @@ export async function list(ctx: any) {
     const usageStats = readUsageStats(await safeReadFile(join(skillsDir, '.usage.json')))
 
     // Scan all skills (supports both two-level and three-level directory structures)
-    const categories = await scanSkillsDir(skillsDir, bundledManifest, hubNames, disabledList, usageStats, chatPlane)
+    let categories = await scanSkillsDir(skillsDir, bundledManifest, hubNames, disabledList, usageStats, chatPlane)
+    for (const externalDir of await resolveExternalSkillsDirs(config, skillsDir)) {
+      const externalCategories = await scanExternalSkillsDir(externalDir, disabledList, usageStats)
+      categories = mergeExternalCategories(categories, externalCategories)
+    }
 
     // Read archived skills from .archive/
     const archived: any[] = []
@@ -308,11 +431,10 @@ export async function toggle(ctx: any) {
 export async function listFiles(ctx: any) {
   const { category, skill } = ctx.params
   const hd = requestHermesDir(ctx)
-  // Handle "misc" category: real skill dir is skills/<skill>, not skills/misc/<skill>
-  const realDir = category === 'misc' ? skill : join(category, skill)
   const skillsRoot = resolve(hd, 'skills')
-  const skillDir = resolve(skillsRoot, realDir)
-  if (!isInsideDirectory(skillsRoot, skillDir) || isSensitivePath(realDir)) {
+  const config = await readRequestConfig(ctx)
+  const skillDir = await resolveSkillDirFromConfig(config, skillsRoot, category, skill)
+  if (!skillDir || isSensitivePath(category) || isSensitivePath(skill)) {
     ctx.status = 403
     ctx.body = { error: 'Access denied' }
     return
@@ -330,14 +452,17 @@ export async function listFiles(ctx: any) {
 export async function readFile_(ctx: any) {
   const filePath = (ctx.params as any).path
   const hd = requestHermesDir(ctx)
-  // Handle "misc" category: real skill dir is skills/<skill>, not skills/misc/<skill>
-  let realPath = filePath
-  if (filePath.startsWith('misc/')) {
-    realPath = filePath.slice(5)
-  }
   const skillsRoot = resolve(hd, 'skills')
-  const fullPath = resolve(skillsRoot, realPath)
-  if (!isInsideDirectory(skillsRoot, fullPath) || isSensitivePath(realPath)) {
+  const parts = String(filePath || '').split('/').filter(Boolean)
+  const category = parts[0] || ''
+  const skillName = parts[1] || ''
+  const restPath = parts.slice(2).join('/')
+  const config = await readRequestConfig(ctx)
+  const skillDir = category && skillName
+    ? await resolveSkillDirFromConfig(config, skillsRoot, category, skillName)
+    : null
+  const fullPath = skillDir ? resolve(join(skillDir, restPath)) : ''
+  if (!skillDir || !restPath || !isInsideDirectory(skillDir, fullPath) || isSensitivePath(restPath)) {
     ctx.status = 403
     ctx.body = { error: 'Access denied' }
     return

@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, symlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
-import { scanSkillsDir } from '../../packages/server/src/controllers/hermes/skills'
+import { mergeExternalCategories, scanExternalSkillsDir, scanSkillsDir } from '../../packages/server/src/controllers/hermes/skills'
 
 describe('skills controller scanner', () => {
   it('includes profile skills installed as directory symlinks', async () => {
@@ -36,5 +36,27 @@ describe('skills controller scanner', () => {
 
     const keep = categories.find((category: any) => category.name === 'Keep')
     expect(keep?.skills.map((skill: any) => skill.name)).toContain('kep-prd-analysis')
+  })
+
+  it('merges configured external skills without overriding local skills', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-webui-external-skills-'))
+    const localSkills = join(root, 'profile', 'skills')
+    const externalSkills = join(root, 'external')
+    await mkdir(join(localSkills, 'tools', 'dupe-skill'), { recursive: true })
+    await mkdir(join(externalSkills, 'tools', 'external-skill'), { recursive: true })
+    await mkdir(join(externalSkills, 'tools', 'dupe-skill'), { recursive: true })
+    await writeFile(join(localSkills, 'tools', 'dupe-skill', 'SKILL.md'), '# Local Dupe\nlocal copy\n')
+    await writeFile(join(externalSkills, 'tools', 'external-skill', 'SKILL.md'), '# External Skill\nexternal copy\n')
+    await writeFile(join(externalSkills, 'tools', 'dupe-skill', 'SKILL.md'), '# External Dupe\nexternal duplicate\n')
+
+    const localCategories = await scanSkillsDir(localSkills, new Map(), new Set(), [], new Map(), true)
+    const externalCategories = await scanExternalSkillsDir(externalSkills, [], new Map())
+    const merged = mergeExternalCategories(localCategories, externalCategories)
+
+    const tools = merged.find((category: any) => category.name === 'tools')
+    expect(tools?.skills).toEqual([
+      expect.objectContaining({ name: 'dupe-skill', source: 'local', description: 'local copy' }),
+      expect.objectContaining({ name: 'external-skill', source: 'external', description: 'external copy' }),
+    ])
   })
 })

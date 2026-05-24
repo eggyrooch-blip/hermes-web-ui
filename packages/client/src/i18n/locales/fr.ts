@@ -305,6 +305,7 @@ jobTriggered: 'Job declenche',
       builtin: 'Intégré',
       hub: 'Hub',
       local: 'Local',
+      external: 'Externe',
     },
   },
 

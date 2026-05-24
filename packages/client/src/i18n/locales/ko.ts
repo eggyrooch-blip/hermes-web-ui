@@ -305,6 +305,7 @@ export default {
       builtin: '내장',
       hub: 'Hub',
       local: '로컬',
+      external: '외부',
     },
   },
 
