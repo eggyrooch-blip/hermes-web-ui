@@ -1,4 +1,4 @@
-import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, type RunEvent, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
+import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondClarify as respondClarifyApi, type RunEvent, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
 import { deleteSession as deleteSessionApi, fetchSession, fetchSessions, setSessionModel, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
 import { getApiKey, isUserMode } from '@/api/client'
 import { defineStore } from 'pinia'
@@ -59,6 +59,14 @@ export interface Session {
   endedAt?: number | null
   lastActiveAt?: number
   workspace?: string | null
+}
+
+export interface PendingClarify {
+  sessionId: string
+  clarifyId: string
+  question: string
+  choices: string[]
+  runId?: string
 }
 
 function uid(): string {
@@ -354,6 +362,12 @@ export const useChatStore = defineStore('chat', () => {
   const queueLengths = ref<Map<string, number>>(new Map())
   /** sessionId → queued user messages not yet visible in the transcript */
   const queuedUserMessages = ref<Map<string, Message[]>>(new Map())
+  /** sessionId → active clarify prompt for that run */
+  const pendingClarifies = ref<Map<string, PendingClarify>>(new Map())
+  const activePendingClarify = computed(() => {
+    const sid = activeSessionId.value
+    return sid ? pendingClarifies.value.get(sid) || null : null
+  })
 
   // 自动播放语音开关
   const autoPlaySpeechEnabled = ref(false)
@@ -563,6 +577,10 @@ export const useChatStore = defineStore('chat', () => {
                 setAbortState({ aborting: false, synced: e.synced ?? false })
               } else if (String(e.event || '').startsWith('subagent.')) {
                 handleSubagentEvent(sessionId, e as RunEvent)
+              } else if (e.event === 'clarify.requested') {
+                handleClarifyRequested(sessionId, e as RunEvent)
+              } else if (e.event === 'clarify.resolved') {
+                handleClarifyResolved(sessionId, e as RunEvent)
               }
             }
           }
@@ -676,6 +694,36 @@ export const useChatStore = defineStore('chat', () => {
       session_id: sessionId,
       queue_id: messageId,
     })
+  }
+
+  function handleClarifyRequested(sessionId: string, evt: RunEvent) {
+    const clarifyId = String((evt as any).clarify_id || '').trim()
+    if (!clarifyId) return
+    pendingClarifies.value.set(sessionId, {
+      sessionId,
+      clarifyId,
+      question: String((evt as any).question || '').trim(),
+      choices: Array.isArray((evt as any).choices)
+        ? (evt as any).choices.map((choice: unknown) => String(choice)).filter(Boolean)
+        : [],
+      runId: evt.run_id,
+    })
+  }
+
+  function handleClarifyResolved(sessionId: string, evt: RunEvent) {
+    const clarifyId = String((evt as any).clarify_id || '').trim()
+    const current = pendingClarifies.value.get(sessionId)
+    if (!clarifyId || current?.clarifyId === clarifyId) {
+      pendingClarifies.value.delete(sessionId)
+    }
+  }
+
+  function respondClarify(clarifyId: string, response: string) {
+    const sid = activeSessionId.value
+    if (!sid || !clarifyId) return
+    const profile = activeSession.value?.profile || useProfilesStore().activeProfileName || undefined
+    respondClarifyApi(sid, clarifyId, response, profile)
+    pendingClarifies.value.delete(sid)
   }
 
   function showDequeuedUserMessage(sessionId: string, queueId: string) {
@@ -888,6 +936,7 @@ export const useChatStore = defineStore('chat', () => {
       const cleanup = () => {
         streamStates.value.delete(sid)
         serverWorking.value.delete(sid)
+        pendingClarifies.value.delete(sid)
       }
 
       // Per-active-run flags used to detect silently-swallowed errors at run.completed.
@@ -1131,6 +1180,17 @@ export const useChatStore = defineStore('chat', () => {
               break
             }
 
+            case 'clarify.requested': {
+              handleClarifyRequested(sid, evt)
+              break
+            }
+
+            case 'clarify.resolved':
+            case 'clarify.failed': {
+              handleClarifyResolved(sid, evt)
+              break
+            }
+
             case 'run.completed': {
               const msgs = getSessionMsgs(sid)
               const lastMsg = activeAssistantMessageId
@@ -1342,6 +1402,7 @@ export const useChatStore = defineStore('chat', () => {
       closed = true
       streamStates.value.delete(sid)
       serverWorking.value.delete(sid)
+      pendingClarifies.value.delete(sid)
       // Unregister from global session handlers
       unregisterSessionHandlers(sid)
     }
@@ -1565,6 +1626,17 @@ export const useChatStore = defineStore('chat', () => {
           break
         }
 
+        case 'clarify.requested': {
+          handleClarifyRequested(sid, evt)
+          break
+        }
+
+        case 'clarify.resolved':
+        case 'clarify.failed': {
+          handleClarifyResolved(sid, evt)
+          break
+        }
+
         case 'run.completed': {
           const hasQueue = (evt as any).queue_remaining > 0
           if (hasQueue) {
@@ -1718,6 +1790,9 @@ export const useChatStore = defineStore('chat', () => {
       onUsageUpdated: (evt) => handleEvent(evt),
       onRunQueued: (evt) => handleEvent(evt),
       onSubagentEvent: (evt) => handleEvent(evt),
+      onClarifyRequested: (evt) => handleEvent(evt),
+      onClarifyResolved: (evt) => handleEvent(evt),
+      onClarifyFailed: (evt) => handleEvent(evt),
     })
 
     // No need to emit resume here — switchSession already did it.
@@ -1863,6 +1938,9 @@ export const useChatStore = defineStore('chat', () => {
     isAborting,
     queueLengths,
     queuedUserMessages,
+    pendingClarifies,
+    activePendingClarify,
+    respondClarify,
     removeQueuedMessage,
     isLoadingSessions,
     sessionsLoaded,

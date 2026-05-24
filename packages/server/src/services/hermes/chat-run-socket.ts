@@ -38,7 +38,7 @@ import {
   parseFeishuSessionCookie,
 } from '../feishu-oauth'
 import { ownerOwnsProfile } from './agent-ownership'
-import { handleBrokerRun as handleRunChatBrokerRun } from './run-chat/handle-broker-run'
+import { handleBrokerRun as handleRunChatBrokerRun, respondToBrokerClarify } from './run-chat/handle-broker-run'
 import { extractResponseText, responseFunctionCallToToolCall, summarizeToolArguments } from './run-chat/response-utils'
 import { readSseFrames } from './run-chat/sse-utils'
 import { rewriteAssistantMediaDirectives } from './media-directives'
@@ -521,6 +521,44 @@ export function mapRunBrokerFrameForChat(parsed: any, frameEvent?: string): RunB
     }
   }
 
+  if (brokerKind === 'clarify_required' || brokerKind === 'clarify.requested') {
+    const clarifyId = parsed?.clarify_id || payload.clarify_id
+    if (!clarifyId) return { type: 'ignore' }
+    return {
+      type: 'emit',
+      event: 'clarify.requested',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'clarify.requested',
+        run_id: runId,
+        response_id: responseId,
+        clarify_id: String(clarifyId),
+        question: String(parsed?.question || payload.question || ''),
+        choices: Array.isArray(parsed?.choices) ? parsed.choices : (Array.isArray(payload.choices) ? payload.choices : []),
+      },
+    }
+  }
+
+  if (brokerKind === 'clarify_resolved' || brokerKind === 'clarify.resolved') {
+    const clarifyId = parsed?.clarify_id || payload.clarify_id
+    if (!clarifyId) return { type: 'ignore' }
+    return {
+      type: 'emit',
+      event: 'clarify.resolved',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'clarify.resolved',
+        run_id: runId,
+        response_id: responseId,
+        clarify_id: String(clarifyId),
+        response: parsed?.response ?? payload.response,
+        timed_out: parsed?.timed_out ?? payload.timed_out,
+      },
+    }
+  }
+
   if (brokerKind === 'done' || brokerKind === 'run.completed') {
     return {
       type: 'terminal',
@@ -664,6 +702,34 @@ export class ChatRunSocket {
     socket.on('abort', (data: { session_id?: string }) => {
       if (data.session_id) {
         void this.handleAbort(socket, data.session_id)
+      }
+    })
+
+    socket.on('clarify.respond', async (data: { session_id?: string; clarify_id?: string; response?: string }) => {
+      const sessionId = String(data.session_id || '').trim()
+      const clarifyId = String(data.clarify_id || '').trim()
+      if (!sessionId || !clarifyId) return
+      try {
+        await respondToBrokerClarify({
+          socket,
+          profile,
+          sessionId,
+          clarifyId,
+          response: String(data.response || ''),
+        })
+        this.nsp.to(`session:${sessionId}`).emit('clarify.resolved', {
+          event: 'clarify.resolved',
+          session_id: sessionId,
+          clarify_id: clarifyId,
+          response: String(data.response || ''),
+        })
+      } catch (err: any) {
+        socket.emit('clarify.failed', {
+          event: 'clarify.failed',
+          session_id: sessionId,
+          clarify_id: clarifyId,
+          error: err?.message || String(err),
+        })
       }
     })
   }

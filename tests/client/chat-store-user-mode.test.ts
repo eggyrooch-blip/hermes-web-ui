@@ -6,6 +6,7 @@ const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
 const switchModelMock = vi.hoisted(() => vi.fn())
 const setSessionModelMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)))
 const startRunViaSocketMock = vi.hoisted(() => vi.fn(() => ({ abort: vi.fn() })))
+const respondClarifyMock = vi.hoisted(() => vi.fn())
 const fetchSessionMock = vi.hoisted(() => vi.fn())
 const fetchSessionsMock = vi.hoisted(() => vi.fn(() => Promise.resolve([])))
 const resumeSessionMock = vi.hoisted(() => vi.fn((_sessionId: string, onResumed: (data: any) => void) => {
@@ -33,6 +34,7 @@ vi.mock('@/api/hermes/chat', () => ({
   registerSessionHandlers: vi.fn(),
   unregisterSessionHandlers: vi.fn(),
   getChatRunSocket: vi.fn(() => null),
+  respondClarify: respondClarifyMock,
 }))
 
 vi.mock('@/api/hermes/sessions', () => ({
@@ -625,5 +627,38 @@ describe('chat store user-mode model selection', () => {
     })
     expect(toolMessage?.toolPreview).toContain('subagent 1/2 completed')
     expect(toolMessage?.toolResult).toContain('found the file')
+  })
+
+  it('tracks and responds to clarify prompts for the active session', async () => {
+    const store = useChatStore()
+    store.newChat()
+
+    await store.sendMessage('make a report')
+
+    const onEvent = startRunViaSocketMock.mock.calls[0][1]
+    onEvent({
+      event: 'clarify.requested',
+      session_id: store.activeSession!.id,
+      run_id: 'run-1',
+      clarify_id: 'clarify-1',
+      question: 'Which report style?',
+      choices: ['brief', 'detailed'],
+    })
+
+    expect(store.activePendingClarify).toMatchObject({
+      clarifyId: 'clarify-1',
+      question: 'Which report style?',
+      choices: ['brief', 'detailed'],
+    })
+
+    store.respondClarify('clarify-1', 'brief')
+
+    expect(respondClarifyMock).toHaveBeenCalledWith(
+      store.activeSession!.id,
+      'clarify-1',
+      'brief',
+      undefined,
+    )
+    expect(store.activePendingClarify).toBeNull()
   })
 })

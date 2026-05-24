@@ -86,6 +86,9 @@ const sessionEventHandlers = new Map<string, {
   onUsageUpdated: (event: RunEvent) => void
   onRunQueued?: (event: RunEvent) => void
   onSubagentEvent?: (event: RunEvent) => void
+  onClarifyRequested?: (event: RunEvent) => void
+  onClarifyResolved?: (event: RunEvent) => void
+  onClarifyFailed?: (event: RunEvent) => void
 }>()
 
 /**
@@ -310,6 +313,27 @@ function globalSubagentEventHandler(event: RunEvent): void {
   }
 }
 
+function globalClarifyRequestedHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onClarifyRequested) handlers.onClarifyRequested(event)
+}
+
+function globalClarifyResolvedHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onClarifyResolved) handlers.onClarifyResolved(event)
+}
+
+function globalClarifyFailedHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onClarifyFailed) handlers.onClarifyFailed(event)
+}
+
 /**
  * Register event handlers for a session
  * @param sessionId - Session ID
@@ -335,6 +359,9 @@ export function registerSessionHandlers(
     onUsageUpdated: (event: RunEvent) => void
     onRunQueued?: (event: RunEvent) => void
     onSubagentEvent?: (event: RunEvent) => void
+    onClarifyRequested?: (event: RunEvent) => void
+    onClarifyResolved?: (event: RunEvent) => void
+    onClarifyFailed?: (event: RunEvent) => void
   }
 ): () => void {
   sessionEventHandlers.set(sessionId, handlers)
@@ -411,6 +438,9 @@ export function connectChatRun(requestedProfile?: string | null): Socket {
     chatRunSocket.on('subagent.tool', globalSubagentEventHandler)
     chatRunSocket.on('subagent.progress', globalSubagentEventHandler)
     chatRunSocket.on('subagent.complete', globalSubagentEventHandler)
+    chatRunSocket.on('clarify.requested', globalClarifyRequestedHandler)
+    chatRunSocket.on('clarify.resolved', globalClarifyResolvedHandler)
+    chatRunSocket.on('clarify.failed', globalClarifyFailedHandler)
 
     // Run lifecycle events
     chatRunSocket.on('run.started', globalRunStartedHandler)
@@ -564,6 +594,18 @@ export function startRunViaSocket(
       if (closed) return
       onEvent(evt)
     },
+    onClarifyRequested: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
+    onClarifyResolved: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
+    onClarifyFailed: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
   }
 
   // Register handlers in the global session map
@@ -579,6 +621,15 @@ export function startRunViaSocket(
       }
     },
   }
+}
+
+export function respondClarify(sessionId: string, clarifyId: string, response: string, profile?: string | null): void {
+  const socket = connectChatRun(profile)
+  socket.emit('clarify.respond', {
+    session_id: sessionId,
+    clarify_id: clarifyId,
+    response,
+  })
 }
 
 export async function fetchModels(): Promise<{ data: Array<{ id: string }> }> {

@@ -36,6 +36,8 @@ const userModeChrome = computed(() => isUserMode());
 const showOutline = ref(false);
 
 const currentMode = ref<"chat" | "live">("chat");
+const clarifyResponse = ref("");
+const activeClarify = computed(() => chatStore.activePendingClarify);
 
 // Batch selection mode
 const isBatchMode = ref(false);
@@ -212,6 +214,10 @@ watch(
   },
   { immediate: true },
 );
+
+watch(activeClarify, () => {
+  clarifyResponse.value = "";
+});
 
 const activeSessionTitle = computed(
   () => chatStore.activeSession?.title || t("chat.newChat"),
@@ -459,6 +465,15 @@ async function handleWorkspaceConfirm() {
     message.error(t("chat.workspaceSetFailed"));
   }
   showWorkspaceModal.value = false;
+}
+
+function handleClarify(response?: string) {
+  const pending = activeClarify.value;
+  if (!pending) return;
+  const answer = (response ?? clarifyResponse.value).trim();
+  if (!answer) return;
+  chatStore.respondClarify(pending.clarifyId, answer);
+  clarifyResponse.value = "";
 }
 </script>
 
@@ -858,6 +873,36 @@ async function handleWorkspaceConfirm() {
           </div>
           <OutlinePanel v-if="showOutline" :messages="chatStore.messages" />
         </div>
+        <div v-if="activeClarify" class="clarify-bar">
+          <div class="clarify-question">{{ activeClarify.question }}</div>
+          <div v-if="activeClarify.choices.length" class="clarify-choice-row">
+            <NButton
+              v-for="choice in activeClarify.choices"
+              :key="choice"
+              size="small"
+              secondary
+              @click="handleClarify(choice)"
+            >
+              {{ choice }}
+            </NButton>
+          </div>
+          <div class="clarify-freeform">
+            <NInput
+              v-model:value="clarifyResponse"
+              size="small"
+              :placeholder="t('chat.inputPlaceholder')"
+              @keydown.enter.prevent="handleClarify()"
+            />
+            <NButton
+              size="small"
+              type="primary"
+              :disabled="!clarifyResponse.trim()"
+              @click="handleClarify()"
+            >
+              {{ t('chat.send') }}
+            </NButton>
+          </div>
+        </div>
         <ChatInput />
       </template>
       <ConversationMonitorPane
@@ -1089,6 +1134,40 @@ async function handleWorkspaceConfirm() {
       display: none;
     }
   }
+}
+
+.clarify-bar {
+  display: grid;
+  gap: 8px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.86);
+
+  .dark & {
+    border-top-color: rgba(148, 163, 184, 0.14);
+    background: rgba(18, 22, 28, 0.9);
+  }
+}
+
+.clarify-question {
+  color: $text-primary;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.clarify-choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.clarify-freeform {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
 }
 
 .session-list {
