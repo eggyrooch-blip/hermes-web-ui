@@ -7,6 +7,7 @@ const switchModelMock = vi.hoisted(() => vi.fn())
 const setSessionModelMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)))
 const startRunViaSocketMock = vi.hoisted(() => vi.fn(() => ({ abort: vi.fn() })))
 const fetchSessionMock = vi.hoisted(() => vi.fn())
+const fetchSessionsMock = vi.hoisted(() => vi.fn(() => Promise.resolve([])))
 const resumeSessionMock = vi.hoisted(() => vi.fn((_sessionId: string, onResumed: (data: any) => void) => {
   onResumed({ messages: [], isWorking: false, events: [] })
   return { disconnect: vi.fn() }
@@ -37,7 +38,7 @@ vi.mock('@/api/hermes/chat', () => ({
 vi.mock('@/api/hermes/sessions', () => ({
   deleteSession: vi.fn(),
   fetchSession: fetchSessionMock,
-  fetchSessions: vi.fn(() => Promise.resolve([])),
+  fetchSessions: fetchSessionsMock,
   setSessionModel: setSessionModelMock,
 }))
 
@@ -58,6 +59,7 @@ describe('chat store user-mode model selection', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     isUserModeMock.mockReturnValue(false)
+    fetchSessionsMock.mockResolvedValue([])
     fetchSessionMock.mockResolvedValue(null)
     resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
       onResumed({ messages: [], isWorking: false, events: [] })
@@ -532,5 +534,60 @@ describe('chat store user-mode model selection', () => {
     expect(store.activeSessionId).toBe(secondId)
     expect(store.sessions.find(s => s.id === secondId)?.messages).toEqual([])
     expect(store.sessions.find(s => s.id === firstId)?.messages[0]?.content).toBe('stale first-session reply')
+  })
+
+  it('loads the route-selected session from the requested profile', async () => {
+    fetchSessionsMock.mockResolvedValue([
+      {
+        id: 'session-1',
+        source: 'api_server',
+        model: 'm',
+        title: 'first',
+        started_at: 100,
+        ended_at: null,
+        last_active: 100,
+        message_count: 0,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        profile: 'tester',
+      },
+      {
+        id: 'session-2',
+        source: 'api_server',
+        model: 'm',
+        title: 'second',
+        started_at: 101,
+        ended_at: null,
+        last_active: 101,
+        message_count: 0,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        profile: 'tester',
+      },
+    ])
+    const store = useChatStore()
+
+    await store.loadSessions('tester', 'session-2')
+
+    expect(fetchSessionsMock).toHaveBeenCalledWith(undefined, undefined, 'tester')
+    expect(store.activeSessionId).toBe('session-2')
+    expect(store.activeSession?.profile).toBe('tester')
+    expect(resumeSessionMock).toHaveBeenCalledWith('session-2', expect.any(Function), 'tester')
   })
 })

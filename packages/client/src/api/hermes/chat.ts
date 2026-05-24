@@ -15,6 +15,7 @@ export interface StartRunRequest {
   input: string | ContentBlock[]
   instructions?: string
   session_id?: string
+  profile?: string
   model?: string
   provider?: string
   queue_id?: string
@@ -62,6 +63,7 @@ export interface RunEvent {
 
 let chatRunSocket: Socket | null = null
 let globalListenersRegistered = false
+let chatRunSocketProfile: string | null = null
 
 /**
  * Session event handlers map
@@ -340,29 +342,34 @@ export function getChatRunSocket(): Socket | null {
   return chatRunSocket
 }
 
-export function connectChatRun(): Socket {
-  if (chatRunSocket?.connected) return chatRunSocket
+export function connectChatRun(requestedProfile?: string | null): Socket {
+  const normalizedRequestedProfile = requestedProfile?.trim() || null
+  if (chatRunSocket?.connected && (!normalizedRequestedProfile || chatRunSocketProfile === normalizedRequestedProfile)) return chatRunSocket
 
   // Clean up old socket to prevent duplicate event listeners
   if (chatRunSocket) {
     chatRunSocket.removeAllListeners()
     chatRunSocket.disconnect()
     globalListenersRegistered = false
+    chatRunSocketProfile = null
   }
 
   const baseUrl = getBaseUrlValue()
   const token = getApiKey()
 
   // Get active profile from store (authoritative source)
-  let profile = 'default'
+  let profile = normalizedRequestedProfile || 'default'
   try {
-    const { useProfilesStore } = require('@/stores/hermes/profiles')
-    const profilesStore = useProfilesStore()
-    profile = profilesStore.activeProfileName || 'default'
+    if (!normalizedRequestedProfile) {
+      const { useProfilesStore } = require('@/stores/hermes/profiles')
+      const profilesStore = useProfilesStore()
+      profile = profilesStore.activeProfileName || 'default'
+    }
   } catch {
     // Fallback to localStorage during early initialization
-    profile = localStorage.getItem('hermes_active_profile_name') || 'default'
+    profile = normalizedRequestedProfile || localStorage.getItem('hermes_active_profile_name') || 'default'
   }
+  chatRunSocketProfile = profile
 
   chatRunSocket = io(`${baseUrl}/chat-run`, {
     auth: { token },
@@ -410,6 +417,7 @@ export function disconnectChatRun(): void {
   if (chatRunSocket) {
     chatRunSocket.disconnect()
     chatRunSocket = null
+    chatRunSocketProfile = null
     globalListenersRegistered = false
     sessionEventHandlers.clear()
   }
@@ -425,11 +433,12 @@ export function disconnectChatRun(): void {
 export function resumeSession(
   sessionId: string,
   onResumed: (data: { session_id: string; messages: any[]; isWorking: boolean; isAborting?: boolean; events: any[]; inputTokens?: number; outputTokens?: number; queueLength?: number }) => void,
+  profile?: string | null,
 ): Socket {
-  const socket = connectChatRun()
+  const socket = connectChatRun(profile)
 
   socket.once('resumed', onResumed)
-  socket.emit('resume', { session_id: sessionId })
+  socket.emit('resume', { session_id: sessionId, ...(profile ? { profile } : {}) })
 
   return socket
 }
@@ -447,7 +456,7 @@ export function startRunViaSocket(
   }
 
   let closed = false
-  const socket = connectChatRun()
+  const socket = connectChatRun(body.profile)
 
   if (sessionEventHandlers.has(sid)) {
     socket.emit('run', body)

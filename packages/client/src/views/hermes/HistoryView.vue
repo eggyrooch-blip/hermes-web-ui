@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useChatStore, type Session } from '@/stores/hermes/chat'
 import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
@@ -19,6 +20,18 @@ const profilesStore = useProfilesStore()
 const sessionBrowserPrefsStore = useSessionBrowserPrefsStore()
 const message = useMessage()
 const { t } = useI18n()
+const route = useRoute()
+const router = useRouter()
+
+const routeSessionId = computed(() => {
+  const value = route.params.sessionId
+  return typeof value === 'string' && value.trim() ? value : null
+})
+
+const routeProfile = computed(() => {
+  const value = route.query.profile
+  return typeof value === 'string' && value.trim() ? value : null
+})
 
 // Hermes history sessions (exclude api_server)
 const hermesSessions = ref<SessionSummary[]>([])
@@ -32,7 +45,7 @@ async function loadHermesSessions() {
   if (hermesSessionsLoading.value) return
   hermesSessionsLoading.value = true
   try {
-    hermesSessions.value = await fetchHermesSessions()
+    hermesSessions.value = await fetchHermesSessions(undefined, undefined, routeProfile.value)
     hermesSessionsLoaded.value = true
   } catch (err) {
     console.error('Failed to load Hermes sessions:', err)
@@ -48,9 +61,15 @@ const showSessions = ref(
 let mobileQuery: MediaQueryList | null = null
 const isMobile = ref(false)
 
-async function handleSessionClick(sessionId: string) {
+function findHistorySession(sessionId: string): SessionSummary | undefined {
+  return hermesSessions.value.find(session => session.id === sessionId)
+}
+
+async function loadHistorySession(sessionId: string, profile?: string | null) {
+  const summary = findHistorySession(sessionId)
+  const sessionProfile = profile || summary?.profile || null
   // First, fetch the Hermes session detail
-  const sessionDetail = await fetchHermesSession(sessionId)
+  const sessionDetail = await fetchHermesSession(sessionId, sessionProfile)
   if (!sessionDetail) {
     message.error(t('chat.sessionNotFound'))
     return
@@ -64,6 +83,7 @@ async function handleSessionClick(sessionId: string) {
     createdAt: sessionDetail.started_at * 1000,
     updatedAt: (sessionDetail.last_active || sessionDetail.started_at) * 1000,
     model: sessionDetail.model,
+    profile: sessionDetail.profile || sessionProfile,
     messageCount: sessionDetail.message_count,
     inputTokens: sessionDetail.input_tokens,
     outputTokens: sessionDetail.output_tokens,
@@ -104,6 +124,29 @@ async function handleSessionClick(sessionId: string) {
   if (mobileQuery?.matches) showSessions.value = false
 }
 
+async function handleSessionClick(sessionId: string, profile?: string | null) {
+  await router.push({
+    name: 'hermes.historySession',
+    params: { sessionId },
+    query: profile ? { profile } : undefined,
+  })
+  await loadHistorySession(sessionId, profile)
+}
+
+async function syncRouteSession() {
+  const sessionId = routeSessionId.value
+  if (!sessionId) return
+  if (!hermesSessions.value.some(s => s.id === sessionId)) {
+    historySessionId.value = null
+    historySession.value = null
+    await router.replace({ name: 'hermes.history' })
+    return
+  }
+  if (historySessionId.value !== sessionId) {
+    await loadHistorySession(sessionId, routeProfile.value)
+  }
+}
+
 function handleMobileChange(e: MediaQueryListEvent | MediaQueryList) {
   isMobile.value = e.matches
   if (e.matches && showSessions.value) {
@@ -115,6 +158,7 @@ onMounted(async () => {
   appStore.loadModels()
   await profilesStore.fetchProfiles()
   await loadHermesSessions()
+  await syncRouteSession()
 
   mobileQuery = window.matchMedia('(max-width: 768px)')
   handleMobileChange(mobileQuery)
@@ -123,6 +167,20 @@ onMounted(async () => {
 
 onUnmounted(() => {
   mobileQuery?.removeEventListener('change', handleMobileChange)
+})
+
+watch([routeSessionId, routeProfile], async ([sessionId]) => {
+  if (!sessionId) {
+    historySessionId.value = null
+    historySession.value = null
+    if (hermesSessionsLoaded.value) await loadHermesSessions()
+    return
+  }
+  if (!hermesSessionsLoaded.value) return
+  if (routeProfile.value && !hermesSessions.value.some(s => s.profile === routeProfile.value)) {
+    await loadHermesSessions()
+  }
+  await syncRouteSession()
 })
 
 const showRenameModal = ref(false)
@@ -140,6 +198,7 @@ function sessionSummaryToSession(summary: SessionSummary): Session {
     createdAt: summary.started_at * 1000,
     updatedAt: (summary.last_active || summary.started_at) * 1000,
     model: summary.model,
+    profile: summary.profile || null,
     messageCount: summary.message_count,
     inputTokens: summary.input_tokens,
     outputTokens: summary.output_tokens,
@@ -222,7 +281,7 @@ function toggleGroup(source: string) {
     const group = groupedSessions.value.find(g => g.source === source)
     if (group?.sessions.length) {
       // Auto-select and load first session when expanding group
-      handleSessionClick(group.sessions[0].id)
+      void handleSessionClick(group.sessions[0].id, group.sessions[0].profile)
     }
   }
   localStorage.setItem('hermes_collapsed_groups', JSON.stringify([...collapsedGroups.value]))
@@ -254,7 +313,7 @@ watch(hermesSessionsLoaded, (loaded) => {
         if (collapsedGroups.value.has(firstSession.source)) {
           collapsedGroups.value = new Set([...collapsedGroups.value].filter(s => s !== firstSession.source))
         }
-        handleSessionClick(firstSession.id)
+        void handleSessionClick(firstSession.id, firstSession.profile)
       }
     }
   }
@@ -436,7 +495,7 @@ async function handleWorkspaceConfirm() {
             :pinned="true"
             :can-delete="false"
             :streaming="false"
-            @select="handleSessionClick(s.id)"
+            @select="handleSessionClick(s.id, s.profile)"
             @contextmenu="handleContextMenu($event, s.id)"
           />
         </template>
@@ -456,7 +515,7 @@ async function handleWorkspaceConfirm() {
               :pinned="false"
               :can-delete="false"
               :streaming="false"
-              @select="handleSessionClick(s.id)"
+              @select="handleSessionClick(s.id, s.profile)"
               @contextmenu="handleContextMenu($event, s.id)"
             />
             <div

@@ -23,6 +23,7 @@ import {
   request,
 } from '../../packages/client/src/api/client'
 import { fetchCurrentUser } from '../../packages/client/src/api/auth'
+import { fetchHermesSessions, fetchSession } from '../../packages/client/src/api/hermes/sessions'
 import router from '@/router'
 
 describe('API Client', () => {
@@ -225,6 +226,20 @@ describe('API Client', () => {
         avatarUrl: 'https://example.com/avatar.png',
         profiles: ['researcher'],
       })
+    })
+  })
+
+  describe('sessions API', () => {
+    it('passes explicit profile query params for deep-linked sessions', async () => {
+      mockFetch
+        .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ sessions: [] }) })
+        .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ session: { id: 's1' } }) })
+
+      await fetchHermesSessions(undefined, undefined, 'tester')
+      await fetchSession('s1', 'tester')
+
+      expect(mockFetch.mock.calls[0][0]).toBe('/api/hermes/sessions/hermes?profile=tester')
+      expect(mockFetch.mock.calls[1][0]).toBe('/api/hermes/sessions/s1?profile=tester')
     })
   })
 })

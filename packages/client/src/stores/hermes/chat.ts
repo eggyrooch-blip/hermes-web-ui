@@ -52,6 +52,7 @@ export interface Session {
   updatedAt: number
   model?: string
   provider?: string
+  profile?: string | null
   messageCount?: number
   inputTokens?: number
   outputTokens?: number
@@ -237,6 +238,7 @@ function mapHermesSession(s: SessionSummary): Session {
     updatedAt: Math.round((s.last_active || s.ended_at || s.started_at) * 1000),
     model: s.model,
     provider: s.provider || (s as any).billing_provider || '',
+    profile: s.profile || null,
     messageCount: s.message_count,
     endedAt: s.ended_at != null ? Math.round(s.ended_at * 1000) : null,
     lastActiveAt: s.last_active != null ? Math.round(s.last_active * 1000) : undefined,
@@ -322,6 +324,14 @@ function setItemBestEffort(key: string, value: string) {
   }
 }
 
+function getItemBestEffort(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
 function removeItem(key: string) {
   try {
     localStorage.removeItem(key)
@@ -395,11 +405,11 @@ export const useChatStore = defineStore('chat', () => {
     return streamStates.value.has(sessionId) || serverWorking.value.has(sessionId)
   }
 
-  async function loadSessions() {
+  async function loadSessions(profile?: string | null, preferredSessionId?: string | null) {
     isLoadingSessions.value = true
     sessionsError.value = null
     try {
-      const list = await fetchSessions()
+      const list = await fetchSessions(undefined, undefined, profile || undefined)
       const fresh = list.map(mapHermesSession)
       // Preserve already-loaded messages for sessions that are still present,
       // so we don't blow away the active session's messages on refresh.
@@ -410,11 +420,18 @@ export const useChatStore = defineStore('chat', () => {
       }
       sessions.value = fresh
 
-      // Restore last active session, fallback to most recent
-      const savedId = activeSessionId.value
-      const targetId = savedId && sessions.value.some(s => s.id === savedId)
-        ? savedId
-        : sessions.value[0]?.id
+      // Restore route-selected session first, then current, then persisted,
+      // then fallback to the most recent session.
+      const currentId = activeSessionId.value
+      const legacyActiveKey = legacyStorageKey()
+      const storedId = getItemBestEffort(storageKey()) || (legacyActiveKey ? getItemBestEffort(LEGACY_STORAGE_KEY) : null)
+      const targetId = preferredSessionId && sessions.value.some(s => s.id === preferredSessionId)
+        ? preferredSessionId
+        : currentId && sessions.value.some(s => s.id === currentId)
+          ? currentId
+          : storedId && sessions.value.some(s => s.id === storedId)
+            ? storedId
+            : sessions.value[0]?.id
       if (targetId) {
         await switchSession(targetId)
       }
@@ -436,7 +453,7 @@ export const useChatStore = defineStore('chat', () => {
     const sid = activeSessionId.value
     if (!sid) return false
     try {
-      const detail = await fetchSession(sid)
+      const detail = await fetchSession(sid, activeSession.value?.profile)
       if (!detail) return false
       const target = sessions.value.find(s => s.id === sid)
       if (!target) return false
@@ -483,6 +500,10 @@ export const useChatStore = defineStore('chat', () => {
         const timeout = setTimeout(() => reject(new Error('resume timeout')), 15_000)
         resumeSession(sessionId, (data) => {
           clearTimeout(timeout)
+          if (data.session_id && data.session_id !== sessionId) {
+            resolve()
+            return
+          }
           const targetSession = sessions.value.find(s => s.id === sessionId)
           if (!targetSession) {
             resolve()
@@ -544,7 +565,7 @@ export const useChatStore = defineStore('chat', () => {
             }
           }
           resolve()
-        })
+        }, activeSession.value?.profile)
       })
     } catch (err) {
       console.error('Failed to load session messages via resume:', err)
@@ -555,7 +576,9 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     // Resume in-flight run event listeners if needed
-    resumeServerWorkingRun(sessionId)
+    if (activeSessionId.value === sessionId) {
+      resumeServerWorkingRun(sessionId)
+    }
   }
 
   function newChat() {
@@ -588,7 +611,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function deleteSession(sessionId: string) {
-    await deleteSessionApi(sessionId)
+    const target = sessions.value.find(s => s.id === sessionId)
+    await deleteSessionApi(sessionId, target?.profile)
     sessions.value = sessions.value.filter(s => s.id !== sessionId)
     if (activeSessionId.value === sessionId) {
       if (sessions.value.length > 0) {
@@ -780,6 +804,7 @@ export const useChatStore = defineStore('chat', () => {
       const runPayload = {
         input,
         session_id: sid,
+        profile: activeSession.value?.profile || useProfilesStore().activeProfileName || undefined,
         model: appStore.selectedModel || undefined,
         provider: appStore.selectedProvider || undefined,
         queue_id: userMsg.id,
@@ -1663,7 +1688,7 @@ export const useChatStore = defineStore('chat', () => {
               activeSession.value.messages = mapHermesMessages(data.messages as any[])
             }
             resumeServerWorkingRun(sid)
-          })
+          }, activeSession.value?.profile)
         }
       }
     })

@@ -6,6 +6,12 @@ const fetchHermesSessionsMock = vi.hoisted(() => vi.fn())
 const fetchHermesSessionMock = vi.hoisted(() => vi.fn())
 const renameSessionMock = vi.hoisted(() => vi.fn())
 const setSessionWorkspaceMock = vi.hoisted(() => vi.fn())
+const routerPushMock = vi.hoisted(() => vi.fn())
+const routerReplaceMock = vi.hoisted(() => vi.fn())
+const routeState = vi.hoisted(() => ({
+  params: {} as Record<string, unknown>,
+  query: {} as Record<string, unknown>,
+}))
 
 vi.mock('@/api/hermes/sessions', () => ({
   fetchHermesSessions: fetchHermesSessionsMock,
@@ -36,6 +42,14 @@ vi.mock('@/stores/hermes/session-browser-prefs', () => ({
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string) => key,
+  }),
+}))
+
+vi.mock('vue-router', () => ({
+  useRoute: () => routeState,
+  useRouter: () => ({
+    push: routerPushMock,
+    replace: routerReplaceMock,
   }),
 }))
 
@@ -121,6 +135,12 @@ describe('HistoryView user-mode session loading', () => {
     fetchHermesSessionMock.mockReset()
     renameSessionMock.mockReset()
     setSessionWorkspaceMock.mockReset()
+    routerPushMock.mockReset()
+    routerReplaceMock.mockReset()
+    routerPushMock.mockResolvedValue(undefined)
+    routerReplaceMock.mockResolvedValue(undefined)
+    routeState.params = {}
+    routeState.query = {}
     window.matchMedia = vi.fn().mockReturnValue({
       matches: false,
       addEventListener: vi.fn(),
@@ -136,7 +156,26 @@ describe('HistoryView user-mode session loading', () => {
     const wrapper = mount(HistoryView)
     await flushMountedWork()
 
-    expect(fetchHermesSessionMock).toHaveBeenCalledWith('webui-session')
+    expect(routerPushMock).toHaveBeenCalledWith({
+      name: 'hermes.historySession',
+      params: { sessionId: 'webui-session' },
+      query: undefined,
+    })
+    expect(wrapper.find('.history-message-list').text()).toBe('webui-session')
+  })
+
+  it('loads the deep-linked history session from the requested profile', async () => {
+    routeState.params = { sessionId: 'webui-session' }
+    routeState.query = { profile: 'tester' }
+    const summary = sessionSummary({ profile: 'tester', messages: undefined })
+    fetchHermesSessionsMock.mockResolvedValue([summary])
+    fetchHermesSessionMock.mockResolvedValue(sessionSummary({ profile: 'tester' }))
+
+    const wrapper = mount(HistoryView)
+    await flushMountedWork()
+
+    expect(fetchHermesSessionsMock).toHaveBeenCalledWith(undefined, undefined, 'tester')
+    expect(fetchHermesSessionMock).toHaveBeenCalledWith('webui-session', 'tester')
     expect(wrapper.find('.history-message-list').text()).toBe('webui-session')
   })
 
