@@ -42,6 +42,8 @@ related:
 > 2026-05-25 00:14 追加 profile-scoped view 初始化：吸收 upstream `f4c70bd` 的核心行为，新增 `ensureProfileSelection()`，Files/Jobs/Memory/Skills/Usage/Channels/Models/Plugins/Settings 等 profile-scoped 页面在发自身请求前先确保 profile store 已有 active profile/list，避免首个请求缺 `X-Hermes-Profile` 而落到默认 profile。该 helper 只调用现有 `profilesStore.fetchProfiles()`，不改变 profile switch 或 owner ACL。验证：Jobs/Files 先红后绿覆盖调用顺序；相关视图 focused 6 files / 19 tests 通过，client `vue-tsc` 通过。
 >
 > 2026-05-25 00:17 追加 profile list parser：吸收 upstream `ab7dd00` 的长列解析修复，新增 `profile-list-parser.ts`，`listProfiles()` 以磁盘 profile 目录和 `active_profile` 为事实源，`hermes profile list` 输出只补 gateway/alias runtime 信息；长 profile 名或长 model 把表格列撑满时不再错切 profile/model/gateway。CLI 失败时降级返回磁盘 profile 列表，不直接 500。验证：`tests/server/profile-list-parser.test.ts`、`tests/server/profiles-routes.test.ts` 为 2 files / 17 tests 通过，server `tsc` 通过。
+>
+> 2026-05-25 00:25 追加 bundled skills 同步：吸收 upstream `f90e79f`、`20f51f4`、`8d261c3`、`3e8f84a` 的最小闭环，新增 `HermesSkillInjector`，启动时把 `packages/skills` 中的 HyperFrames、Remotion、Markdown Viewer 同步到 default 和每个 named profile，profile 新建/切换时也补同步目标 profile。同步只覆盖 WebUI bundled skill 同名目录，不删除 profile-local 其他技能；build 会把 `packages/skills` 复制到 `dist/skills`。验证：新增 RED/GREEN `tests/server/skill-injector.test.ts`，与 `tests/server/profiles-routes.test.ts` focused 2 files / 17 tests 通过。
 
 > [!warning] 2026-05-22 已发布 — Credentials 页区分 bot runtime 与 user UAT
 > `webui-lark-cli-user-auth-status` 已发布到生产。Credentials 页的 Lark-cli 卡片不能把 runtime 能以 bot 身份工作误显示为个人用户「已认证」；在 `ctx.state.user` 存在的 chat-plane 场景，只有 Feishu UAT status valid、profile-local UAT connected，或 lark-cli readiness 明确 `default_identity=user` 时才显示 authenticated。`default_identity=bot` 只说明 bot runtime 可用，个人用户仍显示 `needs_auth` 和「授权」按钮。

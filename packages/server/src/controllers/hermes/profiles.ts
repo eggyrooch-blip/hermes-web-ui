@@ -18,6 +18,7 @@ import { config, getWebUiHome } from '../../config'
 import { listOwnedProfileMetadata, ownerOwnsProfile, registerOwnedProfile } from '../../services/hermes/agent-ownership'
 import { provisionOwnedProfileViaBroker } from '../../services/hermes/profile-provisioning'
 import { getRequestProfile } from '../../services/request-context'
+import { HermesSkillInjector } from '../../services/hermes/skill-injector'
 
 interface ProfileAvatarMeta {
   type: 'generated' | 'image'
@@ -100,6 +101,24 @@ function ensureCanWriteProfileMetadata(ctx: any, name: string): boolean {
   ctx.status = 403
   ctx.body = { error: `Profile "${name}" is not available for this user` }
   return false
+}
+
+async function injectBundledSkillsForProfile(name: string): Promise<void> {
+  try {
+    const targetDir = HermesSkillInjector.resolveTargetDirForProfile(name)
+    const result = await new HermesSkillInjector(undefined, targetDir).injectMissingSkills()
+    const target = result.targets[0]
+    if (target && (target.injected.length > 0 || target.updated.length > 0)) {
+      logger.info({
+        profile: name,
+        targetDir,
+        injected: target.injected,
+        updated: target.updated,
+      }, '[profiles] synced bundled skills for profile')
+    }
+  } catch (err: any) {
+    logger.warn(err, '[profiles] failed to sync bundled skills for profile "%s"', name)
+  }
 }
 
 export async function list(ctx: any) {
@@ -232,6 +251,9 @@ export async function create(ctx: any) {
         registerOwnedProfile(user.openid, name, user.profile)
       }
     }
+
+    await injectBundledSkillsForProfile(name)
+
     ctx.body = {
       success: true,
       message: output.trim(),
@@ -389,6 +411,8 @@ export async function switchProfile(ctx: any) {
     } catch (err: any) {
       logger.error(err, 'Ensure config failed')
     }
+
+    await injectBundledSkillsForProfile(name)
 
     const drainResult = await SessionDeleter.getInstance().drain(name)
     SessionDeleter.getInstance().switchProfile(name)
