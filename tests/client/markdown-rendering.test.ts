@@ -27,7 +27,21 @@ vi.mock('vue-i18n', () => ({
   }),
 }))
 
+const downloadApiMock = vi.hoisted(() => ({
+  downloadFile: vi.fn(),
+  fetchFileText: vi.fn(),
+}))
+
 vi.mock('naive-ui', () => ({
+  NDrawer: {
+    props: ['show', 'width', 'placement', 'showMask', 'trapFocus'],
+    emits: ['update:show'],
+    template: '<aside v-if="show" class="n-drawer"><slot name="header" /><slot /></aside>',
+  },
+  NSpin: {
+    props: ['show'],
+    template: '<div class="n-spin"><slot /></div>',
+  },
   useMessage: () => ({
     error: vi.fn(),
     success: vi.fn(),
@@ -37,7 +51,8 @@ vi.mock('naive-ui', () => ({
 }))
 
 vi.mock('@/api/hermes/download', () => ({
-  downloadFile: vi.fn(),
+  downloadFile: downloadApiMock.downloadFile,
+  fetchFileText: downloadApiMock.fetchFileText,
   getDownloadUrl: (path: string) => `http://test.local/api/hermes/download?path=${encodeURIComponent(path)}`,
 }))
 
@@ -54,6 +69,9 @@ describe('MarkdownRenderer', () => {
     mermaidMock.render.mockImplementation(async (id: string, source: string) => ({
       svg: `<svg id="${id}" data-testid="mermaid-svg"><text>${source}</text></svg>`,
     }))
+    downloadApiMock.downloadFile.mockReset()
+    downloadApiMock.fetchFileText.mockReset()
+    downloadApiMock.downloadFile.mockResolvedValue(undefined)
 
     Object.defineProperty(window, 'isSecureContext', {
       configurable: true,
@@ -148,6 +166,37 @@ describe('MarkdownRenderer', () => {
     expect(card.exists()).toBe(true)
     expect(card.attributes('data-path')).toBe('sakura_fractal.html')
     expect(card.text()).toContain('Cherry animation')
+  })
+
+  it('previews supported text file cards instead of immediately downloading them', async () => {
+    downloadApiMock.fetchFileText.mockResolvedValue('# Report\n\nhello')
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '![Report](report.md)',
+      },
+    })
+
+    await wrapper.find('.markdown-file-card').trigger('click')
+    await nextTick()
+    await Promise.resolve()
+    await nextTick()
+
+    expect(downloadApiMock.fetchFileText).toHaveBeenCalledWith('report.md', 'Report')
+    expect(downloadApiMock.downloadFile).not.toHaveBeenCalled()
+    expect(wrapper.find('.text-preview-body').text()).toContain('# Report')
+  })
+
+  it('still downloads supported text file cards when the download icon is clicked', async () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '![Report](report.md)',
+      },
+    })
+
+    await wrapper.find('.att-download-icon').trigger('click')
+
+    expect(downloadApiMock.downloadFile).toHaveBeenCalledWith('report.md', 'Report')
+    expect(downloadApiMock.fetchFileText).not.toHaveBeenCalled()
   })
 
   it('renders outer markdown draft fences as markdown while preserving nested fenced examples', () => {

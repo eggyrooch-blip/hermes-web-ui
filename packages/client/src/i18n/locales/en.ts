@@ -1093,6 +1093,7 @@ export default {
     backendTimeout: 'File read timed out',
     unsupportedBackend: 'Current terminal backend does not support file download',
     invalidPath: 'Invalid file path',
+    preview: 'Preview',
     download: 'Download',
     downloadFile: 'Download file',
   },

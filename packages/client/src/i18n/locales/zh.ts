@@ -1095,6 +1095,7 @@ export default {
     backendTimeout: '文件读取超时',
     unsupportedBackend: '当前 terminal backend 暂不支持文件下载',
     invalidPath: '无效的文件路径',
+    preview: '预览',
     download: '下载',
     downloadFile: '下载文件',
   },

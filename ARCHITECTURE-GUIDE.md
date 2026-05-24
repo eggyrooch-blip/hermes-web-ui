@@ -36,6 +36,8 @@ related:
 > 23:56 追加 profile avatar 闭环：新增 `PUT/DELETE /api/hermes/profiles/:name/avatar`，头像元数据存储在 WebUI 本地 `profile-metadata` 目录；chat-plane 下写操作只允许当前 Feishu user 绑定 profile 或 `ownerOwnsProfile(openid, name)` 的 profile。客户端新增 `updateProfileAvatar/deleteProfileAvatar` 与 Pinia `updateAvatar/deleteAvatar`，会同步 profiles、detail cache、active profile。验证：`tests/server/profiles-routes.test.ts`、`tests/client/profile-avatar.test.ts`、`tests/client/profiles-store.test.ts` focused 3 files / 33 tests 通过，server `tsc` 和 client `vue-tsc` 通过。
 >
 > 2026-05-25 00:02 追加 ProfileSelector 头像入口：在现有 upstream `ProfileSelector` 轻量形态上增加 active profile 头像显示和“自定义头像”弹窗，支持随机 generated avatar 与重置，并复用 owner-scoped `profilesStore.updateAvatar/deleteAvatar`。没有吸收 upstream runtime restart/gateway 控制面，也没有改变本地 profile switch 语义。验证：`tests/client/profile-selector.test.ts` 先红后绿；头像/store/i18n focused 4 files / 25 tests 通过，client `vue-tsc` 通过。
+>
+> 2026-05-25 00:09 追加聊天内文本文件预览：吸收 upstream `bf74745` 的低风险 UX，`MarkdownRenderer.vue` 对聊天消息中的本地 `.md/.txt/.json/.csv/...` 文件卡片点击打开右侧预览抽屉，下载图标仍保持下载语义；读取仍走既有 `/api/hermes/download` BFF，因此 token/query 下载的已知边界没有扩大，也不改变后端 file scope。验证：新增 preview/download icon 回归；`tests/client/markdown-rendering.test.ts`、`tests/client/api.test.ts`、`tests/client/i18n-coverage.test.ts` 为 3 files / 52 tests 通过，client `vue-tsc` 通过。
 
 > [!warning] 2026-05-22 已发布 — Credentials 页区分 bot runtime 与 user UAT
 > `webui-lark-cli-user-auth-status` 已发布到生产。Credentials 页的 Lark-cli 卡片不能把 runtime 能以 bot 身份工作误显示为个人用户「已认证」；在 `ctx.state.user` 存在的 chat-plane 场景，只有 Feishu UAT status valid、profile-local UAT connected，或 lark-cli readiness 明确 `default_identity=user` 时才显示 authenticated。`default_identity=bot` 只说明 bot runtime 可用，个人用户仍显示 `needs_auth` 和「授权」按钮。
