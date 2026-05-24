@@ -26,6 +26,8 @@ related:
 > 23:26 追加：同一 worktree 内 `/api/auth/me` 现在同时保留 Hermes 既有 Feishu 顶层字段，并增加 upstream 0.6 风格 `{ user: { id, username, role, status, profiles, ... } }` 包装；客户端 `fetchCurrentUser()` 会优先解包 `res.user`，旧格式仍兼容。这里的 `user.id/username/profiles` 来自已验证 Feishu session/open_id 与 `middleware/user-auth.ts` adapter，不引入 upstream password/JWT 作为生产身份源。验证：`tests/server/feishu-oauth.test.ts`、`tests/client/api.test.ts`、auth/profile focused 9 files / 103 tests、server `tsc`、client `vue-tsc` 均通过；仍未合入或发布生产。
 >
 > 23:29 追加 guard：`tests/server/auth.test.ts` 明确锁住 Feishu OAuth 模式下 `getToken()` 返回 `null`，且 `requireAuth()` 不接受 Bearer/password token 作为用户身份。后续吸收 upstream password/JWT/users-store 时，这条测试必须继续保证生产 owner/open_id 只能来自 Feishu session 或 trusted header adapter。
+>
+> 23:32 追加 run-chat 低风险贴合：新增 upstream 风格 `packages/server/src/services/hermes/run-chat/response-utils.ts`，把 `responseFunctionCallToToolCall`、`summarizeToolArguments`、`extractResponseText` 从 `chat-run-socket.ts` 内联函数提取为模块并复用。该变更是纯数据转换 helper，不启用 upstream `agent-bridge`，也不改变 `HERMES_WEBUI_RUN_BROKER` 生产执行路径。验证：`tests/server/run-chat-response-utils.test.ts`、`chat-run-socket`、`run-chat-broker`、`chat-run-message-flush` focused 4 files / 34 tests 通过，server `tsc` 通过。
 
 > [!warning] 2026-05-22 已发布 — Credentials 页区分 bot runtime 与 user UAT
 > `webui-lark-cli-user-auth-status` 已发布到生产。Credentials 页的 Lark-cli 卡片不能把 runtime 能以 bot 身份工作误显示为个人用户「已认证」；在 `ctx.state.user` 存在的 chat-plane 场景，只有 Feishu UAT status valid、profile-local UAT connected，或 lark-cli readiness 明确 `default_identity=user` 时才显示 authenticated。`default_identity=bot` 只说明 bot runtime 可用，个人用户仍显示 `needs_auth` 和「授权」按钮。
