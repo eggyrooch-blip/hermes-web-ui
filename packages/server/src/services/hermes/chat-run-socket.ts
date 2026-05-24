@@ -891,6 +891,7 @@ export class ChatRunSocket {
         this.sessionMap.set(session_id, state)
       }
       state.isWorking = true
+      state.events = []
       state.profile = profile
 
       if (!skipUserMessage) {

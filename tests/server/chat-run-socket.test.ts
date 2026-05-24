@@ -19,6 +19,14 @@ function createSocketServer() {
   return { io, namespace, room }
 }
 
+async function waitFor(condition: () => boolean) {
+  for (let i = 0; i < 20; i += 1) {
+    if (condition()) return
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 0))
+  }
+  throw new Error('timed out waiting for condition')
+}
+
 describe('ChatRunSocket gateway lifecycle', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -373,6 +381,65 @@ describe('ChatRunSocket gateway lifecycle', () => {
       session_id: 'session-broker',
       run_id: 'run_webui_1',
     }))
+  })
+
+  it('clears stale replay events when starting a broker-backed run', async () => {
+    vi.resetModules()
+    vi.stubEnv('HERMES_WEBUI_RUN_BROKER', '1')
+    vi.stubEnv('HERMES_RUN_BROKER_URL', 'http://127.0.0.1:8766')
+    const { ChatRunSocket: BrokerChatRunSocket } = await import('../../packages/server/src/services/hermes/chat-run-socket')
+
+    const { io } = createSocketServer()
+    const gatewayManager = {
+      detectStatus: vi.fn(),
+      startApiOnly: vi.fn(),
+      getUpstream: vi.fn(() => {
+        throw new Error('profile apiserver should not be used')
+      }),
+      getApiKey: vi.fn(() => null),
+    }
+    const encoder = new TextEncoder()
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined
+    const fetchMock = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const chatRun = new BrokerChatRunSocket(io as any, gatewayManager)
+    ;(chatRun as any).sessionMap.set('session-stale-events', {
+      messages: [],
+      isWorking: false,
+      events: [
+        { event: 'compression.started', data: { event: 'compression.started', token_count: 1000 } },
+      ],
+      queue: [],
+      profile: 'sunke',
+    })
+    const socket = {
+      data: { user: { openid: 'ou_webui_user' } },
+      connected: true,
+      emit: vi.fn(),
+      join: vi.fn(),
+    }
+
+    const runPromise = (chatRun as any).handleRun(socket, {
+      input: 'next broker run',
+      session_id: 'session-stale-events',
+    }, 'sunke')
+
+    await waitFor(() => fetchMock.mock.calls.length > 0)
+    const state = (chatRun as any).sessionMap.get('session-stale-events')
+    expect(state.isWorking).toBe(true)
+    expect(state.events).toEqual([])
+
+    streamController!.enqueue(encoder.encode('data: {"kind":"done","payload":{"run_id":"run-stale-events"}}\n\n'))
+    streamController!.close()
+    await runPromise
   })
 
   it('persists a visible assistant error when the broker run fails before streaming', async () => {

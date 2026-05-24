@@ -555,6 +555,7 @@ export async function handleBrokerRun(
   if (session_id) {
     const state = context.getOrCreateSession(session_id)
     state.isWorking = true
+    state.events = []
     state.runId = undefined
     state.abortController = abortController
     context.getResponseRunState(state, runMarker)
