@@ -85,6 +85,7 @@ const sessionEventHandlers = new Map<string, {
   onAbortCompleted: (event: RunEvent) => void
   onUsageUpdated: (event: RunEvent) => void
   onRunQueued?: (event: RunEvent) => void
+  onSubagentEvent?: (event: RunEvent) => void
 }>()
 
 /**
@@ -297,6 +298,19 @@ function globalUsageUpdatedHandler(event: RunEvent): void {
 }
 
 /**
+ * Global subagent event handler
+ */
+function globalSubagentEventHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onSubagentEvent) {
+    handlers.onSubagentEvent(event)
+  }
+}
+
+/**
  * Register event handlers for a session
  * @param sessionId - Session ID
  * @param handlers - Event handling functions
@@ -320,6 +334,7 @@ export function registerSessionHandlers(
     onAbortCompleted: (event: RunEvent) => void
     onUsageUpdated: (event: RunEvent) => void
     onRunQueued?: (event: RunEvent) => void
+    onSubagentEvent?: (event: RunEvent) => void
   }
 ): () => void {
   sessionEventHandlers.set(sessionId, handlers)
@@ -392,6 +407,10 @@ export function connectChatRun(requestedProfile?: string | null): Socket {
     // Tool events
     chatRunSocket.on('tool.started', globalToolStartedHandler)
     chatRunSocket.on('tool.completed', globalToolCompletedHandler)
+    chatRunSocket.on('subagent.start', globalSubagentEventHandler)
+    chatRunSocket.on('subagent.tool', globalSubagentEventHandler)
+    chatRunSocket.on('subagent.progress', globalSubagentEventHandler)
+    chatRunSocket.on('subagent.complete', globalSubagentEventHandler)
 
     // Run lifecycle events
     chatRunSocket.on('run.started', globalRunStartedHandler)
@@ -538,6 +557,10 @@ export function startRunViaSocket(
       onEvent(evt)
     },
     onRunQueued: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
+    onSubagentEvent: (evt: RunEvent) => {
       if (closed) return
       onEvent(evt)
     },

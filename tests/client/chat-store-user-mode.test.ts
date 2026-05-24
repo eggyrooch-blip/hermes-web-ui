@@ -590,4 +590,40 @@ describe('chat store user-mode model selection', () => {
     expect(store.activeSession?.profile).toBe('tester')
     expect(resumeSessionMock).toHaveBeenCalledWith('session-2', expect.any(Function), 'tester')
   })
+
+  it('renders subagent run events as a delegate_task tool card', async () => {
+    const store = useChatStore()
+    store.newChat()
+
+    await store.sendMessage('delegate this')
+
+    const onEvent = startRunViaSocketMock.mock.calls[0][1]
+    onEvent({
+      event: 'subagent.start',
+      session_id: store.activeSession!.id,
+      run_id: 'run-1',
+      subagent_id: 'a',
+      task_index: 0,
+      task_count: 2,
+      goal: 'inspect files',
+    })
+    onEvent({
+      event: 'subagent.complete',
+      session_id: store.activeSession!.id,
+      run_id: 'run-1',
+      subagent_id: 'a',
+      task_index: 0,
+      task_count: 2,
+      status: 'completed',
+      summary: 'found the file',
+    })
+
+    const toolMessage = store.activeSession!.messages.find(m => m.role === 'tool' && m.toolName === 'delegate_task')
+    expect(toolMessage).toMatchObject({
+      toolCallId: 'subagent:run-1:a',
+      toolStatus: 'done',
+    })
+    expect(toolMessage?.toolPreview).toContain('subagent 1/2 completed')
+    expect(toolMessage?.toolResult).toContain('found the file')
+  })
 })
