@@ -1,6 +1,6 @@
 import { resolve, join } from 'path'
 import { homedir } from 'os'
-import { readFileSync, existsSync } from 'fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
 
 const HERMES_BASE = process.env.HERMES_HOME || resolve(homedir(), '.hermes')
 
@@ -64,4 +64,26 @@ export function getProfileDir(name: string): string {
   if (!name || name === 'default') return HERMES_BASE
   const dir = join(HERMES_BASE, 'profiles', name)
   return existsSync(dir) ? dir : HERMES_BASE
+}
+
+export function listProfileNamesFromDisk(): string[] {
+  const names = new Set<string>(['default'])
+  const profilesDir = join(HERMES_BASE, 'profiles')
+  try {
+    for (const entry of readdirSync(profilesDir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.')) continue
+      if (entry.isDirectory()) {
+        names.add(entry.name)
+      } else if (entry.isSymbolicLink()) {
+        try {
+          if (statSync(join(profilesDir, entry.name)).isDirectory()) names.add(entry.name)
+        } catch {
+          // Ignore broken symlinks.
+        }
+      }
+    }
+  } catch {
+    // A fresh single-profile Hermes install may not have profiles/.
+  }
+  return [...names].sort((a, b) => a.localeCompare(b))
 }
