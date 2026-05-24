@@ -611,6 +611,15 @@ export default {
   profiles: {
     title: 'Profiles',
     create: 'Create Profile',
+    avatar: {
+      customize: 'Customize Avatar',
+      randomize: 'Randomize',
+      reset: 'Reset',
+      updateSuccess: 'Avatar updated',
+      updateFailed: 'Failed to update avatar',
+      resetSuccess: 'Avatar reset',
+      resetFailed: 'Failed to reset avatar',
+    },
     import: 'Import',
     export: 'Export',
     rename: 'Rename',

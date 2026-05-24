@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-05-22
+updated: 2026-05-25
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.5.16)
 audience: Claude PAI / 孙可
@@ -34,6 +34,8 @@ related:
 > 23:50 追加 profile UI 低风险端口：新增 upstream `ProfileAvatar.vue` 和 `ProfileAvatar` API 类型，并在 `ProfileCard.vue` 标题处显示 generated/image avatar。只吸收展示组件，不吸收 upstream 的 profile switching 语义变化，因此 chat-plane 本地 owner profile 选择行为不变。验证：`tests/client/profile-avatar.test.ts`、profiles focused 4 files / 18 tests 通过，client `vue-tsc` 通过。
 >
 > 23:56 追加 profile avatar 闭环：新增 `PUT/DELETE /api/hermes/profiles/:name/avatar`，头像元数据存储在 WebUI 本地 `profile-metadata` 目录；chat-plane 下写操作只允许当前 Feishu user 绑定 profile 或 `ownerOwnsProfile(openid, name)` 的 profile。客户端新增 `updateProfileAvatar/deleteProfileAvatar` 与 Pinia `updateAvatar/deleteAvatar`，会同步 profiles、detail cache、active profile。验证：`tests/server/profiles-routes.test.ts`、`tests/client/profile-avatar.test.ts`、`tests/client/profiles-store.test.ts` focused 3 files / 33 tests 通过，server `tsc` 和 client `vue-tsc` 通过。
+>
+> 2026-05-25 00:02 追加 ProfileSelector 头像入口：在现有 upstream `ProfileSelector` 轻量形态上增加 active profile 头像显示和“自定义头像”弹窗，支持随机 generated avatar 与重置，并复用 owner-scoped `profilesStore.updateAvatar/deleteAvatar`。没有吸收 upstream runtime restart/gateway 控制面，也没有改变本地 profile switch 语义。验证：`tests/client/profile-selector.test.ts` 先红后绿；头像/store/i18n focused 4 files / 25 tests 通过，client `vue-tsc` 通过。
 
 > [!warning] 2026-05-22 已发布 — Credentials 页区分 bot runtime 与 user UAT
 > `webui-lark-cli-user-auth-status` 已发布到生产。Credentials 页的 Lark-cli 卡片不能把 runtime 能以 bot 身份工作误显示为个人用户「已认证」；在 `ctx.state.user` 存在的 chat-plane 场景，只有 Feishu UAT status valid、profile-local UAT connected，或 lark-cli readiness 明确 `default_identity=user` 时才显示 authenticated。`default_identity=bot` 只说明 bot runtime 可用，个人用户仍显示 `needs_auth` 和「授权」按钮。

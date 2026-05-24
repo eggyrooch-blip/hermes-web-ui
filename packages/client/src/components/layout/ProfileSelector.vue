@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NButton, NSelect, useMessage } from 'naive-ui'
+import { NButton, NModal, NSelect, useMessage } from 'naive-ui'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useI18n } from 'vue-i18n'
 import ProfileCreateModal from '@/components/hermes/profiles/ProfileCreateModal.vue'
+import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -17,7 +18,14 @@ const options = computed(() =>
 )
 
 const activeName = computed(() => profilesStore.activeProfileName ?? '')
+const activeProfile = computed(() =>
+  profilesStore.activeProfile
+  ?? profilesStore.profiles.find(p => p.name === activeName.value)
+  ?? null,
+)
 const showCreateModal = ref(false)
+const showAvatarModal = ref(false)
+const avatarSaving = ref(false)
 
 async function handleChange(value: string | number | Array<string | number>) {
   if (typeof value === 'string' && value !== activeName.value) {
@@ -42,12 +50,60 @@ async function handleCreated() {
   showCreateModal.value = false
   await profilesStore.fetchProfiles()
 }
+
+function nextAvatarSeed() {
+  const prefix = activeName.value || 'profile'
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+async function randomizeAvatar() {
+  if (!activeName.value) return
+  avatarSaving.value = true
+  try {
+    await profilesStore.updateAvatar(activeName.value, {
+      type: 'generated',
+      seed: nextAvatarSeed(),
+    })
+    message.success(t('profiles.avatar.updateSuccess'))
+  } catch {
+    message.error(t('profiles.avatar.updateFailed'))
+  } finally {
+    avatarSaving.value = false
+  }
+}
+
+async function resetAvatar() {
+  if (!activeName.value) return
+  avatarSaving.value = true
+  try {
+    await profilesStore.deleteAvatar(activeName.value)
+    message.success(t('profiles.avatar.resetSuccess'))
+  } catch {
+    message.error(t('profiles.avatar.resetFailed'))
+  } finally {
+    avatarSaving.value = false
+  }
+}
 </script>
 
 <template>
   <div class="profile-selector">
     <div class="selector-label">{{ t('sidebar.profiles') }}</div>
     <div class="selector-row">
+      <NButton
+        class="profile-selector-avatar"
+        size="small"
+        quaternary
+        circle
+        :title="t('profiles.avatar.customize')"
+        @click="showAvatarModal = true"
+      >
+        <ProfileAvatar
+          :name="activeName"
+          :avatar="activeProfile?.avatar"
+          :size="24"
+        />
+      </NButton>
       <NSelect
         :value="activeName"
         :options="options"
@@ -70,6 +126,40 @@ async function handleCreated() {
       @saved="handleCreated"
       @close="showCreateModal = false"
     />
+    <NModal
+      v-model:show="showAvatarModal"
+      preset="dialog"
+      :title="t('profiles.avatar.customize')"
+    >
+      <div class="avatar-editor">
+        <ProfileAvatar
+          :name="activeName"
+          :avatar="activeProfile?.avatar"
+          :size="72"
+        />
+        <div class="avatar-actions">
+          <NButton
+            class="avatar-random"
+            size="small"
+            type="primary"
+            secondary
+            :loading="avatarSaving"
+            @click="randomizeAvatar"
+          >
+            {{ t('profiles.avatar.randomize') }}
+          </NButton>
+          <NButton
+            class="avatar-reset"
+            size="small"
+            secondary
+            :loading="avatarSaving"
+            @click="resetAvatar"
+          >
+            {{ t('profiles.avatar.reset') }}
+          </NButton>
+        </div>
+      </div>
+    </NModal>
   </div>
 </template>
 
@@ -92,8 +182,25 @@ async function handleCreated() {
 
 .selector-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
   align-items: center;
   gap: 6px;
+}
+
+.profile-selector-avatar {
+  padding: 0;
+}
+
+.avatar-editor {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 4px;
+}
+
+.avatar-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 </style>

@@ -603,6 +603,15 @@ export default {
   profiles: {
     title: '配置',
     create: '创建配置',
+    avatar: {
+      customize: '自定义头像',
+      randomize: '随机',
+      reset: '重置',
+      updateSuccess: '头像已更新',
+      updateFailed: '头像更新失败',
+      resetSuccess: '头像已重置',
+      resetFailed: '头像重置失败',
+    },
     import: '导入',
     export: '导出',
     rename: '重命名',
