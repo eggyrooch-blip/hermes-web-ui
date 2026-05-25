@@ -37,8 +37,16 @@ import {
   getFeishuSessionSecret,
   parseFeishuSessionCookie,
 } from '../feishu-oauth'
-import { ownerOwnsProfile } from './agent-ownership'
-import { handleBrokerRun as handleRunChatBrokerRun, respondToBrokerClarify } from './run-chat/handle-broker-run'
+import { ownerOwnsProfile, resolveOwnedProfileAgentId } from './agent-ownership'
+import {
+  handleBrokerRun as handleRunChatBrokerRun,
+  parseBrokerSessionCommand,
+  respondToBrokerClarify,
+  runBrokerGoalEvaluate,
+  runBrokerSessionCommand,
+  type BrokerGoalEvaluateResult,
+  type BrokerSessionCommandResult,
+} from './run-chat/handle-broker-run'
 import { extractResponseText, responseFunctionCallToToolCall, summarizeToolArguments } from './run-chat/response-utils'
 import { readSseFrames } from './run-chat/sse-utils'
 import { rewriteAssistantMediaDirectives } from './media-directives'
@@ -622,9 +630,11 @@ export class ChatRunSocket {
         ? socket.handshake.query.profile.trim()
         : ''
       socket.data.user = user
-      socket.data.profile = requestedProfile && requestedProfile !== user.profile && ownerOwnsProfile(user.openid, requestedProfile)
+      const resolvedProfile = requestedProfile && requestedProfile !== user.profile && ownerOwnsProfile(user.openid, requestedProfile)
         ? requestedProfile
         : user.profile
+      socket.data.profile = resolvedProfile
+      socket.data.agentId = resolveOwnedProfileAgentId(user.openid, resolvedProfile)
       return next()
     }
 
@@ -646,12 +656,18 @@ export class ChatRunSocket {
 
     socket.on('run', async (data: {
       input: string | ContentBlock[]
+      __skipSessionCommand?: boolean
+      __hideUserMessage?: boolean
       session_id?: string
       model?: string
       provider?: string
       instructions?: string
       queue_id?: string
     }) => {
+      if (config.webuiRunBroker && data.session_id && !data.__skipSessionCommand && parseBrokerSessionCommand(data.input)) {
+        await this.handleBrokerSessionCommand(socket, data, profile)
+        return
+      }
       if (data.session_id) {
         const state = this.getOrCreateSession(data.session_id)
         if (state.isWorking) {
@@ -713,6 +729,7 @@ export class ChatRunSocket {
         await respondToBrokerClarify({
           socket,
           profile,
+          agentId: (socket.data?.agentId as string | undefined)?.trim(),
           sessionId,
           clarifyId,
           response: String(data.response || ''),
@@ -935,11 +952,15 @@ export class ChatRunSocket {
 
   private async handleRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string },
+    data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; model?: string; provider?: string; instructions?: string },
     profile: string,
     skipUserMessage = false,
   ) {
     const { input, session_id, model, provider, instructions } = data
+    if (config.webuiRunBroker && session_id && !data.__skipSessionCommand && parseBrokerSessionCommand(input)) {
+      await this.handleBrokerSessionCommand(socket, data, profile)
+      return
+    }
 
     // Local marker used only to group in-memory messages for this streamed response.
     const runMarker = session_id
@@ -960,7 +981,7 @@ export class ChatRunSocket {
       state.events = []
       state.profile = profile
 
-      if (!skipUserMessage) {
+      if (!data.__hideUserMessage) {
         // Convert ContentBlock[] to string for storage
         const inputStr = contentBlocksToString(input)
         state.messages.push({
@@ -980,29 +1001,6 @@ export class ChatRunSocket {
         }
 
         // Write user message to local DB immediately
-        addMessage({
-          session_id,
-          role: 'user',
-          content: inputStr,
-          timestamp: now,
-        })
-      } else {
-        // Dequeued: write the user message into both memory and DB so the
-        // backend transcript keeps the same run boundary as the client.
-        const inputStr = contentBlocksToString(input)
-        state.messages.push({
-          id: state.messages.length + 1,
-          session_id,
-          runMarker,
-          role: 'user',
-          content: inputStr,
-          timestamp: now,
-        })
-        if (!getSession(session_id)) {
-          const previewText = extractTextForPreview(input)
-          const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
-          createSession({ id: session_id, profile, model, title: preview })
-        }
         addMessage({
           session_id,
           role: 'user',
@@ -1754,6 +1752,172 @@ export class ChatRunSocket {
     return latestAssistant.content
   }
 
+  private persistCommandMessage(sessionId: string, state: SessionState, content: string) {
+    const text = String(content || '').trim()
+    if (!text) return
+    const now = Math.floor(Date.now() / 1000)
+    if (!getSession(sessionId)) {
+      createSession({
+        id: sessionId,
+        profile: state.profile || 'default',
+        title: text.replace(/[\r\n]/g, ' ').slice(0, 100),
+      })
+    }
+    state.messages.push({
+      id: state.messages.length + 1,
+      session_id: sessionId,
+      role: 'command',
+      content: text,
+      timestamp: now,
+    })
+    addMessage({
+      session_id: sessionId,
+      role: 'command',
+      content: text,
+      timestamp: now,
+    })
+  }
+
+  private emitSessionCommand(socket: Socket, sessionId: string, payload: Record<string, unknown>) {
+    this.emitToSession(socket, sessionId, 'session.command', {
+      event: 'session.command',
+      session_id: sessionId,
+      ok: true,
+      ...payload,
+    })
+  }
+
+  private async handleBrokerSessionCommand(
+    socket: Socket,
+    data: {
+      input: string | ContentBlock[]
+      session_id?: string
+      model?: string
+      provider?: string
+      instructions?: string
+      queue_id?: string
+    },
+    profile: string,
+  ) {
+    const sessionId = String(data.session_id || '').trim()
+    const parsed = parseBrokerSessionCommand(data.input)
+    if (!sessionId || !parsed) return false
+
+    const state = this.getOrCreateSession(sessionId)
+    state.profile = profile
+    socket.join(`session:${sessionId}`)
+    this.persistCommandMessage(sessionId, state, parsed.raw)
+
+    let result: BrokerSessionCommandResult
+    try {
+      result = await runBrokerSessionCommand({
+        socket,
+        profile,
+        agentId: (socket.data?.agentId as string | undefined)?.trim(),
+        sessionId,
+        command: parsed.raw,
+      })
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      const message = `Command failed: ${detail}`
+      this.persistCommandMessage(sessionId, state, message)
+      this.emitSessionCommand(socket, sessionId, {
+        command: parsed.name,
+        ok: false,
+        action: 'error',
+        terminal: !state.isWorking,
+        message,
+      })
+      return true
+    }
+
+    const commandName = String(result.command || parsed.name)
+    const action = String(result.action || parsed.name)
+    const message = typeof result.message === 'string' ? result.message.trim() : ''
+    const kickoffPrompt = typeof result.kickoff_prompt === 'string' ? result.kickoff_prompt.trim() : ''
+    const hiddenPrompt = (
+      kickoffPrompt ||
+      (commandName === 'plan' && result.handled && message ? message : '')
+    ).trim()
+    const shouldStartRun = Boolean(result.handled && hiddenPrompt && (commandName === 'plan' || commandName === 'goal'))
+    const eventMessage = commandName === 'plan' && shouldStartRun ? 'Plan started.' : message
+
+    if (eventMessage) {
+      this.persistCommandMessage(sessionId, state, eventMessage)
+    }
+    this.emitSessionCommand(socket, sessionId, {
+      command: commandName,
+      action,
+      terminal: !state.isWorking,
+      started: shouldStartRun,
+      message: eventMessage,
+      type: result.type,
+      historyCount: result.history_count,
+      handled: result.handled,
+    })
+    if (shouldStartRun) {
+      await this.handleRun(socket, {
+        input: hiddenPrompt,
+        __skipSessionCommand: true,
+        __hideUserMessage: true,
+        session_id: sessionId,
+        model: data.model,
+        provider: data.provider,
+        instructions: data.instructions,
+      }, profile)
+    }
+    return true
+  }
+
+  private async maybeEvaluateGoalAfterRun(
+    socket: Socket,
+    sessionId: string,
+    profile: string | undefined,
+    finalResponse: string | undefined,
+  ) {
+    const responseText = String(finalResponse || '').trim()
+    if (!config.webuiRunBroker || !profile || !responseText) return
+    let result: BrokerGoalEvaluateResult
+    try {
+      result = await runBrokerGoalEvaluate({
+        socket,
+        profile,
+        agentId: (socket.data?.agentId as string | undefined)?.trim(),
+        sessionId,
+        finalResponse: responseText,
+      })
+    } catch (err) {
+      logger.warn({ err, sessionId, profile }, '[chat-run-socket] broker goal evaluate failed')
+      return
+    }
+    const continuation = typeof result.continuation_prompt === 'string'
+      ? result.continuation_prompt.trim()
+      : ''
+    if (!result.should_continue || !continuation) return
+    const state = this.getOrCreateSession(sessionId)
+    const message = typeof result.message === 'string' && result.message.trim()
+      ? result.message.trim()
+      : 'Continuing goal.'
+    this.persistCommandMessage(sessionId, state, message)
+    this.emitSessionCommand(socket, sessionId, {
+      command: 'goal',
+      action: 'continue',
+      terminal: true,
+      started: true,
+      message,
+      verdict: result.verdict,
+      reason: result.reason,
+    })
+    setTimeout(() => {
+      void this.handleRun(socket, {
+        input: continuation,
+        __skipSessionCommand: true,
+        __hideUserMessage: true,
+        session_id: sessionId,
+      }, profile)
+    }, 0)
+  }
+
   // --- Abort handler ---
 
   private async handleAbort(socket: Socket, sessionId: string) {
@@ -1800,7 +1964,7 @@ export class ChatRunSocket {
   }
 
   /** Mark a session run as completed/failed so reconnecting clients get notified */
-  private async markCompleted(socket: Socket, sessionId: string, _info: { event: string; run_id?: string }) {
+  private async markCompleted(socket: Socket, sessionId: string, _info: { event: string; run_id?: string; final_response?: string }) {
     const state = this.sessionMap.get(sessionId)
     if (state) {
       if (state.isAborting) {
@@ -1827,6 +1991,9 @@ export class ChatRunSocket {
         this.nsp.to(`session:${sessionId}`).emit(event, { ...payload, session_id: sessionId })
       }
       await this.calcAndUpdateUsage(sessionId, state, emit)
+      if (_info.event === 'run.completed') {
+        await this.maybeEvaluateGoalAfterRun(socket, sessionId, profile, _info.final_response)
+      }
     }
   }
 
@@ -2048,7 +2215,7 @@ export class ChatRunSocket {
   private emitToSession(socket: Socket, sessionId: string, event: string, payload: any) {
     const tagged = { ...payload, session_id: sessionId }
     this.nsp.to(`session:${sessionId}`).emit(event, tagged)
-    if (!this.nsp.adapter.rooms.get(`session:${sessionId}`)?.size && socket.connected) {
+    if (!this.nsp.adapter?.rooms?.get(`session:${sessionId}`)?.size && socket.connected) {
       socket.emit(event, tagged)
     }
   }

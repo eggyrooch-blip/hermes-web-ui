@@ -24,6 +24,35 @@ export type RunBrokerChatFrameMapping =
   | { type: 'terminal'; event: 'run.completed' | 'run.failed'; payload: any }
   | { type: 'ignore' }
 
+export interface BrokerSessionCommandResult {
+  ok?: boolean
+  handled?: boolean
+  profile_name?: string
+  session_id?: string
+  command?: string
+  type?: string
+  action?: string
+  message?: string
+  kickoff_prompt?: string
+  clear_goal_continuations?: boolean
+  max_turns?: number | null
+  history_count?: number
+  [key: string]: unknown
+}
+
+export interface BrokerGoalEvaluateResult {
+  ok?: boolean
+  handled?: boolean
+  active?: boolean
+  status?: string
+  should_continue?: boolean
+  continuation_prompt?: string
+  verdict?: string
+  reason?: string
+  message?: string
+  [key: string]: unknown
+}
+
 type BuildRunBrokerRequestOptions = {
   input: string | ContentBlock[]
   profile: string
@@ -52,6 +81,8 @@ type ProfileSkillRuntimeEntry = {
 const PROFILE_SKILL_SLASH_ALIASES: Record<string, string> = {
   hades: 'kep-hades-cli',
 }
+
+const BROKER_SESSION_COMMANDS = new Set(['new', 'reset', 'status', 'plan', 'goal', 'subgoal'])
 
 export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOptions): Promise<Record<string, any>> {
   const {
@@ -114,6 +145,17 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
       ...(appendInputToMessages && content ? [{ role: 'user', content }] : []),
     ],
   }
+}
+
+export function parseBrokerSessionCommand(input: string | ContentBlock[]): { raw: string; name: string; args: string } | null {
+  if (typeof input !== 'string') return null
+  const raw = input.trim()
+  if (!raw.startsWith('/')) return null
+  const match = raw.match(/^\/([A-Za-z][\w-]*)(?:\s+([\s\S]*))?$/)
+  if (!match) return null
+  const name = match[1].toLowerCase().replace(/_/g, '-')
+  if (!BROKER_SESSION_COMMANDS.has(name)) return null
+  return { raw, name, args: (match[2] || '').trim() }
 }
 
 function buildProfileSkillRuntimeContext(profileDir: string, inputText: string, sessionId?: string): { content?: string; instructions?: string } | null {
@@ -514,6 +556,7 @@ export function mapRunBrokerFrameForChat(parsed: any, frameEvent?: string): RunB
 export async function respondToBrokerClarify(options: {
   socket: Socket
   profile: string
+  agentId?: string
   sessionId: string
   clarifyId: string
   response: string
@@ -527,9 +570,11 @@ export async function respondToBrokerClarify(options: {
     headers: buildRunBrokerHeaders({
       runBrokerKey: config.runBrokerKey,
       ownerOpenId,
+      agentId: options.agentId,
     }),
     body: JSON.stringify({
       profile_name: options.profile,
+      ...(options.agentId ? { agent_id: options.agentId } : {}),
       session_id: options.sessionId,
       response: options.response,
     }),
@@ -540,11 +585,75 @@ export async function respondToBrokerClarify(options: {
   }
 }
 
+export async function runBrokerSessionCommand(options: {
+  socket: Socket
+  profile: string
+  agentId?: string
+  sessionId: string
+  command: string
+}): Promise<BrokerSessionCommandResult> {
+  const brokerUrl = config.runBrokerUrl
+  if (!brokerUrl) throw new Error('HERMES_RUN_BROKER_URL is required when HERMES_WEBUI_RUN_BROKER=1')
+  const ownerOpenId = (options.socket.data?.user?.openid as string | undefined)?.trim()
+  if (!ownerOpenId) throw new Error('owner identity is required for session command')
+  const res = await fetch(`${brokerUrl}/api/run-broker/session-commands`, {
+    method: 'POST',
+    headers: buildRunBrokerHeaders({
+      runBrokerKey: config.runBrokerKey,
+      ownerOpenId,
+      agentId: options.agentId,
+    }),
+    body: JSON.stringify({
+      profile_name: options.profile,
+      ...(options.agentId ? { agent_id: options.agentId } : {}),
+      session_id: options.sessionId,
+      command: options.command,
+    }),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`Run broker session command ${res.status}: ${text}`)
+  }
+  return await res.json() as BrokerSessionCommandResult
+}
+
+export async function runBrokerGoalEvaluate(options: {
+  socket: Socket
+  profile: string
+  agentId?: string
+  sessionId: string
+  finalResponse: string
+}): Promise<BrokerGoalEvaluateResult> {
+  const brokerUrl = config.runBrokerUrl
+  if (!brokerUrl) throw new Error('HERMES_RUN_BROKER_URL is required when HERMES_WEBUI_RUN_BROKER=1')
+  const ownerOpenId = (options.socket.data?.user?.openid as string | undefined)?.trim()
+  if (!ownerOpenId) throw new Error('owner identity is required for goal evaluation')
+  const res = await fetch(`${brokerUrl}/api/run-broker/goals/evaluate`, {
+    method: 'POST',
+    headers: buildRunBrokerHeaders({
+      runBrokerKey: config.runBrokerKey,
+      ownerOpenId,
+      agentId: options.agentId,
+    }),
+    body: JSON.stringify({
+      profile_name: options.profile,
+      ...(options.agentId ? { agent_id: options.agentId } : {}),
+      session_id: options.sessionId,
+      final_response: options.finalResponse,
+    }),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`Run broker goal evaluate ${res.status}: ${text}`)
+  }
+  return await res.json() as BrokerGoalEvaluateResult
+}
+
 export type HandleBrokerRunContext = {
   sessionMap: Map<string, SessionState>
   getOrCreateSession: (sessionId: string) => SessionState
   getResponseRunState: (state: SessionState, runMarker?: string) => ResponseRunState
-  markCompleted: (socket: Socket, sessionId: string, info: { event: string; run_id?: string }) => Promise<void>
+  markCompleted: (socket: Socket, sessionId: string, info: { event: string; run_id?: string; final_response?: string }) => Promise<void>
   dequeueNextQueuedRun: (socket: Socket, sessionId: string) => void
   buildInput: (input: string | ContentBlock[], profile: string) => Promise<any>
 }
@@ -601,11 +710,13 @@ export async function handleBrokerRun(
   }
 
   const ownerOpenId = (socket.data?.user?.openid as string | undefined)?.trim()
+  const agentId = (socket.data?.agentId as string | undefined)?.trim()
   const sessionRow = session_id ? getSession(session_id) : null
   const request = await buildRunBrokerRequest({
     input,
     profile,
     ownerOpenId,
+    agentId,
     sessionId: session_id,
     model,
     provider,
@@ -634,6 +745,7 @@ export async function handleBrokerRun(
       headers: buildRunBrokerHeaders({
         runBrokerKey: config.runBrokerKey,
         ownerOpenId,
+        agentId,
       }),
       body: JSON.stringify(request),
       signal: abortController.signal,
@@ -790,18 +902,23 @@ export async function handleBrokerRun(
         const eventRunId = mapped.payload.run_id || mapped.payload.response_id
         if (eventRunId) runId = String(eventRunId)
         const queueLen = session_id ? context.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+        const output = mapped.payload.output || finalText
         if (mapped.event === 'run.failed') {
           appendBrokerFailureMessage(
             context,
             session_id,
             runMarker,
-            mapped.payload.error || mapped.payload.output || 'Run broker failed',
+            mapped.payload.error || output || 'Run broker failed',
           )
         }
-        if (session_id) await context.markCompleted(socket, session_id, { event: mapped.event, run_id: runId })
+        if (session_id) await context.markCompleted(socket, session_id, {
+          event: mapped.event,
+          run_id: runId,
+          final_response: output,
+        })
         emit(mapped.event, {
           ...mapped.payload,
-          output: mapped.payload.output || finalText,
+          output,
           queue_remaining: queueLen,
         })
         if (session_id && queueLen > 0) context.dequeueNextQueuedRun(socket, session_id)

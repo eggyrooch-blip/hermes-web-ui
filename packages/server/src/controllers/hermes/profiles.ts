@@ -140,6 +140,7 @@ export async function list(ctx: any) {
           ...(meta.displayLabel ? { displayLabel: meta.displayLabel } : {}),
           ...(meta.kind ? { kind: meta.kind } : {}),
           ...(meta.ownerOpenId ? { ownerOpenId: meta.ownerOpenId } : {}),
+          ...(meta.agentId ? { agentId: meta.agentId } : {}),
         })),
       }
       return

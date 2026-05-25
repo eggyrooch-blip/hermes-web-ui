@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 import { config } from '../../packages/server/src/config'
 import { listSlashCommands } from '../../packages/server/src/controllers/hermes/slash'
@@ -28,6 +31,36 @@ describe('slash controller', () => {
   })
 
   it('proxies chat-plane slash registry to the owner-scoped run broker', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'slash-controller-agent-id-'))
+    const dbPath = join(dir, 'multitenancy.db')
+    const originalMultitenancyDb = config.multitenancyDb
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(dbPath)
+    try {
+      db.exec(`
+        CREATE TABLE multitenancy_routing (
+          user_id TEXT PRIMARY KEY NOT NULL,
+          profile_name TEXT NOT NULL,
+          open_id TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1,
+          owner_open_id TEXT,
+          provenance TEXT DEFAULT 'sync',
+          agent_id TEXT
+        );
+      `)
+      db.prepare('INSERT INTO multitenancy_routing (user_id, profile_name, open_id, active, owner_open_id, provenance, agent_id) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+        'agent-owned',
+        'selected_profile',
+        'agent-owned',
+        1,
+        'ou_owner',
+        'webui-agent',
+        'agent-owned',
+      )
+    } finally {
+      db.close()
+    }
+    config.multitenancyDb = dbPath
     const fetchMock = vi.fn(async (url: string, init: RequestInit) => new Response(JSON.stringify({
       ok: true,
       profile_name: 'owner_sync_profile',
@@ -49,50 +82,56 @@ describe('slash controller', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const c = ctx({
-      query: { profile: 'spoofed' },
-      search: '?profile=spoofed&token=secret',
+      query: { profile: 'selected_profile' },
+      search: '?profile=selected_profile&token=secret',
     })
     await listSlashCommands(c)
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:8766/api/run-broker/slash/commands',
-      expect.objectContaining({
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: 'Bearer broker-secret',
-          'X-Hermes-Owner-Open-Id': 'ou_owner',
-        },
-        body: undefined,
-      }),
-    )
-    expect(c.body).toEqual({
-      ok: true,
-      commands: [
-        {
-          name: 'clear',
-          slash: '/clear',
-          title: 'Clear conversation',
-          description: 'Clear the current chat transcript.',
-          source: 'local',
-          type: 'local',
-          category: 'Chat',
-        },
-        {
-          name: 'kep-prd-analysis',
-          slash: '/kep-prd-analysis',
-          title: 'KEP PRD Analysis',
-          description: 'PRD analysis helper',
-          source: 'skill',
-          type: 'skill',
-          category: 'Keep',
-        },
-      ],
-      broker: {
+    try {
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://127.0.0.1:8766/api/run-broker/slash/commands?profile_name=selected_profile&agent_id=agent-owned',
+        expect.objectContaining({
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer broker-secret',
+            'X-Hermes-Owner-Open-Id': 'ou_owner',
+            'X-Hermes-Agent-Id': 'agent-owned',
+          },
+          body: undefined,
+        }),
+      )
+      expect(c.body).toEqual({
         ok: true,
-        profile_name: 'owner_sync_profile',
-      },
-    })
+        commands: [
+          {
+            name: 'clear',
+            slash: '/clear',
+            title: 'Clear conversation',
+            description: 'Clear the current chat transcript.',
+            source: 'local',
+            type: 'local',
+            category: 'Chat',
+          },
+          {
+            name: 'kep-prd-analysis',
+            slash: '/kep-prd-analysis',
+            title: 'KEP PRD Analysis',
+            description: 'PRD analysis helper',
+            source: 'skill',
+            type: 'skill',
+            category: 'Keep',
+          },
+        ],
+        broker: {
+          ok: true,
+          profile_name: 'owner_sync_profile',
+        },
+      })
+    } finally {
+      config.multitenancyDb = originalMultitenancyDb
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('returns local commands with an unavailable marker when broker is not configured', async () => {

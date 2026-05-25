@@ -9,6 +9,7 @@ export interface HermesProfile {
   displayLabel?: string
   kind?: string
   ownerOpenId?: string
+  agentId?: string
   avatar?: ProfileAvatar | null
 }
 

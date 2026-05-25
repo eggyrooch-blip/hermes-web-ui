@@ -96,16 +96,18 @@ describe('ChatRunSocket gateway lifecycle', () => {
           open_id TEXT NOT NULL,
           active INTEGER NOT NULL DEFAULT 1,
           owner_open_id TEXT,
-          provenance TEXT DEFAULT 'sync'
+          provenance TEXT DEFAULT 'sync',
+          agent_id TEXT
         );
       `)
-      db.prepare('INSERT INTO multitenancy_routing (user_id, profile_name, open_id, active, owner_open_id, provenance) VALUES (?, ?, ?, ?, ?, ?)').run(
+      db.prepare('INSERT INTO multitenancy_routing (user_id, profile_name, open_id, active, owner_open_id, provenance, agent_id) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
         'group:alpha',
         'feishu_group_alpha',
         '',
         1,
         'ou_test',
         'group',
+        'agent-group-alpha',
       )
     } finally {
       db.close()
@@ -155,6 +157,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
     await runHandler({ input: 'hello selected profile' })
 
     expect(handleRun).toHaveBeenCalledWith(socket, { input: 'hello selected profile' }, 'feishu_group_alpha')
+    expect(socket.data.agentId).toBe('agent-group-alpha')
     await rm(dir, { recursive: true, force: true })
   })
 
@@ -1038,7 +1041,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
     chatRun.init()
     const onConnection = namespace.on.mock.calls.find(([event]) => event === 'connection')?.[1]
     const socket = {
-      data: { user: { openid: 'ou_owner' } },
+      data: { user: { openid: 'ou_owner' }, agentId: 'agent-owned' },
       handshake: { query: { profile: 'user_a' }, auth: {} },
       on: vi.fn(),
       emit: vi.fn(),
@@ -1061,9 +1064,11 @@ describe('ChatRunSocket gateway lifecycle', () => {
         headers: expect.objectContaining({
           Authorization: 'Bearer broker-secret',
           'X-Hermes-Owner-Open-Id': 'ou_owner',
+          'X-Hermes-Agent-Id': 'agent-owned',
         }),
         body: JSON.stringify({
           profile_name: 'user_a',
+          agent_id: 'agent-owned',
           session_id: 'session-1',
           response: 'brief',
         }),
@@ -1075,4 +1080,373 @@ describe('ChatRunSocket gateway lifecycle', () => {
       response: 'brief',
     }))
   })
+
+  it('routes broker-compatible session history commands without starting an agent run', async () => {
+    vi.resetModules()
+    vi.stubEnv('HERMES_WEBUI_RUN_BROKER', '1')
+    vi.stubEnv('HERMES_RUN_BROKER_URL', 'http://127.0.0.1:8766')
+    vi.stubEnv('HERMES_RUN_BROKER_KEY', 'broker-secret')
+    const { ChatRunSocket: BrokerChatRunSocket } = await import('../../packages/server/src/services/hermes/chat-run-socket')
+    const { io, room } = createSocketServer()
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/api/run-broker/session-commands')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          handled: true,
+          profile_name: 'user_a',
+          session_id: 'session-history-action',
+          command: 'reset',
+          type: 'session_history',
+          action: 'reset',
+          message: '会话历史已重置 ✅',
+          history_count: 0,
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      throw new Error(`unexpected fetch ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const chatRun = new BrokerChatRunSocket(io as any, {
+      detectStatus: vi.fn(),
+      startApiOnly: vi.fn(),
+      getUpstream: vi.fn(),
+      getApiKey: vi.fn(),
+    })
+    const socket = {
+      data: { user: { openid: 'ou_owner' }, agentId: 'agent-owned' },
+      connected: true,
+      emit: vi.fn(),
+      join: vi.fn(),
+    }
+
+    await (chatRun as any).handleRun(socket, {
+      input: '/reset',
+      session_id: 'session-history-action',
+    }, 'user_a')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8766/api/run-broker/session-commands',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer broker-secret',
+          'X-Hermes-Owner-Open-Id': 'ou_owner',
+          'X-Hermes-Agent-Id': 'agent-owned',
+        }),
+        body: JSON.stringify({
+          profile_name: 'user_a',
+          agent_id: 'agent-owned',
+          session_id: 'session-history-action',
+          command: '/reset',
+        }),
+      }),
+    )
+    expect(socket.join).toHaveBeenCalledWith('session:session-history-action')
+    expect(room.emit).toHaveBeenCalledWith('session.command', expect.objectContaining({
+      command: 'reset',
+      action: 'reset',
+      type: 'session_history',
+      started: false,
+      historyCount: 0,
+    }))
+    const state = (chatRun as any).sessionMap.get('session-history-action')
+    expect(state.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'command', content: '/reset' }),
+      expect.objectContaining({ role: 'command', content: '会话历史已重置 ✅' }),
+    ]))
+    expect(state.messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'user', content: '/reset' }),
+    ]))
+  })
+
+  it('routes /plan through the broker command endpoint and starts the returned prompt hidden', async () => {
+    vi.resetModules()
+    vi.stubEnv('HERMES_WEBUI_RUN_BROKER', '1')
+    vi.stubEnv('HERMES_RUN_BROKER_URL', 'http://127.0.0.1:8766')
+    vi.stubEnv('HERMES_RUN_BROKER_KEY', 'broker-secret')
+    const { ChatRunSocket: BrokerChatRunSocket } = await import('../../packages/server/src/services/hermes/chat-run-socket')
+    const { io, room } = createSocketServer()
+    const encoder = new TextEncoder()
+    const planPrompt = 'PLAN BODY\n\nUser request: build the feature'
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/api/run-broker/session-commands')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          handled: true,
+          profile_name: 'user_a',
+          session_id: 'session-plan',
+          command: 'plan',
+          type: 'skill',
+          action: 'plan',
+          message: planPrompt,
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.endsWith('/api/run-broker/runs')) {
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"kind":"content","text":"planned","payload":{"run_id":"run-plan"}}\n\n'))
+            controller.enqueue(encoder.encode('data: {"kind":"done","payload":{"run_id":"run-plan"}}\n\n'))
+            controller.close()
+          },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      }
+      if (url.endsWith('/api/run-broker/goals/evaluate')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          handled: true,
+          active: false,
+          should_continue: false,
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      throw new Error(`unexpected fetch ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const chatRun = new BrokerChatRunSocket(io as any, {
+      detectStatus: vi.fn(),
+      startApiOnly: vi.fn(),
+      getUpstream: vi.fn(),
+      getApiKey: vi.fn(),
+    })
+    const socket = {
+      data: { user: { openid: 'ou_owner' }, agentId: 'agent-owned' },
+      connected: true,
+      emit: vi.fn(),
+      join: vi.fn(),
+    }
+
+    await (chatRun as any).handleRun(socket, {
+      input: '/plan build the feature',
+      session_id: 'session-plan',
+    }, 'user_a')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8766/api/run-broker/session-commands',
+      expect.objectContaining({
+        body: JSON.stringify({
+          profile_name: 'user_a',
+          agent_id: 'agent-owned',
+          session_id: 'session-plan',
+          command: '/plan build the feature',
+        }),
+      }),
+    )
+    const runCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/api/run-broker/runs'))
+    expect(runCall).toBeTruthy()
+    const runBody = JSON.parse(runCall?.[1]?.body as string)
+    expect(runCall?.[1]?.headers).toEqual(expect.objectContaining({
+      'X-Hermes-Agent-Id': 'agent-owned',
+    }))
+    expect(runBody.agent_id).toBe('agent-owned')
+    expect(runBody.content).toBe(planPrompt)
+    expect(runBody.messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'user', content: planPrompt }),
+    ]))
+    expect(room.emit).toHaveBeenCalledWith('session.command', expect.objectContaining({
+      command: 'plan',
+      action: 'plan',
+      started: true,
+      message: 'Plan started.',
+    }))
+    expect(room.emit).toHaveBeenCalledWith('run.completed', expect.objectContaining({
+      output: 'planned',
+    }))
+    const state = (chatRun as any).sessionMap.get('session-plan')
+    expect(state.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'command', content: '/plan build the feature' }),
+      expect.objectContaining({ role: 'command', content: 'Plan started.' }),
+      expect.objectContaining({ role: 'assistant', content: 'planned' }),
+    ]))
+    expect(state.messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'user', content: '/plan build the feature' }),
+      expect.objectContaining({ role: 'user', content: planPrompt }),
+      expect.objectContaining({ role: 'command', content: planPrompt }),
+    ]))
+  })
+
+  it('routes /goal through the broker command endpoint and starts the kickoff prompt hidden', async () => {
+    vi.resetModules()
+    vi.stubEnv('HERMES_WEBUI_RUN_BROKER', '1')
+    vi.stubEnv('HERMES_RUN_BROKER_URL', 'http://127.0.0.1:8766')
+    vi.stubEnv('HERMES_RUN_BROKER_KEY', 'broker-secret')
+    const { ChatRunSocket: BrokerChatRunSocket } = await import('../../packages/server/src/services/hermes/chat-run-socket')
+    const { io, room } = createSocketServer()
+    const encoder = new TextEncoder()
+    const goalPrompt = 'GOAL KICKOFF BODY\n\nTarget: ship the feature'
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/api/run-broker/session-commands')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          handled: true,
+          profile_name: 'user_a',
+          session_id: 'session-goal',
+          command: 'goal',
+          type: 'goal',
+          action: 'set',
+          message: 'Goal started.',
+          kickoff_prompt: goalPrompt,
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.endsWith('/api/run-broker/runs')) {
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"kind":"content","text":"goal running","payload":{"run_id":"run-goal"}}\n\n'))
+            controller.enqueue(encoder.encode('data: {"kind":"done","payload":{"run_id":"run-goal"}}\n\n'))
+            controller.close()
+          },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      }
+      if (url.endsWith('/api/run-broker/goals/evaluate')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          handled: true,
+          active: false,
+          should_continue: false,
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      throw new Error(`unexpected fetch ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const chatRun = new BrokerChatRunSocket(io as any, {
+      detectStatus: vi.fn(),
+      startApiOnly: vi.fn(),
+      getUpstream: vi.fn(),
+      getApiKey: vi.fn(),
+    })
+    const socket = {
+      data: { user: { openid: 'ou_owner' }, agentId: 'agent-owned' },
+      connected: true,
+      emit: vi.fn(),
+      join: vi.fn(),
+    }
+
+    await (chatRun as any).handleRun(socket, {
+      input: '/goal ship the feature',
+      session_id: 'session-goal',
+    }, 'user_a')
+
+    const commandCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/api/run-broker/session-commands'))
+    expect(commandCall?.[1]?.headers).toEqual(expect.objectContaining({
+      'X-Hermes-Agent-Id': 'agent-owned',
+    }))
+    expect(JSON.parse(commandCall?.[1]?.body as string)).toEqual({
+      profile_name: 'user_a',
+      agent_id: 'agent-owned',
+      session_id: 'session-goal',
+      command: '/goal ship the feature',
+    })
+    const runCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/api/run-broker/runs'))
+    const runBody = JSON.parse(runCall?.[1]?.body as string)
+    expect(runBody.content).toBe(goalPrompt)
+    expect(runBody.agent_id).toBe('agent-owned')
+    expect(runBody.messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'user', content: goalPrompt }),
+    ]))
+    expect(room.emit).toHaveBeenCalledWith('session.command', expect.objectContaining({
+      command: 'goal',
+      action: 'set',
+      started: true,
+      message: 'Goal started.',
+    }))
+    const state = (chatRun as any).sessionMap.get('session-goal')
+    expect(state.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'command', content: '/goal ship the feature' }),
+      expect.objectContaining({ role: 'command', content: 'Goal started.' }),
+      expect.objectContaining({ role: 'assistant', content: 'goal running' }),
+    ]))
+    expect(state.messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'user', content: '/goal ship the feature' }),
+      expect.objectContaining({ role: 'user', content: goalPrompt }),
+      expect.objectContaining({ role: 'command', content: goalPrompt }),
+    ]))
+  })
+
+  it('starts broker goal continuations hidden after goal evaluation', async () => {
+    vi.resetModules()
+    vi.stubEnv('HERMES_WEBUI_RUN_BROKER', '1')
+    vi.stubEnv('HERMES_RUN_BROKER_URL', 'http://127.0.0.1:8766')
+    vi.stubEnv('HERMES_RUN_BROKER_KEY', 'broker-secret')
+    const { ChatRunSocket: BrokerChatRunSocket } = await import('../../packages/server/src/services/hermes/chat-run-socket')
+    const { io, room } = createSocketServer()
+    const continuation = 'GOAL CONTINUATION BODY'
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/api/run-broker/goals/evaluate')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          handled: true,
+          active: true,
+          should_continue: true,
+          continuation_prompt: continuation,
+          message: 'Continuing goal.',
+          verdict: 'continue',
+          reason: 'more work remains',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      throw new Error(`unexpected fetch ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const chatRun = new BrokerChatRunSocket(io as any, {
+      detectStatus: vi.fn(),
+      startApiOnly: vi.fn(),
+      getUpstream: vi.fn(),
+      getApiKey: vi.fn(),
+    })
+    const handleRun = vi.spyOn(chatRun as any, 'handleRun').mockResolvedValue(undefined)
+    const socket = {
+      data: { user: { openid: 'ou_owner' }, agentId: 'agent-owned' },
+      connected: true,
+      emit: vi.fn(),
+      join: vi.fn(),
+    }
+
+    await (chatRun as any).maybeEvaluateGoalAfterRun(socket, 'session-goal-continue', 'user_a', 'final answer')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8766/api/run-broker/goals/evaluate',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer broker-secret',
+          'X-Hermes-Owner-Open-Id': 'ou_owner',
+          'X-Hermes-Agent-Id': 'agent-owned',
+        }),
+        body: JSON.stringify({
+          profile_name: 'user_a',
+          agent_id: 'agent-owned',
+          session_id: 'session-goal-continue',
+          final_response: 'final answer',
+        }),
+      }),
+    )
+    expect(room.emit).toHaveBeenCalledWith('session.command', expect.objectContaining({
+      command: 'goal',
+      action: 'continue',
+      started: true,
+      message: 'Continuing goal.',
+    }))
+    expect(handleRun).toHaveBeenCalledWith(socket, {
+      input: continuation,
+      __skipSessionCommand: true,
+      __hideUserMessage: true,
+      session_id: 'session-goal-continue',
+    }, 'user_a')
+    const state = (chatRun as any).sessionMap.get('session-goal-continue')
+    expect(state.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'command', content: 'Continuing goal.' }),
+    ]))
+    expect(state.messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'user', content: continuation }),
+      expect.objectContaining({ role: 'command', content: continuation }),
+    ]))
+  })
+
 })

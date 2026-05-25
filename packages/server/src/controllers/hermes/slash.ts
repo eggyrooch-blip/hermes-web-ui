@@ -1,6 +1,7 @@
 import type { Context } from 'koa'
 import { config } from '../../config'
 import { isChatPlaneRequest, type WebUser } from '../../services/request-context'
+import { resolveOwnedProfileAgentId } from '../../services/hermes/agent-ownership'
 
 export interface SlashCommand {
   name: string
@@ -30,14 +31,33 @@ function chatPlaneOpenId(ctx: Context): string | undefined {
   return user?.openid?.trim() || undefined
 }
 
+function requestedProfile(ctx: Context): string {
+  return String(ctx.query?.profile_name || ctx.query?.profile || '').trim()
+}
+
+function brokerAgentId(ctx: Context, profile: string): string | undefined {
+  const openid = chatPlaneOpenId(ctx)
+  if (openid && profile) return resolveOwnedProfileAgentId(openid, profile)
+  return String(ctx.query?.agent_id || ctx.get?.('x-hermes-agent-id') || '').trim() || undefined
+}
+
 function brokerHeaders(ctx: Context): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
   const openid = chatPlaneOpenId(ctx)
   if (openid) headers['X-Hermes-Owner-Open-Id'] = openid
-  const agentId = String(ctx.query?.agent_id || ctx.get?.('x-hermes-agent-id') || '').trim()
+  const agentId = brokerAgentId(ctx, requestedProfile(ctx))
   if (agentId) headers['X-Hermes-Agent-Id'] = agentId
   return headers
+}
+
+function brokerSlashUrl(ctx: Context): string {
+  const url = new URL('/api/run-broker/slash/commands', config.runBrokerUrl)
+  const profile = requestedProfile(ctx)
+  if (profile) url.searchParams.set('profile_name', profile)
+  const agentId = brokerAgentId(ctx, profile)
+  if (agentId) url.searchParams.set('agent_id', agentId)
+  return url.toString()
 }
 
 async function readUpstreamError(res: Response): Promise<string> {
@@ -82,7 +102,7 @@ export async function listSlashCommands(ctx: Context): Promise<void> {
 
   let res: Response
   try {
-    res = await fetch(`${config.runBrokerUrl}/api/run-broker/slash/commands`, {
+    res = await fetch(brokerSlashUrl(ctx), {
       method: 'GET',
       headers: brokerHeaders(ctx),
       body: undefined,
