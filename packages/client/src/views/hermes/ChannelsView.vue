@@ -4,12 +4,18 @@ import { NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import PlatformSettings from '@/components/hermes/settings/PlatformSettings.vue'
+import { ensureProfileSelection } from '@/utils/hermes/profile-ready'
 
 const settingsStore = useSettingsStore()
 const { t } = useI18n()
 
+async function loadSettings() {
+  await ensureProfileSelection()
+  await settingsStore.fetchSettings()
+}
+
 onMounted(() => {
-  settingsStore.fetchSettings()
+  void loadSettings()
 })
 </script>
 

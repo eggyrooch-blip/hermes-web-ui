@@ -19,6 +19,14 @@ function createSocketServer() {
   return { io, namespace, room }
 }
 
+async function waitFor(condition: () => boolean) {
+  for (let i = 0; i < 100; i += 1) {
+    if (condition()) return
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 10))
+  }
+  throw new Error('timed out waiting for condition')
+}
+
 describe('ChatRunSocket gateway lifecycle', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -375,6 +383,65 @@ describe('ChatRunSocket gateway lifecycle', () => {
     }))
   })
 
+  it('clears stale replay events when starting a broker-backed run', async () => {
+    vi.resetModules()
+    vi.stubEnv('HERMES_WEBUI_RUN_BROKER', '1')
+    vi.stubEnv('HERMES_RUN_BROKER_URL', 'http://127.0.0.1:8766')
+    const { ChatRunSocket: BrokerChatRunSocket } = await import('../../packages/server/src/services/hermes/chat-run-socket')
+
+    const { io } = createSocketServer()
+    const gatewayManager = {
+      detectStatus: vi.fn(),
+      startApiOnly: vi.fn(),
+      getUpstream: vi.fn(() => {
+        throw new Error('profile apiserver should not be used')
+      }),
+      getApiKey: vi.fn(() => null),
+    }
+    const encoder = new TextEncoder()
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined
+    const fetchMock = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const chatRun = new BrokerChatRunSocket(io as any, gatewayManager)
+    ;(chatRun as any).sessionMap.set('session-stale-events', {
+      messages: [],
+      isWorking: false,
+      events: [
+        { event: 'compression.started', data: { event: 'compression.started', token_count: 1000 } },
+      ],
+      queue: [],
+      profile: 'sunke',
+    })
+    const socket = {
+      data: { user: { openid: 'ou_webui_user' } },
+      connected: true,
+      emit: vi.fn(),
+      join: vi.fn(),
+    }
+
+    const runPromise = (chatRun as any).handleRun(socket, {
+      input: 'next broker run',
+      session_id: 'session-stale-events',
+    }, 'sunke')
+
+    await waitFor(() => fetchMock.mock.calls.length > 0)
+    const state = (chatRun as any).sessionMap.get('session-stale-events')
+    expect(state.isWorking).toBe(true)
+    expect(state.events).toEqual([])
+
+    streamController!.enqueue(encoder.encode('data: {"kind":"done","payload":{"run_id":"run-stale-events"}}\n\n'))
+    streamController!.close()
+    await runPromise
+  })
+
   it('persists a visible assistant error when the broker run fails before streaming', async () => {
     vi.resetModules()
     vi.stubEnv('HERMES_WEBUI_RUN_BROKER', '1')
@@ -422,6 +489,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
       session_id: sessionId,
       content: expect.stringContaining('Run broker 503'),
     }))
+    await waitFor(() => !!getSessionDetail(sessionId)?.messages?.length)
     expect(getSessionDetail(sessionId)?.messages).toEqual([
       expect.objectContaining({ role: 'user' }),
       expect.objectContaining({
@@ -480,6 +548,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
       session_id: sessionId,
     }, 'baiguannan')
 
+    await waitFor(() => !!getSessionDetail(sessionId)?.messages?.length)
     expect(getSessionDetail(sessionId)?.messages).toEqual([
       expect.objectContaining({ role: 'user' }),
       expect.objectContaining({
@@ -536,6 +605,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
       session_id: sessionId,
     }, 'baiguannan')
 
+    await waitFor(() => !!getSessionDetail(sessionId)?.messages?.length)
     const assistantMessages = getSessionDetail(sessionId)?.messages.filter(message => message.role === 'assistant')
     expect(assistantMessages).toHaveLength(1)
     expect(assistantMessages?.[0]).toEqual(expect.objectContaining({
@@ -621,6 +691,42 @@ describe('ChatRunSocket gateway lifecycle', () => {
         output: 'created doc',
         duration: 1.25,
         is_error: false,
+      }),
+    }))
+
+    expect(mapRunBrokerFrameForChat({
+      kind: 'clarify_required',
+      run_id: 'run-1',
+      payload: {
+        clarify_id: 'clarify-1',
+        question: 'Which report style?',
+        choices: ['brief', 'detailed'],
+      },
+    })).toEqual(expect.objectContaining({
+      type: 'emit',
+      event: 'clarify.requested',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: expect.objectContaining({
+        clarify_id: 'clarify-1',
+        question: 'Which report style?',
+        choices: ['brief', 'detailed'],
+      }),
+    }))
+
+    expect(mapRunBrokerFrameForChat({
+      kind: 'clarify_resolved',
+      run_id: 'run-1',
+      payload: {
+        clarify_id: 'clarify-1',
+        response: 'brief',
+      },
+    })).toEqual(expect.objectContaining({
+      type: 'emit',
+      event: 'clarify.resolved',
+      payload: expect.objectContaining({
+        clarify_id: 'clarify-1',
+        response: 'brief',
       }),
     }))
   })
@@ -912,5 +1018,64 @@ describe('ChatRunSocket gateway lifecycle', () => {
       provider: 'openai',
       instructions: 'be brief',
     }, 'sunke', true)
+  })
+
+  it('posts clarify responses to the owner-scoped run broker endpoint', async () => {
+    vi.resetModules()
+    vi.stubEnv('HERMES_RUN_BROKER_URL', 'http://127.0.0.1:8766')
+    vi.stubEnv('HERMES_RUN_BROKER_KEY', 'broker-secret')
+    const { ChatRunSocket: BrokerChatRunSocket } = await import('../../packages/server/src/services/hermes/chat-run-socket')
+    const { io, namespace, room } = createSocketServer()
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const chatRun = new BrokerChatRunSocket(io as any, {
+      detectStatus: vi.fn(),
+      startApiOnly: vi.fn(),
+      getUpstream: vi.fn(),
+      getApiKey: vi.fn(),
+    })
+    chatRun.init()
+    const onConnection = namespace.on.mock.calls.find(([event]) => event === 'connection')?.[1]
+    const socket = {
+      data: { user: { openid: 'ou_owner' } },
+      handshake: { query: { profile: 'sunke' }, auth: {} },
+      on: vi.fn(),
+      emit: vi.fn(),
+      join: vi.fn(),
+      connected: true,
+    }
+    onConnection(socket)
+    const clarifyHandler = socket.on.mock.calls.find(([event]) => event === 'clarify.respond')?.[1]
+
+    await clarifyHandler({
+      session_id: 'session-1',
+      clarify_id: 'clarify-1',
+      response: 'brief',
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8766/api/run-broker/clarify/clarify-1/respond',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer broker-secret',
+          'X-Hermes-Owner-Open-Id': 'ou_owner',
+        }),
+        body: JSON.stringify({
+          profile_name: 'sunke',
+          session_id: 'session-1',
+          response: 'brief',
+        }),
+      }),
+    )
+    expect(room.emit).toHaveBeenCalledWith('clarify.resolved', expect.objectContaining({
+      session_id: 'session-1',
+      clarify_id: 'clarify-1',
+      response: 'brief',
+    }))
   })
 })

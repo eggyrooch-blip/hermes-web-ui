@@ -441,6 +441,44 @@ export function mapRunBrokerFrameForChat(parsed: any, frameEvent?: string): RunB
     }
   }
 
+  if (brokerKind === 'clarify_required' || brokerKind === 'clarify.requested') {
+    const clarifyId = parsed?.clarify_id || payload.clarify_id
+    if (!clarifyId) return { type: 'ignore' }
+    return {
+      type: 'emit',
+      event: 'clarify.requested',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'clarify.requested',
+        run_id: runId,
+        response_id: responseId,
+        clarify_id: String(clarifyId),
+        question: String(parsed?.question || payload.question || ''),
+        choices: Array.isArray(parsed?.choices) ? parsed.choices : (Array.isArray(payload.choices) ? payload.choices : []),
+      },
+    }
+  }
+
+  if (brokerKind === 'clarify_resolved' || brokerKind === 'clarify.resolved') {
+    const clarifyId = parsed?.clarify_id || payload.clarify_id
+    if (!clarifyId) return { type: 'ignore' }
+    return {
+      type: 'emit',
+      event: 'clarify.resolved',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'clarify.resolved',
+        run_id: runId,
+        response_id: responseId,
+        clarify_id: String(clarifyId),
+        response: parsed?.response ?? payload.response,
+        timed_out: parsed?.timed_out ?? payload.timed_out,
+      },
+    }
+  }
+
   if (brokerKind === 'done' || brokerKind === 'run.completed') {
     return {
       type: 'terminal',
@@ -471,6 +509,35 @@ export function mapRunBrokerFrameForChat(parsed: any, frameEvent?: string): RunB
   }
 
   return { type: 'ignore' }
+}
+
+export async function respondToBrokerClarify(options: {
+  socket: Socket
+  profile: string
+  sessionId: string
+  clarifyId: string
+  response: string
+}): Promise<void> {
+  const brokerUrl = config.runBrokerUrl
+  if (!brokerUrl) throw new Error('HERMES_RUN_BROKER_URL is required when HERMES_WEBUI_RUN_BROKER=1')
+  const ownerOpenId = (options.socket.data?.user?.openid as string | undefined)?.trim()
+  if (!ownerOpenId) throw new Error('owner identity is required for clarify response')
+  const res = await fetch(`${brokerUrl}/api/run-broker/clarify/${encodeURIComponent(options.clarifyId)}/respond`, {
+    method: 'POST',
+    headers: buildRunBrokerHeaders({
+      runBrokerKey: config.runBrokerKey,
+      ownerOpenId,
+    }),
+    body: JSON.stringify({
+      profile_name: options.profile,
+      session_id: options.sessionId,
+      response: options.response,
+    }),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`Run broker clarify ${res.status}: ${text}`)
+  }
 }
 
 export type HandleBrokerRunContext = {
@@ -555,6 +622,7 @@ export async function handleBrokerRun(
   if (session_id) {
     const state = context.getOrCreateSession(session_id)
     state.isWorking = true
+    state.events = []
     state.runId = undefined
     state.abortController = abortController
     context.getResponseRunState(state, runMarker)

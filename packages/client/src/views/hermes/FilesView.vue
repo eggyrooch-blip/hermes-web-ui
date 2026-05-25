@@ -4,6 +4,7 @@ import { useFilesStore } from '@/stores/hermes/files'
 import { isUserMode } from '@/api/client'
 import { useI18n } from 'vue-i18n'
 import { NButton } from 'naive-ui'
+import { ensureProfileSelection } from '@/utils/hermes/profile-ready'
 import FileTree from '@/components/hermes/files/FileTree.vue'
 import FileBreadcrumb from '@/components/hermes/files/FileBreadcrumb.vue'
 import FileToolbar from '@/components/hermes/files/FileToolbar.vue'
@@ -51,8 +52,13 @@ function handleRename(entry: FileEntry) {
   showRenameModal.value = true
 }
 
+async function loadRoot() {
+  await ensureProfileSelection()
+  await filesStore.fetchEntries('')
+}
+
 onMounted(() => {
-  filesStore.fetchEntries('')
+  void loadRoot()
 })
 </script>
 

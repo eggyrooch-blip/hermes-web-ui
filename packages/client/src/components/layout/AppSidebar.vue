@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive } from "vue";
+import { computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useAppStore } from "@/stores/hermes/app";
@@ -11,6 +11,8 @@ import ProfileSelector from "./ProfileSelector.vue";
 import LanguageSwitch from "./LanguageSwitch.vue";
 import ThemeSwitch from "./ThemeSwitch.vue";
 import { useSessionSearch } from '@/composables/useSessionSearch'
+import { usePersistentRecord } from '@/composables/usePersistentRecord'
+import RouteLinkItem from '@/components/common/RouteLinkItem.vue'
 
 const { t } = useI18n();
 const route = useRoute();
@@ -27,7 +29,7 @@ const displayInitial = computed(() => (displayName.value || 'H').trim().slice(0,
 const showUserModeChrome = computed(() => isUserMode());
 const showAdminSurfaces = computed(() => !showUserModeChrome.value);
 const gatewayStandby = computed(() => showUserModeChrome.value && !appStore.connected);
-const collapsedGroups = reactive<Record<string, boolean>>({});
+const { record: collapsedGroups, persist: persistCollapsedGroups } = usePersistentRecord('hermes.sidebar.collapsedGroups');
 
 type SidebarGroupKey = "Conversation" | "Agent" | "Monitoring" | "System";
 
@@ -37,14 +39,15 @@ function groupLabel(key: SidebarGroupKey) {
 
 function toggleGroup(key: string) {
   collapsedGroups[key] = !collapsedGroups[key];
+  persistCollapsedGroups();
 }
 
 function isGroupCollapsed(key: string) {
   return !!collapsedGroups[key];
 }
 
-function handleNav(key: string) {
-  router.push({ name: key });
+function isNavActive(...names: string[]) {
+  return names.includes(selectedKey.value);
 }
 
 async function handleLogout() {
@@ -78,11 +81,11 @@ onMounted(async () => {
 
 <template>
   <aside class="sidebar" :class="{ open: appStore.sidebarOpen, collapsed: appStore.sidebarCollapsed, 'user-mode': showUserModeChrome }">
-    <div class="sidebar-logo" @click="router.push('/hermes/chat')">
+    <RouteLinkItem class="sidebar-logo" :to="{ name: 'hermes.chat' }">
       <img :src="logoPath" alt="Hermes" class="logo-img" />
       <span class="logo-text">Hermes</span>
       <!-- <video class="logo-dance" :src="isDark ? danceVideoDark : danceVideoLight" autoplay loop muted playsinline /> -->
-    </div>
+    </RouteLinkItem>
 
     <button class="collapse-btn" @click="appStore.toggleSidebarCollapsed()" :title="appStore.sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -101,20 +104,20 @@ onMounted(async () => {
           </svg>
         </div>
         <div v-show="!isGroupCollapsed('conversation')" class="nav-group-items">
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.chat' }" @click="handleNav('hermes.chat')">
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.chat' }" :active="isNavActive('hermes.chat', 'hermes.session')">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
             </svg>
             <span>{{ t("sidebar.chat") }}</span>
-          </button>
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.history' }" @click="handleNav('hermes.history')">
+          </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.history' }" :active="isNavActive('hermes.history', 'hermes.historySession')">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10" />
               <polyline points="12 6 12 12 16 14" />
             </svg>
             <span>{{ t("sidebar.history") }}</span>
-          </button>
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.groupChat' }" @click="handleNav('hermes.groupChat')">
+          </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.groupChat' }" :active="isNavActive('hermes.groupChat', 'hermes.groupChatRoom')">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
               <circle cx="9" cy="7" r="4" />
@@ -122,7 +125,7 @@ onMounted(async () => {
               <path d="M16 3.13a4 4 0 0 1 0 7.75" />
             </svg>
             <span>{{ t("sidebar.groupChat") }}<span class="beta-tag">(beta)</span></span>
-          </button>
+          </RouteLinkItem>
           <button class="nav-item" @click="openSessionSearch">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="11" cy="11" r="7" />
@@ -142,7 +145,7 @@ onMounted(async () => {
           </svg>
         </div>
         <div v-show="!isGroupCollapsed('agent')" class="nav-group-items">
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.jobs' }" @click="handleNav('hermes.jobs')">
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.jobs' }" :active="selectedKey === 'hermes.jobs'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
               <line x1="16" y1="2" x2="16" y2="6" />
@@ -150,52 +153,52 @@ onMounted(async () => {
               <line x1="3" y1="10" x2="21" y2="10" />
             </svg>
             <span>{{ t("sidebar.jobs") }}</span>
-          </button>
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.kanban' }" @click="handleNav('hermes.kanban')">
+          </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.kanban' }" :active="selectedKey === 'hermes.kanban'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="3" width="5" height="18" rx="1" />
               <rect x="10" y="3" width="5" height="12" rx="1" />
               <rect x="17" y="3" width="5" height="18" rx="1" />
             </svg>
             <span>{{ t("sidebar.kanban") }}</span>
-          </button>
-          <button v-if="showAdminSurfaces" class="nav-item" :class="{ active: selectedKey === 'hermes.channels' }" @click="handleNav('hermes.channels')">
+          </RouteLinkItem>
+          <RouteLinkItem v-if="showAdminSurfaces" class="nav-item" :to="{ name: 'hermes.channels' }" :active="selectedKey === 'hermes.channels'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
             </svg>
             <span>{{ t("sidebar.channels") }}</span>
-          </button>
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.skills' }" @click="handleNav('hermes.skills')">
+          </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.skills' }" :active="selectedKey === 'hermes.skills'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <polygon points="12 2 2 7 12 12 22 7 12 2" />
               <polyline points="2 17 12 22 22 17" />
               <polyline points="2 12 12 17 22 12" />
             </svg>
             <span>{{ t("sidebar.skills") }}</span>
-          </button>
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.credentials' }" @click="handleNav('hermes.credentials')">
+          </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.credentials' }" :active="selectedKey === 'hermes.credentials'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="11" width="18" height="10" rx="2" />
               <path d="M7 11V7a5 5 0 0 1 10 0v4" />
               <circle cx="12" cy="16" r="1" />
             </svg>
             <span>{{ t("sidebar.credentials") }}</span>
-          </button>
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.memory' }" @click="handleNav('hermes.memory')">
+          </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.memory' }" :active="selectedKey === 'hermes.memory'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M9 18h6" />
               <path d="M10 22h4" />
               <path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z" />
             </svg>
             <span>{{ t("sidebar.memory") }}</span>
-          </button>
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.files' }" @click="handleNav('hermes.files')">
+          </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.files' }" :active="selectedKey === 'hermes.files'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
             </svg>
             <span>{{ t("sidebar.files") }}</span>
-          </button>
-          <button v-if="showAdminSurfaces" class="nav-item" :class="{ active: selectedKey === 'hermes.models' }" @click="handleNav('hermes.models')">
+          </RouteLinkItem>
+          <RouteLinkItem v-if="showAdminSurfaces" class="nav-item" :to="{ name: 'hermes.models' }" :active="selectedKey === 'hermes.models'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3" />
               <path d="M12 1v4" />
@@ -208,7 +211,7 @@ onMounted(async () => {
               <path d="M16.95 7.05l2.83-2.83" />
             </svg>
             <span>{{ t("sidebar.models") }}</span>
-          </button>
+          </RouteLinkItem>
         </div>
       </div>
 
@@ -221,7 +224,7 @@ onMounted(async () => {
           </svg>
         </div>
         <div v-show="!isGroupCollapsed('monitoring')" class="nav-group-items">
-          <button v-if="showAdminSurfaces" class="nav-item" :class="{ active: selectedKey === 'hermes.logs' }" @click="handleNav('hermes.logs')">
+          <RouteLinkItem v-if="showAdminSurfaces" class="nav-item" :to="{ name: 'hermes.logs' }" :active="selectedKey === 'hermes.logs'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
               <polyline points="14 2 14 8 20 8" />
@@ -230,15 +233,15 @@ onMounted(async () => {
               <polyline points="10 9 9 9 8 9" />
             </svg>
             <span>{{ t("sidebar.logs") }}</span>
-          </button>
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.usage' }" @click="handleNav('hermes.usage')">
+          </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.usage' }" :active="selectedKey === 'hermes.usage'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="12" width="4" height="9" rx="1" />
               <rect x="10" y="7" width="4" height="14" rx="1" />
               <rect x="17" y="3" width="4" height="18" rx="1" />
             </svg>
             <span>{{ t("sidebar.usage") }}</span>
-          </button>
+          </RouteLinkItem>
         </div>
       </div>
 
@@ -251,7 +254,7 @@ onMounted(async () => {
           </svg>
         </div>
         <div v-show="!isGroupCollapsed('system')" class="nav-group-items">
-          <button v-if="showAdminSurfaces" class="nav-item" :class="{ active: selectedKey === 'hermes.gateways' }" @click="handleNav('hermes.gateways')">
+          <RouteLinkItem v-if="showAdminSurfaces" class="nav-item" :to="{ name: 'hermes.gateways' }" :active="selectedKey === 'hermes.gateways'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <rect x="2" y="2" width="20" height="8" rx="2" ry="2" />
               <rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
@@ -259,21 +262,21 @@ onMounted(async () => {
               <line x1="6" y1="18" x2="6.01" y2="18" />
             </svg>
             <span>{{ t("sidebar.gateways") }}</span>
-          </button>
-          <button v-if="showAdminSurfaces" class="nav-item" :class="{ active: selectedKey === 'hermes.profiles' }" @click="handleNav('hermes.profiles')">
+          </RouteLinkItem>
+          <RouteLinkItem v-if="showAdminSurfaces" class="nav-item" :to="{ name: 'hermes.profiles' }" :active="selectedKey === 'hermes.profiles'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
               <circle cx="12" cy="7" r="4" />
             </svg>
             <span>{{ t("sidebar.profiles") }}</span>
-          </button>
-          <button class="nav-item" :class="{ active: selectedKey === 'hermes.settings' }" @click="handleNav('hermes.settings')">
+          </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.settings' }" :active="selectedKey === 'hermes.settings'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
             <span>{{ t("sidebar.settings") }}</span>
-          </button>
+          </RouteLinkItem>
         </div>
       </div>
     </nav>
@@ -450,6 +453,7 @@ onMounted(async () => {
   cursor: pointer;
   background-color: $bg-card;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  text-decoration: none;
 
   .dark & {
     background-color: #393939;
@@ -555,6 +559,7 @@ onMounted(async () => {
   padding: 12px;
   border: none;
   background: none;
+  appearance: none;
   color: $text-secondary;
   font-size: 14px;
   border-radius: $radius-sm;
@@ -562,6 +567,7 @@ onMounted(async () => {
   transition: all $transition-fast;
   width: 100%;
   text-align: left;
+  text-decoration: none;
 
   &:hover {
     background-color: rgba(var(--accent-primary-rgb), 0.06);

@@ -7,12 +7,31 @@ export interface AuthStatus {
   plane?: string
 }
 
+export type CurrentUserRole = 'user' | 'admin' | 'super_admin'
+export type CurrentUserStatus = 'active' | 'disabled' | string
+
 export interface CurrentUser {
+  id?: string | number
+  username?: string
   openid: string
   profile: string
-  role: 'user' | 'admin'
+  role: CurrentUserRole
+  status?: CurrentUserStatus
+  created_at?: number
+  updated_at?: number
+  last_login_at?: number | null
+  requiresCredentialChange?: boolean
   name?: string
   avatarUrl?: string
+  profiles?: string[]
+}
+
+interface CurrentUserEnvelope {
+  user: CurrentUser
+}
+
+function isCurrentUserEnvelope(value: CurrentUser | CurrentUserEnvelope): value is CurrentUserEnvelope {
+  return typeof value === 'object' && value !== null && 'user' in value
 }
 
 export interface FeishuUatStatus {
@@ -61,7 +80,8 @@ export async function loginWithPassword(username: string, password: string): Pro
 }
 
 export async function fetchCurrentUser(): Promise<CurrentUser> {
-  return request('/api/auth/me')
+  const res = await request<CurrentUser | CurrentUserEnvelope>('/api/auth/me')
+  return isCurrentUserEnvelope(res) ? res.user : res
 }
 
 export async function fetchFeishuUatStatus(requiredScopes?: string): Promise<FeishuUatStatus> {

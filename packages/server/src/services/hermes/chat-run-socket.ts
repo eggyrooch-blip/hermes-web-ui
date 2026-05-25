@@ -38,7 +38,9 @@ import {
   parseFeishuSessionCookie,
 } from '../feishu-oauth'
 import { ownerOwnsProfile } from './agent-ownership'
-import { handleBrokerRun as handleRunChatBrokerRun } from './run-chat/handle-broker-run'
+import { handleBrokerRun as handleRunChatBrokerRun, respondToBrokerClarify } from './run-chat/handle-broker-run'
+import { extractResponseText, responseFunctionCallToToolCall, summarizeToolArguments } from './run-chat/response-utils'
+import { readSseFrames } from './run-chat/sse-utils'
 import { rewriteAssistantMediaDirectives } from './media-directives'
 
 /**
@@ -519,6 +521,44 @@ export function mapRunBrokerFrameForChat(parsed: any, frameEvent?: string): RunB
     }
   }
 
+  if (brokerKind === 'clarify_required' || brokerKind === 'clarify.requested') {
+    const clarifyId = parsed?.clarify_id || payload.clarify_id
+    if (!clarifyId) return { type: 'ignore' }
+    return {
+      type: 'emit',
+      event: 'clarify.requested',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'clarify.requested',
+        run_id: runId,
+        response_id: responseId,
+        clarify_id: String(clarifyId),
+        question: String(parsed?.question || payload.question || ''),
+        choices: Array.isArray(parsed?.choices) ? parsed.choices : (Array.isArray(payload.choices) ? payload.choices : []),
+      },
+    }
+  }
+
+  if (brokerKind === 'clarify_resolved' || brokerKind === 'clarify.resolved') {
+    const clarifyId = parsed?.clarify_id || payload.clarify_id
+    if (!clarifyId) return { type: 'ignore' }
+    return {
+      type: 'emit',
+      event: 'clarify.resolved',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'clarify.resolved',
+        run_id: runId,
+        response_id: responseId,
+        clarify_id: String(clarifyId),
+        response: parsed?.response ?? payload.response,
+        timed_out: parsed?.timed_out ?? payload.timed_out,
+      },
+    }
+  }
+
   if (brokerKind === 'done' || brokerKind === 'run.completed') {
     return {
       type: 'terminal',
@@ -662,6 +702,34 @@ export class ChatRunSocket {
     socket.on('abort', (data: { session_id?: string }) => {
       if (data.session_id) {
         void this.handleAbort(socket, data.session_id)
+      }
+    })
+
+    socket.on('clarify.respond', async (data: { session_id?: string; clarify_id?: string; response?: string }) => {
+      const sessionId = String(data.session_id || '').trim()
+      const clarifyId = String(data.clarify_id || '').trim()
+      if (!sessionId || !clarifyId) return
+      try {
+        await respondToBrokerClarify({
+          socket,
+          profile,
+          sessionId,
+          clarifyId,
+          response: String(data.response || ''),
+        })
+        this.nsp.to(`session:${sessionId}`).emit('clarify.resolved', {
+          event: 'clarify.resolved',
+          session_id: sessionId,
+          clarify_id: clarifyId,
+          response: String(data.response || ''),
+        })
+      } catch (err: any) {
+        socket.emit('clarify.failed', {
+          event: 'clarify.failed',
+          session_id: sessionId,
+          clarify_id: clarifyId,
+          error: err?.message || String(err),
+        })
       }
     })
   }
@@ -889,6 +957,7 @@ export class ChatRunSocket {
         this.sessionMap.set(session_id, state)
       }
       state.isWorking = true
+      state.events = []
       state.profile = profile
 
       if (!skipUserMessage) {
@@ -1612,6 +1681,24 @@ export class ChatRunSocket {
   private flushResponseRunToDb(state: SessionState, sessionId: string) {
     const run = state.responseRun
     if (!run?.runMarker) return
+    const firstUser = state.messages.find(msg => msg.role === 'user')?.content || ''
+    if (!getSession(sessionId)) {
+      createSession({
+        id: sessionId,
+        profile: state.profile || 'default',
+        title: firstUser.replace(/[\r\n]/g, ' ').slice(0, 100),
+      })
+    }
+    const detail = getSessionDetail(sessionId)
+    const hasUserMessage = detail?.messages?.some(message => message.role === 'user')
+    if (firstUser && !hasUserMessage) {
+      addMessage({
+        session_id: sessionId,
+        role: 'user',
+        content: firstUser,
+        timestamp: state.messages.find(msg => msg.role === 'user')?.timestamp,
+      })
+    }
     let flushed = 0
     for (const msg of state.messages) {
       if (msg.runMarker !== run.runMarker) continue
@@ -1982,87 +2069,6 @@ export class ChatRunSocket {
   }
 }
 
-async function* readSseFrames(stream: ReadableStream<Uint8Array>): AsyncGenerator<{ event?: string; data: string }> {
-  const decoder = new TextDecoder()
-  const reader = stream.getReader()
-  let buffer = ''
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-
-      let boundary = buffer.indexOf('\n\n')
-      while (boundary >= 0) {
-        const raw = buffer.slice(0, boundary)
-        buffer = buffer.slice(boundary + 2)
-        const frame = parseSseFrame(raw)
-        if (frame?.data) yield frame
-        boundary = buffer.indexOf('\n\n')
-      }
-    }
-
-    buffer += decoder.decode()
-    const frame = parseSseFrame(buffer)
-    if (frame?.data) yield frame
-  } finally {
-    reader.releaseLock()
-  }
-}
-
-function parseSseFrame(raw: string): { event?: string; data: string } | null {
-  let event: string | undefined
-  const data: string[] = []
-  for (const line of raw.split(/\r?\n/)) {
-    if (!line || line.startsWith(':')) continue
-    if (line.startsWith('event:')) {
-      event = line.slice(6).trim()
-    } else if (line.startsWith('data:')) {
-      data.push(line.slice(5).trimStart())
-    }
-  }
-  if (data.length === 0) return null
-  return { event, data: data.join('\n') }
-}
-
-function responseFunctionCallToToolCall(item: any): any {
-  const callId = item.call_id || item.id || ''
-  const name = item.name || item.function?.name || ''
-  let args = item.arguments ?? item.function?.arguments ?? '{}'
-  if (typeof args !== 'string') {
-    args = JSON.stringify(args ?? {})
-  }
-  return {
-    id: callId,
-    type: 'function',
-    function: {
-      name,
-      arguments: args || '{}',
-    },
-  }
-}
-
-function summarizeToolArguments(args: string): string | undefined {
-  if (!args) return undefined
-  try {
-    const parsed = JSON.parse(args)
-    if (!parsed || typeof parsed !== 'object') return args.slice(0, 120)
-    const preferredKeys = ['cmd', 'command', 'code', 'query', 'path', 'url', 'prompt']
-    for (const key of preferredKeys) {
-      const value = parsed[key]
-      if (typeof value === 'string' && value.trim()) {
-        return value.replace(/\s+/g, ' ').slice(0, 160)
-      }
-    }
-    const first = Object.entries(parsed).find(([, value]) => typeof value === 'string' && value.trim())
-    if (first) return String(first[1]).replace(/\s+/g, ' ').slice(0, 160)
-    return JSON.stringify(parsed).slice(0, 160)
-  } catch {
-    return args.replace(/\s+/g, ' ').slice(0, 160)
-  }
-}
-
 function shouldPersistToolPreviewAsArgs(args: string | undefined, preview: unknown): boolean {
   if (args && args !== '{}' && args !== '[]') return false
   if (typeof preview !== 'string') return false
@@ -2083,20 +2089,4 @@ function hasUsefulToolArguments(args: string): boolean {
   } catch {
     return Boolean(args.trim())
   }
-}
-
-function extractResponseText(response: any): string {
-  const output = Array.isArray(response?.output) ? response.output : []
-  const parts: string[] = []
-  for (const item of output) {
-    if (item.type !== 'message') continue
-    const content = Array.isArray(item.content) ? item.content : []
-    for (const part of content) {
-      if (part.type === 'output_text' || part.type === 'text') {
-        parts.push(part.text || '')
-      }
-    }
-  }
-  if (parts.length > 0) return parts.join('')
-  return typeof response?.output_text === 'string' ? response.output_text : ''
 }

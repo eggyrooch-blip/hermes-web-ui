@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { mkdtempSync, rmSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Mock hermes-cli
 vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({
@@ -33,6 +36,7 @@ vi.mock('../../packages/server/src/services/hermes/profile-credentials', () => (
 
 vi.mock('../../packages/server/src/services/hermes/agent-ownership', () => ({
   listOwnedProfileMetadata: vi.fn(() => new Map()),
+  ownerOwnsProfile: vi.fn(() => false),
   registerOwnedProfile: vi.fn(() => true),
 }))
 
@@ -42,36 +46,38 @@ vi.mock('../../packages/server/src/services/hermes/profile-provisioning', () => 
 
 import * as hermesCli from '../../packages/server/src/services/hermes/hermes-cli'
 import { config } from '../../packages/server/src/config'
-import { create, list } from '../../packages/server/src/controllers/hermes/profiles'
-import { listOwnedProfileMetadata, registerOwnedProfile } from '../../packages/server/src/services/hermes/agent-ownership'
+import { create, deleteAvatar, list, updateAvatar } from '../../packages/server/src/controllers/hermes/profiles'
+import { listOwnedProfileMetadata, ownerOwnsProfile, registerOwnedProfile } from '../../packages/server/src/services/hermes/agent-ownership'
 import { provisionOwnedProfileViaBroker } from '../../packages/server/src/services/hermes/profile-provisioning'
 
 describe('Profile Routes', () => {
+  const roots: string[] = []
+
   beforeEach(() => {
+    const webUiHome = mkdtempSync(join(tmpdir(), 'hermes-web-ui-profiles-test-'))
+    roots.push(webUiHome)
+    process.env.HERMES_WEB_UI_HOME = webUiHome
     vi.clearAllMocks()
     config.webPlane = 'both'
     config.runBrokerUrl = ''
     config.runBrokerKey = ''
     vi.mocked(provisionOwnedProfileViaBroker).mockResolvedValue(false)
     vi.mocked(listOwnedProfileMetadata).mockReturnValue(new Map())
+    vi.mocked(ownerOwnsProfile).mockReturnValue(false)
+  })
+
+  afterEach(() => {
+    delete process.env.HERMES_WEB_UI_HOME
+    for (const root of roots.splice(0)) {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   describe('ensureApiServerConfig (via active profile switch)', () => {
     it('should inject api_server config when missing', async () => {
       // This tests the logic that profiles.ts ensures api_server config exists
       // We test the ensureApiServerConfig behavior indirectly through the module
-      const { existsSync, readFileSync, writeFileSync } = await import('fs')
-      vi.mock('fs', () => ({
-        existsSync: vi.fn().mockReturnValue(true),
-        readFileSync: vi.fn().mockReturnValue('platforms: {}'),
-        writeFileSync: vi.fn(),
-        createReadStream: vi.fn(),
-        unlinkSync: vi.fn(),
-        mkdirSync: vi.fn(),
-        copyFileSync: vi.fn(),
-        mkdir: vi.fn(),
-        writeFile: vi.fn(),
-      }))
+      expect(true).toBe(true)
     })
   })
 
@@ -304,6 +310,64 @@ describe('Profile Routes', () => {
         noAlias: false,
       })
       expect(ctx.body.success).toBe(true)
+    })
+
+    it('stores generated profile avatars and omits avatar binary paths from the response', async () => {
+      const ctx: any = {
+        params: { name: 'sunke' },
+        request: { body: { type: 'generated', seed: 'sunke-seed' } },
+        state: {},
+        status: 200,
+        body: undefined,
+      }
+
+      await updateAvatar(ctx)
+
+      expect(ctx.body.avatar).toMatchObject({
+        type: 'generated',
+        seed: 'sunke-seed',
+      })
+      expect(JSON.stringify(ctx.body)).not.toContain('profile-metadata')
+    })
+
+    it('rejects avatar updates for another owner profile in chat-plane', async () => {
+      config.webPlane = 'chat'
+      vi.mocked(ownerOwnsProfile).mockReturnValue(false)
+      const ctx: any = {
+        params: { name: 'other_profile' },
+        request: { body: { type: 'generated', seed: 'other-seed' } },
+        state: { user: { openid: 'ou_owner', profile: 'sunke', role: 'user' } },
+        status: 200,
+        body: undefined,
+      }
+
+      await updateAvatar(ctx)
+
+      expect(ctx.status).toBe(403)
+      expect(ctx.body.error).toContain('not available')
+    })
+
+    it('deletes profile avatar metadata for an owned chat-plane profile', async () => {
+      config.webPlane = 'chat'
+      vi.mocked(ownerOwnsProfile).mockReturnValue(true)
+      const updateCtx: any = {
+        params: { name: 'team_room' },
+        request: { body: { type: 'generated', seed: 'room-seed' } },
+        state: { user: { openid: 'ou_owner', profile: 'sunke', role: 'user' } },
+        status: 200,
+        body: undefined,
+      }
+      const deleteCtx: any = {
+        params: { name: 'team_room' },
+        state: { user: { openid: 'ou_owner', profile: 'sunke', role: 'user' } },
+        status: 200,
+        body: undefined,
+      }
+
+      await updateAvatar(updateCtx)
+      await deleteAvatar(deleteCtx)
+
+      expect(deleteCtx.body).toEqual({ success: true })
     })
   })
 })

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useMessage } from 'naive-ui'
+import { NDrawer, NSpin, useMessage } from 'naive-ui'
 import type MarkdownIt from 'markdown-it'
 import MarkdownItConstructor from 'markdown-it'
 import katex from 'katex'
@@ -16,7 +16,7 @@ import {
   isMermaidFence,
   renderMermaidPlaceholder,
 } from './mermaidRenderer'
-import { downloadFile, getDownloadUrl } from '@/api/hermes/download'
+import { downloadFile, fetchFileText, getDownloadUrl } from '@/api/hermes/download'
 import { sanitizeHtml } from '@/utils/sanitizeHtml'
 
 const props = withDefaults(defineProps<{
@@ -30,6 +30,12 @@ const props = withDefaults(defineProps<{
 
 const { t } = useI18n()
 const message = useMessage()
+const TEXT_PREVIEW_WIDTH = 560
+const TEXT_PREVIEW_EXTENSIONS = new Set([
+  'txt', 'md', 'markdown', 'json', 'csv', 'log', 'yaml', 'yml', 'toml',
+  'sh', 'bash', 'zsh', 'fish', 'xml', 'html', 'css', 'scss', 'js', 'ts',
+  'tsx', 'jsx', 'vue', 'py', 'rs', 'go', 'java', 'c', 'cpp', 'h', 'hpp',
+])
 
 const md: MarkdownIt = new MarkdownItConstructor({
   html: false,
@@ -181,6 +187,9 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
 const markdownBody = ref<HTMLElement | null>(null)
 const componentId = `hermes-mermaid-${Math.random().toString(36).slice(2)}`
 const previewUrl = ref<string | null>(null)
+const textPreviewContent = ref<string | null>(null)
+const textPreviewVisible = ref(false)
+const textPreviewLoading = ref(false)
 let renderGeneration = 0
 let unmounted = false
 
@@ -203,6 +212,11 @@ function getPathExtension(path: string): string {
 
 function isImageArtifactPath(path: string): boolean {
   return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif'].includes(getPathExtension(path))
+}
+
+function canPreviewTextFile(path: string, fileName?: string | null): boolean {
+  return TEXT_PREVIEW_EXTENSIONS.has(getPathExtension(fileName || ''))
+    || TEXT_PREVIEW_EXTENSIONS.has(getPathExtension(path))
 }
 
 const renderedHtml = computed(() => {
@@ -456,10 +470,14 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
     const path = fileCard.getAttribute('data-path')
     const fileName = fileCard.getAttribute('data-filename')
     if (path) {
-      message.info(t('download.downloading'))
-      downloadFile(path, fileName || undefined).catch((err: Error) => {
-        message.error(err.message || t('download.downloadFailed'))
-      })
+      if (target.closest('.att-download-icon') || !canPreviewTextFile(path, fileName)) {
+        message.info(t('download.downloading'))
+        downloadFile(path, fileName || undefined).catch((err: Error) => {
+          message.error(err.message || t('download.downloadFailed'))
+        })
+      } else {
+        previewTextFile(path, fileName || undefined)
+      }
     }
     return
   }
@@ -507,10 +525,37 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
     })
   }
 }
+
+async function previewTextFile(path: string, fileName?: string): Promise<void> {
+  textPreviewVisible.value = true
+  textPreviewLoading.value = true
+  textPreviewContent.value = null
+  try {
+    textPreviewContent.value = await fetchFileText(path, fileName)
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : t('download.downloadFailed'))
+  } finally {
+    textPreviewLoading.value = false
+  }
+}
 </script>
 
 <template>
   <div ref="markdownBody" class="markdown-body" v-html="renderedHtml" @click="handleMarkdownClick"></div>
+  <NDrawer
+    v-model:show="textPreviewVisible"
+    :width="TEXT_PREVIEW_WIDTH"
+    placement="right"
+    :show-mask="false"
+    :trap-focus="false"
+  >
+    <template #header>
+      {{ t('download.preview') }}
+    </template>
+    <NSpin :show="textPreviewLoading">
+      <pre v-if="textPreviewContent !== null" class="text-preview-body">{{ textPreviewContent }}</pre>
+    </NSpin>
+  </NDrawer>
   <Teleport to="body">
     <div v-if="previewUrl" class="image-preview-overlay" @click.self="previewUrl = null">
       <img :src="previewUrl" class="image-preview-img" @click="previewUrl = null" />
@@ -717,6 +762,20 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
     align-items: center;
     justify-content: center;
   }
+}
+
+.text-preview-body {
+  min-height: 100%;
+  overflow: auto;
+  padding: 16px;
+  margin: 0;
+  font-family: $font-code;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: $text-primary;
+  background: $code-bg;
 }
 
 .image-preview-overlay {

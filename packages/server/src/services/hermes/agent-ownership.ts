@@ -44,13 +44,11 @@ export function ownerOwnsProfile(openid: string, profileName: string): boolean {
                     params.push(normalizedOpenid)
                 }
 
-                if (columns.has('provenance')) {
-                    disjuncts.push("(open_id = ? AND provenance = 'sync')")
-                    params.push(normalizedOpenid)
-                } else {
-                    disjuncts.push('open_id = ?')
-                    params.push(normalizedOpenid)
-                }
+                const openIdPredicates = ['open_id = ?']
+                if (columns.has('provenance')) openIdPredicates.push("provenance = 'sync'")
+                if (columns.has('kind')) openIdPredicates.push("(kind = 'user' OR kind IS NULL OR kind = '')")
+                disjuncts.push(`(${openIdPredicates.join(' AND ')})`)
+                params.push(normalizedOpenid)
 
                 if (disjuncts.length === 0) return false
 
@@ -95,13 +93,11 @@ export function listOwnedProfileNames(openid: string): Set<string> {
                     params.push(normalizedOpenid)
                 }
 
-                if (columns.has('provenance')) {
-                    disjuncts.push("(open_id = ? AND provenance = 'sync')")
-                    params.push(normalizedOpenid)
-                } else {
-                    disjuncts.push('open_id = ?')
-                    params.push(normalizedOpenid)
-                }
+                const openIdPredicates = ['open_id = ?']
+                if (columns.has('provenance')) openIdPredicates.push("provenance = 'sync'")
+                if (columns.has('kind')) openIdPredicates.push("(kind = 'user' OR kind IS NULL OR kind = '')")
+                disjuncts.push(`(${openIdPredicates.join(' AND ')})`)
+                params.push(normalizedOpenid)
 
                 if (disjuncts.length === 0) continue
 
@@ -154,13 +150,11 @@ export function listOwnedProfileMetadata(openid: string): Map<string, OwnedProfi
                     params.push(normalizedOpenid)
                 }
 
-                if (columns.has('provenance')) {
-                    disjuncts.push("(open_id = ? AND provenance = 'sync')")
-                    params.push(normalizedOpenid)
-                } else {
-                    disjuncts.push('open_id = ?')
-                    params.push(normalizedOpenid)
-                }
+                const openIdPredicates = ['open_id = ?']
+                if (columns.has('provenance')) openIdPredicates.push("provenance = 'sync'")
+                if (columns.has('kind')) openIdPredicates.push("(kind = 'user' OR kind IS NULL OR kind = '')")
+                disjuncts.push(`(${openIdPredicates.join(' AND ')})`)
+                params.push(normalizedOpenid)
 
                 if (disjuncts.length === 0) continue
 

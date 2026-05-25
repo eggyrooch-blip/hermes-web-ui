@@ -27,7 +27,7 @@ export async function* readSseFrames(stream: ReadableStream<Uint8Array>): AsyncG
   }
 }
 
-function parseSseFrame(raw: string): { event?: string; data: string } | null {
+export function parseSseFrame(raw: string): { event?: string; data: string } | null {
   let event: string | undefined
   const data: string[] = []
   for (const line of raw.split(/\r?\n/)) {

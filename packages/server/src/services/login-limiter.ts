@@ -1,13 +1,13 @@
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { writeFileSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
+import { getWebUiHome } from '../config'
 
-const APP_HOME = join(homedir(), '.hermes-web-ui')
+const APP_HOME = getWebUiHome()
 const LOCK_FILE = join(APP_HOME, '.login-lock.json')
 
 // Per-IP settings
-const IP_MAX_FAILURES = 3
+const IP_MAX_FAILURES = 10
 const IP_LOCK_DURATION_MS = 60 * 60_000 // 1 hour
 const IP_MAP_MAX_SIZE = 10000
 

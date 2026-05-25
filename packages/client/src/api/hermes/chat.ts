@@ -15,6 +15,7 @@ export interface StartRunRequest {
   input: string | ContentBlock[]
   instructions?: string
   session_id?: string
+  profile?: string
   model?: string
   provider?: string
   queue_id?: string
@@ -62,6 +63,7 @@ export interface RunEvent {
 
 let chatRunSocket: Socket | null = null
 let globalListenersRegistered = false
+let chatRunSocketProfile: string | null = null
 
 /**
  * Session event handlers map
@@ -83,6 +85,10 @@ const sessionEventHandlers = new Map<string, {
   onAbortCompleted: (event: RunEvent) => void
   onUsageUpdated: (event: RunEvent) => void
   onRunQueued?: (event: RunEvent) => void
+  onSubagentEvent?: (event: RunEvent) => void
+  onClarifyRequested?: (event: RunEvent) => void
+  onClarifyResolved?: (event: RunEvent) => void
+  onClarifyFailed?: (event: RunEvent) => void
 }>()
 
 /**
@@ -295,6 +301,40 @@ function globalUsageUpdatedHandler(event: RunEvent): void {
 }
 
 /**
+ * Global subagent event handler
+ */
+function globalSubagentEventHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onSubagentEvent) {
+    handlers.onSubagentEvent(event)
+  }
+}
+
+function globalClarifyRequestedHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onClarifyRequested) handlers.onClarifyRequested(event)
+}
+
+function globalClarifyResolvedHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onClarifyResolved) handlers.onClarifyResolved(event)
+}
+
+function globalClarifyFailedHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onClarifyFailed) handlers.onClarifyFailed(event)
+}
+
+/**
  * Register event handlers for a session
  * @param sessionId - Session ID
  * @param handlers - Event handling functions
@@ -318,6 +358,10 @@ export function registerSessionHandlers(
     onAbortCompleted: (event: RunEvent) => void
     onUsageUpdated: (event: RunEvent) => void
     onRunQueued?: (event: RunEvent) => void
+    onSubagentEvent?: (event: RunEvent) => void
+    onClarifyRequested?: (event: RunEvent) => void
+    onClarifyResolved?: (event: RunEvent) => void
+    onClarifyFailed?: (event: RunEvent) => void
   }
 ): () => void {
   sessionEventHandlers.set(sessionId, handlers)
@@ -340,29 +384,34 @@ export function getChatRunSocket(): Socket | null {
   return chatRunSocket
 }
 
-export function connectChatRun(): Socket {
-  if (chatRunSocket?.connected) return chatRunSocket
+export function connectChatRun(requestedProfile?: string | null): Socket {
+  const normalizedRequestedProfile = requestedProfile?.trim() || null
+  if (chatRunSocket?.connected && (!normalizedRequestedProfile || chatRunSocketProfile === normalizedRequestedProfile)) return chatRunSocket
 
   // Clean up old socket to prevent duplicate event listeners
   if (chatRunSocket) {
     chatRunSocket.removeAllListeners()
     chatRunSocket.disconnect()
     globalListenersRegistered = false
+    chatRunSocketProfile = null
   }
 
   const baseUrl = getBaseUrlValue()
   const token = getApiKey()
 
   // Get active profile from store (authoritative source)
-  let profile = 'default'
+  let profile = normalizedRequestedProfile || 'default'
   try {
-    const { useProfilesStore } = require('@/stores/hermes/profiles')
-    const profilesStore = useProfilesStore()
-    profile = profilesStore.activeProfileName || 'default'
+    if (!normalizedRequestedProfile) {
+      const { useProfilesStore } = require('@/stores/hermes/profiles')
+      const profilesStore = useProfilesStore()
+      profile = profilesStore.activeProfileName || 'default'
+    }
   } catch {
     // Fallback to localStorage during early initialization
-    profile = localStorage.getItem('hermes_active_profile_name') || 'default'
+    profile = normalizedRequestedProfile || localStorage.getItem('hermes_active_profile_name') || 'default'
   }
+  chatRunSocketProfile = profile
 
   chatRunSocket = io(`${baseUrl}/chat-run`, {
     auth: { token },
@@ -385,6 +434,13 @@ export function connectChatRun(): Socket {
     // Tool events
     chatRunSocket.on('tool.started', globalToolStartedHandler)
     chatRunSocket.on('tool.completed', globalToolCompletedHandler)
+    chatRunSocket.on('subagent.start', globalSubagentEventHandler)
+    chatRunSocket.on('subagent.tool', globalSubagentEventHandler)
+    chatRunSocket.on('subagent.progress', globalSubagentEventHandler)
+    chatRunSocket.on('subagent.complete', globalSubagentEventHandler)
+    chatRunSocket.on('clarify.requested', globalClarifyRequestedHandler)
+    chatRunSocket.on('clarify.resolved', globalClarifyResolvedHandler)
+    chatRunSocket.on('clarify.failed', globalClarifyFailedHandler)
 
     // Run lifecycle events
     chatRunSocket.on('run.started', globalRunStartedHandler)
@@ -410,6 +466,7 @@ export function disconnectChatRun(): void {
   if (chatRunSocket) {
     chatRunSocket.disconnect()
     chatRunSocket = null
+    chatRunSocketProfile = null
     globalListenersRegistered = false
     sessionEventHandlers.clear()
   }
@@ -425,11 +482,12 @@ export function disconnectChatRun(): void {
 export function resumeSession(
   sessionId: string,
   onResumed: (data: { session_id: string; messages: any[]; isWorking: boolean; isAborting?: boolean; events: any[]; inputTokens?: number; outputTokens?: number; queueLength?: number }) => void,
+  profile?: string | null,
 ): Socket {
-  const socket = connectChatRun()
+  const socket = connectChatRun(profile)
 
   socket.once('resumed', onResumed)
-  socket.emit('resume', { session_id: sessionId })
+  socket.emit('resume', { session_id: sessionId, ...(profile ? { profile } : {}) })
 
   return socket
 }
@@ -447,7 +505,7 @@ export function startRunViaSocket(
   }
 
   let closed = false
-  const socket = connectChatRun()
+  const socket = connectChatRun(body.profile)
 
   if (sessionEventHandlers.has(sid)) {
     socket.emit('run', body)
@@ -532,6 +590,22 @@ export function startRunViaSocket(
       if (closed) return
       onEvent(evt)
     },
+    onSubagentEvent: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
+    onClarifyRequested: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
+    onClarifyResolved: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
+    onClarifyFailed: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
   }
 
   // Register handlers in the global session map
@@ -547,6 +621,15 @@ export function startRunViaSocket(
       }
     },
   }
+}
+
+export function respondClarify(sessionId: string, clarifyId: string, response: string, profile?: string | null): void {
+  const socket = connectChatRun(profile)
+  socket.emit('clarify.respond', {
+    session_id: sessionId,
+    clarify_id: clarifyId,
+    response,
+  })
 }
 
 export async function fetchModels(): Promise<{ data: Array<{ id: string }> }> {

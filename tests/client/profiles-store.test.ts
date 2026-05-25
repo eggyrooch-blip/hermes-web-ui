@@ -9,6 +9,8 @@ const mockProfilesApi = vi.hoisted(() => ({
   deleteProfile: vi.fn(),
   renameProfile: vi.fn(),
   switchProfile: vi.fn(),
+  updateProfileAvatar: vi.fn(),
+  deleteProfileAvatar: vi.fn(),
   exportProfile: vi.fn(),
   importProfile: vi.fn(),
 }))
@@ -133,6 +135,60 @@ describe('Profiles Store', () => {
     expect(store.activeProfileName).toBe('feishu_group_alpha')
     expect(store.activeProfile?.name).toBe('feishu_group_alpha')
     expect(localStorage.getItem('hermes_active_profile_name')).toBe('feishu_group_alpha')
+  })
+
+  it('updates profile avatars in list, detail cache, and active profile state', async () => {
+    const avatar = { type: 'generated' as const, seed: 'sunke-seed' }
+    mockProfilesApi.updateProfileAvatar.mockResolvedValue(avatar)
+    const store = useProfilesStore()
+    store.profiles = [{ name: 'sunke', active: true, model: 'gpt-4', gateway: 'running', alias: '' }] as any
+    store.activeProfile = store.profiles[0] as any
+    store.detailMap = {
+      sunke: {
+        name: 'sunke',
+        path: '/tmp/sunke',
+        model: 'gpt-4',
+        provider: 'openai',
+        gateway: 'running',
+        skills: 1,
+        hasEnv: true,
+        hasSoulMd: true,
+      },
+    } as any
+
+    await store.updateAvatar('sunke', avatar)
+
+    expect(mockProfilesApi.updateProfileAvatar).toHaveBeenCalledWith('sunke', avatar)
+    expect(store.profiles[0].avatar).toEqual(avatar)
+    expect(store.activeProfile?.avatar).toEqual(avatar)
+    expect(store.detailMap.sunke.avatar).toEqual(avatar)
+  })
+
+  it('clears profile avatars in list, detail cache, and active profile state', async () => {
+    mockProfilesApi.deleteProfileAvatar.mockResolvedValue(undefined)
+    const store = useProfilesStore()
+    store.profiles = [{ name: 'sunke', active: true, model: 'gpt-4', gateway: 'running', alias: '', avatar: { type: 'generated', seed: 'old' } }] as any
+    store.activeProfile = store.profiles[0] as any
+    store.detailMap = {
+      sunke: {
+        name: 'sunke',
+        path: '/tmp/sunke',
+        model: 'gpt-4',
+        provider: 'openai',
+        gateway: 'running',
+        skills: 1,
+        hasEnv: true,
+        hasSoulMd: true,
+        avatar: { type: 'generated', seed: 'old' },
+      },
+    } as any
+
+    await store.deleteAvatar('sunke')
+
+    expect(mockProfilesApi.deleteProfileAvatar).toHaveBeenCalledWith('sunke')
+    expect(store.profiles[0].avatar).toBeNull()
+    expect(store.activeProfile?.avatar).toBeNull()
+    expect(store.detailMap.sunke.avatar).toBeNull()
   })
 
   it('createProfile calls API and refreshes list', async () => {

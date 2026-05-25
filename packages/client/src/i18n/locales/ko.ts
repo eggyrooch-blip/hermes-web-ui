@@ -16,6 +16,8 @@ export default {
     credentialsRequired: '사용자 이름과 비밀번호를 입력해 주세요',
     invalidCredentials: '사용자 이름 또는 비밀번호가 올바르지 않습니다',
     tooManyAttempts: '로그인 시도 횟수가 너무 많습니다. 잠시 후 다시 시도해 주세요',
+    lockResetHint: '이 서버가 본인 서버라면 다음 명령으로 로그인 잠금을 해제하세요:',
+    defaultLoginResetHint: '기본 admin 비밀번호를 재설정하려면 다음을 실행하세요:',
     passwordMismatch: '비밀번호가 일치하지 않습니다',
     passwordTooShort: '비밀번호는 6자 이상이어야 합니다',
     setupSuccess: '비밀번호 로그인이 설정되었습니다',
@@ -303,6 +305,7 @@ export default {
       builtin: '내장',
       hub: 'Hub',
       local: '로컬',
+      external: '외부',
     },
   },
 

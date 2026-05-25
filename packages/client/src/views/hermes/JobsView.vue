@@ -6,6 +6,7 @@ import JobsPanel from '@/components/hermes/jobs/JobsPanel.vue'
 import JobRunHistory from '@/components/hermes/jobs/JobRunHistory.vue'
 import JobFormModal from '@/components/hermes/jobs/JobFormModal.vue'
 import { useJobsStore } from '@/stores/hermes/jobs'
+import { ensureProfileSelection } from '@/utils/hermes/profile-ready'
 
 const { t } = useI18n()
 const jobsStore = useJobsStore()
@@ -22,8 +23,15 @@ const jobNameMap = computed(() => {
   return map
 })
 
+async function loadJobs() {
+  selectedJobId.value = null
+  jobsStore.jobs = []
+  await ensureProfileSelection()
+  await jobsStore.fetchJobs()
+}
+
 onMounted(() => {
-  jobsStore.fetchJobs()
+  void loadJobs()
 })
 
 function openCreateModal() {

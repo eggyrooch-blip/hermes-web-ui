@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 
 const jobsStoreMock = vi.hoisted(() => ({
   jobs: [],
@@ -10,6 +10,7 @@ const jobsStoreMock = vi.hoisted(() => ({
 }))
 
 const isUserModeMock = vi.hoisted(() => vi.fn(() => true))
+const ensureProfileSelectionMock = vi.hoisted(() => vi.fn(async () => undefined))
 
 vi.mock('@/stores/hermes/jobs', () => ({
   useJobsStore: () => jobsStoreMock,
@@ -17,6 +18,10 @@ vi.mock('@/stores/hermes/jobs', () => ({
 
 vi.mock('@/api/client', () => ({
   isUserMode: isUserModeMock,
+}))
+
+vi.mock('@/utils/hermes/profile-ready', () => ({
+  ensureProfileSelection: ensureProfileSelectionMock,
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -54,7 +59,20 @@ describe('JobsView gateway unavailable state', () => {
     jobsStoreMock.loading = false
     jobsStoreMock.gatewayUnavailable = false
     jobsStoreMock.fetchJobs.mockClear()
+    ensureProfileSelectionMock.mockReset()
+    ensureProfileSelectionMock.mockResolvedValue(undefined)
     isUserModeMock.mockReturnValue(true)
+  })
+
+  it('initializes the active profile before loading profile-scoped jobs', async () => {
+    mount(JobsView)
+    await flushPromises()
+
+    expect(ensureProfileSelectionMock).toHaveBeenCalled()
+    expect(jobsStoreMock.fetchJobs).toHaveBeenCalled()
+    expect(ensureProfileSelectionMock.mock.invocationCallOrder[0]).toBeLessThan(
+      jobsStoreMock.fetchJobs.mock.invocationCallOrder[0],
+    )
   })
 
   it('does not open the create modal while the bound gateway is unavailable', async () => {

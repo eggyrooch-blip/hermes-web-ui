@@ -16,6 +16,8 @@ export default {
     credentialsRequired: 'ユーザー名とパスワードを入力してください',
     invalidCredentials: 'ユーザー名またはパスワードが正しくありません',
     tooManyAttempts: 'ログイン試行回数が多すぎます。しばらくしてからお試しください',
+    lockResetHint: 'これがあなたのサーバーの場合、次のコマンドでログインロックを解除できます：',
+    defaultLoginResetHint: 'デフォルトの admin パスワードをリセットするには、次を実行してください：',
     passwordMismatch: 'パスワードが一致しません',
     passwordTooShort: 'パスワードは6文字以上必要です',
     setupSuccess: 'パスワードログインが設定されました',
@@ -303,6 +305,7 @@ export default {
       builtin: '組み込み',
       hub: 'Hub',
       local: 'ローカル',
+      external: '外部',
     },
   },
 

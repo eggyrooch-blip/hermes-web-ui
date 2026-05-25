@@ -16,6 +16,7 @@ import { getGatewayManagerInstance } from '../services/gateway-bootstrap'
 import { logger } from '../services/logger'
 import type { WebUser } from '../services/request-context'
 import { getRequestProfile } from '../services/request-context'
+import { toAuthenticatedUser, type AuthenticatedUser } from '../middleware/user-auth'
 import { getProfileDir } from '../services/hermes/hermes-profile'
 import {
   completeKeepRecordAuth,
@@ -526,18 +527,35 @@ export async function feishuUatCancel(ctx: Context) {
 }
 
 export async function currentUser(ctx: Context) {
-  const user = ctx.state.user as WebUser | undefined
+  const user = ctx.state.user as (WebUser & Partial<AuthenticatedUser>) | undefined
   if (!user) {
     ctx.status = 401
     ctx.body = { error: 'Unauthorized' }
     return
   }
+  const authenticated = toAuthenticatedUser(user)
+  const currentUser = {
+    id: authenticated.id,
+    username: authenticated.username,
+    openid: authenticated.openid,
+    profile: authenticated.profile,
+    role: authenticated.role,
+    status: 'active',
+    created_at: 0,
+    updated_at: 0,
+    last_login_at: null,
+    requiresCredentialChange: false,
+    name: authenticated.name,
+    avatarUrl: authenticated.avatarUrl,
+    profiles: authenticated.profiles,
+  }
   ctx.body = {
-    openid: user.openid,
-    profile: user.profile,
-    role: user.role,
-    name: user.name,
-    avatarUrl: user.avatarUrl,
+    openid: authenticated.openid,
+    profile: authenticated.profile,
+    role: authenticated.role,
+    name: authenticated.name,
+    avatarUrl: authenticated.avatarUrl,
+    user: currentUser,
   }
 }
 

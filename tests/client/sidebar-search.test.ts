@@ -69,6 +69,14 @@ vi.mock('/logo.png', () => ({
   default: 'logo.png',
 }))
 
+vi.mock('@/components/common/RouteLinkItem.vue', () => ({
+  default: {
+    name: 'RouteLinkItem',
+    props: ['to', 'active'],
+    template: '<a class="route-link-item" :class="{ active }" :href="\'#/\' + ((to && to.name) ? to.name : to)"><slot /></a>',
+  },
+}))
+
 vi.mock('naive-ui', async () => {
   const actual = await vi.importActual<any>('naive-ui')
   return {
@@ -367,7 +375,7 @@ describe('AppSidebar search entry', () => {
     expect(wrapper.find('.feishu-connector').exists()).toBe(false)
   })
 
-  it('shows credentials in the Agent group navigation', async () => {
+  it('shows credentials as a native link in the Agent group navigation', async () => {
     const wrapper = mount(AppSidebar, {
       global: {
         stubs: {
@@ -383,11 +391,11 @@ describe('AppSidebar search entry', () => {
     const agentGroup = wrapper.findAll('.nav-group')[1]
     expect(agentGroup.text()).toContain('sidebar.credentials')
 
-    const credentialsButton = agentGroup.findAll('.nav-item').find(node => node.text().includes('sidebar.credentials'))
-    expect(credentialsButton).toBeTruthy()
-    await credentialsButton!.trigger('click')
+    const credentialsLink = agentGroup.findAll('a.nav-item').find(node => node.text().includes('sidebar.credentials'))
+    expect(credentialsLink).toBeTruthy()
+    expect(credentialsLink!.attributes('href')).toContain('hermes.credentials')
 
-    expect(pushMock).toHaveBeenCalledWith({ name: 'hermes.credentials' })
+    expect(pushMock).not.toHaveBeenCalled()
   })
 
   it('uses short group labels and keeps group folding active when collapsed', async () => {

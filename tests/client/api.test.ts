@@ -22,6 +22,8 @@ import {
   shouldSkipLoginPage,
   request,
 } from '../../packages/client/src/api/client'
+import { fetchCurrentUser } from '../../packages/client/src/api/auth'
+import { fetchHermesSessions, fetchSession } from '../../packages/client/src/api/hermes/sessions'
 import router from '@/router'
 
 describe('API Client', () => {
@@ -188,6 +190,56 @@ describe('API Client', () => {
 
       const [, options] = mockFetch.mock.calls[0]
       expect(options.headers['X-Hermes-Profile']).toBeUndefined()
+    })
+  })
+
+  describe('auth API', () => {
+    it('unwraps upstream-style current-user responses while preserving Feishu fields', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          user: {
+            id: 'ou_test',
+            username: '张三',
+            openid: 'ou_test',
+            profile: 'researcher',
+            role: 'user',
+            status: 'active',
+            name: '张三',
+            avatarUrl: 'https://example.com/avatar.png',
+            profiles: ['researcher'],
+          },
+        }),
+      })
+
+      const user = await fetchCurrentUser()
+
+      expect(user).toMatchObject({
+        id: 'ou_test',
+        username: '张三',
+        openid: 'ou_test',
+        profile: 'researcher',
+        role: 'user',
+        status: 'active',
+        name: '张三',
+        avatarUrl: 'https://example.com/avatar.png',
+        profiles: ['researcher'],
+      })
+    })
+  })
+
+  describe('sessions API', () => {
+    it('passes explicit profile query params for deep-linked sessions', async () => {
+      mockFetch
+        .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ sessions: [] }) })
+        .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ session: { id: 's1' } }) })
+
+      await fetchHermesSessions(undefined, undefined, 'tester')
+      await fetchSession('s1', 'tester')
+
+      expect(mockFetch.mock.calls[0][0]).toBe('/api/hermes/sessions/hermes?profile=tester')
+      expect(mockFetch.mock.calls[1][0]).toBe('/api/hermes/sessions/s1?profile=tester')
     })
   })
 })

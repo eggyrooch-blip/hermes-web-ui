@@ -6,12 +6,18 @@ import { useUsageStore } from '@/stores/hermes/usage'
 import StatCards from '@/components/hermes/usage/StatCards.vue'
 import ModelBreakdown from '@/components/hermes/usage/ModelBreakdown.vue'
 import DailyTrend from '@/components/hermes/usage/DailyTrend.vue'
+import { ensureProfileSelection } from '@/utils/hermes/profile-ready'
 
 const { t } = useI18n()
 const usageStore = useUsageStore()
 
+async function loadUsage() {
+  await ensureProfileSelection()
+  await usageStore.loadSessions()
+}
+
 onMounted(() => {
-  usageStore.loadSessions()
+  void loadUsage()
 })
 </script>
 

@@ -259,23 +259,36 @@ describe('Feishu OAuth controller', () => {
     const ctx: any = {
       state: {
         user: {
+          id: 'ou_test',
+          username: '张三',
           openid: 'ou_test',
           profile: 'researcher',
           role: 'user',
           name: '张三',
           avatarUrl: 'https://example.com/avatar.png',
+          profiles: ['researcher', 'feishu_group_alpha'],
         },
       },
     }
 
     await currentUser(ctx)
 
-    expect(ctx.body).toEqual({
+    expect(ctx.body).toMatchObject({
       openid: 'ou_test',
       profile: 'researcher',
       role: 'user',
       name: '张三',
       avatarUrl: 'https://example.com/avatar.png',
+      user: {
+        id: 'ou_test',
+        username: '张三',
+        openid: 'ou_test',
+        profile: 'researcher',
+        role: 'user',
+        status: 'active',
+        profiles: ['researcher', 'feishu_group_alpha'],
+        requiresCredentialChange: false,
+      },
     })
   })
 

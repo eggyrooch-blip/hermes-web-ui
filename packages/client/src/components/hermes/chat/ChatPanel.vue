@@ -13,6 +13,7 @@ import {
 } from "naive-ui";
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import router from "@/router";
 import { getSourceLabel } from "@/shared/session-display";
 import { copyToClipboard } from "@/utils/clipboard";
 import { isUserMode } from "@/api/client";
@@ -35,6 +36,8 @@ const userModeChrome = computed(() => isUserMode());
 const showOutline = ref(false);
 
 const currentMode = ref<"chat" | "live">("chat");
+const clarifyResponse = ref("");
+const activeClarify = computed(() => chatStore.activePendingClarify);
 
 // Batch selection mode
 const isBatchMode = ref(false);
@@ -53,7 +56,25 @@ const showSessions = ref(
 let mobileQuery: MediaQueryList | null = null;
 const isMobile = ref(false);
 
+function sessionProfile(sessionId: string): string {
+  return chatStore.sessions.find((item) => item.id === sessionId)?.profile || "";
+}
+
+function sessionRoute(sessionId: string) {
+  const profile = sessionProfile(sessionId);
+  return {
+    name: "hermes.session",
+    params: { sessionId },
+    query: profile ? { profile } : undefined,
+  };
+}
+
+function sessionHref(sessionId: string) {
+  return router.resolve(sessionRoute(sessionId)).href;
+}
+
 function handleSessionClick(sessionId: string) {
+  void router.push(sessionRoute(sessionId));
   chatStore.switchSession(sessionId);
   if (mobileQuery?.matches) showSessions.value = false;
 }
@@ -193,6 +214,10 @@ watch(
   },
   { immediate: true },
 );
+
+watch(activeClarify, () => {
+  clarifyResponse.value = "";
+});
 
 const activeSessionTitle = computed(
   () => chatStore.activeSession?.title || t("chat.newChat"),
@@ -441,6 +466,15 @@ async function handleWorkspaceConfirm() {
   }
   showWorkspaceModal.value = false;
 }
+
+function handleClarify(response?: string) {
+  const pending = activeClarify.value;
+  if (!pending) return;
+  const answer = (response ?? clarifyResponse.value).trim();
+  if (!answer) return;
+  chatStore.respondClarify(pending.clarifyId, answer);
+  clarifyResponse.value = "";
+}
 </script>
 
 <template>
@@ -628,6 +662,7 @@ async function handleWorkspaceConfirm() {
             :streaming="chatStore.isSessionLive(s.id)"
             :selectable="isBatchMode"
             :selected="isSessionSelected(s.id)"
+            :to="sessionHref(s.id)"
             @select="handleSessionClick(s.id)"
             @contextmenu="handleContextMenu($event, s.id)"
             @delete="handleDeleteSession(s.id)"
@@ -666,6 +701,7 @@ async function handleWorkspaceConfirm() {
               :streaming="chatStore.isSessionLive(s.id)"
               :selectable="isBatchMode"
               :selected="isSessionSelected(s.id)"
+              :to="sessionHref(s.id)"
               @select="handleSessionClick(s.id)"
               @contextmenu="handleContextMenu($event, s.id)"
               @delete="handleDeleteSession(s.id)"
@@ -836,6 +872,36 @@ async function handleWorkspaceConfirm() {
             <MessageList />
           </div>
           <OutlinePanel v-if="showOutline" :messages="chatStore.messages" />
+        </div>
+        <div v-if="activeClarify" class="clarify-bar">
+          <div class="clarify-question">{{ activeClarify.question }}</div>
+          <div v-if="activeClarify.choices.length" class="clarify-choice-row">
+            <NButton
+              v-for="choice in activeClarify.choices"
+              :key="choice"
+              size="small"
+              secondary
+              @click="handleClarify(choice)"
+            >
+              {{ choice }}
+            </NButton>
+          </div>
+          <div class="clarify-freeform">
+            <NInput
+              v-model:value="clarifyResponse"
+              size="small"
+              :placeholder="t('chat.inputPlaceholder')"
+              @keydown.enter.prevent="handleClarify()"
+            />
+            <NButton
+              size="small"
+              type="primary"
+              :disabled="!clarifyResponse.trim()"
+              @click="handleClarify()"
+            >
+              {{ t('chat.send') }}
+            </NButton>
+          </div>
         </div>
         <ChatInput />
       </template>
@@ -1068,6 +1134,40 @@ async function handleWorkspaceConfirm() {
       display: none;
     }
   }
+}
+
+.clarify-bar {
+  display: grid;
+  gap: 8px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.86);
+
+  .dark & {
+    border-top-color: rgba(148, 163, 184, 0.14);
+    background: rgba(18, 22, 28, 0.9);
+  }
+}
+
+.clarify-question {
+  color: $text-primary;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.clarify-choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.clarify-freeform {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
 }
 
 .session-list {

@@ -6,7 +6,9 @@ const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
 const switchModelMock = vi.hoisted(() => vi.fn())
 const setSessionModelMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)))
 const startRunViaSocketMock = vi.hoisted(() => vi.fn(() => ({ abort: vi.fn() })))
+const respondClarifyMock = vi.hoisted(() => vi.fn())
 const fetchSessionMock = vi.hoisted(() => vi.fn())
+const fetchSessionsMock = vi.hoisted(() => vi.fn(() => Promise.resolve([])))
 const resumeSessionMock = vi.hoisted(() => vi.fn((_sessionId: string, onResumed: (data: any) => void) => {
   onResumed({ messages: [], isWorking: false, events: [] })
   return { disconnect: vi.fn() }
@@ -32,12 +34,13 @@ vi.mock('@/api/hermes/chat', () => ({
   registerSessionHandlers: vi.fn(),
   unregisterSessionHandlers: vi.fn(),
   getChatRunSocket: vi.fn(() => null),
+  respondClarify: respondClarifyMock,
 }))
 
 vi.mock('@/api/hermes/sessions', () => ({
   deleteSession: vi.fn(),
   fetchSession: fetchSessionMock,
-  fetchSessions: vi.fn(() => Promise.resolve([])),
+  fetchSessions: fetchSessionsMock,
   setSessionModel: setSessionModelMock,
 }))
 
@@ -58,6 +61,7 @@ describe('chat store user-mode model selection', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     isUserModeMock.mockReturnValue(false)
+    fetchSessionsMock.mockResolvedValue([])
     fetchSessionMock.mockResolvedValue(null)
     resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
       onResumed({ messages: [], isWorking: false, events: [] })
@@ -532,5 +536,129 @@ describe('chat store user-mode model selection', () => {
     expect(store.activeSessionId).toBe(secondId)
     expect(store.sessions.find(s => s.id === secondId)?.messages).toEqual([])
     expect(store.sessions.find(s => s.id === firstId)?.messages[0]?.content).toBe('stale first-session reply')
+  })
+
+  it('loads the route-selected session from the requested profile', async () => {
+    fetchSessionsMock.mockResolvedValue([
+      {
+        id: 'session-1',
+        source: 'api_server',
+        model: 'm',
+        title: 'first',
+        started_at: 100,
+        ended_at: null,
+        last_active: 100,
+        message_count: 0,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        profile: 'tester',
+      },
+      {
+        id: 'session-2',
+        source: 'api_server',
+        model: 'm',
+        title: 'second',
+        started_at: 101,
+        ended_at: null,
+        last_active: 101,
+        message_count: 0,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        profile: 'tester',
+      },
+    ])
+    const store = useChatStore()
+
+    await store.loadSessions('tester', 'session-2')
+
+    expect(fetchSessionsMock).toHaveBeenCalledWith(undefined, undefined, 'tester')
+    expect(store.activeSessionId).toBe('session-2')
+    expect(store.activeSession?.profile).toBe('tester')
+    expect(resumeSessionMock).toHaveBeenCalledWith('session-2', expect.any(Function), 'tester')
+  })
+
+  it('renders subagent run events as a delegate_task tool card', async () => {
+    const store = useChatStore()
+    store.newChat()
+
+    await store.sendMessage('delegate this')
+
+    const onEvent = startRunViaSocketMock.mock.calls[0][1]
+    onEvent({
+      event: 'subagent.start',
+      session_id: store.activeSession!.id,
+      run_id: 'run-1',
+      subagent_id: 'a',
+      task_index: 0,
+      task_count: 2,
+      goal: 'inspect files',
+    })
+    onEvent({
+      event: 'subagent.complete',
+      session_id: store.activeSession!.id,
+      run_id: 'run-1',
+      subagent_id: 'a',
+      task_index: 0,
+      task_count: 2,
+      status: 'completed',
+      summary: 'found the file',
+    })
+
+    const toolMessage = store.activeSession!.messages.find(m => m.role === 'tool' && m.toolName === 'delegate_task')
+    expect(toolMessage).toMatchObject({
+      toolCallId: 'subagent:run-1:a',
+      toolStatus: 'done',
+    })
+    expect(toolMessage?.toolPreview).toContain('subagent 1/2 completed')
+    expect(toolMessage?.toolResult).toContain('found the file')
+  })
+
+  it('tracks and responds to clarify prompts for the active session', async () => {
+    const store = useChatStore()
+    store.newChat()
+
+    await store.sendMessage('make a report')
+
+    const onEvent = startRunViaSocketMock.mock.calls[0][1]
+    onEvent({
+      event: 'clarify.requested',
+      session_id: store.activeSession!.id,
+      run_id: 'run-1',
+      clarify_id: 'clarify-1',
+      question: 'Which report style?',
+      choices: ['brief', 'detailed'],
+    })
+
+    expect(store.activePendingClarify).toMatchObject({
+      clarifyId: 'clarify-1',
+      question: 'Which report style?',
+      choices: ['brief', 'detailed'],
+    })
+
+    store.respondClarify('clarify-1', 'brief')
+
+    expect(respondClarifyMock).toHaveBeenCalledWith(
+      store.activeSession!.id,
+      'clarify-1',
+      'brief',
+      undefined,
+    )
+    expect(store.activePendingClarify).toBeNull()
   })
 })

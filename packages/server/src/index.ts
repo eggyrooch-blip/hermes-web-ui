@@ -104,6 +104,25 @@ export async function bootstrap() {
   await new Promise(resolve => setTimeout(resolve, 1000))
   console.log('[bootstrap] all stores initialized')
 
+  try {
+    const { HermesSkillInjector } = await import('./services/hermes/skill-injector')
+    const injectionResult = await new HermesSkillInjector().injectMissingSkills()
+    if (injectionResult.injected.length > 0) {
+      logger.info({
+        injected: [...new Set(injectionResult.injected)],
+        targetCount: injectionResult.targets.length,
+      }, '[bootstrap] bundled skills injected')
+    }
+    if (injectionResult.updated.length > 0) {
+      logger.info({
+        updated: [...new Set(injectionResult.updated)],
+        targetCount: injectionResult.targets.length,
+      }, '[bootstrap] bundled skills updated')
+    }
+  } catch (err) {
+    logger.warn(err, '[bootstrap] failed to inject bundled skills')
+  }
+
   // Sync Hermes sessions from all profiles (only if local DB is empty)
   const { syncAllHermesSessionsOnStartup } = await import('./services/hermes/session-sync')
   await syncAllHermesSessionsOnStartup()

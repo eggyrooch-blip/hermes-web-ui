@@ -9,6 +9,14 @@ export interface HermesProfile {
   displayLabel?: string
   kind?: string
   ownerOpenId?: string
+  avatar?: ProfileAvatar | null
+}
+
+export interface ProfileAvatar {
+  type: 'generated' | 'image'
+  seed?: string
+  dataUrl?: string
+  updatedAt?: number
 }
 
 export interface HermesProfileDetail {
@@ -20,6 +28,7 @@ export interface HermesProfileDetail {
   skills: number
   hasEnv: boolean
   hasSoulMd: boolean
+  avatar?: ProfileAvatar | null
 }
 
 export async function fetchProfiles(): Promise<HermesProfile[]> {
@@ -30,6 +39,18 @@ export async function fetchProfiles(): Promise<HermesProfile[]> {
 export async function fetchProfileDetail(name: string): Promise<HermesProfileDetail> {
   const res = await request<{ profile: HermesProfileDetail }>(`/api/hermes/profiles/${encodeURIComponent(name)}`)
   return res.profile
+}
+
+export async function updateProfileAvatar(name: string, avatar: ProfileAvatar): Promise<ProfileAvatar> {
+  const res = await request<{ avatar: ProfileAvatar }>(`/api/hermes/profiles/${encodeURIComponent(name)}/avatar`, {
+    method: 'PUT',
+    body: JSON.stringify(avatar),
+  })
+  return res.avatar
+}
+
+export async function deleteProfileAvatar(name: string): Promise<void> {
+  await request(`/api/hermes/profiles/${encodeURIComponent(name)}/avatar`, { method: 'DELETE' })
 }
 
 export interface CreateProfileResult {

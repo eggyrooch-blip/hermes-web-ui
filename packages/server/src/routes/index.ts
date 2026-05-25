@@ -31,6 +31,7 @@ import { ttsRoutes } from './hermes/tts'
 import { proxyRoutes, proxyMiddleware } from './hermes/proxy'
 import { groupChatRoutes, setGroupChatServer } from './hermes/group-chat'
 import { enforcePlaneAccess } from '../services/request-context'
+import { populateHermesUserProfile } from '../middleware/user-auth'
 
 /**
  * Register all routes on the Koa app.
@@ -47,6 +48,7 @@ export function registerRoutes(app: any, requireAuth: (ctx: Context, next: Next)
   // --- Auth middleware: all routes below require authentication ---
   app.use(requireAuth)
   app.use(enforcePlaneAccess)
+  app.use(populateHermesUserProfile)
 
   // --- Protected routes (auth required) ---
   app.use(authProtectedRoutes.routes())

@@ -1,4 +1,4 @@
-import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, type RunEvent, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
+import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondClarify as respondClarifyApi, type RunEvent, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
 import { deleteSession as deleteSessionApi, fetchSession, fetchSessions, setSessionModel, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
 import { getApiKey, isUserMode } from '@/api/client'
 import { defineStore } from 'pinia'
@@ -52,12 +52,21 @@ export interface Session {
   updatedAt: number
   model?: string
   provider?: string
+  profile?: string | null
   messageCount?: number
   inputTokens?: number
   outputTokens?: number
   endedAt?: number | null
   lastActiveAt?: number
   workspace?: string | null
+}
+
+export interface PendingClarify {
+  sessionId: string
+  clarifyId: string
+  question: string
+  choices: string[]
+  runId?: string
 }
 
 function uid(): string {
@@ -237,6 +246,7 @@ function mapHermesSession(s: SessionSummary): Session {
     updatedAt: Math.round((s.last_active || s.ended_at || s.started_at) * 1000),
     model: s.model,
     provider: s.provider || (s as any).billing_provider || '',
+    profile: s.profile || null,
     messageCount: s.message_count,
     endedAt: s.ended_at != null ? Math.round(s.ended_at * 1000) : null,
     lastActiveAt: s.last_active != null ? Math.round(s.last_active * 1000) : undefined,
@@ -322,6 +332,14 @@ function setItemBestEffort(key: string, value: string) {
   }
 }
 
+function getItemBestEffort(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
 function removeItem(key: string) {
   try {
     localStorage.removeItem(key)
@@ -344,6 +362,12 @@ export const useChatStore = defineStore('chat', () => {
   const queueLengths = ref<Map<string, number>>(new Map())
   /** sessionId → queued user messages not yet visible in the transcript */
   const queuedUserMessages = ref<Map<string, Message[]>>(new Map())
+  /** sessionId → active clarify prompt for that run */
+  const pendingClarifies = ref<Map<string, PendingClarify>>(new Map())
+  const activePendingClarify = computed(() => {
+    const sid = activeSessionId.value
+    return sid ? pendingClarifies.value.get(sid) || null : null
+  })
 
   // 自动播放语音开关
   const autoPlaySpeechEnabled = ref(false)
@@ -395,11 +419,11 @@ export const useChatStore = defineStore('chat', () => {
     return streamStates.value.has(sessionId) || serverWorking.value.has(sessionId)
   }
 
-  async function loadSessions() {
+  async function loadSessions(profile?: string | null, preferredSessionId?: string | null) {
     isLoadingSessions.value = true
     sessionsError.value = null
     try {
-      const list = await fetchSessions()
+      const list = await fetchSessions(undefined, undefined, profile || undefined)
       const fresh = list.map(mapHermesSession)
       // Preserve already-loaded messages for sessions that are still present,
       // so we don't blow away the active session's messages on refresh.
@@ -410,11 +434,18 @@ export const useChatStore = defineStore('chat', () => {
       }
       sessions.value = fresh
 
-      // Restore last active session, fallback to most recent
-      const savedId = activeSessionId.value
-      const targetId = savedId && sessions.value.some(s => s.id === savedId)
-        ? savedId
-        : sessions.value[0]?.id
+      // Restore route-selected session first, then current, then persisted,
+      // then fallback to the most recent session.
+      const currentId = activeSessionId.value
+      const legacyActiveKey = legacyStorageKey()
+      const storedId = getItemBestEffort(storageKey()) || (legacyActiveKey ? getItemBestEffort(LEGACY_STORAGE_KEY) : null)
+      const targetId = preferredSessionId && sessions.value.some(s => s.id === preferredSessionId)
+        ? preferredSessionId
+        : currentId && sessions.value.some(s => s.id === currentId)
+          ? currentId
+          : storedId && sessions.value.some(s => s.id === storedId)
+            ? storedId
+            : sessions.value[0]?.id
       if (targetId) {
         await switchSession(targetId)
       }
@@ -436,7 +467,7 @@ export const useChatStore = defineStore('chat', () => {
     const sid = activeSessionId.value
     if (!sid) return false
     try {
-      const detail = await fetchSession(sid)
+      const detail = await fetchSession(sid, activeSession.value?.profile)
       if (!detail) return false
       const target = sessions.value.find(s => s.id === sid)
       if (!target) return false
@@ -483,6 +514,10 @@ export const useChatStore = defineStore('chat', () => {
         const timeout = setTimeout(() => reject(new Error('resume timeout')), 15_000)
         resumeSession(sessionId, (data) => {
           clearTimeout(timeout)
+          if (data.session_id && data.session_id !== sessionId) {
+            resolve()
+            return
+          }
           const targetSession = sessions.value.find(s => s.id === sessionId)
           if (!targetSession) {
             resolve()
@@ -540,11 +575,17 @@ export const useChatStore = defineStore('chat', () => {
                 setAbortState({ aborting: true, synced: null })
               } else if (e.event === 'abort.completed') {
                 setAbortState({ aborting: false, synced: e.synced ?? false })
+              } else if (String(e.event || '').startsWith('subagent.')) {
+                handleSubagentEvent(sessionId, e as RunEvent)
+              } else if (e.event === 'clarify.requested') {
+                handleClarifyRequested(sessionId, e as RunEvent)
+              } else if (e.event === 'clarify.resolved') {
+                handleClarifyResolved(sessionId, e as RunEvent)
               }
             }
           }
           resolve()
-        })
+        }, activeSession.value?.profile)
       })
     } catch (err) {
       console.error('Failed to load session messages via resume:', err)
@@ -555,7 +596,9 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     // Resume in-flight run event listeners if needed
-    resumeServerWorkingRun(sessionId)
+    if (activeSessionId.value === sessionId) {
+      resumeServerWorkingRun(sessionId)
+    }
   }
 
   function newChat() {
@@ -588,7 +631,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function deleteSession(sessionId: string) {
-    await deleteSessionApi(sessionId)
+    const target = sessions.value.find(s => s.id === sessionId)
+    await deleteSessionApi(sessionId, target?.profile)
     sessions.value = sessions.value.filter(s => s.id !== sessionId)
     if (activeSessionId.value === sessionId) {
       if (sessions.value.length > 0) {
@@ -652,6 +696,36 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
+  function handleClarifyRequested(sessionId: string, evt: RunEvent) {
+    const clarifyId = String((evt as any).clarify_id || '').trim()
+    if (!clarifyId) return
+    pendingClarifies.value.set(sessionId, {
+      sessionId,
+      clarifyId,
+      question: String((evt as any).question || '').trim(),
+      choices: Array.isArray((evt as any).choices)
+        ? (evt as any).choices.map((choice: unknown) => String(choice)).filter(Boolean)
+        : [],
+      runId: evt.run_id,
+    })
+  }
+
+  function handleClarifyResolved(sessionId: string, evt: RunEvent) {
+    const clarifyId = String((evt as any).clarify_id || '').trim()
+    const current = pendingClarifies.value.get(sessionId)
+    if (!clarifyId || current?.clarifyId === clarifyId) {
+      pendingClarifies.value.delete(sessionId)
+    }
+  }
+
+  function respondClarify(clarifyId: string, response: string) {
+    const sid = activeSessionId.value
+    if (!sid || !clarifyId) return
+    const profile = activeSession.value?.profile || useProfilesStore().activeProfileName || undefined
+    respondClarifyApi(sid, clarifyId, response, profile)
+    pendingClarifies.value.delete(sid)
+  }
+
   function showDequeuedUserMessage(sessionId: string, queueId: string) {
     const queue = queuedUserMessages.value.get(sessionId)
     if (!queue?.length) return
@@ -681,6 +755,74 @@ export const useChatStore = defineStore('chat', () => {
     } else {
       queueLengths.value.delete(sessionId)
     }
+  }
+
+  function handleSubagentEvent(sessionId: string, evt: RunEvent) {
+    const eventName = String(evt.event || '')
+    if (!eventName.startsWith('subagent.')) return
+
+    const subagentId = String((evt as any).subagent_id || `${(evt as any).task_index ?? 0}`)
+    const toolCallId = `subagent:${evt.run_id || 'run'}:${subagentId}`
+    const taskIndex = Number((evt as any).task_index ?? 0)
+    const taskCount = Math.max(1, Number((evt as any).task_count ?? 1) || 1)
+    const label = `${taskIndex + 1}/${taskCount}`
+    const status = String((evt as any).status || 'completed')
+    const goal = String((evt as any).goal || '').trim()
+    const text = String(evt.text || evt.preview || '').trim()
+    const summary = String((evt as any).summary || '').trim()
+    const toolName = String(evt.tool || evt.name || '').trim()
+    const toolCount = Number((evt as any).tool_count || 0)
+    const duration = Number((evt as any).duration_seconds ?? (evt as any).duration)
+
+    let preview = text || summary || goal || `subagent ${label}`
+    if (eventName === 'subagent.start') {
+      preview = `subagent ${label} started${goal ? `: ${goal}` : ''}`
+    } else if (eventName === 'subagent.tool') {
+      preview = `subagent ${label}${toolCount ? ` turn ${toolCount}` : ''}${toolName ? `: ${toolName}` : ''}${text ? ` - ${text}` : ''}`
+    } else if (eventName === 'subagent.progress') {
+      preview = `subagent ${label}: ${text || 'working'}`
+    } else if (eventName === 'subagent.complete') {
+      preview = `subagent ${label} ${status}${summary ? `: ${summary}` : ''}`
+    }
+
+    const msgs = getSessionMsgs(sessionId)
+    const existing = msgs.find(m => m.role === 'tool' && m.toolCallId === toolCallId)
+    const toolStatus: Message['toolStatus'] = eventName === 'subagent.complete'
+      ? (status === 'completed' ? 'done' : 'error')
+      : existing?.toolStatus === 'done' || existing?.toolStatus === 'error'
+        ? existing.toolStatus
+      : 'running'
+    const update: Partial<Message> = {
+      toolName: 'delegate_task',
+      toolCallId,
+      toolPreview: preview.slice(0, 220),
+      toolStatus,
+    }
+    if (Number.isFinite(duration)) {
+      update.toolDuration = duration
+    }
+    if (eventName === 'subagent.complete') {
+      update.toolResult = JSON.stringify({
+          status,
+          summary: summary || text,
+          api_calls: (evt as any).api_calls,
+          input_tokens: (evt as any).input_tokens,
+          output_tokens: (evt as any).output_tokens,
+        }, null, 2)
+    }
+
+    if (existing) {
+      updateMessage(sessionId, existing.id, update)
+      return
+    }
+
+    addMessage(sessionId, {
+      id: uid(),
+      role: 'tool',
+      content: '',
+      timestamp: Date.now(),
+      ...update,
+    } as Message)
   }
 
   function updateSessionTitle(sessionId: string) {
@@ -780,6 +922,7 @@ export const useChatStore = defineStore('chat', () => {
       const runPayload = {
         input,
         session_id: sid,
+        profile: activeSession.value?.profile || useProfilesStore().activeProfileName || undefined,
         model: appStore.selectedModel || undefined,
         provider: appStore.selectedProvider || undefined,
         queue_id: userMsg.id,
@@ -793,6 +936,7 @@ export const useChatStore = defineStore('chat', () => {
       const cleanup = () => {
         streamStates.value.delete(sid)
         serverWorking.value.delete(sid)
+        pendingClarifies.value.delete(sid)
       }
 
       // Per-active-run flags used to detect silently-swallowed errors at run.completed.
@@ -1027,6 +1171,26 @@ export const useChatStore = defineStore('chat', () => {
               break
             }
 
+            case 'subagent.start':
+            case 'subagent.tool':
+            case 'subagent.progress':
+            case 'subagent.complete': {
+              runHadToolActivity = true
+              handleSubagentEvent(sid, evt)
+              break
+            }
+
+            case 'clarify.requested': {
+              handleClarifyRequested(sid, evt)
+              break
+            }
+
+            case 'clarify.resolved':
+            case 'clarify.failed': {
+              handleClarifyResolved(sid, evt)
+              break
+            }
+
             case 'run.completed': {
               const msgs = getSessionMsgs(sid)
               const lastMsg = activeAssistantMessageId
@@ -1238,6 +1402,7 @@ export const useChatStore = defineStore('chat', () => {
       closed = true
       streamStates.value.delete(sid)
       serverWorking.value.delete(sid)
+      pendingClarifies.value.delete(sid)
       // Unregister from global session handlers
       unregisterSessionHandlers(sid)
     }
@@ -1452,6 +1617,26 @@ export const useChatStore = defineStore('chat', () => {
           break
         }
 
+        case 'subagent.start':
+        case 'subagent.tool':
+        case 'subagent.progress':
+        case 'subagent.complete': {
+          runHadToolActivity = true
+          handleSubagentEvent(sid, evt)
+          break
+        }
+
+        case 'clarify.requested': {
+          handleClarifyRequested(sid, evt)
+          break
+        }
+
+        case 'clarify.resolved':
+        case 'clarify.failed': {
+          handleClarifyResolved(sid, evt)
+          break
+        }
+
         case 'run.completed': {
           const hasQueue = (evt as any).queue_remaining > 0
           if (hasQueue) {
@@ -1604,6 +1789,10 @@ export const useChatStore = defineStore('chat', () => {
       onAbortCompleted: (evt) => handleEvent(evt),
       onUsageUpdated: (evt) => handleEvent(evt),
       onRunQueued: (evt) => handleEvent(evt),
+      onSubagentEvent: (evt) => handleEvent(evt),
+      onClarifyRequested: (evt) => handleEvent(evt),
+      onClarifyResolved: (evt) => handleEvent(evt),
+      onClarifyFailed: (evt) => handleEvent(evt),
     })
 
     // No need to emit resume here — switchSession already did it.
@@ -1663,7 +1852,7 @@ export const useChatStore = defineStore('chat', () => {
               activeSession.value.messages = mapHermesMessages(data.messages as any[])
             }
             resumeServerWorkingRun(sid)
-          })
+          }, activeSession.value?.profile)
         }
       }
     })
@@ -1749,6 +1938,9 @@ export const useChatStore = defineStore('chat', () => {
     isAborting,
     queueLengths,
     queuedUserMessages,
+    pendingClarifies,
+    activePendingClarify,
+    respondClarify,
     removeQueuedMessage,
     isLoadingSessions,
     sessionsLoaded,

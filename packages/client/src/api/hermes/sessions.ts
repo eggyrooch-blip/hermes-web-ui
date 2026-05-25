@@ -22,6 +22,7 @@ export interface SessionSummary {
   actual_cost_usd: number | null
   cost_status: string
   workspace?: string | null
+  profile?: string | null
 }
 
 export interface SessionDetail extends SessionSummary {
@@ -48,10 +49,11 @@ export interface HermesMessage {
   reasoning: string | null
 }
 
-export async function fetchSessions(source?: string, limit?: number): Promise<SessionSummary[]> {
+export async function fetchSessions(source?: string, limit?: number, profile?: string | null): Promise<SessionSummary[]> {
   const params = new URLSearchParams()
   if (source) params.set('source', source)
   if (limit) params.set('limit', String(limit))
+  if (profile) params.set('profile', profile)
   const query = params.toString()
   const res = await request<{ sessions: SessionSummary[] }>(`/api/hermes/sessions${query ? `?${query}` : ''}`)
   return res.sessions
@@ -60,10 +62,11 @@ export async function fetchSessions(source?: string, limit?: number): Promise<Se
 /**
  * Fetch Hermes sessions only (exclude api_server source)
  */
-export async function fetchHermesSessions(source?: string, limit?: number): Promise<SessionSummary[]> {
+export async function fetchHermesSessions(source?: string, limit?: number, profile?: string | null): Promise<SessionSummary[]> {
   const params = new URLSearchParams()
   if (source) params.set('source', source)
   if (limit) params.set('limit', String(limit))
+  if (profile) params.set('profile', profile)
   const query = params.toString()
   const res = await request<{ sessions: SessionSummary[] }>(`/api/hermes/sessions/hermes${query ? `?${query}` : ''}`)
   return res.sessions
@@ -79,9 +82,12 @@ export async function searchSessions(q: string, source?: string, limit?: number)
   return res.results
 }
 
-export async function fetchSession(id: string): Promise<SessionDetail | null> {
+export async function fetchSession(id: string, profile?: string | null): Promise<SessionDetail | null> {
   try {
-    const res = await request<{ session: SessionDetail }>(`/api/hermes/sessions/${id}`)
+    const params = new URLSearchParams()
+    if (profile) params.set('profile', profile)
+    const query = params.toString()
+    const res = await request<{ session: SessionDetail }>(`/api/hermes/sessions/${id}${query ? `?${query}` : ''}`)
     return res.session
   } catch {
     return null
@@ -91,18 +97,24 @@ export async function fetchSession(id: string): Promise<SessionDetail | null> {
 /**
  * Fetch Hermes session detail only (exclude api_server source)
  */
-export async function fetchHermesSession(id: string): Promise<SessionDetail | null> {
+export async function fetchHermesSession(id: string, profile?: string | null): Promise<SessionDetail | null> {
   try {
-    const res = await request<{ session: SessionDetail }>(`/api/hermes/sessions/hermes/${id}`)
+    const params = new URLSearchParams()
+    if (profile) params.set('profile', profile)
+    const query = params.toString()
+    const res = await request<{ session: SessionDetail }>(`/api/hermes/sessions/hermes/${id}${query ? `?${query}` : ''}`)
     return res.session
   } catch {
     return null
   }
 }
 
-export async function deleteSession(id: string): Promise<boolean> {
+export async function deleteSession(id: string, profile?: string | null): Promise<boolean> {
   try {
-    await request(`/api/hermes/sessions/${id}`, { method: 'DELETE' })
+    const params = new URLSearchParams()
+    if (profile) params.set('profile', profile)
+    const query = params.toString()
+    await request(`/api/hermes/sessions/${id}${query ? `?${query}` : ''}`, { method: 'DELETE' })
     return true
   } catch {
     return false
