@@ -85,8 +85,15 @@ export function resolveProfileForOpenId(openid: string): string | null {
       if (!existsSync(dbPath) || statSync(dbPath).size === 0) continue
       const db = new DatabaseSync(dbPath, { readOnly: true })
       try {
+        const columns = new Set((db.prepare('PRAGMA table_info(multitenancy_routing)').all() as Array<{ name: string }>).map(column => column.name))
+        const predicates = ['open_id = ?', 'active = 1']
+        if (columns.has('kind')) predicates.push("(kind = 'user' OR kind IS NULL OR kind = '')")
+        if (columns.has('provenance')) predicates.push("provenance = 'sync'")
+        const orderBy = columns.has('kind')
+          ? "CASE WHEN kind = 'user' THEN 0 WHEN kind IS NULL OR kind = '' THEN 1 ELSE 2 END, profile_name"
+          : 'profile_name'
         const row = db.prepare(
-          'SELECT profile_name FROM multitenancy_routing WHERE open_id = ? AND active = 1 LIMIT 1',
+          `SELECT profile_name FROM multitenancy_routing WHERE ${predicates.join(' AND ')} ORDER BY ${orderBy} LIMIT 1`,
         ).get(openid) as { profile_name?: string } | undefined
         const profile = row?.profile_name?.trim()
         if (profile && config.requiredProfile && profile !== config.requiredProfile) return null

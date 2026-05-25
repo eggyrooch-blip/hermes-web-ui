@@ -26,6 +26,10 @@ vi.mock('vue-i18n', () => ({
       const values: Record<string, string> = {
         'sidebar.profiles': 'Profiles',
         'profiles.create': 'Create Profile',
+        'profiles.groups.user': 'Personal',
+        'profiles.groups.agent': 'Agents',
+        'profiles.groups.group': 'Groups',
+        'profiles.groups.other': 'Other',
         'profiles.avatar.customize': 'Customize Avatar',
         'profiles.avatar.randomize': 'Randomize',
         'profiles.avatar.reset': 'Reset',
@@ -44,7 +48,16 @@ vi.mock('vue-i18n', () => ({
 vi.mock('naive-ui', () => ({
   NSelect: {
     props: ['value', 'options', 'loading', 'size'],
-    template: '<select><option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option></select>',
+    template: `
+      <select>
+        <template v-for="option in options" :key="option.key || option.value">
+          <optgroup v-if="option.type === 'group'" :label="option.label">
+            <option v-for="child in option.children" :key="child.value" :value="child.value">{{ child.label }}</option>
+          </optgroup>
+          <option v-else :value="option.value">{{ option.label }}</option>
+        </template>
+      </select>
+    `,
   },
   NButton: {
     props: ['title', 'size', 'quaternary', 'circle', 'secondary', 'type', 'loading'],
@@ -77,10 +90,10 @@ describe('ProfileSelector', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     profilesStoreMock.profiles = [
-      { name: 'feishu_g41a5b5g', active: true, model: '', gateway: '', alias: '', avatar: { type: 'generated', seed: 'current-seed' } },
+      { name: 'feishu_g41a5b5g', active: true, model: '', gateway: '', alias: '', kind: 'user', avatar: { type: 'generated', seed: 'current-seed' } },
     ]
     profilesStoreMock.activeProfileName = 'feishu_g41a5b5g'
-    profilesStoreMock.activeProfile = { name: 'feishu_g41a5b5g', active: true, model: '', gateway: '', alias: '', avatar: { type: 'generated', seed: 'current-seed' } }
+    profilesStoreMock.activeProfile = { name: 'feishu_g41a5b5g', active: true, model: '', gateway: '', alias: '', kind: 'user', avatar: { type: 'generated', seed: 'current-seed' } }
   })
 
   it('shows the active profile avatar beside the upstream selector', () => {
@@ -124,5 +137,33 @@ describe('ProfileSelector', () => {
 
     await wrapper.find('.save-created').trigger('click')
     expect(profilesStoreMock.fetchProfiles).toHaveBeenCalled()
+  })
+
+  it('groups owner-scoped profiles by profile kind and strips owner prefixes from group labels', () => {
+    profilesStoreMock.profiles = [
+      { name: 'feishu_g41a5b5g', active: true, model: '', gateway: '', alias: '', kind: 'user' },
+      { name: 'webui_hash_coder', active: false, model: '', gateway: '', alias: '', kind: 'agent', displayLabel: 'coder' },
+      {
+        name: 'feishu_group_alpha',
+        active: false,
+        model: '',
+        gateway: '',
+        alias: '',
+        kind: 'group',
+        ownerOpenId: 'ou_owner',
+        displayLabel: 'ou_owner-研发群',
+      },
+      { name: 'legacy_profile', active: false, model: '', gateway: '', alias: '' },
+    ]
+
+    const wrapper = mount(ProfileSelector)
+
+    const groups = wrapper.findAll('optgroup')
+    expect(groups.map(group => group.attributes('label'))).toEqual(['Personal', 'Agents', 'Groups', 'Other'])
+    expect(wrapper.text()).toContain('feishu_g41a5b5g')
+    expect(wrapper.text()).toContain('coder · webui_hash_coder')
+    expect(wrapper.text()).toContain('研发群 · feishu_group_alpha')
+    expect(wrapper.text()).not.toContain('ou_owner-研发群')
+    expect(wrapper.text()).toContain('legacy_profile')
   })
 })

@@ -280,7 +280,7 @@ describe('multitenancy profile resolution', () => {
     process.env = originalEnv
   })
 
-  function makeRoutingDb(rows: Array<{ user_id: string; profile_name: string; open_id: string; active?: number; owner_open_id?: string; provenance?: string }>) {
+  function makeRoutingDb(rows: Array<{ user_id: string; profile_name: string; open_id: string; active?: number; owner_open_id?: string; provenance?: string; kind?: string | null }>) {
     const dir = mkdtempSync(join(tmpdir(), 'hermes-routing-'))
     const dbPath = join(dir, 'multitenancy.db')
     const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite')
@@ -293,12 +293,13 @@ describe('multitenancy profile resolution', () => {
           open_id TEXT NOT NULL,
           active INTEGER NOT NULL DEFAULT 1,
           owner_open_id TEXT,
+          kind TEXT DEFAULT 'user',
           provenance TEXT DEFAULT 'sync'
         );
       `)
-      const stmt = db.prepare('INSERT INTO multitenancy_routing (user_id, profile_name, open_id, active, owner_open_id, provenance) VALUES (?, ?, ?, ?, ?, ?)')
+      const stmt = db.prepare('INSERT INTO multitenancy_routing (user_id, profile_name, open_id, active, owner_open_id, kind, provenance) VALUES (?, ?, ?, ?, ?, ?, ?)')
       for (const row of rows) {
-        stmt.run(row.user_id, row.profile_name, row.open_id, row.active ?? 1, row.owner_open_id ?? row.open_id, row.provenance ?? 'sync')
+        stmt.run(row.user_id, row.profile_name, row.open_id, row.active ?? 1, row.owner_open_id ?? row.open_id, row.kind === undefined ? 'user' : row.kind, row.provenance ?? 'sync')
       }
     } finally {
       db.close()
@@ -311,6 +312,82 @@ describe('multitenancy profile resolution', () => {
     const { resolveProfileForOpenId } = await loadRequestContext({ HERMES_MULTITENANCY_DB: dbPath })
 
     expect(resolveProfileForOpenId('ou_sunke')).toBe('sunke')
+  })
+
+  it('resolves only the canonical synced user row when an agent row reuses the same open_id', async () => {
+    const dbPath = makeRoutingDb([
+      {
+        user_id: 'webui:ou_sunke:agent',
+        profile_name: 'agent_profile',
+        open_id: 'ou_sunke',
+        owner_open_id: 'ou_sunke',
+        kind: 'agent',
+        provenance: 'sync',
+      },
+      {
+        user_id: 'sunke',
+        profile_name: 'feishu_sunke',
+        open_id: 'ou_sunke',
+        owner_open_id: 'ou_sunke',
+        kind: 'user',
+        provenance: 'sync',
+      },
+    ])
+    const { resolveProfileForOpenId } = await loadRequestContext({ HERMES_MULTITENANCY_DB: dbPath })
+
+    expect(resolveProfileForOpenId('ou_sunke')).toBe('feishu_sunke')
+  })
+
+  it('keeps OAuth profile binding compatible with migrated rows whose kind is still null', async () => {
+    const dbPath = makeRoutingDb([{
+      user_id: 'sunke',
+      profile_name: 'feishu_sunke',
+      open_id: 'ou_sunke',
+      owner_open_id: 'ou_sunke',
+      kind: null,
+      provenance: 'sync',
+    }])
+    const { resolveProfileForOpenId } = await loadRequestContext({ HERMES_MULTITENANCY_DB: dbPath })
+
+    expect(resolveProfileForOpenId('ou_sunke')).toBe('feishu_sunke')
+  })
+
+  it('prefers an explicit user kind over a legacy null-kind row for the same open_id', async () => {
+    const dbPath = makeRoutingDb([
+      {
+        user_id: 'legacy',
+        profile_name: 'legacy_sunke',
+        open_id: 'ou_sunke',
+        owner_open_id: 'ou_sunke',
+        kind: null,
+        provenance: 'sync',
+      },
+      {
+        user_id: 'sunke',
+        profile_name: 'feishu_sunke',
+        open_id: 'ou_sunke',
+        owner_open_id: 'ou_sunke',
+        kind: 'user',
+        provenance: 'sync',
+      },
+    ])
+    const { resolveProfileForOpenId } = await loadRequestContext({ HERMES_MULTITENANCY_DB: dbPath })
+
+    expect(resolveProfileForOpenId('ou_sunke')).toBe('feishu_sunke')
+  })
+
+  it('keeps OAuth profile binding compatible with migrated rows whose kind is empty', async () => {
+    const dbPath = makeRoutingDb([{
+      user_id: 'sunke',
+      profile_name: 'feishu_sunke',
+      open_id: 'ou_sunke',
+      owner_open_id: 'ou_sunke',
+      kind: '',
+      provenance: 'sync',
+    }])
+    const { resolveProfileForOpenId } = await loadRequestContext({ HERMES_MULTITENANCY_DB: dbPath })
+
+    expect(resolveProfileForOpenId('ou_sunke')).toBe('feishu_sunke')
   })
 
   it('rejects OAuth profile binding when the route is not the required canonical profile', async () => {

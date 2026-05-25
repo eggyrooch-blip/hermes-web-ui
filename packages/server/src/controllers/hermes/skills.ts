@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from 'fs/promises'
+import { readdir, readFile, realpath, stat } from 'fs/promises'
 import { isAbsolute, join, relative, resolve } from 'path'
 import { createHash } from 'crypto'
 import { homedir } from 'os'
@@ -8,9 +8,10 @@ import {
   safeReadFile, extractDescription, listFilesRecursive, getHermesDir,
   type SkillSource,
 } from '../../services/config-helpers'
-import { pinSkill } from '../../services/hermes/hermes-cli'
+import { validateSkillName } from '../../services/hermes/hermes-cli'
 import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 import { isSensitivePath } from '../../services/hermes/file-provider'
+import { safeFileStore } from '../../services/safe-file-store'
 
 /** Read bundled manifest as a name→hash map from ~/.hermes/skills/.bundled_manifest */
 function readBundledManifest(manifestContent: string | null): Map<string, string> {
@@ -151,6 +152,79 @@ async function readRequestConfig(ctx: any): Promise<Record<string, any>> {
   return (YAML.load(raw) as Record<string, any>) || {}
 }
 
+async function updateRequestConfig(
+  ctx: any,
+  updater: (config: Record<string, any>) => Record<string, any>,
+): Promise<void> {
+  if (!isChatPlaneRequest(ctx)) {
+    await updateConfigYaml(updater)
+    return
+  }
+  await safeFileStore.updateYaml(join(getRequestProfileDir(ctx), 'config.yaml'), updater, { backup: true })
+}
+
+async function buildSkillInfo(
+  name: string,
+  skillMd: string,
+  skillDir: string,
+  bundledManifest: Map<string, string>,
+  hubNames: Set<string>,
+  disabledList: string[],
+  usageStats: Map<string, UsageStats>,
+  chatPlane: boolean,
+) {
+  const source = getSkillSource(name, bundledManifest, hubNames)
+  let modified = false
+  if (source === 'builtin' && !chatPlane) {
+    const manifestHash = bundledManifest.get(name)
+    if (manifestHash) {
+      const currentHash = await dirHash(skillDir)
+      modified = currentHash !== manifestHash
+    }
+  }
+  const usage = usageStats.get(name)
+  return {
+    name,
+    description: extractDescription(skillMd),
+    enabled: !disabledList.includes(name),
+    source,
+    modified: modified || undefined,
+    patchCount: usage?.patch_count,
+    useCount: usage?.use_count,
+    viewCount: usage?.view_count,
+    pinned: usage?.pinned || undefined,
+  }
+}
+
+async function collectSkillsRecursive(
+  directory: string,
+  bundledManifest: Map<string, string>,
+  hubNames: Set<string>,
+  disabledList: string[],
+  usageStats: Map<string, UsageStats>,
+  chatPlane: boolean,
+  visited = new Set<string>(),
+): Promise<any[]> {
+  const realDirectory = await realpath(directory).catch(() => resolve(directory))
+  if (visited.has(realDirectory)) return []
+  visited.add(realDirectory)
+
+  const entries = await readdir(directory, { withFileTypes: true }).catch(() => [] as import('fs').Dirent[])
+  const skills: any[] = []
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue
+    if (!await isDirectoryLike(directory, entry)) continue
+    const dir = join(directory, entry.name)
+    const skillMd = await safeReadFile(join(dir, 'SKILL.md'))
+    if (skillMd) {
+      skills.push(await buildSkillInfo(entry.name, skillMd, dir, bundledManifest, hubNames, disabledList, usageStats, chatPlane))
+      continue
+    }
+    skills.push(...await collectSkillsRecursive(dir, bundledManifest, hubNames, disabledList, usageStats, chatPlane, visited))
+  }
+  return skills
+}
+
 /**
  * Scan for skills at different directory depths.
  *
@@ -213,35 +287,7 @@ export async function scanSkillsDir(
 
   for (const cat of categoryDirs) {
     const catDir = join(skillsDir, cat.name)
-    const subEntries = await readdir(catDir, { withFileTypes: true })
-    const skills: any[] = []
-    for (const se of subEntries) {
-      if (!await isDirectoryLike(catDir, se)) continue
-      const skillMd = await safeReadFile(join(catDir, se.name, 'SKILL.md'))
-      if (skillMd) {
-        const source = getSkillSource(se.name, bundledManifest, hubNames)
-        let modified = false
-        if (source === 'builtin' && !chatPlane) {
-          const manifestHash = bundledManifest.get(se.name)
-          if (manifestHash) {
-            const currentHash = await dirHash(join(catDir, se.name))
-            modified = currentHash !== manifestHash
-          }
-        }
-        const usage = usageStats.get(se.name)
-        skills.push({
-          name: se.name,
-          description: extractDescription(skillMd),
-          enabled: !disabledList.includes(se.name),
-          source,
-          modified: modified || undefined,
-          patchCount: usage?.patch_count,
-          useCount: usage?.use_count,
-          viewCount: usage?.view_count,
-          pinned: usage?.pinned || undefined,
-        })
-      }
-    }
+    const skills = await collectSkillsRecursive(catDir, bundledManifest, hubNames, disabledList, usageStats, chatPlane)
     if (skills.length > 0) {
       categories.push({ name: cat.name, description: cat.description, skills })
     }
@@ -337,7 +383,53 @@ async function findSkillDirInRoot(rootDir: string, category: string, skillName: 
   const skillDir = resolve(rootDir, category === 'misc' ? skillName : join(category, skillName))
   if (!isInsideDirectory(rootDir, skillDir)) return null
   const skillMd = await safeReadFile(join(skillDir, 'SKILL.md'))
-  return skillMd !== null ? skillDir : null
+  if (skillMd !== null) return skillDir
+  if (category === 'misc') return null
+
+  const categoryDir = resolve(rootDir, category)
+  if (!isInsideDirectory(rootDir, categoryDir)) return null
+  return findNestedSkillDir(categoryDir, skillName)
+}
+
+async function findNestedSkillDir(directory: string, skillName: string, visited = new Set<string>()): Promise<string | null> {
+  const realDirectory = await realpath(directory).catch(() => resolve(directory))
+  if (visited.has(realDirectory)) return null
+  visited.add(realDirectory)
+
+  const entries = await readdir(directory, { withFileTypes: true }).catch(() => [] as import('fs').Dirent[])
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue
+    if (!await isDirectoryLike(directory, entry)) continue
+    const dir = join(directory, entry.name)
+    if (entry.name === skillName && await safeReadFile(join(dir, 'SKILL.md')) !== null) {
+      return dir
+    }
+    const nested = await findNestedSkillDir(dir, skillName, visited)
+    if (nested) return nested
+  }
+  return null
+}
+
+async function updatePinnedSkill(skillsDir: string, name: string, pinned: boolean): Promise<void> {
+  validateSkillName(name)
+  const usagePath = join(skillsDir, '.usage.json')
+  await safeFileStore.updateText(usagePath, (raw) => {
+    let usage: Record<string, any> = {}
+    try {
+      usage = raw ? JSON.parse(raw) : {}
+    } catch {
+      usage = {}
+    }
+    const current = usage[name] && typeof usage[name] === 'object' ? usage[name] : {}
+    usage[name] = {
+      ...current,
+      patch_count: current.patch_count ?? 0,
+      use_count: current.use_count ?? 0,
+      view_count: current.view_count ?? 0,
+      pinned,
+    }
+    return `${JSON.stringify(usage, null, 2)}\n`
+  })
 }
 
 async function resolveSkillDirFromConfig(
@@ -412,7 +504,8 @@ export async function toggle(ctx: any) {
     return
   }
   try {
-    await updateConfigYaml((config) => {
+    validateSkillName(name)
+    await updateRequestConfig(ctx, (config) => {
       if (!config.skills) config.skills = {}
       if (!Array.isArray(config.skills.disabled)) config.skills.disabled = []
       const disabled = config.skills.disabled as string[]
@@ -484,7 +577,7 @@ export async function pin_(ctx: any) {
     return
   }
   try {
-    await pinSkill(name, pinned)
+    await updatePinnedSkill(join(requestHermesDir(ctx), 'skills'), name, pinned)
     ctx.body = { success: true }
   } catch (err: any) {
     ctx.status = 500

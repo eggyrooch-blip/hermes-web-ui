@@ -599,6 +599,12 @@ export default {
   profiles: {
     title: '設定檔',
     create: '建立設定檔',
+    groups: {
+      user: '個人',
+      agent: '智能體',
+      group: '群聊',
+      other: '其他',
+    },
     import: '匯入',
     export: '匯出',
     rename: '重新命名',

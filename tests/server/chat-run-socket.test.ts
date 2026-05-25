@@ -489,6 +489,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
       session_id: sessionId,
       content: expect.stringContaining('Run broker 503'),
     }))
+    await waitFor(() => !!getSessionDetail(sessionId)?.messages?.length)
     expect(getSessionDetail(sessionId)?.messages).toEqual([
       expect.objectContaining({ role: 'user' }),
       expect.objectContaining({
@@ -547,6 +548,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
       session_id: sessionId,
     }, 'baiguannan')
 
+    await waitFor(() => !!getSessionDetail(sessionId)?.messages?.length)
     expect(getSessionDetail(sessionId)?.messages).toEqual([
       expect.objectContaining({ role: 'user' }),
       expect.objectContaining({

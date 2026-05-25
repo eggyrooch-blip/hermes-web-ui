@@ -606,6 +606,12 @@ export default {
   profiles: {
     title: '配置',
     create: '创建配置',
+    groups: {
+      user: '个人',
+      agent: '智能体',
+      group: '群聊',
+      other: '其他',
+    },
     avatar: {
       customize: '自定义头像',
       randomize: '随机',

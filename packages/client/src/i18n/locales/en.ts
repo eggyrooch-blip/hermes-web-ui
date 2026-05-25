@@ -614,6 +614,12 @@ export default {
   profiles: {
     title: 'Profiles',
     create: 'Create Profile',
+    groups: {
+      user: 'Personal',
+      agent: 'Agents',
+      group: 'Groups',
+      other: 'Other',
+    },
     avatar: {
       customize: 'Customize Avatar',
       randomize: 'Randomize',
