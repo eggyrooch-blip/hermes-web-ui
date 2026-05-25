@@ -194,6 +194,17 @@ describe('chat plane access control', () => {
     expect(deleteCtx.status).toBe(403)
   })
 
+  it('allows slash registry lookup in chat plane', async () => {
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const ctx = mockCtx('/api/hermes/slash/commands', 'GET')
+    const next = vi.fn(async () => {})
+
+    await enforcePlaneAccess(ctx, next)
+
+    expect(next).toHaveBeenCalledOnce()
+    expect(ctx.status).toBe(200)
+  })
+
   it('allows authenticated Feishu UAT self-service endpoints in chat plane', async () => {
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
     const statusCtx = mockCtx('/api/auth/feishu/uat/status', 'GET')

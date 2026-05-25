@@ -5,8 +5,9 @@ import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { fetchContextLength } from '@/api/hermes/sessions'
 import { setModelContext } from '@/api/hermes/model-context'
+import { fetchSlashCommands, type SlashCommand } from '@/api/hermes/slash'
 import { NButton, NTooltip, NSwitch, NModal, NInputNumber, useMessage } from 'naive-ui'
-import { computed, ref, onMounted, watch } from 'vue'
+import { computed, ref, onMounted, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const chatStore = useChatStore()
@@ -41,6 +42,113 @@ watch(autoPlaySpeech, (value) => {
 })
 
 const canSend = computed(() => inputText.value.trim() || attachments.value.length > 0)
+
+const slashCommands = ref<SlashCommand[]>([])
+const slashCommandsLoadedFor = ref<string | null>(null)
+const slashCommandsLoading = ref(false)
+const slashActiveIndex = ref(0)
+const slashSuggestionsDismissedFor = ref<string | null>(null)
+
+const slashQuery = computed(() => {
+  const text = inputText.value
+  if (!text.startsWith('/')) return null
+  if (/\s/.test(text)) return null
+  const firstToken = text.split(/\s/, 1)[0] || ''
+  if (!firstToken.startsWith('/')) return null
+  return firstToken.slice(1).toLowerCase()
+})
+
+const filteredSlashCommands = computed(() => {
+  const query = slashQuery.value
+  if (query === null) return []
+  return slashCommands.value
+    .filter(command => {
+      const name = command.name.toLowerCase()
+      const slash = command.slash.toLowerCase()
+      return !query || name.includes(query) || slash.includes(query)
+    })
+    .slice(0, 8)
+})
+
+const showSlashSuggestions = computed(() =>
+  slashQuery.value !== null
+  && filteredSlashCommands.value.length > 0
+  && slashSuggestionsDismissedFor.value !== inputText.value,
+)
+
+const slashSuggestionGroups = computed(() => {
+  const groups: Array<{ key: string; label: string; entries: Array<{ command: SlashCommand; index: number }> }> = []
+  const byLabel = new Map<string, Array<{ command: SlashCommand; index: number }>>()
+  for (const [index, command] of filteredSlashCommands.value.entries()) {
+    const label = command.category || command.source || 'Commands'
+    const existing = byLabel.get(label) || []
+    existing.push({ command, index })
+    byLabel.set(label, existing)
+  }
+  for (const [label, entries] of byLabel.entries()) {
+    groups.push({ key: label, label, entries })
+  }
+  return groups
+})
+
+const activeSlashCommand = computed(() => filteredSlashCommands.value[slashActiveIndex.value] || null)
+
+function slashCommandTestId(command: SlashCommand): string {
+  return `slash-suggestion-${command.name.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+}
+
+async function loadSlashCommands() {
+  const profile = useProfilesStore().activeProfileName || ''
+  if (slashCommandsLoadedFor.value === profile || slashCommandsLoading.value) return
+  slashCommandsLoading.value = true
+  try {
+    const response = await fetchSlashCommands(profile || undefined)
+    slashCommands.value = response.commands || []
+    slashCommandsLoadedFor.value = profile
+  } catch {
+    slashCommands.value = []
+    slashCommandsLoadedFor.value = profile
+  } finally {
+    slashCommandsLoading.value = false
+  }
+}
+
+function maybeLoadSlashCommands() {
+  if (slashQuery.value !== null) {
+    void loadSlashCommands()
+  }
+}
+
+async function selectSlashCommand(command: SlashCommand) {
+  inputText.value = `${command.slash} `
+  slashSuggestionsDismissedFor.value = null
+  await nextTick()
+  textareaRef.value?.focus()
+}
+
+function moveSlashSelection(delta: number) {
+  const count = filteredSlashCommands.value.length
+  if (!count) return
+  slashActiveIndex.value = (slashActiveIndex.value + delta + count) % count
+}
+
+watch(inputText, maybeLoadSlashCommands)
+watch(filteredSlashCommands, commands => {
+  if (!commands.length) {
+    slashActiveIndex.value = 0
+    return
+  }
+  if (slashActiveIndex.value >= commands.length) {
+    slashActiveIndex.value = commands.length - 1
+  }
+})
+watch(() => useProfilesStore().activeProfileName, () => {
+  slashCommands.value = []
+  slashCommandsLoadedFor.value = null
+  slashActiveIndex.value = 0
+  slashSuggestionsDismissedFor.value = null
+  maybeLoadSlashCommands()
+})
 
 // --- Context info ---
 
@@ -221,6 +329,32 @@ function isImeEnter(e: KeyboardEvent): boolean {
 }
 
 function handleKeydown(e: KeyboardEvent) {
+  if (showSlashSuggestions.value) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      moveSlashSelection(1)
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      moveSlashSelection(-1)
+      return
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      slashSuggestionsDismissedFor.value = inputText.value
+      return
+    }
+    if ((e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) && !isImeEnter(e)) {
+      const command = activeSlashCommand.value
+      if (command) {
+        e.preventDefault()
+        void selectSlashCommand(command)
+        return
+      }
+    }
+  }
+
   if (e.key !== 'Enter' || e.shiftKey) return
   if (isImeEnter(e)) return
 
@@ -232,6 +366,7 @@ function handleInput(e: Event) {
   const el = e.target as HTMLTextAreaElement
   el.style.height = 'auto'
   el.style.height = Math.min(el.scrollHeight, 100) + 'px'
+  maybeLoadSlashCommands()
 }
 
 function removeAttachment(id: string) {
@@ -361,6 +496,30 @@ function isImage(type: string): boolean {
         @input="handleInput"
         @paste="handlePaste"
       ></textarea>
+      <div v-if="showSlashSuggestions" class="slash-suggestions" role="listbox">
+        <div v-for="group in slashSuggestionGroups" :key="group.key" class="slash-suggestion-group">
+          <div class="slash-suggestion-group-label">{{ group.label }}</div>
+          <button
+            v-for="entry in group.entries"
+            :key="entry.command.source + ':' + entry.command.name"
+            type="button"
+            class="slash-suggestion"
+            :class="{ 'is-active': entry.index === slashActiveIndex }"
+            role="option"
+            :aria-selected="entry.index === slashActiveIndex"
+            :data-testid="slashCommandTestId(entry.command)"
+            @mouseenter="slashActiveIndex = entry.index"
+            @click="selectSlashCommand(entry.command)"
+          >
+            <span class="slash-suggestion-command">{{ entry.command.slash }}</span>
+            <span class="slash-suggestion-meta">
+              <span class="slash-suggestion-title">{{ entry.command.title }}</span>
+              <span v-if="entry.command.description" class="slash-suggestion-description">{{ entry.command.description }}</span>
+            </span>
+            <span class="slash-suggestion-source">{{ entry.command.source }}</span>
+          </button>
+        </div>
+      </div>
       <div class="input-actions">
         <NButton
           v-if="chatStore.isStreaming"
@@ -443,6 +602,95 @@ function isImage(type: string): boolean {
   flex-wrap: wrap;
   gap: 8px;
   padding: 0 0 6px;
+}
+
+.slash-suggestions {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: calc(100% + 8px);
+  max-height: 232px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid $border-color;
+  border-radius: 8px;
+  background: $bg-primary;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+  z-index: 20;
+}
+
+.slash-suggestion {
+  width: 100%;
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1.6fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: $text-primary;
+  text-align: left;
+  padding: 7px 8px;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible,
+  &.is-active {
+    background: rgba(128, 128, 128, 0.12);
+    outline: none;
+  }
+}
+
+.slash-suggestion-group + .slash-suggestion-group {
+  margin-top: 6px;
+}
+
+.slash-suggestion-group-label {
+  padding: 4px 8px 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: $text-muted;
+}
+
+.slash-suggestion-command {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: $accent-primary;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-suggestion-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.slash-suggestion-title,
+.slash-suggestion-description {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-suggestion-title {
+  font-size: 12px;
+}
+
+.slash-suggestion-description,
+.slash-suggestion-source {
+  font-size: 11px;
+  color: $text-muted;
+}
+
+.slash-suggestion-source {
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .auto-play-speech-switch {
@@ -588,6 +836,7 @@ function isImage(type: string): boolean {
 }
 
 .input-wrapper {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -670,6 +919,21 @@ function isImage(type: string): boolean {
     align-items: flex-end;
     gap: 8px;
     padding: 9px 10px;
+  }
+
+  .slash-suggestions {
+    left: 0;
+    right: 0;
+    max-height: min(260px, 50vh);
+  }
+
+  .slash-suggestion {
+    grid-template-columns: minmax(92px, 0.9fr) minmax(0, 1.4fr);
+    gap: 8px;
+  }
+
+  .slash-suggestion-source {
+    display: none;
   }
 
   .input-textarea {

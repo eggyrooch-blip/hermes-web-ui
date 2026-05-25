@@ -15,6 +15,11 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
+> [!info] 2026-05-25 worktree — slash registry 第一批贴合
+> `webui-slash-registry` 保持生产聊天执行路径在 multitenancy Run Broker，不启用 upstream `agent-bridge`。WebUI 新增 `/api/hermes/slash/commands` BFF，只负责合并本地 UI 命令与 broker 返回的 profile-scoped skill slash 元数据；可执行 skill registry 的事实源是 multitenancy `/api/run-broker/slash/commands`。
+>
+> ChatInput 在用户输入 `/` 时加载当前 profile 的 slash registry，按 category/source 分组展示，并支持键盘上下选择、Enter/Tab 插入、Esc 临时关闭；命令后出现空格即退出建议态，避免拦截正常发送。选择 skill 后仍把 `/skill ...` 作为普通聊天文本发送，server 侧继续由既有 `handle-broker-run` profile-local skill slash rewrite 在进入 Run Broker 前展开。未知 slash 保持普通用户文本，不触发 WebUI 本地路径扫描或任意 profile 读取。验证：slash/request-context/chat-input focused tests 通过，run-chat-broker/skills 回归通过，`npm run build` 通过；尚未合入、未 push、未发布生产。
+
 > [!info] 这是哪一个 web-ui？
 > **EKKO 系 `hermes-web-ui`**：`https://github.com/EKKOLearnAI/hermes-web-ui`，Koa 2 + Vue 3 + Naive UI + Pinia 全家桶。本机 fork 不在 nesquena 那条 Python+vanilla-JS 单体老版本上。
 > ⚠️ 别把它跟同名笔记里的 `hermes-webui (nesquena)` 混了——那是另一条嵌入式单体 Python 实现，对比详见 [[对比 — hermes-webui (nesquena) vs hermes-web-ui (EKKO) 架构 2026-05-06]]。
