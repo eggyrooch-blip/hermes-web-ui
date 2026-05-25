@@ -7,6 +7,7 @@ authPublicRoutes.get('/api/auth/status', ctrl.authStatus)
 authPublicRoutes.post('/api/auth/login', ctrl.login)
 authPublicRoutes.get('/api/auth/feishu/login', ctrl.feishuLogin)
 authPublicRoutes.get('/api/auth/feishu/callback', ctrl.feishuCallback)
+authPublicRoutes.get('/api/auth/kep-cli/callback/:sessionId', ctrl.kepCliCallback)
 authPublicRoutes.post('/api/auth/feishu/logout', ctrl.feishuLogout)
 authPublicRoutes.post('/api/auth/logout', ctrl.logout)
 

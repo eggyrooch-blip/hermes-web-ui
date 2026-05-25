@@ -280,6 +280,62 @@ describe('skill credential status', () => {
     })
   })
 
+  it('rewrites kep-cli OAuth callback through the public WebUI origin and proxies back to the active local listener', async () => {
+    const {
+      completeKepCliAuthCallback,
+      startKepCliAuth,
+    } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = makeProfile()
+    const kepAuth = join(profileDir, 'kep-auth')
+    writeFileSync(kepAuth, [
+      '#!/bin/sh',
+      'echo "https://auth.gotokeep.com/?response_url=http://localhost:52237&oauth2=1" >&2',
+      'sleep 0.2',
+    ].join('\n'), 'utf-8')
+    chmodSync(kepAuth, 0o755)
+    process.env.HERMES_KEP_AUTH_BIN = kepAuth
+
+    const result = await startKepCliAuth({
+      id: 'kep-cli',
+      profileName: 'feishu_sunke',
+      profileDir,
+      publicOrigin: 'https://hermes.gotokeep.com',
+    })
+
+    const authUrl = new URL(result.verification_uri)
+    const responseUrl = new URL(authUrl.searchParams.get('response_url') || '')
+    expect(responseUrl.origin).toBe('https://hermes.gotokeep.com')
+    expect(responseUrl.pathname).toMatch(/^\/api\/auth\/kep-cli\/callback\/[A-Za-z0-9_-]+$/)
+    expect(result.verification_uri).not.toContain('response_url=http://localhost')
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('kep-auth ok', { status: 200 }))
+    const callback = await completeKepCliAuthCallback({
+      sessionId: responseUrl.pathname.split('/').pop() || '',
+      query: 'code=oauth-code',
+    })
+
+    expect(fetchSpy).toHaveBeenCalledWith('http://localhost:52237/?code=oauth-code', {
+      method: 'GET',
+      redirect: 'manual',
+    })
+    expect(callback).toEqual({ status: 'ok', body: 'kep-auth ok' })
+  })
+
+  it('rejects unknown kep-cli OAuth callback sessions without contacting localhost', async () => {
+    const { completeKepCliAuthCallback } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+
+    await expect(completeKepCliAuthCallback({
+      sessionId: 'missing-session',
+      query: 'code=oauth-code',
+    })).rejects.toMatchObject({
+      status: 404,
+      message: 'kep-cli auth session was not found or has expired',
+    })
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
   it('does not treat Keep-record local credential files as authenticated without a verified QR flow', async () => {
     const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
     const profileDir = makeProfile()

@@ -5,7 +5,7 @@ import { execFile, spawn } from 'child_process'
 import type { ChildProcessByStdio } from 'child_process'
 import type { Readable } from 'stream'
 import { promisify } from 'util'
-import { createHash } from 'crypto'
+import { createHash, randomBytes } from 'crypto'
 import type { WebUser } from '../request-context'
 
 export type SkillCredentialState = 'authenticated' | 'configured' | 'missing' | 'needs_auth' | 'unknown' | 'error'
@@ -14,7 +14,20 @@ export type SkillCredentialActionKind = 'feishu_device_flow' | 'skill_flow' | 'q
 const execFileAsync = promisify(execFile)
 type KepAuthLoginProcess = ChildProcessByStdio<null, Readable, Readable>
 
-const activeKepAuthLogins = new Map<string, KepAuthLoginProcess>()
+interface KepAuthLoginSession {
+  child: KepAuthLoginProcess
+  sessionKey: string
+}
+
+interface KepAuthCallbackSession {
+  createdAt: number
+  localCallbackUrl: string
+  sessionKey: string
+}
+
+const KEP_AUTH_CALLBACK_TTL_MS = 10 * 60 * 1000
+const activeKepAuthLogins = new Map<string, KepAuthLoginSession>()
+const activeKepAuthCallbacks = new Map<string, KepAuthCallbackSession>()
 
 export interface SkillCredentialAction {
   kind: SkillCredentialActionKind
@@ -51,6 +64,7 @@ export interface SkillCredentialStartOptions {
   id: string
   profileName: string
   profileDir: string
+  publicOrigin?: string
 }
 
 interface ProfileSkill {
@@ -86,6 +100,11 @@ export interface KepCliAuthStartResult {
   status: 'auth_pending'
   verification_uri: string
   action: SkillCredentialAction
+}
+
+export interface KepCliAuthCallbackResult {
+  status: 'ok'
+  body: string
 }
 
 export async function listSkillCredentialStatuses(options: ListSkillCredentialOptions): Promise<SkillCredentialsResult> {
@@ -203,19 +222,24 @@ export async function startKepCliAuth(options: SkillCredentialStartOptions): Pro
 
   const sessionKey = `${options.profileName}:online`
   const existing = activeKepAuthLogins.get(sessionKey)
-  if (existing && !existing.killed) existing.kill()
+  if (existing && !existing.child.killed) existing.child.kill()
+  deleteKepAuthCallbacksForSessionKey(sessionKey)
 
   const child = spawn(bin, ['--profile', options.profileName, '--env', 'online', 'login'], {
     cwd: options.profileDir,
     env: kepAuthEnv(options.profileDir, options.profileName, false),
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-  activeKepAuthLogins.set(sessionKey, child)
+  activeKepAuthLogins.set(sessionKey, { child, sessionKey })
   child.on('exit', () => {
-    if (activeKepAuthLogins.get(sessionKey) === child) activeKepAuthLogins.delete(sessionKey)
+    if (activeKepAuthLogins.get(sessionKey)?.child === child) activeKepAuthLogins.delete(sessionKey)
   })
 
-  const verificationUri = await waitForKepAuthUrl(child)
+  const rawVerificationUri = await waitForKepAuthUrl(child)
+  const verificationUri = rewriteKepAuthVerificationUri(rawVerificationUri, {
+    publicOrigin: options.publicOrigin,
+    sessionKey,
+  })
   return {
     id: 'kep-cli',
     status: 'auth_pending',
@@ -225,6 +249,108 @@ export async function startKepCliAuth(options: SkillCredentialStartOptions): Pro
       label: '打开 kep-cli 认证',
       description: 'Complete kep-cli OAuth in the browser. The CLI callback writes the token into the current Hermes profile home.',
     },
+  }
+}
+
+export async function completeKepCliAuthCallback(options: { sessionId: string; query: string | URLSearchParams }): Promise<KepCliAuthCallbackResult> {
+  pruneExpiredKepAuthCallbacks()
+  const sessionId = String(options.sessionId || '').trim()
+  const session = activeKepAuthCallbacks.get(sessionId)
+  if (!session) {
+    const err: any = new Error('kep-cli auth session was not found or has expired')
+    err.status = 404
+    throw err
+  }
+  activeKepAuthCallbacks.delete(sessionId)
+
+  const target = new URL(session.localCallbackUrl)
+  const query = typeof options.query === 'string'
+    ? options.query
+    : options.query.toString()
+  target.search = query
+
+  let res: Response
+  try {
+    res = await fetch(target.toString(), {
+      method: 'GET',
+      redirect: 'manual',
+    })
+  } catch (err: any) {
+    const wrapped: any = new Error(`kep-auth local callback failed: ${err?.message || err}`)
+    wrapped.status = 502
+    throw wrapped
+  }
+
+  const body = await res.text().catch(() => '')
+  if (res.status >= 400) {
+    const err: any = new Error(body || `kep-auth local callback returned HTTP ${res.status}`)
+    err.status = 502
+    throw err
+  }
+  return {
+    status: 'ok',
+    body,
+  }
+}
+
+function rewriteKepAuthVerificationUri(rawVerificationUri: string, options: {
+  publicOrigin?: string
+  sessionKey: string
+}): string {
+  const publicOrigin = normalizePublicOrigin(options.publicOrigin)
+  if (!publicOrigin) return rawVerificationUri
+
+  const authUrl = new URL(rawVerificationUri)
+  const localCallback = authUrl.searchParams.get('response_url')
+  if (!localCallback) return rawVerificationUri
+
+  const localCallbackUrl = new URL(localCallback)
+  if (!isLocalKepAuthCallback(localCallbackUrl)) {
+    const err: any = new Error('kep-auth returned an unsafe OAuth callback URL')
+    err.status = 502
+    throw err
+  }
+
+  pruneExpiredKepAuthCallbacks()
+  const sessionId = randomBytes(18).toString('base64url')
+  activeKepAuthCallbacks.set(sessionId, {
+    createdAt: Date.now(),
+    localCallbackUrl: localCallbackUrl.toString(),
+    sessionKey: options.sessionKey,
+  })
+
+  const publicCallback = new URL(`/api/auth/kep-cli/callback/${sessionId}`, publicOrigin)
+  authUrl.searchParams.set('response_url', publicCallback.toString())
+  return authUrl.toString()
+}
+
+function normalizePublicOrigin(raw: string | undefined): string {
+  const value = String(raw || '').trim()
+  if (!value) return ''
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return ''
+    return url.origin
+  } catch {
+    return ''
+  }
+}
+
+function isLocalKepAuthCallback(url: URL): boolean {
+  if (url.protocol !== 'http:') return false
+  if (url.username || url.password) return false
+  return url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]' || url.hostname === '::1'
+}
+
+function pruneExpiredKepAuthCallbacks(now = Date.now()): void {
+  for (const [sessionId, session] of activeKepAuthCallbacks) {
+    if (now - session.createdAt > KEP_AUTH_CALLBACK_TTL_MS) activeKepAuthCallbacks.delete(sessionId)
+  }
+}
+
+function deleteKepAuthCallbacksForSessionKey(sessionKey: string): void {
+  for (const [sessionId, session] of activeKepAuthCallbacks) {
+    if (session.sessionKey === sessionKey) activeKepAuthCallbacks.delete(sessionId)
   }
 }
 

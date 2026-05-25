@@ -19,6 +19,7 @@ import { getRequestProfile } from '../services/request-context'
 import { toAuthenticatedUser, type AuthenticatedUser } from '../middleware/user-auth'
 import { getProfileDir } from '../services/hermes/hermes-profile'
 import {
+  completeKepCliAuthCallback,
   completeKeepRecordAuth,
   getSkillCredentialStartAction,
   listSkillCredentialStatuses,
@@ -418,6 +419,7 @@ export async function skillCredentialStart(ctx: Context) {
         id,
         profileName,
         profileDir: getProfileDir(profileName),
+        publicOrigin: externalRequestOrigin(ctx),
       })
       return
     }
@@ -429,6 +431,22 @@ export async function skillCredentialStart(ctx: Context) {
     })
   } catch (err: any) {
     handleUatProxyError(ctx, err)
+  }
+}
+
+export async function kepCliCallback(ctx: Context) {
+  try {
+    const sessionId = String(ctx.params?.sessionId || '').trim()
+    const result = await completeKepCliAuthCallback({
+      sessionId,
+      query: ctx.querystring || '',
+    })
+    ctx.status = 200
+    ctx.type = 'html'
+    ctx.body = result.body || '<!doctype html><meta charset="utf-8"><title>kep-cli authenticated</title><p>kep-cli authentication completed. You can close this window.</p>'
+  } catch (err: any) {
+    ctx.status = typeof err?.status === 'number' ? err.status : 500
+    ctx.body = { error: err?.message || 'kep-cli OAuth callback failed' }
   }
 }
 
