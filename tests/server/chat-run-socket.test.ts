@@ -605,6 +605,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
       session_id: sessionId,
     }, 'baiguannan')
 
+    await waitFor(() => !!getSessionDetail(sessionId)?.messages?.length)
     const assistantMessages = getSessionDetail(sessionId)?.messages.filter(message => message.role === 'assistant')
     expect(assistantMessages).toHaveLength(1)
     expect(assistantMessages?.[0]).toEqual(expect.objectContaining({
