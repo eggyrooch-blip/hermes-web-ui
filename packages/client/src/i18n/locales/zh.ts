@@ -129,6 +129,13 @@ export default {
     noChangelog: '暂无更新日志',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: '内部系统',
+      otherCredentials: '其他凭证',
+    },
+  },
+
   // 抽屉
   drawer: {
     terminal: '终端',

@@ -12,6 +12,7 @@ export interface SkillInfo {
   useCount?: number
   viewCount?: number
   pinned?: boolean
+  requiredCredentials?: string[]
 }
 
 export interface SkillCategory {
@@ -82,5 +83,16 @@ export async function pinSkillApi(name: string, pinned: boolean): Promise<void> 
   await request('/api/hermes/skills/pin', {
     method: 'PUT',
     body: JSON.stringify({ name, pinned }),
+  })
+}
+
+export async function installSkillHubSkill(skillCode: string): Promise<{
+  skill_code: string
+  required_credentials: string[]
+  source: 'aidock-skillhub'
+}> {
+  return request('/api/hermes/skills/skillhub/install', {
+    method: 'POST',
+    body: JSON.stringify({ skill_code: skillCode }),
   })
 }

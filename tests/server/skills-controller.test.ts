@@ -42,6 +42,20 @@ function chatContext(body: Record<string, unknown>) {
 }
 
 describe('skills controller scanner', () => {
+  it('registers SkillHub install before the catch-all skill file route', async () => {
+    const { skillRoutes } = await import('../../packages/server/src/routes/hermes/skills')
+    const routes = skillRoutes.stack.map((layer: any) => ({
+      path: layer.path as string,
+      methods: layer.methods as string[],
+    }))
+    const installIndex = routes.findIndex(route => route.methods.includes('POST') && route.path === '/api/hermes/skills/skillhub/install')
+    const catchAllIndex = routes.findIndex(route => route.methods.includes('GET') && route.path === '/api/hermes/skills/{*path}')
+
+    expect(installIndex).toBeGreaterThanOrEqual(0)
+    expect(catchAllIndex).toBeGreaterThanOrEqual(0)
+    expect(installIndex).toBeLessThan(catchAllIndex)
+  })
+
   it('includes profile skills installed as directory symlinks', async () => {
     const root = await mkdtemp(join(tmpdir(), 'hermes-webui-skills-'))
     const sharedSkill = join(root, 'shared', 'Keep', 'kep-prd-analysis')
@@ -111,6 +125,71 @@ describe('skills controller scanner', () => {
     expect(evalCategory?.skills).toEqual([
       expect.objectContaining({ name: 'lm-evaluation-harness', description: 'benchmark runner' }),
     ])
+  })
+
+  it('reports required credentials for scanned skills', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-webui-skill-credentials-'))
+    const profileSkills = join(root, 'profile', 'skills')
+    await mkdir(join(profileSkills, 'internal', 'mixed-helper'), { recursive: true })
+    await writeFile(
+      join(profileSkills, 'internal', 'mixed-helper', 'SKILL.md'),
+      [
+        '---',
+        'name: mixed-helper',
+        'metadata:',
+        '  hermes:',
+        '    tags: [aidock]',
+        '---',
+        'Fetch proxy.cms.gotokeep.com with kep-auth and write a Feishu docx.',
+      ].join('\n'),
+    )
+
+    const categories = await scanSkillsDir(profileSkills, new Map(), new Set(), [], new Map(), true)
+
+    const internal = categories.find((category: any) => category.name === 'internal')
+    expect(internal?.skills).toEqual([
+      expect.objectContaining({
+        name: 'mixed-helper',
+        requiredCredentials: ['lark-cli', 'kep-cli'],
+      }),
+    ])
+  })
+
+  it('marks Hermes SkillHub installs as hub source in the skills list', async () => {
+    const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-webui-hermes-skillhub-source-'))
+    const profileSkills = join(hermesHome, 'profiles', 'alpha', 'skills')
+    await mkdir(join(profileSkills, 'daily-breaking'), { recursive: true })
+    await writeFile(
+      join(profileSkills, 'daily-breaking', 'SKILL.md'),
+      [
+        '---',
+        'name: daily-breaking',
+        'description: Daily digest',
+        '---',
+        'Prepare the daily digest from the current workspace.',
+      ].join('\n'),
+    )
+    await writeFile(
+      join(profileSkills, '.hermes-skillhub.json'),
+      JSON.stringify({ installed: { 'daily-breaking': { source: 'aidock-skillhub' } } }),
+    )
+
+    await withHermesHome(hermesHome, { HERMES_WEB_PLANE: 'chat' }, async ({ list }) => {
+      const ctx = chatContext({})
+      await list(ctx)
+      expect(ctx.body.categories).toEqual([
+        expect.objectContaining({
+          name: 'misc',
+          skills: [
+            expect.objectContaining({
+              name: 'daily-breaking',
+              source: 'hub',
+              requiredCredentials: ['kep-cli'],
+            }),
+          ],
+        }),
+      ])
+    })
   })
 
   it('skips recursive symlink cycles while scanning nested skills', async () => {

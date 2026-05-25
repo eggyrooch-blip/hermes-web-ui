@@ -45,6 +45,7 @@ export interface SkillCredentialEntry {
   account_hint?: string
   default_identity?: string
   detail?: string
+  required_by?: string[]
   action: SkillCredentialAction
 }
 
@@ -73,6 +74,14 @@ interface ProfileSkill {
   path: string
   tags: string[]
   text: string
+  source?: string
+}
+
+export interface SkillCredentialRequirementInput {
+  name: string
+  tags?: string[]
+  text: string
+  source?: string
 }
 
 interface KepAuthStatus {
@@ -111,15 +120,82 @@ export async function listSkillCredentialStatuses(options: ListSkillCredentialOp
   const profileName = options.profileName
   const profileDir = options.profileDir
   const skills = scanProfileSkills(profileDir)
+  const requiredBy = credentialRequirementsById(skills)
   return {
     profile_name: profileName,
     credentials: [
-      larkCliStatus(options),
+      larkCliStatus(options, requiredBy.get('lark-cli')),
       keepRecordStatus(profileDir, skills),
-      await kepCliStatus(profileDir, profileName, skills),
+      await kepCliStatus(profileDir, profileName, skills, requiredBy.get('kep-cli')),
       gitlabStatus(profileDir, skills),
     ],
   }
+}
+
+export function detectSkillCredentialRequirements(input: SkillCredentialRequirementInput): string[] {
+  const text = `${input.name || ''}\n${(input.tags || []).join('\n')}\n${input.text || ''}`.toLowerCase()
+  const source = String(input.source || '').trim().toLowerCase()
+  const required: string[] = []
+
+  const needsLark = [
+    /\blark[-_ ]?cli\b/,
+    /\blarksuite\b/,
+    /\bfeishu\b/,
+    /open\.feishu\.cn/,
+    /feishu\.cn\/(docx|docs|sheets|wiki|base|minutes|file)/,
+    /\bwiki:wiki:readonly\b/,
+    /\b(feishu|lark|larksuite)\b.{0,80}\b(docx|docs|base|sheets?|bitable|wiki)\b/,
+    /\b(docx|docs|base|sheets?|bitable|wiki)\b.{0,80}\b(feishu|lark|larksuite)\b/,
+    /\b(im:message|contact:user|drive:drive|wiki:wiki)\b/,
+  ].some(pattern => pattern.test(text))
+
+  const hubSourced = source === 'hub' || source === 'aidock-skillhub'
+  const needsKep = hubSourced || [
+    /\bkep[-_ ]?cli\b/,
+    /\bkep[-_ ]?auth\b/,
+    /\baidock\b/,
+    /\bskillhub\b/,
+    /\bkeep[-_ ]?login\b/,
+    /\bproxy[-_ ]?cms\b/,
+    /proxy\.cms\.(pre\.)?gotokeep\.com/,
+    /ark\.gotokeep\.com\/aidock-cms/,
+    /skill\/zipfile/,
+    /\bkep_profile\b/,
+    /\bkep_no_auto_login\b/,
+    /bearer\s+token.*gotokeep/,
+  ].some(pattern => pattern.test(text))
+
+  const needsGitlab = [
+    /\bgitlab_token\b/,
+    /gitlab\.gotokeep\.com/,
+    /oauth2:\$\{?gitlab_token\}?@/i,
+  ].some(pattern => pattern.test(text))
+
+  const needsKeepRecord = [
+    /\bkeep-record\b/,
+    /\bkeep_auth_token\b/,
+    /\bget_qrcode\b/,
+    /\bpersist_auth\b/,
+  ].some(pattern => pattern.test(text))
+
+  if (needsLark) required.push('lark-cli')
+  if (needsKep) required.push('kep-cli')
+  if (needsKeepRecord) required.push('keep-record')
+  if (needsGitlab) required.push('gitlab')
+  return required
+}
+
+function credentialRequirementsById(skills: ProfileSkill[]): Map<string, string[]> {
+  const result = new Map<string, string[]>()
+  for (const skill of skills) {
+    for (const id of detectSkillCredentialRequirements(skill)) {
+      const list = result.get(id) || []
+      if (!list.includes(skill.name)) list.push(skill.name)
+      result.set(id, list)
+    }
+  }
+  for (const list of result.values()) list.sort((a, b) => a.localeCompare(b))
+  return result
 }
 
 export async function getSkillCredentialStartAction(options: SkillCredentialStartOptions): Promise<{ id: string; action: SkillCredentialAction }> {
@@ -432,7 +508,7 @@ export async function completeKeepRecordAuth(options: SkillCredentialStartOption
   }
 }
 
-function larkCliStatus(options: ListSkillCredentialOptions): SkillCredentialEntry {
+function larkCliStatus(options: ListSkillCredentialOptions, requiredBy?: string[]): SkillCredentialEntry {
   const status = options.larkStatus || {}
   const larkCli = status.lark_cli || {}
   const localUat = localFeishuUatStatus(options.profileDir)
@@ -454,6 +530,7 @@ function larkCliStatus(options: ListSkillCredentialOptions): SkillCredentialEntr
     detail: connected
       ? hasUserAuthorization ? 'Lark-cli user authorization is available for this profile.' : 'Lark-cli credential is available for this skill runtime.'
       : 'Lark-cli needs user authorization for private Lark resources.',
+    required_by: requiredBy,
     action: {
       kind: 'feishu_device_flow',
       label: connected ? '重新授权' : '授权',
@@ -630,9 +707,9 @@ function keepRecordSdkExists(nodeModulesDir: string): boolean {
   return text.includes('"@keepclaw/skill-sdk"') || text.includes('"name"')
 }
 
-async function kepCliStatus(profileDir: string, profileName: string, skills = scanProfileSkills(profileDir)): Promise<SkillCredentialEntry> {
+async function kepCliStatus(profileDir: string, profileName: string, skills = scanProfileSkills(profileDir), requiredBy?: string[]): Promise<SkillCredentialEntry> {
   const skill = findKepCliSkill(skills)
-  const installed = Boolean(skill)
+  const installed = Boolean(skill) || Boolean(requiredBy?.length)
   const keyringDir = join(profileDir, 'home', '.kep-cli', 'keyring-fallback')
   const hasToken = safeList(keyringDir).some(name => name.includes(`token-key:online:${profileName}`) || name.includes('token-key:online:'))
   const liveStatus = installed ? await kepAuthStatus(profileDir, profileName, skill) : null
@@ -653,6 +730,7 @@ async function kepCliStatus(profileDir: string, profileName: string, skills = sc
         : installed && hasToken
           ? 'kep-cli credential material exists, but live status could not be verified.'
           : installed ? `${skill?.name || 'kep-cli skill'} requires kep-cli login for this profile.` : 'No kep-cli backed skill is installed for this profile.',
+    required_by: requiredBy,
     action: {
       kind: 'oauth_url',
       label: connected ? '重新认证' : '认证',
@@ -684,6 +762,7 @@ function gitlabStatus(profileDir: string, skills = scanProfileSkills(profileDir)
 
 function scanProfileSkills(profileDir: string): ProfileSkill[] {
   const root = join(profileDir, 'skills')
+  const hubInstalledNames = readSkillHubInstalledNames(root)
   const results: ProfileSkill[] = []
   const visit = (dir: string, depth: number) => {
     if (depth > 8 || !existsSync(dir)) return
@@ -697,18 +776,39 @@ function scanProfileSkills(profileDir: string): ProfileSkill[] {
       if (entry.isFile() && entry.name === 'SKILL.md') {
         const text = readSmallText(fullPath)
         if (!text) continue
+        const name = parseSkillName(text) || basename(dirname(fullPath))
+        const dirName = basename(dirname(fullPath))
         results.push({
-          name: parseSkillName(text) || basename(dirname(fullPath)),
+          name,
           dir: dirname(fullPath),
           path: fullPath,
           tags: parseSkillTags(text),
           text,
+          source: hubInstalledNames.has(name) || hubInstalledNames.has(dirName) ? 'hub' : undefined,
         })
       }
     }
   }
   visit(root, 0)
   return results
+}
+
+function readSkillHubInstalledNames(skillsDir: string): Set<string> {
+  const names = new Set<string>()
+  for (const relativePath of [join('.hub', 'lock.json'), '.hermes-skillhub.json']) {
+    const raw = readSmallText(join(skillsDir, relativePath))
+    if (!raw) continue
+    try {
+      const data = JSON.parse(raw)
+      if (!data?.installed || typeof data.installed !== 'object') continue
+      for (const name of Object.keys(data.installed)) {
+        if (name) names.add(name)
+      }
+    } catch {
+      // Ignore malformed SkillHub provenance files; skill text heuristics still apply.
+    }
+  }
+  return names
 }
 
 function isDirectoryLikeSync(path: string, entry: Dirent): boolean {

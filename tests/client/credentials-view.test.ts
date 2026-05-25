@@ -13,7 +13,12 @@ vi.mock('@/api/skillCredentials', () => ({
 }))
 
 vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ t: (key: string) => key }),
+  useI18n: () => ({
+    t: (key: string) => ({
+      'skillCredentials.groups.internalSystems': 'Internal systems',
+      'skillCredentials.groups.otherCredentials': 'Other credentials',
+    } as Record<string, string>)[key] || key,
+  }),
 }))
 
 vi.mock('vue-router', () => ({
@@ -60,6 +65,7 @@ describe('CredentialsView', () => {
           account_hint: '孙可',
           default_identity: 'user',
           detail: 'ready',
+          required_by: ['wiki-helper'],
           action: { kind: 'feishu_device_flow', label: '重新授权' },
         },
         {
@@ -79,6 +85,7 @@ describe('CredentialsView', () => {
           installed: true,
           status: 'needs_auth',
           detail: 'login required',
+          required_by: ['aidock-helper', 'keep-login-skill'],
           action: { kind: 'oauth_url', label: '认证' },
         },
         {
@@ -111,6 +118,12 @@ describe('CredentialsView', () => {
 
     expect(fetchSkillCredentialsMock).toHaveBeenCalledOnce()
     expect(wrapper.findAll('.credential-card')).toHaveLength(4)
+    expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('Internal systems')
+    expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('Lark-cli')
+    expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('kep-cli')
+    expect(wrapper.find('[data-credential-group="other-credentials"]').text()).toContain('Other credentials')
+    expect(wrapper.find('[data-credential-group="other-credentials"]').text()).toContain('Keep-record')
+    expect(wrapper.find('[data-credential-group="other-credentials"]').text()).toContain('GitLab')
     expect(wrapper.text()).toContain('Lark-cli')
     expect(wrapper.text()).toContain('已认证')
     expect(wrapper.text()).toContain('孙可')
@@ -118,6 +131,9 @@ describe('CredentialsView', () => {
     expect(wrapper.text()).toContain('待验证')
     expect(wrapper.text()).toContain('Keep User')
     expect(wrapper.text()).toContain('kep-cli')
+    expect(wrapper.text()).toContain('wiki-helper')
+    expect(wrapper.text()).toContain('aidock-helper')
+    expect(wrapper.text()).toContain('keep-login-skill')
     expect(wrapper.text()).toContain('GitLab')
     expect(wrapper.text()).toContain('Token 可读')
 

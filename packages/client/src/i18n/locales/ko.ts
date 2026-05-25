@@ -119,6 +119,13 @@ export default {
     noChangelog: '변경 이력이 없습니다',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: '내부 시스템',
+      otherCredentials: '기타 자격 증명',
+    },
+  },
+
   // 서랍
   drawer: {
     terminal: '터미널',

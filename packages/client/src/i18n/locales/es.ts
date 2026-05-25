@@ -119,6 +119,13 @@ export default {
     noChangelog: 'No hay registro de cambios',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: 'Sistemas internos',
+      otherCredentials: 'Otras credenciales',
+    },
+  },
+
   // Drawer
   drawer: {
     terminal: 'Terminal',

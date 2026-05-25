@@ -119,6 +119,13 @@ export default {
     noChangelog: 'Kein Anderungsprotokoll verfugbar',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: 'Interne Systeme',
+      otherCredentials: 'Weitere Zugangsdaten',
+    },
+  },
+
   // Drawer
   drawer: {
     terminal: 'Terminal',

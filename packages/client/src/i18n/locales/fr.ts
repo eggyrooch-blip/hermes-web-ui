@@ -119,6 +119,13 @@ export default {
     noChangelog: 'Aucun journal disponible',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: 'Systemes internes',
+      otherCredentials: 'Autres identifiants',
+    },
+  },
+
   // Drawer
   drawer: {
     terminal: 'Terminal',

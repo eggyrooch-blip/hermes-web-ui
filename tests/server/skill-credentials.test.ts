@@ -13,7 +13,37 @@ describe('skill credential status', () => {
     vi.resetModules()
     delete process.env.HERMES_HOME
     delete process.env.HERMES_KEP_AUTH_BIN
+    delete process.env.HERMES_MULTITENANCY_DB
+    delete process.env.HERMES_WEB_PLANE
   })
+
+  function makeRoutingDb(rows: Array<{ user_id: string; profile_name: string; open_id: string; active?: number; owner_open_id?: string; provenance?: string; kind?: string | null }>) {
+    const dir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-routing-'))
+    roots.push(dir)
+    const dbPath = join(dir, 'multitenancy.db')
+    const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite')
+    const db = new DatabaseSync(dbPath)
+    try {
+      db.exec(`
+        CREATE TABLE multitenancy_routing (
+          user_id TEXT PRIMARY KEY NOT NULL,
+          profile_name TEXT NOT NULL,
+          open_id TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1,
+          owner_open_id TEXT,
+          kind TEXT DEFAULT 'user',
+          provenance TEXT DEFAULT 'sync'
+        );
+      `)
+      const stmt = db.prepare('INSERT INTO multitenancy_routing (user_id, profile_name, open_id, active, owner_open_id, kind, provenance) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      for (const row of rows) {
+        stmt.run(row.user_id, row.profile_name, row.open_id, row.active ?? 1, row.owner_open_id ?? row.open_id, row.kind === undefined ? 'user' : row.kind, row.provenance ?? 'sync')
+      }
+    } finally {
+      db.close()
+    }
+    return dbPath
+  }
 
   function makeProfile() {
     const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-'))
@@ -168,6 +198,92 @@ describe('skill credential status', () => {
     expect(serialized).not.toContain('gitlab-secret-token')
   })
 
+  it('classifies internal-system skill requirements without requiring upstream metadata changes', async () => {
+    const { detectSkillCredentialRequirements } = await import('../../packages/server/src/services/hermes/skill-credentials')
+
+    expect(detectSkillCredentialRequirements({
+      name: 'feishu-wiki-reader',
+      tags: [],
+      text: 'Use lark_cli to read wiki:wiki:readonly documents from open.feishu.cn.',
+    })).toEqual(['lark-cli'])
+
+    expect(detectSkillCredentialRequirements({
+      name: 'keep-login-skill',
+      tags: [],
+      text: 'Fetch proxy.cms.gotokeep.com APIs with kep-auth and KEP_PROFILE.',
+      source: 'hub',
+    })).toEqual(['kep-cli'])
+
+    expect(detectSkillCredentialRequirements({
+      name: 'daily-breaking',
+      tags: [],
+      text: 'Prepare the daily digest from the current workspace.',
+      source: 'hub',
+    })).toEqual(['kep-cli'])
+
+    expect(detectSkillCredentialRequirements({
+      name: 'another-digest',
+      tags: [],
+      text: 'Prepare the digest from the current workspace.',
+      source: 'aidock-skillhub',
+    })).toEqual(['kep-cli'])
+
+    expect(detectSkillCredentialRequirements({
+      name: 'mixed-internal-report',
+      tags: ['aidock'],
+      text: 'Download SkillHub data from ark.gotokeep.com/aidock-cms, then write the result to a Feishu docx.',
+    })).toEqual(['lark-cli', 'kep-cli'])
+
+    expect(detectSkillCredentialRequirements({
+      name: 'local-docx-exporter',
+      tags: [],
+      text: 'Create a local docx file in the workspace.',
+    })).toEqual([])
+  })
+
+  it('shows which installed skills require lark-cli and kep-cli credentials', async () => {
+    const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-required-by-'))
+    roots.push(profileDir)
+    mkdirSync(join(profileDir, 'skills', 'internal', 'wiki-helper'), { recursive: true })
+    mkdirSync(join(profileDir, 'skills', 'internal', 'aidock-helper'), { recursive: true })
+    writeFileSync(join(profileDir, 'skills', 'internal', 'wiki-helper', 'SKILL.md'), [
+      '---',
+      'name: wiki-helper',
+      '---',
+      'Use lark_cli to read Feishu wiki pages.',
+    ].join('\n'), 'utf-8')
+    writeFileSync(join(profileDir, 'skills', 'internal', 'aidock-helper', 'SKILL.md'), [
+      '---',
+      'name: aidock-helper',
+      'metadata:',
+      '  hermes:',
+      '    tags: [aidock]',
+      '---',
+      'Call proxy.cms.gotokeep.com through kep-auth.',
+    ].join('\n'), 'utf-8')
+    const kepAuth = join(profileDir, 'kep-auth')
+    writeFileSync(kepAuth, '#!/bin/sh\necho "state: valid"\n', 'utf-8')
+    chmodSync(kepAuth, 0o755)
+    process.env.HERMES_KEP_AUTH_BIN = kepAuth
+
+    const result = await listSkillCredentialStatuses({
+      profileName: 'feishu_sunke',
+      profileDir,
+      larkStatus: {
+        status: 'valid',
+        lark_cli: { available: true, default_identity: 'user' },
+      },
+    })
+
+    expect(result.credentials.find(item => item.id === 'lark-cli')?.required_by).toEqual(['wiki-helper'])
+    expect(result.credentials.find(item => item.id === 'kep-cli')).toMatchObject({
+      installed: true,
+      status: 'authenticated',
+      required_by: ['aidock-helper'],
+    })
+  })
+
   it('detects kep-cli-backed skills installed as multitenancy directory symlinks', async () => {
     const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
     const hermesHome = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-symlink-home-'))
@@ -197,6 +313,74 @@ describe('skill credential status', () => {
       status: 'needs_auth',
     })
     expect(result.credentials.find(item => item.id === 'kep-cli')?.detail).not.toBe('No kep-cli backed skill is installed for this profile.')
+  })
+
+  it('treats SkillHub-installed skills as kep-cli-backed even without text markers', async () => {
+    const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-hub-source-'))
+    roots.push(profileDir)
+    mkdirSync(join(profileDir, 'skills', 'daily-breaking'), { recursive: true })
+    writeFileSync(join(profileDir, 'skills', 'daily-breaking', 'SKILL.md'), [
+      '---',
+      'name: daily-breaking',
+      '---',
+      'Prepare the daily digest from the current workspace.',
+    ].join('\n'), 'utf-8')
+    writeFileSync(join(profileDir, 'skills', '.hermes-skillhub.json'), JSON.stringify({
+      installed: {
+        'daily-breaking': {
+          source: 'aidock-skillhub',
+          profile: 'feishu_sunke',
+        },
+      },
+    }), 'utf-8')
+    const kepAuth = join(profileDir, 'kep-auth')
+    writeFileSync(kepAuth, '#!/bin/sh\necho "state: valid"\n', 'utf-8')
+    chmodSync(kepAuth, 0o755)
+    process.env.HERMES_KEP_AUTH_BIN = kepAuth
+
+    const result = await listSkillCredentialStatuses({
+      profileName: 'feishu_sunke',
+      profileDir,
+    })
+
+    expect(result.credentials.find(item => item.id === 'kep-cli')).toMatchObject({
+      installed: true,
+      status: 'authenticated',
+      required_by: ['daily-breaking'],
+    })
+  })
+
+  it('reports needs_auth for SkillHub installs without a concrete kep-cli skill when kep-auth is not logged in', async () => {
+    const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-hub-needs-auth-'))
+    roots.push(profileDir)
+    mkdirSync(join(profileDir, 'skills', 'daily-breaking'), { recursive: true })
+    writeFileSync(join(profileDir, 'skills', 'daily-breaking', 'SKILL.md'), [
+      '---',
+      'name: daily-breaking',
+      '---',
+      'Prepare the daily digest from the current workspace.',
+    ].join('\n'), 'utf-8')
+    writeFileSync(join(profileDir, 'skills', '.hermes-skillhub.json'), JSON.stringify({
+      installed: { 'daily-breaking': { source: 'aidock-skillhub' } },
+    }), 'utf-8')
+    const kepAuth = join(profileDir, 'kep-auth')
+    writeFileSync(kepAuth, '#!/bin/sh\necho "state: not logged in"\n', 'utf-8')
+    chmodSync(kepAuth, 0o755)
+    process.env.HERMES_KEP_AUTH_BIN = kepAuth
+
+    const result = await listSkillCredentialStatuses({
+      profileName: 'feishu_sunke',
+      profileDir,
+    })
+
+    expect(result.credentials.find(item => item.id === 'kep-cli')).toMatchObject({
+      installed: true,
+      status: 'needs_auth',
+      required_by: ['daily-breaking'],
+      detail: 'kep-auth status reports this profile is not logged in.',
+    })
   })
 
   it('checks kep-auth live status instead of treating keyring material as connected', async () => {
@@ -588,5 +772,45 @@ describe('skill credential status', () => {
       status: 'configured',
     })
     expect(JSON.stringify(ctx.body)).not.toContain('gitlab-secret-token')
+  })
+
+  it('loads credential status from an owner-scoped selected profile for a Feishu session', async () => {
+    const hermesHome = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-home-'))
+    roots.push(hermesHome)
+    process.env.HERMES_HOME = hermesHome
+    process.env.HERMES_WEB_PLANE = 'chat'
+    process.env.HERMES_MULTITENANCY_DB = makeRoutingDb([
+      { user_id: 'user_a', profile_name: 'feishu_user_a', open_id: 'ou_user_a' },
+      { user_id: 'group_alpha', profile_name: 'feishu_group_alpha', open_id: '', owner_open_id: 'ou_user_a', provenance: 'group', kind: 'agent' },
+    ])
+    mkdirSync(join(hermesHome, 'profiles', 'feishu_user_a'), { recursive: true })
+    mkdirSync(join(hermesHome, 'profiles', 'feishu_group_alpha', 'workspace', 'credentials'), { recursive: true })
+    writeFileSync(
+      join(hermesHome, 'profiles', 'feishu_group_alpha', 'workspace', 'credentials', 'gitlab.token'),
+      'group-gitlab-secret-token',
+      'utf-8',
+    )
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      status: 'authenticated',
+      account_hint: '孙可',
+    }), { status: 200 }) as any)
+
+    vi.resetModules()
+    const { skillCredentialsStatus } = await import('../../packages/server/src/controllers/auth')
+    const ctx: any = {
+      state: { user: { openid: 'ou_user_a', profile: 'feishu_user_a', role: 'user' } },
+      query: { profile: 'feishu_group_alpha' },
+      get: () => '',
+    }
+
+    await skillCredentialsStatus(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body.profile_name).toBe('feishu_group_alpha')
+    expect(ctx.body.credentials.find((item: any) => item.id === 'gitlab')).toMatchObject({
+      status: 'configured',
+    })
+    expect(JSON.stringify(ctx.body)).not.toContain('group-gitlab-secret-token')
+    fetchSpy.mockRestore()
   })
 })

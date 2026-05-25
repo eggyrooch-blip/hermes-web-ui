@@ -119,6 +119,13 @@ export default {
     noChangelog: '更新履歴はありません',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: '内部システム',
+      otherCredentials: 'その他の認証情報',
+    },
+  },
+
   // ドロワー
   drawer: {
     terminal: 'ターミナル',

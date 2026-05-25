@@ -19,6 +19,7 @@ export interface SkillCredentialEntry {
   account_hint?: string
   default_identity?: string
   detail?: string
+  required_by?: string[]
   action: SkillCredentialAction
 }
 

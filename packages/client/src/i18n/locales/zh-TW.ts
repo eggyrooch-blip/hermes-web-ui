@@ -116,6 +116,13 @@ export default {
     noChangelog: '目前無更新日誌',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: '內部系統',
+      otherCredentials: '其他憑證',
+    },
+  },
+
   // 抽屜
   drawer: {
     terminal: '終端機',

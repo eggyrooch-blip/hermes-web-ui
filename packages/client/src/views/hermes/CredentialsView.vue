@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { NButton, NModal, NSpin, useMessage } from 'naive-ui'
 import { completeSkillCredentialAuth, fetchSkillCredentials, startSkillCredentialAuth } from '@/api/skillCredentials'
 import type { SkillCredentialEntry, SkillCredentialsResponse } from '@/api/skillCredentials'
 
 const message = useMessage()
+const { t } = useI18n()
 const route = useRoute()
 const loading = ref(false)
 const startingId = ref('')
@@ -23,6 +25,15 @@ const oauthPollingId = ref('')
 
 const credentials = computed(() => data.value?.credentials || [])
 const requestedProfile = computed(() => typeof route.query.profile === 'string' ? route.query.profile.trim() : '')
+const internalCredentialIds = new Set(['lark-cli', 'kep-cli'])
+const credentialGroups = computed(() => {
+  const internal = credentials.value.filter(entry => internalCredentialIds.has(entry.id))
+  const other = credentials.value.filter(entry => !internalCredentialIds.has(entry.id))
+  return [
+    internal.length ? { id: 'internal-systems', title: t('skillCredentials.groups.internalSystems'), entries: internal } : null,
+    other.length ? { id: 'other-credentials', title: t('skillCredentials.groups.otherCredentials'), entries: other } : null,
+  ].filter(Boolean) as Array<{ id: string; title: string; entries: SkillCredentialEntry[] }>
+})
 
 function statusLabel(status: SkillCredentialEntry['status']) {
   if (status === 'authenticated') return '已认证'
@@ -143,39 +154,48 @@ onMounted(loadCredentials)
 
     <NSpin :show="loading">
       <div v-if="error" class="credentials-error">{{ error }}</div>
-      <div v-else class="credentials-grid">
-        <article
-          v-for="entry in credentials"
-          :key="entry.id"
-          class="credential-card"
-          :class="statusClass(entry.status)"
-        >
-          <div class="credential-main">
-            <div class="credential-icon" aria-hidden="true">{{ entry.title.slice(0, 1) }}</div>
-            <div class="credential-copy">
-              <div class="credential-title-row">
-                <h3>{{ entry.title }}</h3>
-                <span class="credential-status">{{ statusLabel(entry.status) }}</span>
+      <div v-else class="credentials-sections">
+        <section v-for="group in credentialGroups" :key="group.id" class="credential-section" :data-credential-group="group.id">
+          <h3 class="credential-section-title">{{ group.title }}</h3>
+          <div class="credentials-grid">
+            <article
+              v-for="entry in group.entries"
+              :key="entry.id"
+              class="credential-card"
+              :class="statusClass(entry.status)"
+            >
+              <div class="credential-main">
+                <div class="credential-icon" aria-hidden="true">{{ entry.title.slice(0, 1) }}</div>
+                <div class="credential-copy">
+                  <div class="credential-title-row">
+                    <h3>{{ entry.title }}</h3>
+                    <span class="credential-status">{{ statusLabel(entry.status) }}</span>
+                  </div>
+                  <div class="credential-meta">
+                    <span>{{ entry.provider }}</span>
+                    <span v-if="entry.default_identity">{{ entry.default_identity }}</span>
+                    <span v-if="entry.account_hint">{{ entry.account_hint }}</span>
+                  </div>
+                  <p v-if="entry.detail" class="credential-detail">{{ entry.detail }}</p>
+                  <div v-if="entry.required_by?.length" class="credential-required">
+                    <span class="required-label">关联技能</span>
+                    <span v-for="skill in entry.required_by" :key="skill" class="required-skill">{{ skill }}</span>
+                  </div>
+                  <code v-if="entry.action?.command" class="credential-command">{{ entry.action.command }}</code>
+                </div>
               </div>
-              <div class="credential-meta">
-                <span>{{ entry.provider }}</span>
-                <span v-if="entry.default_identity">{{ entry.default_identity }}</span>
-                <span v-if="entry.account_hint">{{ entry.account_hint }}</span>
-              </div>
-              <p v-if="entry.detail" class="credential-detail">{{ entry.detail }}</p>
-              <code v-if="entry.action?.command" class="credential-command">{{ entry.action.command }}</code>
-            </div>
+              <NButton
+                size="small"
+                :loading="startingId === entry.id || oauthPollingId === entry.id"
+                :disabled="entry.status === 'missing'"
+                :data-credential-action="entry.id"
+                @click="startCredential(entry)"
+              >
+                {{ entry.action?.label || '连接' }}
+              </NButton>
+            </article>
           </div>
-          <NButton
-            size="small"
-            :loading="startingId === entry.id || oauthPollingId === entry.id"
-            :disabled="entry.status === 'missing'"
-            :data-credential-action="entry.id"
-            @click="startCredential(entry)"
-          >
-            {{ entry.action?.label || '连接' }}
-          </NButton>
-        </article>
+        </section>
       </div>
     </NSpin>
 
@@ -216,11 +236,24 @@ onMounted(loadCredentials)
   gap: 12px;
 }
 
+.credentials-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 20px;
+}
+
+.credential-section-title {
+  margin: 0 0 10px;
+  color: $text-primary;
+  font-size: 14px;
+  font-weight: 650;
+}
+
 .credentials-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 12px;
-  padding: 20px;
 }
 
 .credential-card {
@@ -307,6 +340,30 @@ onMounted(loadCredentials)
   color: $text-secondary;
   font-size: 13px;
   line-height: 1.45;
+}
+
+.credential-required {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.required-label {
+  color: $text-muted;
+}
+
+.required-skill {
+  max-width: 160px;
+  padding: 1px 6px;
+  border: 1px solid $border-color;
+  border-radius: $radius-sm;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: $text-secondary;
+  background: $bg-primary;
 }
 
 .credential-command {

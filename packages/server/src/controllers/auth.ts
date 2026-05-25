@@ -352,7 +352,7 @@ export async function feishuUatStatus(ctx: Context) {
 export async function skillCredentialsStatus(ctx: Context) {
   try {
     const user = getOptionalFeishuUser(ctx)
-    const profileName = user?.profile || getRequestProfile(ctx)
+    const profileName = getRequestProfile(ctx)
     let larkStatus: Record<string, any> | null = null
     if (user) {
       try {
@@ -376,7 +376,7 @@ export async function skillCredentialsStatus(ctx: Context) {
 export async function skillCredentialStart(ctx: Context) {
   try {
     const user = getOptionalFeishuUser(ctx)
-    const profileName = user?.profile || getRequestProfile(ctx)
+    const profileName = getRequestProfile(ctx)
     const id = String(ctx.params?.id || '').trim()
     if (!id) {
       ctx.status = 400
@@ -453,7 +453,7 @@ export async function kepCliCallback(ctx: Context) {
 export async function skillCredentialComplete(ctx: Context) {
   try {
     const user = getOptionalFeishuUser(ctx)
-    const profileName = user?.profile || getRequestProfile(ctx)
+    const profileName = getRequestProfile(ctx)
     const id = String(ctx.params?.id || '').trim()
     const normalized = id.toLowerCase() === 'lark_cli' ? 'lark-cli' : id.toLowerCase()
     if (normalized !== 'keep-record') {

@@ -4,6 +4,7 @@ import * as ctrl from '../../controllers/hermes/skills'
 export const skillRoutes = new Router()
 
 skillRoutes.get('/api/hermes/skills', ctrl.list)
+skillRoutes.post('/api/hermes/skills/skillhub/install', ctrl.installFromSkillHub)
 skillRoutes.put('/api/hermes/skills/toggle', ctrl.toggle)
 skillRoutes.put('/api/hermes/skills/pin', ctrl.pin_)
 skillRoutes.get('/api/hermes/skills/:category/:skill/files', ctrl.listFiles)

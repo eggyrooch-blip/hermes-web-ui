@@ -10,8 +10,11 @@ import {
 } from '../../services/config-helpers'
 import { validateSkillName } from '../../services/hermes/hermes-cli'
 import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
+import { getRequestProfile } from '../../services/request-context'
 import { isSensitivePath } from '../../services/hermes/file-provider'
 import { safeFileStore } from '../../services/safe-file-store'
+import { detectSkillCredentialRequirements } from '../../services/hermes/skill-credentials'
+import { installSkillHubSkill } from '../../services/hermes/skillhub-installer'
 
 /** Read bundled manifest as a name→hash map from ~/.hermes/skills/.bundled_manifest */
 function readBundledManifest(manifestContent: string | null): Map<string, string> {
@@ -29,16 +32,19 @@ function readBundledManifest(manifestContent: string | null): Map<string, string
   return map
 }
 
-/** Read hub-installed skill names from ~/.hermes/skills/.hub/lock.json */
-function readHubInstalledNames(lockContent: string | null): Set<string> {
-  if (!lockContent) return new Set()
-  try {
-    const data = JSON.parse(lockContent)
-    if (data?.installed && typeof data.installed === 'object') {
-      return new Set(Object.keys(data.installed))
-    }
-  } catch { /* ignore */ }
-  return new Set()
+/** Read hub-installed skill names from legacy hub lock and Hermes SkillHub manifest */
+function readHubInstalledNames(lockContent: string | null, hermesSkillHubContent: string | null): Set<string> {
+  const names = new Set<string>()
+  for (const content of [lockContent, hermesSkillHubContent]) {
+    if (!content) continue
+    try {
+      const data = JSON.parse(content)
+      if (data?.installed && typeof data.installed === 'object') {
+        for (const name of Object.keys(data.installed)) names.add(name)
+      }
+    } catch { /* ignore */ }
+  }
+  return names
 }
 
 /** Compute md5 hash of all files in a directory (mirrors Hermes _dir_hash), with in-memory cache */
@@ -193,6 +199,7 @@ async function buildSkillInfo(
     useCount: usage?.use_count,
     viewCount: usage?.view_count,
     pinned: usage?.pinned || undefined,
+    requiredCredentials: detectSkillCredentialRequirements({ name, text: skillMd, source }),
   }
 }
 
@@ -308,6 +315,7 @@ export async function scanSkillsDir(
         useCount: usage?.use_count,
         viewCount: usage?.view_count,
         pinned: usage?.pinned || undefined,
+        requiredCredentials: detectSkillCredentialRequirements({ name: fs.name, text: fs.skillMd, source: fs.source }),
       })
     }
     miscSkills.sort((a: any, b: any) => a.name.localeCompare(b.name))
@@ -457,7 +465,10 @@ export async function list(ctx: any) {
 
     // Read provenance sources
     const bundledManifest = readBundledManifest(await safeReadFile(join(skillsDir, '.bundled_manifest')))
-    const hubNames = readHubInstalledNames(await safeReadFile(join(skillsDir, '.hub', 'lock.json')))
+    const hubNames = readHubInstalledNames(
+      await safeReadFile(join(skillsDir, '.hub', 'lock.json')),
+      await safeReadFile(join(skillsDir, '.hermes-skillhub.json')),
+    )
     const usageStats = readUsageStats(await safeReadFile(join(skillsDir, '.usage.json')))
 
     // Scan all skills (supports both two-level and three-level directory structures)
@@ -582,5 +593,32 @@ export async function pin_(ctx: any) {
   } catch (err: any) {
     ctx.status = 500
     ctx.body = { error: err.message }
+  }
+}
+
+export async function installFromSkillHub(ctx: any) {
+  const body = (ctx.request.body || {}) as { skill_code?: unknown; skillCode?: unknown }
+  const skillCode = typeof body.skill_code === 'string'
+    ? body.skill_code
+    : typeof body.skillCode === 'string'
+      ? body.skillCode
+      : ''
+  if (!skillCode.trim()) {
+    ctx.status = 400
+    ctx.body = { error: 'skill_code is required' }
+    return
+  }
+  try {
+    const profileName = getRequestProfile(ctx)
+    const result = await installSkillHubSkill({
+      profileName,
+      profileDir: getRequestProfileDir(ctx),
+      skillCode,
+    })
+    ctx.status = 200
+    ctx.body = result
+  } catch (err: any) {
+    ctx.status = typeof err?.status === 'number' ? err.status : 500
+    ctx.body = { error: err?.message || 'Failed to install SkillHub skill' }
   }
 }

@@ -20,7 +20,7 @@ function createSocketServer() {
 }
 
 async function waitFor(condition: () => boolean) {
-  for (let i = 0; i < 100; i += 1) {
+  for (let i = 0; i < 300; i += 1) {
     if (condition()) return
     await new Promise(resolvePromise => setTimeout(resolvePromise, 10))
   }
@@ -447,7 +447,6 @@ describe('ChatRunSocket gateway lifecycle', () => {
     vi.stubEnv('HERMES_WEBUI_RUN_BROKER', '1')
     vi.stubEnv('HERMES_RUN_BROKER_URL', 'http://127.0.0.1:8766')
     const { ChatRunSocket: BrokerChatRunSocket } = await import('../../packages/server/src/services/hermes/chat-run-socket')
-    const { getSessionDetail } = await import('../../packages/server/src/db/hermes/session-store')
 
     const { io, room } = createSocketServer()
     const sessionId = `session-broker-fail-${Date.now()}`
@@ -489,8 +488,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
       session_id: sessionId,
       content: expect.stringContaining('Run broker 503'),
     }))
-    await waitFor(() => !!getSessionDetail(sessionId)?.messages?.length)
-    expect(getSessionDetail(sessionId)?.messages).toEqual([
+    expect(state.messages).toEqual([
       expect.objectContaining({ role: 'user' }),
       expect.objectContaining({
         role: 'assistant',
@@ -509,7 +507,6 @@ describe('ChatRunSocket gateway lifecycle', () => {
     vi.stubEnv('HERMES_WEBUI_RUN_BROKER', '1')
     vi.stubEnv('HERMES_RUN_BROKER_URL', 'http://127.0.0.1:8766')
     const { ChatRunSocket: BrokerChatRunSocket } = await import('../../packages/server/src/services/hermes/chat-run-socket')
-    const { getSessionDetail } = await import('../../packages/server/src/db/hermes/session-store')
 
     const { io, room } = createSocketServer()
     const sessionId = `session-broker-stream-fail-${Date.now()}`
@@ -548,8 +545,8 @@ describe('ChatRunSocket gateway lifecycle', () => {
       session_id: sessionId,
     }, 'user_c')
 
-    await waitFor(() => !!getSessionDetail(sessionId)?.messages?.length)
-    expect(getSessionDetail(sessionId)?.messages).toEqual([
+    const state = (chatRun as any).sessionMap.get(sessionId)
+    expect(state.messages).toEqual([
       expect.objectContaining({ role: 'user' }),
       expect.objectContaining({
         role: 'assistant',

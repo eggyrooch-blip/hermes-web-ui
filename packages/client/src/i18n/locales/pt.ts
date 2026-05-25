@@ -119,6 +119,13 @@ export default {
     noChangelog: 'Nenhum registro disponivel',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: 'Sistemas internos',
+      otherCredentials: 'Outras credenciais',
+    },
+  },
+
   // Gaveta
   drawer: {
     terminal: 'Terminal',

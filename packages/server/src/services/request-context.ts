@@ -211,6 +211,7 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   if (path === '/api/hermes/profiles' && (method === 'GET' || method === 'POST')) return false
   if (path === '/api/hermes/config/credentials') return true
   if (config.chatPlaneAllowSettings && path === '/api/hermes/config' && (method === 'GET' || method === 'PUT')) return false
+  if (path === '/api/hermes/skills/skillhub/install' && method === 'POST') return false
   if (path.startsWith('/api/hermes/skills')) return method === 'PUT' || method === 'POST' || method === 'DELETE'
   if (path === '/api/hermes/memory') return method !== 'GET' && method !== 'POST'
   if (path.startsWith('/api/hermes/download')) return false
