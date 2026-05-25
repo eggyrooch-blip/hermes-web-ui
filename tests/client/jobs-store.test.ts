@@ -38,7 +38,7 @@ describe('Hermes jobs store', () => {
         gatewayUnavailable: false,
       })
     mockWakeJobs.mockResolvedValue({
-      profile: 'g41a5b5g',
+      profile: 'user_a',
       running: true,
       status: 'ready',
       url: 'http://127.0.0.1:8656',

@@ -5,10 +5,10 @@ import ProfileSelector from '@/components/layout/ProfileSelector.vue'
 
 const profilesStoreMock = vi.hoisted(() => ({
   profiles: [
-    { name: 'feishu_g41a5b5g', active: true, model: '', gateway: '', alias: '', avatar: { type: 'generated', seed: 'current-seed' } },
+    { name: 'feishu_user_a', active: true, model: '', gateway: '', alias: '', avatar: { type: 'generated', seed: 'current-seed' } },
   ],
-  activeProfileName: 'feishu_g41a5b5g',
-  activeProfile: { name: 'feishu_g41a5b5g', active: true, model: '', gateway: '', alias: '', avatar: { type: 'generated', seed: 'current-seed' } },
+  activeProfileName: 'feishu_user_a',
+  activeProfile: { name: 'feishu_user_a', active: true, model: '', gateway: '', alias: '', avatar: { type: 'generated', seed: 'current-seed' } },
   switching: false,
   fetchProfiles: vi.fn(),
   switchProfile: vi.fn(),
@@ -90,10 +90,10 @@ describe('ProfileSelector', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     profilesStoreMock.profiles = [
-      { name: 'feishu_g41a5b5g', active: true, model: '', gateway: '', alias: '', kind: 'user', avatar: { type: 'generated', seed: 'current-seed' } },
+      { name: 'feishu_user_a', active: true, model: '', gateway: '', alias: '', kind: 'user', avatar: { type: 'generated', seed: 'current-seed' } },
     ]
-    profilesStoreMock.activeProfileName = 'feishu_g41a5b5g'
-    profilesStoreMock.activeProfile = { name: 'feishu_g41a5b5g', active: true, model: '', gateway: '', alias: '', kind: 'user', avatar: { type: 'generated', seed: 'current-seed' } }
+    profilesStoreMock.activeProfileName = 'feishu_user_a'
+    profilesStoreMock.activeProfile = { name: 'feishu_user_a', active: true, model: '', gateway: '', alias: '', kind: 'user', avatar: { type: 'generated', seed: 'current-seed' } }
   })
 
   it('shows the active profile avatar beside the upstream selector', () => {
@@ -111,7 +111,7 @@ describe('ProfileSelector', () => {
     await wrapper.find('.avatar-random').trigger('click')
 
     expect(profilesStoreMock.updateAvatar).toHaveBeenCalledWith(
-      'feishu_g41a5b5g',
+      'feishu_user_a',
       expect.objectContaining({ type: 'generated' }),
     )
   })
@@ -123,7 +123,7 @@ describe('ProfileSelector', () => {
     await wrapper.find('button[title="Customize Avatar"]').trigger('click')
     await wrapper.find('.avatar-reset').trigger('click')
 
-    expect(profilesStoreMock.deleteAvatar).toHaveBeenCalledWith('feishu_g41a5b5g')
+    expect(profilesStoreMock.deleteAvatar).toHaveBeenCalledWith('feishu_user_a')
   })
 
   it('opens the upstream create profile modal from the selector and refreshes after save', async () => {
@@ -141,7 +141,7 @@ describe('ProfileSelector', () => {
 
   it('groups owner-scoped profiles by profile kind and strips owner prefixes from group labels', () => {
     profilesStoreMock.profiles = [
-      { name: 'feishu_g41a5b5g', active: true, model: '', gateway: '', alias: '', kind: 'user' },
+      { name: 'feishu_user_a', active: true, model: '', gateway: '', alias: '', kind: 'user' },
       { name: 'webui_hash_coder', active: false, model: '', gateway: '', alias: '', kind: 'agent', displayLabel: 'coder' },
       {
         name: 'feishu_group_alpha',
@@ -160,7 +160,7 @@ describe('ProfileSelector', () => {
 
     const groups = wrapper.findAll('optgroup')
     expect(groups.map(group => group.attributes('label'))).toEqual(['Personal', 'Agents', 'Groups', 'Other'])
-    expect(wrapper.text()).toContain('feishu_g41a5b5g')
+    expect(wrapper.text()).toContain('feishu_user_a')
     expect(wrapper.text()).toContain('coder · webui_hash_coder')
     expect(wrapper.text()).toContain('研发群 · feishu_group_alpha')
     expect(wrapper.text()).not.toContain('ou_owner-研发群')

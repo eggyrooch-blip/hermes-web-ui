@@ -18,17 +18,17 @@ related:
 > [!info] 这是哪一个 web-ui？
 > **EKKO 系 `hermes-web-ui`**：`https://github.com/EKKOLearnAI/hermes-web-ui`，Koa 2 + Vue 3 + Naive UI + Pinia 全家桶。本机 fork 不在 nesquena 那条 Python+vanilla-JS 单体老版本上。
 > ⚠️ 别把它跟同名笔记里的 `hermes-webui (nesquena)` 混了——那是另一条嵌入式单体 Python 实现，对比详见 [[对比 — hermes-webui (nesquena) vs hermes-web-ui (EKKO) 架构 2026-05-06]]。
-> 当前本机开发入口是 `/Users/kite/code/hermes-web-ui`；生产入口是 `root@10.250.1.66` 的 `hermes-web-ui.service`，监听 `0.0.0.0:8648`。不要用旧 launchd PID 判断生产状态。
+> 当前本机开发入口是 `<local-repo>/hermes-web-ui`；生产入口是 `root@<prod-host>` 的 `hermes-web-ui.service`，监听 `0.0.0.0:8648`。不要用旧 launchd PID 判断生产状态。
 
 > [!success] 2026-05-25 已发布 — PR #25 upstream 0.6 baseline 本地等价版
-> 运行代码 `main@ef0d033473d8` 已发布到生产 `10.250.1.66`；生产仓库 HEAD 可能包含后续 docs-only commit。本轮把 2026-05-24/25 的 upstream 0.6 baseline worktree 合入 PR #25，同时保持本 fork 的 Feishu OAuth/open_id 身份源、multitenancy owner/profile ACL、Run Broker 执行路径和 Credentials/UAT 边界。生产发布先配套发布 `hermes-multitenancy@ed6e4b4620ce`，再 WebUI `git pull --ff-only`、`pnpm install --frozen-lockfile`、`pnpm run build`、重启 `hermes-web-ui.service`；备份目录 `/home/hermes/backups/webui-multitenancy-upstream060-20260525-121617`。
+> 运行代码 `main@ef0d033473d8` 已发布到生产 `192.0.2.10`；生产仓库 HEAD 可能包含后续 docs-only commit。本轮把 2026-05-24/25 的 upstream 0.6 baseline worktree 合入 PR #25，同时保持本 fork 的 Feishu OAuth/open_id 身份源、multitenancy owner/profile ACL、Run Broker 执行路径和 Credentials/UAT 边界。生产发布先配套发布 `hermes-multitenancy@ed6e4b4620ce`，再 WebUI `git pull --ff-only`、`pnpm install --frozen-lockfile`、`pnpm run build`、重启 `hermes-web-ui.service`；备份目录 `<prod-home>/backups/webui-multitenancy-upstream060-20260525-121617`。
 >
-> 线上验证：`8648/health` OK，公网 `https://hermes.gotokeep.com/` 200；签名 `sunke` Feishu session 访问 `/api/auth/me` 返回 200 且包含 upstream-compatible `{ user }` 包装，`/api/hermes/profiles` 返回 5 个 owner-visible profiles（2 group、1 user、2 webui agent），没有全局 profile 泄漏。本机发布门禁：`bun run test` 为 127 files / 820 passed / 2 skipped，`pnpm run build` passed；生产 build 只有既有大 chunk warning。下面 worktree 段落保留为决策历史，其中“未发布生产”已被本段取代。
+> 线上验证：`8648/health` OK，公网 `https://hermes.example.com/` 200；签名 `user_a` Feishu session 访问 `/api/auth/me` 返回 200 且包含 upstream-compatible `{ user }` 包装，`/api/hermes/profiles` 返回 5 个 owner-visible profiles（2 group、1 user、2 webui agent），没有全局 profile 泄漏。本机发布门禁：`bun run test` 为 127 files / 820 passed / 2 skipped，`pnpm run build` passed；生产 build 只有既有大 chunk warning。下面 worktree 段落保留为决策历史，其中“未发布生产”已被本段取代。
 
 > [!success] 2026-05-25 已发布 — kep-cli OAuth callback 生产回跳修复
-> `main@8310b15` 已发布到生产 `10.250.1.66`，修复 Credentials 页 kep-cli 认证 URL 把 `response_url=http://localhost:<port>` 暴露给远端浏览器的问题。WebUI 现在对 `kep-auth login` 返回的授权 URL 创建短期 callback session，把 `response_url` 改写为当前外部 origin 的 `/api/auth/kep-cli/callback/:sessionId`；Keep 回跳后 BFF 只转发到该 session 捕获的生产同机 `localhost/127.0.0.1` kep-auth listener，token exchange 和 profile-local 保存继续由 kep-auth 负责。不开放通用 localhost proxy，不改变 Lark-cli、Keep-record 或 GitLab 凭证流程。
+> `main@8310b15` 已发布到生产 `192.0.2.10`，修复 Credentials 页 kep-cli 认证 URL 把 `response_url=http://localhost:<port>` 暴露给远端浏览器的问题。WebUI 现在对 `kep-auth login` 返回的授权 URL 创建短期 callback session，把 `response_url` 改写为当前外部 origin 的 `/api/auth/kep-cli/callback/:sessionId`；Keep 回跳后 BFF 只转发到该 session 捕获的生产同机 `localhost/127.0.0.1` kep-auth listener，token exchange 和 profile-local 保存继续由 kep-auth 负责。不开放通用 localhost proxy，不改变 Lark-cli、Keep-record 或 GitLab 凭证流程。
 >
-> 发布备份：`/home/hermes/backups/hermes-webui-kep-cli-oauth-callback-20260525-123450`。本机门禁：RED/GREEN `tests/server/skill-credentials.test.ts`，server `tsc`，focused auth/credentials/client tests 39 passed；全量 `pnpm run test` 为 127 files / 821 passed / 2 skipped，`pnpm run build` passed。生产 build passed 并重启 `hermes-web-ui.service`；`8648/health` OK，公网 `/health` 200。生产签名 `sunke` session 启动 kep-cli auth 返回 `response_origin=https://hermes.gotokeep.com` 且 callback path 为 `/api/auth/kep-cli/callback/...`，未知 callback session 返回 404。
+> 发布备份：`<prod-home>/backups/hermes-webui-kep-cli-oauth-callback-20260525-123450`。本机门禁：RED/GREEN `tests/server/skill-credentials.test.ts`，server `tsc`，focused auth/credentials/client tests 39 passed；全量 `pnpm run test` 为 127 files / 821 passed / 2 skipped，`pnpm run build` passed。生产 build passed 并重启 `hermes-web-ui.service`；`8648/health` OK，公网 `/health` 200。生产签名 `user_a` session 启动 kep-cli auth 返回 `response_origin=https://hermes.example.com` 且 callback path 为 `/api/auth/kep-cli/callback/...`，未知 callback session 返回 404。
 
 > [!info] 2026-05-24 worktree — upstream 0.6 baseline request-profile adapter
 > `webui-upstream-060-baseline` 第一批只接 upstream-compatible 的 request-profile 形状，不切执行路径。新增 `packages/server/src/middleware/user-auth.ts`，在既有 `requireAuth` 与 `enforcePlaneAccess` 之后把 Feishu/multitenancy `request-context` 解析出的 profile 写入 `ctx.state.profile = { name }`，并把现有 `ctx.state.user.openid/profile` 补成 upstream 风格的 `id/username/profiles` 字段。`routes/index.ts` 注册该 middleware 后，后续 upstream controller 可读取 `ctx.state.profile`，但身份来源仍是 Feishu OAuth/open_id，profile ACL 仍由 `getRequestProfile()` / `ownerOwnsProfile()` 决定。明确未吸收 upstream 删除 `feishu-oauth.ts` / `request-context.ts`，也未启用 `agent-bridge`、未改 Run Broker、Credentials/UAT、group chat、cron/jobs/kanban 或生产发布路径。
@@ -75,7 +75,7 @@ related:
 >
 > 2026-05-25 11:01 追加 Skills profile-scoped 收敛：本机 worktree 只在 `skills.ts` 吸收 upstream 更合理的 profile 写入语义，enable/disable 写当前 request profile 的 `config.yaml`，pin/unpin 写当前 request profile `skills/.usage.json`，并在保留本 fork symlink directory 与 sensitive path guard 的前提下补齐 category 内递归扫描。Jobs/Kanban/Credentials 不随本轮改动继续贴 upstream；Run Broker、Feishu open_id owner 边界和 Credentials 页仍保持本地架构。验证：RED/GREEN `tests/server/skills-controller.test.ts`；focused 4 files / 15 tests、全量 `pnpm run test` 126 files / 807 passed / 2 skipped、`pnpm run build` passed。仍未合入、未 push、未发布生产。
 >
-> 2026-05-25 11:30 追加 owner profile 核验与 OAuth 绑定硬化：本机 `multitenancy_routing` 中 `feishu_g41a5b5g / ou_cf23e7c262afa4b7a006baa75f863ed5` 当前可见 10 个 active profile，语义是该 Feishu open_id owner 名下的 1 个 user profile、7 个 agent profile、2 个 group profile，不是全局 profile 泄漏；另一个 owner `ou_63348...` 只返回自己的 `feishu_ee966643`。核验发现旧测试行 `123` 为 `kind=agent` 但带 `open_id=ou_cf23.../provenance=sync`，因此 `resolveProfileForOpenId()` 已收紧为优先只认 `kind='user'`/legacy null/empty kind 的 sync 绑定行，并稳定排序优先 explicit user；`ownerOwnsProfile()` / owned list 的 open_id fallback 也独立按 `kind` 过滤，避免 agent 脏行被当根 profile，同时保留 `owner_open_id` 子 profile。验证：focused `agent-ownership/request-context/profiles-routes/group-chat-isolation` 4 files / 51 tests、server `tsc`、全量 `pnpm run test` 127 files / 819 passed / 2 skipped、`pnpm run build` passed；本机 launchd 已重启，生产未发布。
+> 2026-05-25 11:30 追加 owner profile 核验与 OAuth 绑定硬化：本机 `multitenancy_routing` 中 `feishu_user_a / ou_test_owner_a` 当前可见 10 个 active profile，语义是该 Feishu open_id owner 名下的 1 个 user profile、7 个 agent profile、2 个 group profile，不是全局 profile 泄漏；另一个 owner `ou_test_owner_b...` 只返回自己的 `feishu_user_b`。核验发现旧测试行 `123` 为 `kind=agent` 但带 `open_id=ou_test_owner_a.../provenance=sync`，因此 `resolveProfileForOpenId()` 已收紧为优先只认 `kind='user'`/legacy null/empty kind 的 sync 绑定行，并稳定排序优先 explicit user；`ownerOwnsProfile()` / owned list 的 open_id fallback 也独立按 `kind` 过滤，避免 agent 脏行被当根 profile，同时保留 `owner_open_id` 子 profile。验证：focused `agent-ownership/request-context/profiles-routes/group-chat-isolation` 4 files / 51 tests、server `tsc`、全量 `pnpm run test` 127 files / 819 passed / 2 skipped、`pnpm run build` passed；本机 launchd 已重启，生产未发布。
 >
 > 2026-05-25 11:50 追加 ProfileSelector 分组显示：侧栏 profile selector 改为按 `kind` 分组展示为个人/智能体/群聊/其他，选择值仍是 profile name，后端 ACL 和 request profile 语义不变。群聊等子 profile 的 `display_label` 若带 owner open_id 前缀，会在显示层去掉前缀并保留 `displayLabel · profileName`，降低 10 个 profile 同屏时的误读。验证：`tests/client/profile-selector.test.ts` 覆盖 group option 与前缀剥离；focused `profile-selector/i18n-coverage` 2 files / 8 tests、client `vue-tsc`、全量 `pnpm run test` 127 files / 820 passed / 2 skipped、`pnpm run build` passed；本机 `com.hermes.ekko-webui` 已重启到该 worktree build，`127.0.0.1:8648/health` 返回 ok，生产未发布。
 >
@@ -84,7 +84,7 @@ related:
 > [!warning] 2026-05-22 已发布 — Credentials 页区分 bot runtime 与 user UAT
 > `webui-lark-cli-user-auth-status` 已发布到生产。Credentials 页的 Lark-cli 卡片不能把 runtime 能以 bot 身份工作误显示为个人用户「已认证」；在 `ctx.state.user` 存在的 chat-plane 场景，只有 Feishu UAT status valid、profile-local UAT connected，或 lark-cli readiness 明确 `default_identity=user` 时才显示 authenticated。`default_identity=bot` 只说明 bot runtime 可用，个人用户仍显示 `needs_auth` 和「授权」按钮。
 >
-> 验证：本机 `pnpm test` 为 `114 files / 749 passed / 2 skipped`，`pnpm run build` passed；生产 `hermes-web-ui@ef0b7b5` build/restart 后 `8648/health` OK。使用 `sunyinglun` 的签名 Feishu session 访问 `/api/auth/skill-credentials`，Lark-cli 返回 `status=needs_auth / action=授权 / default_identity=null`；`POST /api/auth/skill-credentials/lark-cli/start` 返回 `status=pending`、`verification_uri` 和 `user_code`，说明 WebUI 凭证页可启动与飞书 `/feishu_auth` 一致的授权流程。
+> 验证：本机 `pnpm test` 为 `114 files / 749 passed / 2 skipped`，`pnpm run build` passed；生产 `hermes-web-ui@ef0b7b5` build/restart 后 `8648/health` OK。使用 `user_b` 的签名 Feishu session 访问 `/api/auth/skill-credentials`，Lark-cli 返回 `status=needs_auth / action=授权 / default_identity=null`；`POST /api/auth/skill-credentials/lark-cli/start` 返回 `status=pending`、`verification_uri` 和 `user_code`，说明 WebUI 凭证页可启动与飞书 `/feishu_auth` 一致的授权流程。
 
 > [!info] 2026-05-21 worktree — chat-plane Kanban 改为薄 BFF
 > `webui-kanban-multitenancy` 分支只在 WebUI 做薄代理：chat-plane 且 `HERMES_WEBUI_RUN_BROKER=1` 时，`/api/hermes/kanban` 的 list/create、`boards` GET、`assignees`、`stats`、`dispatch` 会转发到 `${HERMES_RUN_BROKER_URL}/api/run-broker/kanban/*`，并带上服务端 Feishu session 派生的 `X-Hermes-Owner-Open-Id` 与可选 Bearer key。create 请求体会剥离 `tenant/owner_open_id/owner_profile/profile/token/authorization` 等客户端可伪造字段，真正 owner/tenant 由 multitenancy sidecar 决定。
@@ -92,7 +92,7 @@ related:
 > chat-plane allowlist 只打开上述 owner-scoped BFF 能力；`events`、`artifact`、`diagnostics`、board create/delete 等仍保持 blocked。这样当前开发环境不再因为 `/api/hermes/kanban` 在 chat plane 被整体 403 而无法创建任务，同时不把旧全局 CLI 看板执行面暴露给普通 WebUI 用户。生产 66 是否具备该能力仍以实际发布 HEAD/build 为准。
 
 > [!info] 2026-05-21 worktree — chat-plane Kanban task detail hotfix
-> `webui-kanban-task-detail-chat-plane` 修补上面薄 BFF 的详情缺口：创建任务后前端抽屉会调用 `GET /api/hermes/kanban/:id`，因此 chat-plane allowlist 允许单段 task id 的 GET，但继续阻断 `/events`、`/artifact`、`/diagnostics`、`/:id/log`、board 管理等未 owner-scoped 的接口。controller 在 chat-plane + `HERMES_WEBUI_RUN_BROKER=1` 时不回退旧 CLI，而是复用 multitenancy 既有 `/api/run-broker/kanban/tasks?includeArchived=true` owner-scoped 列表，按 id 找当前 open_id 可见任务并合成抽屉需要的 detail shape（`comments/events/runs/parents/children` 为空）。已通过 PR #22 squash merge 并发布到生产 `root@10.250.1.66` 的 `main@8346f55`；发布备份 `/home/hermes/backups/kanban-detail-hotfix-20260521-121955`，生产 build/restart/health 与 Chrome 登录态看板详情冒烟均通过。
+> `webui-kanban-task-detail-chat-plane` 修补上面薄 BFF 的详情缺口：创建任务后前端抽屉会调用 `GET /api/hermes/kanban/:id`，因此 chat-plane allowlist 允许单段 task id 的 GET，但继续阻断 `/events`、`/artifact`、`/diagnostics`、`/:id/log`、board 管理等未 owner-scoped 的接口。controller 在 chat-plane + `HERMES_WEBUI_RUN_BROKER=1` 时不回退旧 CLI，而是复用 multitenancy 既有 `/api/run-broker/kanban/tasks?includeArchived=true` owner-scoped 列表，按 id 找当前 open_id 可见任务并合成抽屉需要的 detail shape（`comments/events/runs/parents/children` 为空）。已通过 PR #22 squash merge 并发布到生产 `root@<prod-host>` 的 `main@8346f55`；发布备份 `<prod-home>/backups/kanban-detail-hotfix-20260521-121955`，生产 build/restart/health 与 Chrome 登录态看板详情冒烟均通过。
 
 > [!info] 2026-05-21 worktree — chat-plane Kanban drawer actions
 > `webui-kanban-task-actions-chat-plane` 补齐上面详情抽屉后续动作的 chat-plane allowlist：允许当前抽屉实际会调用的 `POST /api/hermes/kanban/complete`、`POST /api/hermes/kanban/unblock`、`POST /api/hermes/kanban/:id/block`、`POST /api/hermes/kanban/:id/assign`，继续阻断 comments、links、bulk、events、artifact、diagnostics、task log、board 管理等更大 API 面。这些动作仍走现有 controller 的 `requireOwnedTasks` 与 `ownerOwnsProfile` guard，只有当前 Feishu open_id 拥有的任务和目标 profile 才能执行；不新增客户端 tenant/owner 信任边界。
@@ -106,7 +106,7 @@ related:
 > 16:5x 追加：WebUI `API Server` 直连路径不经过 multitenancy Run Broker，因此 `chat-run-socket.ts` 也必须在 assistant 完成前调用 `media-directives.ts`。当前直连路径会把当前 profile `home/` 顶层生成文件复制到 `workspace/Downloads`，把 assistant 内容改写为 `MEDIA:/workspace/Downloads/<name>`，并通过 `run.completed.parsed_content` 替换前端正在流式显示的消息；嵌套隐藏目录和任意越界绝对路径不发布。
 
 > [!warning] 2026-05-20 gotcha — Feishu OAuth login behind Caddy must compare forwarded origin
-> 生产 `https://hermes.gotokeep.com` 由 Caddy 反代到 WebUI `127.0.0.1:8648`。Feishu login 为避免 state cookie 写到错误 host，会把 `/api/auth/feishu/login` canonicalize 到 `FEISHU_REDIRECT_URI` 的 origin；但在 Koa 未启用 proxy trust 时，`ctx.origin` 只看到本地 HTTP origin，若忽略 `X-Forwarded-Proto` / `X-Forwarded-Host`，公网登录会 302 到同一个 `https://hermes.gotokeep.com/api/auth/feishu/login` 并形成自循环。`controllers/auth.ts` 的 login canonicalization 必须优先用 forwarded origin 判断“外部请求是否已经在配置 origin 上”，只在真正 host/origin 不一致时才 redirect；`index.ts` 必须设置 `app.proxy = true`，否则 Koa/cookies 仍会把 Caddy 后面的本地 HTTP 当成非安全连接，写 `Secure` state cookie 时返回 500。
+> 生产 `https://hermes.example.com` 由 Caddy 反代到 WebUI `127.0.0.1:8648`。Feishu login 为避免 state cookie 写到错误 host，会把 `/api/auth/feishu/login` canonicalize 到 `FEISHU_REDIRECT_URI` 的 origin；但在 Koa 未启用 proxy trust 时，`ctx.origin` 只看到本地 HTTP origin，若忽略 `X-Forwarded-Proto` / `X-Forwarded-Host`，公网登录会 302 到同一个 `https://hermes.example.com/api/auth/feishu/login` 并形成自循环。`controllers/auth.ts` 的 login canonicalization 必须优先用 forwarded origin 判断“外部请求是否已经在配置 origin 上”，只在真正 host/origin 不一致时才 redirect；`index.ts` 必须设置 `app.proxy = true`，否则 Koa/cookies 仍会把 Caddy 后面的本地 HTTP 当成非安全连接，写 `Secure` state cookie 时返回 500。
 
 > [!info] 2026-05-20 production locale default
 > 生产 WebUI 面向中文团队，首次打开时不能因浏览器/系统语言是英文而显示英文。`packages/client/src/i18n/index.ts` 的默认语言为 `DEFAULT_LOCALE='zh'`，`fallbackLocale` 也应保持中文；只在 `localStorage.hermes_locale` 已保存有效 locale 时尊重用户显式选择。不要重新引入 `navigator.languages` / `Accept-Language` 自动探测作为默认值。回归测试见 `tests/client/i18n-default-locale.test.ts`：英文浏览器、无保存值时必须得到 `zh`；保存 `en` 时仍为 `en`。
@@ -123,7 +123,7 @@ related:
 > multitenancy 生产分发的 managed skills 多数是 `profiles/<profile>/skills/<category>/<skill> -> ~/.hermes/skills/...` 目录 symlink。WebUI 的 `GET /api/hermes/skills` 和 chat-plane 的 profile-local skill slash 注入都必须把“指向目录的 symlink”当成目录扫描；Node `Dirent.isDirectory()` 对 symlink 返回 false，直接用它会让页面只剩真实目录 skill（例如 `keep-record` 和少数个人 skill），并让 WebUI `/kep-prd-analysis ...` 不加载 profile-local skill。当前实现用 `stat` / `statSync` 跟随 symlink target，仅当 target 是目录时参与扫描，普通文件 symlink 不进入。
 
 > [!warning] 2026-05-18 `webui-upstream-safe-ports` — upstream 安全移植，不整支合并
-> 本轮在 ftask worktree `/Users/kite/code/hermes-web-ui.tasks/webui-upstream-safe-ports` 手工吸收 upstream 中对侧栏能力有价值且不冲突多租户目标的补丁。仍禁止整支 merge `EKKOLearnAI/main`：upstream 大规模替换 `chat-run-socket`/`run-chat`、删除本地 `request-context.ts`、`feishu-oauth.ts` 和 user-mode/Feishu/Run Broker 测试，会冲掉 `X-Hermes-Owner-Open-Id`、profile owner isolation、Feishu UAT/lark-cli connector 与本地文档。
+> 本轮在 ftask worktree `<local-repo>/hermes-web-ui.tasks/webui-upstream-safe-ports` 手工吸收 upstream 中对侧栏能力有价值且不冲突多租户目标的补丁。仍禁止整支 merge `EKKOLearnAI/main`：upstream 大规模替换 `chat-run-socket`/`run-chat`、删除本地 `request-context.ts`、`feishu-oauth.ts` 和 user-mode/Feishu/Run Broker 测试，会冲掉 `X-Hermes-Owner-Open-Id`、profile owner isolation、Feishu UAT/lark-cli connector 与本地文档。
 >
 > 已移植：群聊 `8196e49/4f246c7` 的房间克隆、清空上下文、稳定 agent identity、agent mention loop 防护；看板 `e0e4096` 的 archived 任务计数/列表刷新和后续 Kanban 大重写中的评论、日志、诊断、reclaim/reassign/specify/dispatch、任务链接、批量操作、归档统计/详情，但全部保留 `requireOpenId + taskOwnedBy` owner 过滤；通用安全和体验补丁 `67723d9/ce5a9bb` 的配置/`.env` 锁写入与非法 key 拦截、`6516d86` 的运行时模型列表等待上限、`f2c8ace` 的 custom provider `base_url` 保真、`8571a7d` 的 gateway stopped diagnostics、`217b721` 的新 run 清理 stale compression status、`aff3546/bbfd818` 的 FUN-Codex responses transport、Z.AI 模型列表、sidebar divider、Windows markdown/file-provider 路径兼容。
 >
@@ -134,21 +134,21 @@ related:
 > 验证：早期 safe-port focused 14 files / 149 tests passed；追加 run-chat/session 兼容层后 focused 15 files / 156 tests passed，`pnpm run build` passed。build 仍有既有 `INEFFECTIVE_DYNAMIC_IMPORT` 与大 chunk warning；不是本轮新增阻塞。生产尚未发布，后续只能从本 worktree 经 ftask review/ship 后按标准 GitHub main → 66 pull/build/restart/verify 流程进入生产。
 
 > [!warning] 2026-05-20 `webui-upstream-0530` — 0.5.30 主题/UI 与群聊修复兼容吸收
-> 本轮继续在 ftask worktree `/Users/kite/code/hermes-web-ui.tasks/webui-upstream-0530` 从 upstream 0.5.30 线手工吸收，不整支 merge。已吸收：Traditional Chinese locale；collapsed sidebar 的分组折叠 UI；聊天 outline panel 和 heading anchor；comic theme 字体资产、早期主题 class 初始化与 upstream 字体栈；恢复 `ink/comic` 主题风格切换，并在用户模式侧边栏身份卡与 Settings > Display 暴露入口；群聊 `@all` mention routing；群聊 final stream merge/reasoning/content recovery；file browser 绝对路径复制相关的 terminal cwd 配置能力。2026-05-20 追加：用户模式前端群聊 beta 占位已移除，chat-plane 放行 owner-scoped `/api/hermes/group-chat/*`，后端仍由 group-chat routes 执行 openid owner/profile 隔离；群聊创建入口保持 upstream 房间列表标题栏 `+`，仅在未选中房间时禁用“添加智能体”；内部 agent socket 通过 server secret 加入已持久化的所属房间，解决 OAuth 模式下无浏览器 cookie 导致的 agent 不回复；群聊 add-agent 弹窗复用 upstream ProfileCreateModal，新建 profile 会在 chat-plane 绑定当前 openid 后作为可添加 agent 出现；用户模式侧栏恢复 upstream `ProfileSelector`，但只列出当前 openid 拥有的 profile，并用 `multitenancy_routing.display_label/kind/owner_open_id` 渲染群 profile。
+> 本轮继续在 ftask worktree `<local-repo>/hermes-web-ui.tasks/webui-upstream-0530` 从 upstream 0.5.30 线手工吸收，不整支 merge。已吸收：Traditional Chinese locale；collapsed sidebar 的分组折叠 UI；聊天 outline panel 和 heading anchor；comic theme 字体资产、早期主题 class 初始化与 upstream 字体栈；恢复 `ink/comic` 主题风格切换，并在用户模式侧边栏身份卡与 Settings > Display 暴露入口；群聊 `@all` mention routing；群聊 final stream merge/reasoning/content recovery；file browser 绝对路径复制相关的 terminal cwd 配置能力。2026-05-20 追加：用户模式前端群聊 beta 占位已移除，chat-plane 放行 owner-scoped `/api/hermes/group-chat/*`，后端仍由 group-chat routes 执行 openid owner/profile 隔离；群聊创建入口保持 upstream 房间列表标题栏 `+`，仅在未选中房间时禁用“添加智能体”；内部 agent socket 通过 server secret 加入已持久化的所属房间，解决 OAuth 模式下无浏览器 cookie 导致的 agent 不回复；群聊 add-agent 弹窗复用 upstream ProfileCreateModal，新建 profile 会在 chat-plane 绑定当前 openid 后作为可添加 agent 出现；用户模式侧栏恢复 upstream `ProfileSelector`，但只列出当前 openid 拥有的 profile，并用 `multitenancy_routing.display_label/kind/owner_open_id` 渲染群 profile。
 >
 > 冲突处理：仍保留 user-mode/admin-surface 隐藏、Run Broker `/api/run-broker/runs`、`X-Hermes-Owner-Open-Id`、lark-cli/Feishu UAT 与 chat-plane denylist。旧侧栏 Feishu connector 已在凭证页落地后移除，认证入口统一进入 Agent > 凭证。没有吸收 upstream approval/Bridge UI 和 full `agent-bridge/*`/`handle-bridge-run.ts`；`0547fd6` context compression hardening 依赖 upstream full bridge/run-chat 架构，本轮已撤回 cherry-pick，避免半连接到不带 owner/sandbox parity 的执行面。terminal 默认 cwd 也没有采用 upstream 的 profile root/`$HOME` fallback：只有显式存在的 `terminal.cwd` 会生效；无配置或配置缺失时仍回到 `<profile>/terminal` sandbox。
 >
-> 验证：focused group/profile suite 10 files / 61 tests passed；追加 OAuth host canonicalization 后完整 `bun run test` 为 104 files / 679 passed / 2 skipped；owner profile selector 续修后 focused 8 files / 102 tests passed，`pnpm run build` passed，`git diff --check` clean。本机临时 launchd `com.hermes.ekko-webui-upstream-0530` 已重启到 worktree build，`127.0.0.1:8648/health` 返回 `status=ok / plane=chat / auth_mode=feishu-oauth-dev / gateway=running`。真实 `/api/hermes/profiles` 验证当前 openid 返回个人 `feishu_g41a5b5g` 与两个群 profile，群 profile 带 display label/kind/ownerOpenId。build 仍有既有 dynamic import 与大 chunk warning。生产尚未发布。
+> 验证：focused group/profile suite 10 files / 61 tests passed；追加 OAuth host canonicalization 后完整 `bun run test` 为 104 files / 679 passed / 2 skipped；owner profile selector 续修后 focused 8 files / 102 tests passed，`pnpm run build` passed，`git diff --check` clean。本机临时 launchd `com.hermes.ekko-webui-upstream-0530` 已重启到 worktree build，`127.0.0.1:8648/health` 返回 `status=ok / plane=chat / auth_mode=feishu-oauth-dev / gateway=running`。真实 `/api/hermes/profiles` 验证当前 openid 返回个人 `feishu_user_a` 与两个群 profile，群 profile 带 display label/kind/ownerOpenId。build 仍有既有 dynamic import 与大 chunk warning。生产尚未发布。
 >
 > 2026-05-20 20:39 追加登录后首屏性能修复：生产实测 Feishu OAuth callback 到 chat socket 恢复原约 8.5s，断点不是会话库，`/api/hermes/sessions` 与 detail 均为毫秒级；慢点是 chat-plane `/api/hermes/profiles` 仍先执行全局 `hermes profile list`，生产约 3.7s，且 `ChatView` 等 profile/settings 完成后才拉 sessions。PR #18 已发布到 66，WebUI HEAD `61ea1366242e43a76a2269d4d222f9a199dc9f9e`：chat-plane profile list 直接读取当前 openid 的 multitenancy ownership metadata，不调用慢 CLI；`ChatView` 不再阻塞可见会话加载，sessions/settings/profiles 并行触发。安全边界不变：session 列表/详情仍由服务端 `getRequestProfile(ctx)` 使用 Feishu session 绑定 profile 与 owner ACL 过滤，前端 profile 列表是否加载不参与授权。验证：focused `profiles-routes/sessions-controller/chat-view-startup` 32 passed，生产 `pnpm run build` passed；生产本机签名 Feishu session 复核 `/api/hermes/profiles` 6ms、`/api/hermes/sessions` 5ms，伪造 `X-Hermes-Profile` 仍回落到绑定 profile。
 >
 > 2026-05-20 14:02 追加群聊 mention 队列修复：当某个 agent 正在回复时又收到新的 mention（常见于刚 @ 单个群 profile 后立刻 `@all`），旧 `_drainQueue()` 会先把该 agent 标记为 processing，再递归处理 queued mention，导致 queued mention 被重新入队并让该 agent 后续看起来“不理人”。现在 drain 时直接 await 下一条 `_processAgentMention()`，由它自己取得 processing lock。回归 `drains the last queued mention after an agent finishes replying` 先红后绿；focused group-chat suite 5 files / 25 tests passed；`pnpm run build` passed；本机 8648 已重启，日志显示 4 个 agent 恢复并 join 房间。
 >
-> 2026-05-20 14:42 追加群聊 `@all` 多 profile 路由修复：按用户要求重新对照 upstream，目标选择继续使用 upstream `resolveMentionTargets(agents, content, senderId)`，回复 fanout 也保持 upstream 并发模型，没有改成自研顺序队列。真实断点在 WebUI -> multitenancy Run Broker 边界：WebUI 已向 3 个 agent 发起 broker run，但 owner-scoped broker 只看到 `profile_name` 与 room-local `metadata.agent_id`，缺少 routing 表里的 `agent_id` / `X-Hermes-Agent-Id`，于是把群 profile 请求解析回 owner 个人 profile，后续又被 idempotency 当重复请求吞掉。现在群聊 broker request 会从 `multitenancy_routing` 读取当前 owner/profile 的 `agent_id`，作为顶层 `agent_id` 和 `X-Hermes-Agent-Id` 发送；一对一聊天未传 `agentId` 时保持原逻辑。回归 focused 3 files / 15 tests passed；`pnpm run build` passed；本机 canary `ROUTING_AGENT_ALL_1779259314` 产生个人 profile + 两个群 profile 共 3 条回复，并在 `multitenancy_processed_events` 记录 3 个 profile。生产尚未发布。
+> 2026-05-20 14:42 追加群聊 `@all` 多 profile 路由修复：按用户要求重新对照 upstream，目标选择继续使用 upstream `resolveMentionTargets(agents, content, senderId)`，回复 fanout 也保持 upstream 并发模型，没有改成自研顺序队列。真实断点在 WebUI -> multitenancy Run Broker 边界：WebUI 已向 3 个 agent 发起 broker run，但 owner-scoped broker 只看到 `profile_name` 与 room-local `metadata.agent_id`，缺少 routing 表里的 `agent_id` / `X-Hermes-Agent-Id`，于是把群 profile 请求解析回 owner 个人 profile，后续又被 idempotency 当重复请求吞掉。现在群聊 broker request 会从 `multitenancy_routing` 读取当前 owner/profile 的 `agent_id`，作为顶层 `agent_id` 和 `X-Hermes-Agent-Id` 发送；一对一聊天未传 `agentId` 时保持原逻辑。回归 focused 3 files / 15 tests passed；`pnpm run build` passed；本机 canary `CANARY_GROUP_FANOUT` 产生个人 profile + 两个群 profile 共 3 条回复，并在 `multitenancy_processed_events` 记录 3 个 profile。生产尚未发布。
 >
 > 2026-05-20 15:xx 追加 user-mode profile 创建能力：继续复用 upstream `ProfileCreateModal` / `ProfileSelector` / `/api/hermes/profiles`，只做 additive 字段。创建弹窗新增 coder/researcher/writer/operator/custom 角色预设，实际只写 Hermes CLI 已支持的 `--description`，不新增 WebUI 私有角色表；chat-plane 创建时 WebUI 调 `hermes profile create --no-alias --description ...`，再调用 multitenancy Run Broker `/api/run-broker/profiles` 登记 owner-scoped `agent_id`，broker 不可用时才走旧 `registerOwnedProfile()` 本地开发 fallback。普通用户仍不暴露 admin import/export/delete/rename/restart。验证：profile create/selector/store/controller focused 6 files / 29 tests passed，`pnpm run build` passed；`i18n:check` 仍因既有多语言 key 长期发散失败，不是本次新增 key 独有。
 
-> 2026-05-20 19:xx 追加凭证页收口：PR #10 增加 Agent > 凭证，用 profile-local skill 状态展示/触发 Lark-cli、Keep-record、kep-cli 与 GitLab 凭证流程；PR #11 删除旧侧栏底部 Feishu connector，避免出现“飞书已连接”与凭证页重复。验证：`pnpm vitest run tests/client/sidebar-search.test.ts tests/client/credentials-view.test.ts` 为 15 passed，`pnpm run build` passed；本机 `com.hermes.ekko-webui-upstream-0530` 指向 `/Users/kite/code/hermes-web-ui.main-preview/dist/server/index.js`，`8648/health` OK。
+> 2026-05-20 19:xx 追加凭证页收口：PR #10 增加 Agent > 凭证，用 profile-local skill 状态展示/触发 Lark-cli、Keep-record、kep-cli 与 GitLab 凭证流程；PR #11 删除旧侧栏底部 Feishu connector，避免出现“飞书已连接”与凭证页重复。验证：`pnpm vitest run tests/client/sidebar-search.test.ts tests/client/credentials-view.test.ts` 为 15 passed，`pnpm run build` passed；本机 `com.hermes.ekko-webui-upstream-0530` 指向 `<local-repo>/hermes-web-ui.main-preview/dist/server/index.js`，`8648/health` OK。
 
 > [!info] 2026-05-20 `restore-upstream-model-ui` — 模型选择回到 upstream 侧栏语义
 > 本分支按用户要求撤销早期“把模型选择从侧栏挪到聊天框”的本地改动：`ChatInput.vue` 不再渲染 compact `ModelSelector`，`AppSidebar.vue` 在 user-mode/chat-plane 下也保留 upstream 风格的侧栏模型选择器。前端 `ModelSelector` 重新只写 profile/default model（`appStore.switchModel`），聊天发送 payload 直接读取当前 `appStore.selectedModel/selectedProvider`，不再让新建 session 或历史 session 的 `model/provider` 覆盖侧栏选择。
@@ -158,9 +158,9 @@ related:
 > 2026-05-20 追加：user-mode 身份卡 `ThemeSwitch` 只保留 Light/Dark brightness toggle，移除 `title="Comic style"` 的快捷按钮；主题风格切换仍保留在 Settings > Display，不把身份卡当第二个风格入口。回归 `theme-switch` focused test 覆盖该按钮不存在。
 
 > [!warning] 2026-05-14 Cron 投递语义
-> WebUI 创建定时任务时，主流场景是投递到飞书，而不是投递到本地 WebUI。生产默认用户身份是 `sunke` UAT profile；job 写入 `profiles/sunke/cron/jobs.json`，由 `hermes-gateway.service` 的 multitenancy cron worker 执行并通过 Feishu adapter 投递给 owner open_id。投递成功后 multitenancy 会 mirror 到 `multitenancy_sessions`，这样用户基于飞书推送继续对话时有上下文。
+> WebUI 创建定时任务时，主流场景是投递到飞书，而不是投递到本地 WebUI。生产默认用户身份是 `user_a` UAT profile；job 写入 `profiles/user_a/cron/jobs.json`，由 `hermes-gateway.service` 的 multitenancy cron worker 执行并通过 Feishu adapter 投递给 owner open_id。投递成功后 multitenancy 会 mirror 到 `multitenancy_sessions`，这样用户基于飞书推送继续对话时有上下文。
 >
-> 已有 job 的执行/飞书投递不依赖 `hermes-gateway@sunke.service` 常驻；WebUI 创建/管理任务也已走 `hermes-multitenancy` Run Broker sidecar 的 `/api/run-broker/jobs`。生产 canary 在 `hermes-gateway@sunke.service` 停止期间通过 WebUI BFF 创建、列表、删除 job `0dbd12ced3b1` 成功。
+> 已有 job 的执行/飞书投递不依赖 `hermes-gateway@user_a.service` 常驻；WebUI 创建/管理任务也已走 `hermes-multitenancy` Run Broker sidecar 的 `/api/run-broker/jobs`。生产 canary 在 `hermes-gateway@user_a.service` 停止期间通过 WebUI BFF 创建、列表、删除 job `<job-id>` 成功。
 
 > [!warning] 2026-05-14 chat-plane 执行边界
 > `3090768` 后，chat plane 不再允许通用 proxy 把 `POST /v1/responses`、`POST /v1/chat/completions`、`POST /v1/runs` 透传到 profile apiserver，也不允许 `/api/hermes/jobs/:id/run` 手动执行 cron。保留的 WebUI 能力是任务创建/管理、只读 response 查询、profile-scoped 文件/记忆等管理面。正常浏览器聊天的 Socket.IO `chat-run-socket.ts` 已新增 WebUI Run Broker client seam：`HERMES_WEBUI_RUN_BROKER=1` 且 `HERMES_RUN_BROKER_URL` 设置时，会构造 `RunRequest(channel="webui", profile_name, user_key, content, session_id, delivery_mode="socket", requires_host_tools=true)` 并 POST 到 `${HERMES_RUN_BROKER_URL}/api/run-broker/runs`，再把 broker 的 `content/done/error/tool_*` 事件映射回 Socket.IO。如果配置了 `HERMES_RUN_BROKER_KEY`，WebUI 会发送 `Authorization: Bearer <key>`，对应 multitenancy 侧 `HERMES_MULTITENANCY_RUN_BROKER_KEY`。生产 66 已开启该路径，Socket.IO canary 通过 terminal 输出 `SANDBOX=1`，说明浏览器 chat-run 已经进入 router-owned bwrap 执行面。
@@ -169,7 +169,7 @@ related:
 
 > 2026-05-21 gotcha：WebUI 走 Run Broker 时必须显式传 per-turn `idempotency_key`，不能依赖 broker 默认 `channel/profile/user/content_hash` 去重。默认内容 hash 适合 Feishu 同一消息重复投递，但 WebUI 用户常会在新会话或失败后用完全相同文本重试；如果不传 per-turn key，broker 会返回 duplicate `done`，表现为只落 user message、不生成 assistant 回复。`handleBrokerRun()` 现在使用本轮 `runMarker` 构造 `webui:<session_id>:<runMarker>`，同内容跨 session/跨轮次不再互相吞掉。
 
-> 2026-05-22 gotcha：WebUI broker 启动失败不能再只 emit `run.failed` 后 flush 0 条消息。生产 `baiguannan` 的图片追问复现出用户消息已入库、Socket.IO run 失败但历史无 assistant/tool/error 的静默失败；`handleBrokerRun()` 在 broker URL 缺失、非 2xx、无 stream、terminal `run.failed`、stream 无终止事件和 fetch/abort 异常路径上，若当前 run 尚无 assistant/tool 输出，会先追加一条 `assistant` / `finish_reason=error` 的可见错误消息，再交给 `markCompleted()` 的既有 `flushResponseRunToDb()` 写入 DB。这样即使前端错过 `run.failed` 事件，刷新历史也能看到失败原因，不再留下 orphan user message。
+> 2026-05-22 gotcha：WebUI broker 启动失败不能再只 emit `run.failed` 后 flush 0 条消息。生产 `user_c` 的图片追问复现出用户消息已入库、Socket.IO run 失败但历史无 assistant/tool/error 的静默失败；`handleBrokerRun()` 在 broker URL 缺失、非 2xx、无 stream、terminal `run.failed`、stream 无终止事件和 fetch/abort 异常路径上，若当前 run 尚无 assistant/tool 输出，会先追加一条 `assistant` / `finish_reason=error` 的可见错误消息，再交给 `markCompleted()` 的既有 `flushResponseRunToDb()` 写入 DB。这样即使前端错过 `run.failed` 事件，刷新历史也能看到失败原因，不再留下 orphan user message。
 
 > [!info] 2026-05-15 WebUI Feishu UAT ensure
 > WebUI 的飞书 OAuth 登录仍只负责 `open_id -> profile` 身份绑定，不把 OAuth access token 当工具 UAT 使用，也不把 UAT 存入 cookie/localStorage/WebUI DB。OAuth 登录成功后直接进入 WebUI；UAT 是登录后的侧栏连接状态，不再是进入 `/hermes/chat` 的门禁。左下角飞书连接按钮会调用受保护 BFF 接口 `GET /api/auth/feishu/uat/status`；若 multitenancy credential vault 中当前 `profile + open_id` 缺少有效 UAT 或 scope 不足，按钮显示红点。点击红点会调用 `POST /api/auth/feishu/uat/start`，打开等价于 `/feishu_auth` 的 device-flow 授权链接，并轮询 `/api/auth/feishu/uat/sessions/:sessionId`；授权成功后红点变绿点。
@@ -211,7 +211,7 @@ flowchart LR
     Sandbox --> Agent["AIAgent tools"]
     Agent --> SocketOut["Socket.IO stream back to browser"]
     Agent --> Mirror["multitenancy_sessions mirror"]
-    JobsBroker --> JobsFile["profiles/sunke/cron/jobs.json"]
+    JobsBroker --> JobsFile["profiles/user_a/cron/jobs.json"]
 
     Compat["profile apiserver :8655"] --> FailClosed["compat only<br/>host tools disabled outside sandbox<br/>cron ticker disabled"]
 
@@ -247,7 +247,7 @@ flowchart LR
 │                                          │
 │  GatewayManager:                         │
 │    profile → 127.0.0.1:<port>            │
-│    sunke              → :8655            │
+│    user_a              → :8655            │
 │    multitenancy_router cron worker       │
 │      executes profile cron and delivers  │
 │      to Feishu owner_open_id             │
@@ -257,7 +257,7 @@ flowchart LR
            ▼
    Hermes API Server (per profile, in ~/.hermes/profiles/<name>/)
         ↑   ↑   ↑
-        │   │   └─ feishu UAT 链路 (~/code/hermes-feishu-uat → feishu_g41a5b5g)
+        │   │   └─ feishu UAT 链路 (~/code/hermes-feishu-uat → feishu_user_a)
         │   └─── multitenancy.db (open_id → user_id → profile_name)
         └─ ~/code/hermes-multitenancy 共享同张路由表
 ```
@@ -265,7 +265,7 @@ flowchart LR
 **关键事实链**：
 - **Web UI 是 BFF + profile 集群的反向代理**——不是 nesquena 的 in-process embedding；hermes 在另一个进程里跑（[[ARCHITECTURE-GUIDE]] 主图的 web-ui 那一块）。
 - **飞书 OAuth → multitenancy.db → profile** 已经 100% 落地（`controllers/auth.ts:146` callback + `services/feishu-oauth.ts:230 exchangeFeishuCode` + `services/request-context.ts:81 resolveProfileForOpenId`）。
-- **当前生产 canonical profile 是 `sunke`**，WebUI detect/register 已存在 gateway，`sunke` API/runtime gateway 当前端口是 `8655`。
+- **当前生产 canonical profile 是 `user_a`**，WebUI detect/register 已存在 gateway，`user_a` API/runtime gateway 当前端口是 `8655`。
 - **Cron 投递主路径是 Feishu owner_open_id**：WebUI 负责创建/管理任务；执行、Feishu 投递、上下文 mirror 由 multitenancy router worker 承担。
 - **当前没有 X-Hermes-Open-Id / X-Hermes-User 注入到上游**——profile 已经在 BFF 层选好了，hermes 端是 profile-bound 的"哑"进程。
 
@@ -423,14 +423,14 @@ hermes-web-ui/                       (单 package，不是 workspaces)
 | 项 | 值 | 来源锚点 |
 |---|---|---|
 | 进程 PID | `56768` | `launchctl list \| grep ekko` |
-| 守护服务 | `com.hermes.ekko-webui` (launchd) | `/Users/kite/Library/LaunchAgents/com.hermes.ekko-webui.plist` |
+| 守护服务 | `com.hermes.ekko-webui` (launchd) | `<local-home>/Library/LaunchAgents/com.hermes.ekko-webui.plist` |
 | 监听 | `0.0.0.0:8648` | `index.ts:62` + `lsof -i :8648` |
-| 构建产物 | `/Users/kite/code/hermes-web-ui/dist/server/index.js` | plist `ProgramArguments` |
+| 构建产物 | `<local-repo>/hermes-web-ui/dist/server/index.js` | plist `ProgramArguments` |
 | Node | `/opt/homebrew/bin/node` (≥23) | plist + `package.json` engines |
 | stdout | `~/.hermes/ekko-web-ui/webui.out.log` | plist `StandardOutPath` |
 | stderr | `~/.hermes/ekko-web-ui/webui.err.log` | plist `StandardErrorPath` |
 | pino log | `~/.hermes-web-ui/logs/server.log` | `index.ts:194` |
-| 工作目录 | `/Users/kite/code/hermes-web-ui` | plist `WorkingDirectory` |
+| 工作目录 | `<local-repo>/hermes-web-ui` | plist `WorkingDirectory` |
 
 ### §3.2 关键环境变量（plist 实测）
 
@@ -438,9 +438,9 @@ hermes-web-ui/                       (单 package，不是 workspaces)
 HERMES_AUTH_MODE                = feishu-oauth-dev        ← 进入飞书 OAuth 分支
 HERMES_WEB_PLANE                = chat                    ← 用户模式，运维 API 全 403
 HERMES_CHAT_PLANE_ALLOW_SETTINGS = 1                       ← 允许 /api/hermes/config GET/PUT 安全段
-HERMES_HOME                     = /Users/kite/.hermes
-HERMES_BIN                      = /Users/kite/.local/bin/hermes
-HERMES_MULTITENANCY_DB          = /Users/kite/.hermes/multitenancy.db
+HERMES_HOME                     = <local-home>/.hermes
+HERMES_BIN                      = <local-home>/.local/bin/hermes
+HERMES_MULTITENANCY_DB          = <local-home>/.hermes/multitenancy.db
 GATEWAY_AUTOSTART               = none                    ← BFF 不自动起 gateway，按需 wake
 PROFILE                         = coder                   ← 默认 activeProfile（[待 verify] 与 multitenancy.db active 行不一致：见 §8.4）
 SESSION_STORE                   = local
@@ -578,7 +578,7 @@ getUpstream(profileName?: string): string {
 }
 ```
 
-每个 profile 自己一个端口，写在 `~/.hermes/profiles/<name>/config.yaml` 的 `platforms.api_server.extra.port`。`coder=8643`、`feishu_g41a5b5g/feishu_ee966643` 各自的端口由 `GatewayManager.resolvePort()` 检测冲突后写入。
+每个 profile 自己一个端口，写在 `~/.hermes/profiles/<name>/config.yaml` 的 `platforms.api_server.extra.port`。`coder=8643`、`feishu_user_a/feishu_user_b` 各自的端口由 `GatewayManager.resolvePort()` 检测冲突后写入。
 
 ### §4.4 SSRF 闸（必看，否则配置可被弱化为攻击面）
 
@@ -661,8 +661,8 @@ WHERE open_id = ? AND active = 1 LIMIT 1
 ```
 user_id   | open_id                              | profile_name      | active
 ----------|--------------------------------------|-------------------|--------
-ee966643  | ou_63348b2d4c8f885768bdc6c7d7fc26ee | feishu_ee966643   | 1
-g41a5b5g  | ou_cf23e7c262afa4b7a006baa75f863ed5 | feishu_g41a5b5g   | 1
+user_b  | ou_test_owner_b | feishu_user_b   | 1
+user_a  | ou_test_owner_a | feishu_user_a   | 1
 ```
 
 > [!info] profile 命名规则
@@ -698,7 +698,7 @@ g41a5b5g  | ou_cf23e7c262afa4b7a006baa75f863ed5 | feishu_g41a5b5g   | 1
 
 ### Milestone 1 — 飞书 OAuth 整链路接通（2026-05-06 之前）
 - `feishu-oauth.ts` + `controllers/auth.ts:124-194` 完成 login → callback → bound session 全流程。
-- 用户绑定示例：`ou_cf23e7… → feishu_g41a5b5g`。
+- 用户绑定示例：`ou_cf23e7… → feishu_user_a`。
 - callback 把 `name / avatarUrl` 落 cookie；access_token / refresh_token 立即丢。
 
 ### Milestone 2 — 用户模式 UI 收口（2026-05-06）
@@ -746,8 +746,8 @@ g41a5b5g  | ou_cf23e7c262afa4b7a006baa75f863ed5 | feishu_g41a5b5g   | 1
             ↓                                  ↓
    hermes-feishu-uat               飞书 OAuth callback
    (~/code/hermes-feishu-uat)             ↓
-   ↳ feishu_g41a5b5g profile        multitenancy.db lookup
-   ↳ feishu_ee966643 profile        (resolveProfileForOpenId)
+   ↳ feishu_user_a profile        multitenancy.db lookup
+   ↳ feishu_user_b profile        (resolveProfileForOpenId)
             ↓                                  ↓
    hermes-multitenancy plugin         GatewayManager
    (~/code/hermes-multitenancy)              ↓
@@ -855,7 +855,7 @@ g41a5b5g  | ou_cf23e7c262afa4b7a006baa75f863ed5 | feishu_g41a5b5g   | 1
 ### Q5 `npm run dev` 启动报 `hermes: command not found`
 
 - `services/hermes/hermes-cli.ts` 内部 `execFile('hermes', …)`。CLAUDE.md "Prerequisite: hermes CLI must be installed and on $PATH"。
-- Fix：`ln -s /Users/kite/.local/bin/hermes /usr/local/bin/hermes` 或 export PATH。
+- Fix：`ln -s <local-home>/.local/bin/hermes /usr/local/bin/hermes` 或 export PATH。
 
 ### Q6 `/health` 返回 `gateway: stopped` 但其实 gateway 在跑
 
@@ -991,13 +991,13 @@ CLAUDE.md 写过：dev 模式下"`hermes` CLI 必须在 `$PATH`"——确实，s
 
 ## Changelog
 
-- 2026-05-22：ftask `webui-latex-rendering` 修复 WebUI Markdown 公式原样显示，并已发布生产。根因是 `MarkdownRenderer.vue` 只使用 `markdown-it`、代码高亮、Mermaid 与文件卡渲染，没有数学公式 renderer；wubowen 生产会话 `mpgjo5wahc9gs9` 中的 `$$S(x,y)=...$$` 和 `$r_{x,k}$` 因此被当普通文本显示。修复在 markdown-it token 阶段接入 KaTeX，支持 `$...$`、`\(...\)`、`$$...$$`、`\[...\]`，并保持代码 fence 内 `$...$` 不渲染。回归：`npm test -- tests/client/markdown-rendering.test.ts` 为 `28 passed`；`npm run build` 成功。GitHub/生产已包含代码提交 `6a5b015`、gotcha 记录 `53e0813` 与发布文档；生产 `/home/hermes/code/hermes-web-ui` 从发布前 `325a00b` fast-forward，备份为 `/home/hermes/backups/webui-latex-rendering-20260522-151333`，`pnpm install` / `pnpm run build` 成功，`hermes-web-ui.service` 已重启，`/health` 返回 ok，构建产物中已包含 KaTeX JS/CSS/font。
+- 2026-05-22：ftask `webui-latex-rendering` 修复 WebUI Markdown 公式原样显示，并已发布生产。根因是 `MarkdownRenderer.vue` 只使用 `markdown-it`、代码高亮、Mermaid 与文件卡渲染，没有数学公式 renderer；user_d 生产会话 `<session-id>` 中的 `$$S(x,y)=...$$` 和 `$r_{x,k}$` 因此被当普通文本显示。修复在 markdown-it token 阶段接入 KaTeX，支持 `$...$`、`\(...\)`、`$$...$$`、`\[...\]`，并保持代码 fence 内 `$...$` 不渲染。回归：`npm test -- tests/client/markdown-rendering.test.ts` 为 `28 passed`；`npm run build` 成功。GitHub/生产已包含代码提交 `6a5b015`、gotcha 记录 `53e0813` 与发布文档；生产 `<prod-home>/code/hermes-web-ui` 从发布前 `325a00b` fast-forward，备份为 `<prod-home>/backups/webui-latex-rendering-20260522-151333`，`pnpm install` / `pnpm run build` 成功，`hermes-web-ui.service` 已重启，`/health` 返回 ok，构建产物中已包含 KaTeX JS/CSS/font。
 - 2026-05-20：补齐 WebUI Run Broker 对 profile-local skills 的运行态注入。凭证页显示 token 可用不等于聊天模型能触发 skill；此前 WebUI/Run Broker 的 slash rewrite 在 broker 进程 shared `HERMES_HOME` 下扫描 skills，找不到只安装在 `profiles/<profile>/skills` 内的 `kep-hades-cli` / `keep-record`，所以 `/hades get ...` 和自然语言 Keep 记录会被模型当普通文本。WebUI BFF 现在在构造 `/api/run-broker/runs` 请求前用当前 request profile 扫描 `skills/**/SKILL.md`，尊重 `config.yaml skills.disabled`，对 `/hades ...` 等 profile-local skill slash 直接改写为带完整 skill 内容和绝对 skill directory 的 invocation；对明显命中 `preload: true` / `lazyLoad: false` 的 Keep-record/Hades 自然语言请求，把相关 profile skill 内容注入本次 `metadata.instructions`。这样凭证页、Skills 页和聊天运行时使用同一 profile 事实源。验证：`pnpm vitest run tests/server/run-chat-broker.test.ts tests/server/group-chat-agent-broker.test.ts tests/server/skill-credentials.test.ts tests/client/credentials-view.test.ts tests/client/api.test.ts` 为 40 passed；生产未发布。
 - 2026-05-20：补齐 Keep-record 凭证页的扫码完成状态闭环。`complete` 成功执行 `login-wait.js` 与 `persist_auth.js` 后，会在当前 profile home 写入不含 token 的 `home/.keepai/webui-auth-verified.json`，只保存 `token_sha256`、`account_hint` 与验证时间；列表状态读取 `.keepai/.env` 后用当前 token 的 sha256 与 marker 匹配，匹配才显示 `authenticated`。因此“本地有 `.env`”仍只表示待验证，不会误报已连接；但用户在 WebUI 扫码并确认后，前端刷新会显示已认证且不回显 token。验证：`pnpm vitest run tests/server/skill-credentials.test.ts tests/client/credentials-view.test.ts tests/client/api.test.ts` 为 33 passed，`pnpm run build` 成功；生产未发布。
-- 2026-05-20：新增 WebUI Agent 栏目“凭证”页，用于把 skills 的认证状态可视化、可交互化。BFF 新增受保护 `/api/auth/skill-credentials`、`/:id/start` 与 `/:id/complete`，基于当前登录用户绑定 profile 或 token 预览下的 request profile 聚合 redacted 状态，不做跨 profile 查询，不返回 token。实现不是固定路径猜测：服务端会扫描当前 profile 的 `skills/**/SKILL.md`，解析 skill `name`/`tags`/正文，再由各 credential adapter 匹配 Keep-record、kep-cli、GitLab 等能力。状态语义必须严格：只有工具自身认证状态可证明通过才返回 `authenticated`；GitLab 只做当前 profile materialized token 文件非空可读检查，返回 `configured` / “Token 可读”；Keep-record 本地 `.keepai/.env` 只表示本地材料存在，未走二维码 live verification 时返回 `unknown` / “待验证”，不能叫已认证。首批适配 Lark-cli、Keep-record、kep-cli、GitLab：Lark-cli 复用既有 Feishu UAT/device-flow broker，并在无 Feishu session 的本地预览下识别 profile-local `feishu_uat/*.json` 可用性但不回显 token/open_id；Keep-record 已接 skill 原生二维码登录链路：WebUI 调 `mcp-call.js get_qrcode` 弹二维码，扫码后 `login-wait.js` 检查授权，再由服务端执行 `persist_auth.js` 写入 profile home；执行这些 Node shim 时会按当前 skill、shared skill、同一 profiles root 内已安装的兼容 keep-record SDK 依次补 `NODE_PATH`，避免 profile skill 的 `node_modules` 链接断裂时把 Node stacktrace 暴露给用户。kep-cli 适配必须以当前 profile 的 `kep-hades-cli` skill contract 为准：从 skill 文档解析 `/Users/kite/.hermes/bin/kep-auth`，status 子进程设置 `HOME=<profile>/home`、`HERMES_HOME=<profile>`、`KEP_PROFILE=<profile>`、`KEP_NO_AUTO_LOGIN=1`，调用 `kep-auth --profile <profile> --env online status`；真实 valid 才显示 `authenticated`，并只回显 operator/name 类账号提示，不回显 token 或 token path。登录入口由 BFF 启动 profile-scoped `kep-auth --profile <profile> --env online login` 子进程，解析并返回浏览器授权 URL；WebUI 打开该 URL，子进程保持 localhost callback listener 存活，授权回调后由 kep-auth 写入当前 profile home，WebUI 后台轮询状态刷新。GitLab 无交互认证，WebUI 只确认当前 profile 能读取 materialized token 文件且不展示 token。无 Feishu session 时仍可查看状态，但启动 Lark-cli 授权仍要求 Feishu user session。验证：`pnpm vitest run tests/server/skill-credentials.test.ts tests/server/feishu-oauth.test.ts tests/client/credentials-view.test.ts tests/client/sidebar-search.test.ts` 为 40 passed，`pnpm run build` 成功；生产未发布。本机预览 `127.0.0.1:9663` 对 `feishu_g41a5b5g` 返回：Lark-cli `authenticated`、Keep-record `unknown`、kep-cli `authenticated`、GitLab `configured`。
+- 2026-05-20：新增 WebUI Agent 栏目“凭证”页，用于把 skills 的认证状态可视化、可交互化。BFF 新增受保护 `/api/auth/skill-credentials`、`/:id/start` 与 `/:id/complete`，基于当前登录用户绑定 profile 或 token 预览下的 request profile 聚合 redacted 状态，不做跨 profile 查询，不返回 token。实现不是固定路径猜测：服务端会扫描当前 profile 的 `skills/**/SKILL.md`，解析 skill `name`/`tags`/正文，再由各 credential adapter 匹配 Keep-record、kep-cli、GitLab 等能力。状态语义必须严格：只有工具自身认证状态可证明通过才返回 `authenticated`；GitLab 只做当前 profile materialized token 文件非空可读检查，返回 `configured` / “Token 可读”；Keep-record 本地 `.keepai/.env` 只表示本地材料存在，未走二维码 live verification 时返回 `unknown` / “待验证”，不能叫已认证。首批适配 Lark-cli、Keep-record、kep-cli、GitLab：Lark-cli 复用既有 Feishu UAT/device-flow broker，并在无 Feishu session 的本地预览下识别 profile-local `feishu_uat/*.json` 可用性但不回显 token/open_id；Keep-record 已接 skill 原生二维码登录链路：WebUI 调 `mcp-call.js get_qrcode` 弹二维码，扫码后 `login-wait.js` 检查授权，再由服务端执行 `persist_auth.js` 写入 profile home；执行这些 Node shim 时会按当前 skill、shared skill、同一 profiles root 内已安装的兼容 keep-record SDK 依次补 `NODE_PATH`，避免 profile skill 的 `node_modules` 链接断裂时把 Node stacktrace 暴露给用户。kep-cli 适配必须以当前 profile 的 `kep-hades-cli` skill contract 为准：从 skill 文档解析 `<local-home>/.hermes/bin/kep-auth`，status 子进程设置 `HOME=<profile>/home`、`HERMES_HOME=<profile>`、`KEP_PROFILE=<profile>`、`KEP_NO_AUTO_LOGIN=1`，调用 `kep-auth --profile <profile> --env online status`；真实 valid 才显示 `authenticated`，并只回显 operator/name 类账号提示，不回显 token 或 token path。登录入口由 BFF 启动 profile-scoped `kep-auth --profile <profile> --env online login` 子进程，解析并返回浏览器授权 URL；WebUI 打开该 URL，子进程保持 localhost callback listener 存活，授权回调后由 kep-auth 写入当前 profile home，WebUI 后台轮询状态刷新。GitLab 无交互认证，WebUI 只确认当前 profile 能读取 materialized token 文件且不展示 token。无 Feishu session 时仍可查看状态，但启动 Lark-cli 授权仍要求 Feishu user session。验证：`pnpm vitest run tests/server/skill-credentials.test.ts tests/server/feishu-oauth.test.ts tests/client/credentials-view.test.ts tests/client/sidebar-search.test.ts` 为 40 passed，`pnpm run build` 成功；生产未发布。本机预览 `127.0.0.1:9663` 对 `feishu_user_a` 返回：Lark-cli `authenticated`、Keep-record `unknown`、kep-cli `authenticated`、GitLab `configured`。
 - 2026-05-20：修复 chat-plane 手动运行定时任务的 `sandbox_required` 断路。`/api/hermes/jobs/:id/run` 在 `HERMES_WEBUI_RUN_BROKER=1` / jobs broker 模式下不再直接返回 403，而是转发到 `${HERMES_RUN_BROKER_URL}/api/run-broker/jobs/{id}/run`；未开启 broker 时仍保留原安全拦截，避免 profile apiserver 直接执行。multitenancy 侧该 endpoint 只把 job 标成立即到期，实际运行仍由 router cron worker 走 sandbox/RunBroker/Feishu gateway。验证：`tests/server/jobs-controller.test.ts tests/server/jobs-execution-boundary.test.ts` 为 7 passed，`pnpm run build` 成功；本机 8648 已重启。
 - 2026-05-20：继续按兼容吸收路线 port upstream 0.5.30 主题/UI 与群聊修复：Traditional Chinese locale、collapsed sidebar 分组折叠、chat outline panel/heading anchor、comic theme 字体资产与启动期主题 class、`ink/comic` 主题风格切换、`@all` mention routing、group-chat final stream merge/reasoning/content recovery、file browser 绝对路径复制相关 terminal cwd 配置。保留本地 Feishu connector/user-mode/admin-surface 隐藏、Run Broker owner header、lark-cli/UAT 与 chat-plane denylist；terminal 无配置/缺失配置仍落 `<profile>/terminal` sandbox；`0547fd6` compression hardening 因依赖 upstream full bridge/run-chat 架构本轮跳过。PR #3 补齐用户模式侧边栏和 Settings > Display 的主题入口；后续按用户要求打开用户模式群聊入口，移除前端 beta 占位并放行 chat-plane group-chat API，仍依赖现有 owner isolation；群聊空房间状态保持 upstream 侧栏 `+` 创建入口，仅禁用未选房间时的添加智能体动作；修复内部 agent socket 在 Feishu OAuth 模式下被 auth/join 拒绝导致不回复的问题；chat-plane 只开放 owner-scoped profile GET/POST，让群聊添加智能体弹窗复用既有 ProfileCreateModal 新建可添加 agent；用户模式侧栏恢复 upstream `ProfileSelector`，切换只更新当前浏览器选择和后续请求/Socket.IO 的 selected profile，后端用 owner ACL 验证，不调用全局 `hermes profile use`；Feishu OAuth 登录入口会先 canonicalize 到 `FEISHU_REDIRECT_URI` 的 origin，避免从 `127.0.0.1` 打开页面、回调到 `localhost` 时 state cookie 丢失。验证：focused group/profile suite 10 files / 61 tests passed；完整 `bun run test` 为 104 files / 679 passed / 2 skipped；profile selector 续修 focused 8 files / 102 tests passed；`pnpm run build` passed；本机 8648 临时服务 health OK。
-- 2026-05-20：补齐群聊 Agent 在 multitenancy chat-plane 下的执行路径：`GatewayManager` 读取 profile `.env` 的 `API_SERVER_HOST/API_SERVER_PORT`，避免只看 `config.yaml` 打到已过期的 profile API 端口；同时 `HERMES_WEBUI_RUN_BROKER=1` 时群聊 Agent 回复复用既有 `run-chat/handle-broker-run` request/header/SSE 映射，带 room `owner_open_id` 调 `${HERMES_RUN_BROKER_URL}/api/run-broker/runs`，非 broker 模式仍保留 upstream `/v1/responses`。本机真实 8648 group-chat canary 已在 room `5P7DGY` 收到 `feishu_g41a5b5g` 回复；生产未发布。
+- 2026-05-20：补齐群聊 Agent 在 multitenancy chat-plane 下的执行路径：`GatewayManager` 读取 profile `.env` 的 `API_SERVER_HOST/API_SERVER_PORT`，避免只看 `config.yaml` 打到已过期的 profile API 端口；同时 `HERMES_WEBUI_RUN_BROKER=1` 时群聊 Agent 回复复用既有 `run-chat/handle-broker-run` request/header/SSE 映射，带 room `owner_open_id` 调 `${HERMES_RUN_BROKER_URL}/api/run-broker/runs`，非 broker 模式仍保留 upstream `/v1/responses`。本机真实 8648 group-chat canary 已在 room `<room-code>` 收到 `feishu_user_a` 回复；生产未发布。
 - 2026-05-20：修复群聊 mention 队列 drain 卡死。旧逻辑在 agent 忙时把新 mention 入队，但 drain 前预占 processing lock，导致 queued mention 被再次入队且该 agent 后续不再处理；现在 drain 直接 await 下一条处理。验证：新增队列回归先红后绿，group-chat focused 5 files / 25 tests passed，build passed，本机 8648 重启后 agent join 正常。
 - 2026-05-19：按用户要求将 `run-chat/*` 架构替换和 session bridge settings 改为兼容吸收，而非继续跳过。新增 `services/hermes/run-chat/*` broker-compatible 模块，把 WebUI Run Broker request/header/SSE/tool/reasoning/session-state 逻辑从 `chat-run-socket.ts` broker 路径剥离出来；保留 `HERMES_WEBUI_RUN_BROKER`、`/api/run-broker/runs`、`X-Hermes-Owner-Open-Id` 和旧 `X-Hermes-Feishu-OpenId` 合约。新增 session 级 `model/provider` 存储、`POST /api/hermes/sessions/:id/model` 和前端 store/API 写入，切模型默认落当前 session。full upstream `agent-bridge/*` execution 仍未启用，后续需单独做 owner/sandbox parity。验证：`tests/server/run-chat-broker.test.ts tests/server/chat-run-socket.test.ts tests/server/sessions-controller.test.ts tests/server/sessions-routes.test.ts tests/client/chat-store-user-mode.test.ts tests/server/health-controller.test.ts tests/server/jobs-controller.test.ts tests/server/kanban-controller.test.ts tests/server/kanban-isolation.test.ts tests/server/hermes-kanban-service.test.ts tests/client/kanban-api.test.ts tests/client/kanban-store.test.ts tests/client/kanban-view.test.ts tests/client/kanban-task-drawer.test.ts tests/client/markdown-rendering.test.ts` 为 15 files / 156 tests passed，`pnpm run build` 成功。
 - 2026-05-18：本机 upstream safe-port 二次 review + UAT 跑测：已吸收 Kanban 大重写、群聊/看板 owner boundary、Windows media/download 路径、Z.AI/FUN-Codex/model-list 等通用安全改进；未原样吸收 `run-chat/*` 与 session bridge settings，因为 upstream 模块仍缺本地 `HERMES_WEBUI_RUN_BROKER`、`/api/run-broker/runs`、`X-Hermes-Owner-Open-Id` 合约。新增 `/health` broker-mode 探测：`HERMES_WEBUI_RUN_BROKER=1` 且配置 `HERMES_RUN_BROKER_URL` 时，WebUI health 以 Run Broker 可达性为准，4xx 业务拒绝视为服务可达，避免 chat-plane 本地 8648 因 profile gateway 未启动误报 `gateway=stopped`。验证：WebUI focused 14 files / 149 tests passed，`pnpm run build` 成功；multitenancy `uv run pytest ...` 125 passed；Hermes UAT 相关 `uv run --extra dev pytest ...` 469 passed / 43 skipped；本机 Run Broker WebUI payload canary 返回 `LIVE_BROKER_SMOKE_UNIQUE_20260518_0002`。

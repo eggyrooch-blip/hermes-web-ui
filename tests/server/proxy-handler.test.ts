@@ -163,12 +163,12 @@ describe('Proxy Handler', () => {
         'x-hermes-feishu-openid': 'spoofed',
         'content-type': 'application/json',
       },
-      state: { user: { openid: 'ou_cf23e7c262afa4b7a006baa75f863ed5', profile: 'sunke', role: 'user' } },
+      state: { user: { openid: 'ou_test_owner_a', profile: 'user_a', role: 'user' } },
     })
     await proxy(ctx)
 
     const [, options] = mockFetch.mock.calls[0]
-    expect(options.headers['X-Hermes-Feishu-OpenId']).toBe('ou_cf23e7c262afa4b7a006baa75f863ed5')
+    expect(options.headers['X-Hermes-Feishu-OpenId']).toBe('ou_test_owner_a')
     expect(options.headers['x-hermes-feishu-openid']).toBeUndefined()
   })
 

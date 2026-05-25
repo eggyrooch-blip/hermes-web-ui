@@ -108,15 +108,15 @@ describe('group-chat agent run broker compatibility', () => {
     })
     const agent = await clients.createAgent({
       agentId: 'agent-1',
-      profile: 'feishu_g41a5b5g',
-      name: 'feishu_g41a5b5g',
+      profile: 'feishu_user_a',
+      name: 'feishu_user_a',
       description: 'group agent',
       invited: 0,
     })
     await clients.addAgentToRoom('room-1', agent)
 
     await agent.replyToMention('room-1', {
-      content: '@feishu_g41a5b5g hello',
+      content: '@feishu_user_a hello',
       senderName: '孙可',
       senderId: 'ou_sender',
       timestamp: Date.now(),
@@ -135,7 +135,7 @@ describe('group-chat agent run broker compatibility', () => {
     const request = JSON.parse((global.fetch as any).mock.calls[0][1].body)
     expect(request).toEqual(expect.objectContaining({
       channel: 'webui',
-      profile_name: 'feishu_g41a5b5g',
+      profile_name: 'feishu_user_a',
       agent_id: 'routing-agent-1',
       user_key: 'ou_owner',
       credential_subject: 'ou_owner',

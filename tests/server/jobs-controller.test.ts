@@ -80,10 +80,10 @@ describe('Hermes jobs controller proxy', () => {
       json: () => Promise.resolve({
         job: {
           id: 'job1',
-          name: 'sunke smoke',
+          name: 'user_a smoke',
           deliver: 'feishu',
-          owner_open_id: 'ou_cf23e7c262afa4b7a006baa75f863ed5',
-          owner_profile: 'sunke',
+          owner_open_id: 'ou_test_owner_a',
+          owner_profile: 'user_a',
         },
       }),
     })
@@ -92,7 +92,7 @@ describe('Hermes jobs controller proxy', () => {
       req: { method: 'POST' },
       request: {
         body: {
-          name: 'sunke smoke',
+          name: 'user_a smoke',
           schedule: '*/5 * * * *',
           prompt: 'ping',
           deliver: 'origin',
@@ -101,20 +101,20 @@ describe('Hermes jobs controller proxy', () => {
         },
       },
       params: {},
-      state: { user: { openid: 'ou_cf23e7c262afa4b7a006baa75f863ed5', profile: 'sunke', role: 'user' } },
+      state: { user: { openid: 'ou_test_owner_a', profile: 'user_a', role: 'user' } },
     })
 
     await create(ctx)
 
     const [, options] = mockFetch.mock.calls[0]
-    expect(options.headers['X-Hermes-Feishu-OpenId']).toBe('ou_cf23e7c262afa4b7a006baa75f863ed5')
+    expect(options.headers['X-Hermes-Feishu-OpenId']).toBe('ou_test_owner_a')
     expect(JSON.parse(options.body)).toMatchObject({
-      name: 'sunke smoke',
+      name: 'user_a smoke',
       schedule: '*/5 * * * *',
       prompt: 'ping',
       deliver: 'feishu',
-      owner_open_id: 'ou_cf23e7c262afa4b7a006baa75f863ed5',
-      owner_profile: 'sunke',
+      owner_open_id: 'ou_test_owner_a',
+      owner_profile: 'user_a',
     })
     expect(JSON.parse(options.body).profile).toBeUndefined()
   })
@@ -131,10 +131,10 @@ describe('Hermes jobs controller proxy', () => {
       json: () => Promise.resolve({
         job: {
           id: 'job1',
-          name: 'sunke smoke',
+          name: 'user_a smoke',
           deliver: 'feishu',
-          owner_open_id: 'ou_cf23e7c262afa4b7a006baa75f863ed5',
-          owner_profile: 'sunke',
+          owner_open_id: 'ou_test_owner_a',
+          owner_profile: 'user_a',
         },
       }),
     })
@@ -143,7 +143,7 @@ describe('Hermes jobs controller proxy', () => {
       req: { method: 'POST' },
       request: {
         body: {
-          name: 'sunke smoke',
+          name: 'user_a smoke',
           schedule: '*/5 * * * *',
           prompt: 'ping',
           deliver: 'origin',
@@ -153,7 +153,7 @@ describe('Hermes jobs controller proxy', () => {
         },
       },
       params: {},
-      state: { user: { openid: 'ou_cf23e7c262afa4b7a006baa75f863ed5', profile: 'sunke', role: 'user' } },
+      state: { user: { openid: 'ou_test_owner_a', profile: 'user_a', role: 'user' } },
     })
 
     await create(ctx)
@@ -162,16 +162,16 @@ describe('Hermes jobs controller proxy', () => {
     expect(url).toBe('http://127.0.0.1:8766/api/run-broker/jobs')
     expect(options.headers).toMatchObject({
       Authorization: 'Bearer broker-secret',
-      'X-Hermes-Profile': 'sunke',
-      'X-Hermes-User-Key': 'ou_cf23e7c262afa4b7a006baa75f863ed5',
+      'X-Hermes-Profile': 'user_a',
+      'X-Hermes-User-Key': 'ou_test_owner_a',
     })
     expect(JSON.parse(options.body)).toMatchObject({
-      name: 'sunke smoke',
+      name: 'user_a smoke',
       schedule: '*/5 * * * *',
       prompt: 'ping',
       deliver: 'feishu',
-      owner_open_id: 'ou_cf23e7c262afa4b7a006baa75f863ed5',
-      owner_profile: 'sunke',
+      owner_open_id: 'ou_test_owner_a',
+      owner_profile: 'user_a',
     })
     expect(JSON.parse(options.body).profile).toBeUndefined()
     expect(JSON.parse(options.body).api_key).toBeUndefined()
@@ -191,7 +191,7 @@ describe('Hermes jobs controller proxy', () => {
     const ctx = createMockCtx({
       req: { method: 'GET' },
       search: '?profile=other&token=secret&include_disabled=true',
-      state: { user: { openid: 'ou_cf23e7c262afa4b7a006baa75f863ed5', profile: 'sunke', role: 'user' } },
+      state: { user: { openid: 'ou_test_owner_a', profile: 'user_a', role: 'user' } },
     })
 
     await list(ctx)
@@ -199,8 +199,8 @@ describe('Hermes jobs controller proxy', () => {
     const [url, options] = mockFetch.mock.calls[0]
     expect(url).toBe('http://127.0.0.1:8766/api/run-broker/jobs?include_disabled=true')
     expect(options.headers).toMatchObject({
-      'X-Hermes-Profile': 'sunke',
-      'X-Hermes-User-Key': 'ou_cf23e7c262afa4b7a006baa75f863ed5',
+      'X-Hermes-Profile': 'user_a',
+      'X-Hermes-User-Key': 'ou_test_owner_a',
     })
   })
 
@@ -227,7 +227,7 @@ describe('Hermes jobs controller proxy', () => {
       req: { method: 'POST' },
       request: { body: {} },
       params: { id: 'abc123abc123' },
-      state: { user: { openid: 'ou_cf23e7c262afa4b7a006baa75f863ed5', profile: 'sunke', role: 'user' } },
+      state: { user: { openid: 'ou_test_owner_a', profile: 'user_a', role: 'user' } },
     })
 
     await run(ctx)
@@ -236,8 +236,8 @@ describe('Hermes jobs controller proxy', () => {
     expect(url).toBe('http://127.0.0.1:8766/api/run-broker/jobs/abc123abc123/run')
     expect(options.headers).toMatchObject({
       Authorization: 'Bearer broker-secret',
-      'X-Hermes-Profile': 'sunke',
-      'X-Hermes-User-Key': 'ou_cf23e7c262afa4b7a006baa75f863ed5',
+      'X-Hermes-Profile': 'user_a',
+      'X-Hermes-User-Key': 'ou_test_owner_a',
     })
     expect(ctx.status).toBe(200)
     expect(ctx.body).toEqual({

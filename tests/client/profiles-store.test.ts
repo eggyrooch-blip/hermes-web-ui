@@ -44,9 +44,9 @@ describe('Profiles Store', () => {
   it('stores Feishu display user when setting bound profile', () => {
     const store = useProfilesStore()
 
-    store.setBoundProfile('g41a5b5g', {
+    store.setBoundProfile('user_a', {
       openid: 'ou_test',
-      profile: 'g41a5b5g',
+      profile: 'user_a',
       role: 'user',
       name: '张三',
       avatarUrl: 'https://example.com/avatar.png',
@@ -61,18 +61,18 @@ describe('Profiles Store', () => {
     localStorage.setItem('hermes_active_profile_name', 'feishu_group_alpha')
     const store = useProfilesStore()
     store.profiles = [
-      { name: 'g41a5b5g', active: false, model: 'gpt-4', gateway: 'running', alias: '' },
+      { name: 'user_a', active: false, model: 'gpt-4', gateway: 'running', alias: '' },
       { name: 'feishu_group_alpha', active: true, model: 'gpt-4', gateway: 'running', alias: '', displayLabel: '研发群' },
     ] as any
 
-    store.setBoundProfile('g41a5b5g', {
+    store.setBoundProfile('user_a', {
       openid: 'ou_test',
-      profile: 'g41a5b5g',
+      profile: 'user_a',
       role: 'user',
       name: '张三',
     })
 
-    expect(store.currentUser?.profile).toBe('g41a5b5g')
+    expect(store.currentUser?.profile).toBe('user_a')
     expect(store.activeProfileName).toBe('feishu_group_alpha')
     expect(store.activeProfile?.name).toBe('feishu_group_alpha')
   })
@@ -94,12 +94,12 @@ describe('Profiles Store', () => {
     localStorage.setItem('hermes_web_plane', 'chat')
     localStorage.setItem('hermes_current_user', JSON.stringify({
       openid: 'ou_test',
-      profile: 'g41a5b5g',
+      profile: 'user_a',
       role: 'user',
       name: '张三',
     }))
     mockProfilesApi.fetchProfiles.mockResolvedValue([
-      { name: 'g41a5b5g', active: false, model: 'gpt-4', gateway: 'running', alias: '' },
+      { name: 'user_a', active: false, model: 'gpt-4', gateway: 'running', alias: '' },
       { name: 'webui_child_research', active: false, model: 'gpt-4', gateway: 'running', alias: '' },
     ])
 
@@ -107,26 +107,26 @@ describe('Profiles Store', () => {
     await store.fetchProfiles()
 
     expect(mockProfilesApi.fetchProfiles).toHaveBeenCalled()
-    expect(store.activeProfileName).toBe('g41a5b5g')
-    expect(store.activeProfile?.name).toBe('g41a5b5g')
-    expect(store.profiles.map(p => p.name)).toEqual(['g41a5b5g', 'webui_child_research'])
+    expect(store.activeProfileName).toBe('user_a')
+    expect(store.activeProfile?.name).toBe('user_a')
+    expect(store.profiles.map(p => p.name)).toEqual(['user_a', 'webui_child_research'])
   })
 
   it('switches the selected owner profile locally in user mode without changing the global Hermes active profile', async () => {
     localStorage.setItem('hermes_web_plane', 'chat')
     localStorage.setItem('hermes_current_user', JSON.stringify({
       openid: 'ou_test',
-      profile: 'g41a5b5g',
+      profile: 'user_a',
       role: 'user',
       name: '张三',
     }))
 
     const store = useProfilesStore()
     store.profiles = [
-      { name: 'g41a5b5g', active: true, model: 'gpt-4', gateway: 'running', alias: '' },
+      { name: 'user_a', active: true, model: 'gpt-4', gateway: 'running', alias: '' },
       { name: 'feishu_group_alpha', active: false, model: 'gpt-4', gateway: 'running', alias: '', displayLabel: '研发群' },
     ] as any
-    store.activeProfileName = 'g41a5b5g'
+    store.activeProfileName = 'user_a'
 
     const ok = await store.switchProfile('feishu_group_alpha')
 
@@ -138,15 +138,15 @@ describe('Profiles Store', () => {
   })
 
   it('updates profile avatars in list, detail cache, and active profile state', async () => {
-    const avatar = { type: 'generated' as const, seed: 'sunke-seed' }
+    const avatar = { type: 'generated' as const, seed: 'user_a-seed' }
     mockProfilesApi.updateProfileAvatar.mockResolvedValue(avatar)
     const store = useProfilesStore()
-    store.profiles = [{ name: 'sunke', active: true, model: 'gpt-4', gateway: 'running', alias: '' }] as any
+    store.profiles = [{ name: 'user_a', active: true, model: 'gpt-4', gateway: 'running', alias: '' }] as any
     store.activeProfile = store.profiles[0] as any
     store.detailMap = {
-      sunke: {
-        name: 'sunke',
-        path: '/tmp/sunke',
+      user_a: {
+        name: 'user_a',
+        path: '/tmp/user_a',
         model: 'gpt-4',
         provider: 'openai',
         gateway: 'running',
@@ -156,23 +156,23 @@ describe('Profiles Store', () => {
       },
     } as any
 
-    await store.updateAvatar('sunke', avatar)
+    await store.updateAvatar('user_a', avatar)
 
-    expect(mockProfilesApi.updateProfileAvatar).toHaveBeenCalledWith('sunke', avatar)
+    expect(mockProfilesApi.updateProfileAvatar).toHaveBeenCalledWith('user_a', avatar)
     expect(store.profiles[0].avatar).toEqual(avatar)
     expect(store.activeProfile?.avatar).toEqual(avatar)
-    expect(store.detailMap.sunke.avatar).toEqual(avatar)
+    expect(store.detailMap.user_a.avatar).toEqual(avatar)
   })
 
   it('clears profile avatars in list, detail cache, and active profile state', async () => {
     mockProfilesApi.deleteProfileAvatar.mockResolvedValue(undefined)
     const store = useProfilesStore()
-    store.profiles = [{ name: 'sunke', active: true, model: 'gpt-4', gateway: 'running', alias: '', avatar: { type: 'generated', seed: 'old' } }] as any
+    store.profiles = [{ name: 'user_a', active: true, model: 'gpt-4', gateway: 'running', alias: '', avatar: { type: 'generated', seed: 'old' } }] as any
     store.activeProfile = store.profiles[0] as any
     store.detailMap = {
-      sunke: {
-        name: 'sunke',
-        path: '/tmp/sunke',
+      user_a: {
+        name: 'user_a',
+        path: '/tmp/user_a',
         model: 'gpt-4',
         provider: 'openai',
         gateway: 'running',
@@ -183,12 +183,12 @@ describe('Profiles Store', () => {
       },
     } as any
 
-    await store.deleteAvatar('sunke')
+    await store.deleteAvatar('user_a')
 
-    expect(mockProfilesApi.deleteProfileAvatar).toHaveBeenCalledWith('sunke')
+    expect(mockProfilesApi.deleteProfileAvatar).toHaveBeenCalledWith('user_a')
     expect(store.profiles[0].avatar).toBeNull()
     expect(store.activeProfile?.avatar).toBeNull()
-    expect(store.detailMap.sunke.avatar).toBeNull()
+    expect(store.detailMap.user_a.avatar).toBeNull()
   })
 
   it('createProfile calls API and refreshes list', async () => {

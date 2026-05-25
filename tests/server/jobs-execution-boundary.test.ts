@@ -21,7 +21,7 @@ function createMockCtx(overrides: Record<string, any> = {}) {
     query: {},
     search: '',
     headers: {},
-    state: { user: { openid: 'ou_test', profile: 'sunke', role: 'user' } },
+    state: { user: { openid: 'ou_test', profile: 'user_a', role: 'user' } },
     status: 200,
     set: vi.fn(),
     body: null,

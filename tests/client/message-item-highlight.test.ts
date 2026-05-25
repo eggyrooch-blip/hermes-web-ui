@@ -240,7 +240,7 @@ describe('MessageItem tool details', () => {
         message: {
           id: 'assistant-media-file',
           role: 'assistant',
-          content: '方案已保存\nMEDIA:/home/hermes/.hermes/profiles/sunke/workspace/Downloads/report.md',
+          content: '方案已保存\nMEDIA:<prod-home>/.hermes/profiles/user_a/workspace/Downloads/report.md',
           timestamp: Date.now(),
         } satisfies Message,
       },
@@ -250,6 +250,6 @@ describe('MessageItem tool details', () => {
     expect(wrapper.find('.att-name').text()).toBe('report.md')
     expect(wrapper.text()).toContain('方案已保存')
     expect(wrapper.text()).not.toContain('MEDIA:')
-    expect(wrapper.text()).not.toContain('/home/hermes/.hermes')
+    expect(wrapper.text()).not.toContain('<prod-home>/.hermes')
   })
 })

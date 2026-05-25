@@ -26,7 +26,7 @@ const appStoreMock = vi.hoisted(() => ({
 
 const profilesStoreMock = vi.hoisted(() => ({
   currentUser: null as Record<string, any> | null,
-  activeProfileName: 'g41a5b5g',
+  activeProfileName: 'user_a',
 }))
 
 const prefsStoreMock = vi.hoisted(() => ({
@@ -143,7 +143,7 @@ describe('ChatPanel user-mode gateway state', () => {
     chatStoreMock.activeSessionId = null
     chatStoreMock.isStreaming = false
     profilesStoreMock.currentUser = null
-    profilesStoreMock.activeProfileName = 'g41a5b5g'
+    profilesStoreMock.activeProfileName = 'user_a'
     vi.clearAllMocks()
     localStorage.clear()
     window.matchMedia = vi.fn().mockReturnValue({
@@ -178,7 +178,7 @@ describe('ChatPanel user-mode gateway state', () => {
     appStoreMock.connected = false
     profilesStoreMock.currentUser = {
       name: '陈先生',
-      profile: 'g41a5b5g',
+      profile: 'user_a',
     }
 
     const wrapper = mount(ChatPanel, {
@@ -191,7 +191,7 @@ describe('ChatPanel user-mode gateway state', () => {
 
     const card = wrapper.find('.user-agent-card')
     expect(card.exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('profile g41a5b5g')
+    expect(wrapper.text()).not.toContain('profile user_a')
     expect(wrapper.text()).not.toContain('chat.agentStandby')
   })
 

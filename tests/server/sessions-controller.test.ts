@@ -179,13 +179,13 @@ describe('session conversations controller', () => {
     const mod = await import('../../packages/server/src/controllers/hermes/sessions')
     const ctx: any = {
       query: {},
-      state: { user: { openid: 'ou_test', profile: 'g41a5b5g', role: 'user' } },
+      state: { user: { openid: 'ou_test', profile: 'user_a', role: 'user' } },
       get: () => '',
       body: null,
     }
     await mod.listHermesSessions(ctx)
 
-    expect(listSessionSummariesMock).toHaveBeenCalledWith(undefined, 2000, 'g41a5b5g')
+    expect(listSessionSummariesMock).toHaveBeenCalledWith(undefined, 2000, 'user_a')
     expect(listSessionsMock).not.toHaveBeenCalled()
     expect(ctx.body).toEqual({ sessions: [{ id: 'bound-session', source: 'feishu' }] })
   })
@@ -197,13 +197,13 @@ describe('session conversations controller', () => {
     const mod = await import('../../packages/server/src/controllers/hermes/sessions')
     const ctx: any = {
       query: {},
-      state: { user: { openid: 'ou_test', profile: 'sunke', role: 'user' } },
+      state: { user: { openid: 'ou_test', profile: 'user_a', role: 'user' } },
       get: (name: string) => name.toLowerCase() === 'x-hermes-profile' ? 'someone_else' : '',
       body: null,
     }
     await mod.list(ctx)
 
-    expect(listSessionSummariesMock).toHaveBeenCalledWith(undefined, 2000, 'sunke')
+    expect(listSessionSummariesMock).toHaveBeenCalledWith(undefined, 2000, 'user_a')
     expect(ctx.body).toEqual({ sessions: [{ id: 'bound-session', source: 'api_server' }] })
   })
 
@@ -217,13 +217,13 @@ describe('session conversations controller', () => {
     const mod = await import('../../packages/server/src/controllers/hermes/sessions')
     const ctx: any = {
       query: {},
-      state: { user: { openid: 'ou_test', profile: 'g41a5b5g', role: 'user' } },
+      state: { user: { openid: 'ou_test', profile: 'user_a', role: 'user' } },
       get: () => '',
       body: null,
     }
     await mod.listHermesSessions(ctx)
 
-    expect(listSessionSummariesMock).toHaveBeenCalledWith(undefined, 2000, 'g41a5b5g')
+    expect(listSessionSummariesMock).toHaveBeenCalledWith(undefined, 2000, 'user_a')
     expect(ctx.body).toEqual({
       sessions: [
         { id: 'web-chat', source: 'api_server' },
@@ -239,7 +239,7 @@ describe('session conversations controller', () => {
     const mod = await import('../../packages/server/src/controllers/hermes/sessions')
     const ctx: any = {
       query: {},
-      state: { user: { openid: 'ou_test', profile: 'g41a5b5g', role: 'user' } },
+      state: { user: { openid: 'ou_test', profile: 'user_a', role: 'user' } },
       get: () => '',
       body: null,
     }
@@ -256,13 +256,13 @@ describe('session conversations controller', () => {
     const mod = await import('../../packages/server/src/controllers/hermes/sessions')
     const ctx: any = {
       params: { id: 'bound-session' },
-      state: { user: { openid: 'ou_test', profile: 'g41a5b5g', role: 'user' } },
+      state: { user: { openid: 'ou_test', profile: 'user_a', role: 'user' } },
       get: () => '',
       body: null,
     }
     await mod.getHermesSession(ctx)
 
-    expect(getSessionDetailFromDbMock).toHaveBeenCalledWith('bound-session', 'g41a5b5g')
+    expect(getSessionDetailFromDbMock).toHaveBeenCalledWith('bound-session', 'user_a')
     expect(getSessionMock).not.toHaveBeenCalled()
     expect(ctx.body).toEqual({ session: { id: 'bound-session', source: 'feishu', messages: [] } })
   })
@@ -274,13 +274,13 @@ describe('session conversations controller', () => {
     const mod = await import('../../packages/server/src/controllers/hermes/sessions')
     const ctx: any = {
       params: { id: 'web-chat' },
-      state: { user: { openid: 'ou_test', profile: 'g41a5b5g', role: 'user' } },
+      state: { user: { openid: 'ou_test', profile: 'user_a', role: 'user' } },
       get: () => '',
       body: null,
     }
     await mod.getHermesSession(ctx)
 
-    expect(getSessionDetailFromDbMock).toHaveBeenCalledWith('web-chat', 'g41a5b5g')
+    expect(getSessionDetailFromDbMock).toHaveBeenCalledWith('web-chat', 'user_a')
     expect(ctx.body).toEqual({ session: { id: 'web-chat', source: 'api_server', messages: [] } })
   })
 
@@ -291,13 +291,13 @@ describe('session conversations controller', () => {
     const mod = await import('../../packages/server/src/controllers/hermes/sessions')
     const ctx: any = {
       query: { q: 'hello', source: 'webui', limit: '7' },
-      state: { user: { openid: 'ou_test', profile: 'g41a5b5g', role: 'user' } },
+      state: { user: { openid: 'ou_test', profile: 'user_a', role: 'user' } },
       get: () => '',
       body: null,
     }
     await mod.search(ctx)
 
-    expect(searchSessionSummariesMock).toHaveBeenCalledWith('hello', 'webui', 7, 'g41a5b5g')
+    expect(searchSessionSummariesMock).toHaveBeenCalledWith('hello', 'webui', 7, 'user_a')
     expect(ctx.body).toEqual({ results: [{ id: 'match', source: 'webui' }] })
   })
 
@@ -434,14 +434,14 @@ describe('session conversations controller', () => {
     const mod = await import('../../packages/server/src/controllers/hermes/sessions')
     const ctx: any = {
       query: { days: '30' },
-      state: { user: { openid: 'ou_test', profile: 'g41a5b5g', role: 'user' } },
+      state: { user: { openid: 'ou_test', profile: 'user_a', role: 'user' } },
       get: () => '',
       body: null,
     }
     await mod.usageStats(ctx)
 
-    expect(getLocalUsageStatsMock).toHaveBeenCalledWith('g41a5b5g', 30)
-    expect(getUsageStatsFromDbMock).toHaveBeenCalledWith(30, expect.any(Number), 'g41a5b5g', true)
+    expect(getLocalUsageStatsMock).toHaveBeenCalledWith('user_a', 30)
+    expect(getUsageStatsFromDbMock).toHaveBeenCalledWith(30, expect.any(Number), 'user_a', true)
     expect(ctx.body).toMatchObject({
       total_input_tokens: 100,
       total_output_tokens: 50,

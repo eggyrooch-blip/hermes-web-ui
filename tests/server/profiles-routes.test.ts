@@ -129,13 +129,13 @@ describe('Profile Routes', () => {
       config.webPlane = 'chat'
       vi.mocked(hermesCli.listProfiles).mockRejectedValue(new Error('profile list should not run'))
       vi.mocked(listOwnedProfileMetadata).mockReturnValue(new Map([
-        ['sunke', { profileName: 'sunke', kind: 'user', ownerOpenId: 'ou_owner' }],
+        ['user_a', { profileName: 'user_a', kind: 'user', ownerOpenId: 'ou_owner' }],
         ['team_room', { profileName: 'team_room', kind: 'group', ownerOpenId: 'ou_owner', displayLabel: '团队群' }],
       ]))
 
       const ctx: any = {
         state: {
-          user: { openid: 'ou_owner', profile: 'sunke', role: 'user' },
+          user: { openid: 'ou_owner', profile: 'user_a', role: 'user' },
         },
         body: undefined,
       }
@@ -146,7 +146,7 @@ describe('Profile Routes', () => {
       expect(ctx.body).toEqual({
         profiles: [
           {
-            name: 'sunke',
+            name: 'user_a',
             active: true,
             model: '',
             gateway: '',
@@ -180,7 +180,7 @@ describe('Profile Routes', () => {
           },
         },
         state: {
-          user: { openid: 'ou_owner', profile: 'feishu_g41a5b5g' },
+          user: { openid: 'ou_owner', profile: 'feishu_user_a' },
         },
         status: 200,
         body: undefined,
@@ -191,7 +191,7 @@ describe('Profile Routes', () => {
 
       expect(hermesCli.createProfile).toHaveBeenCalledWith('web_coder', {
         clone: true,
-        cloneFrom: 'feishu_g41a5b5g',
+        cloneFrom: 'feishu_user_a',
         description: 'Software engineering agent for coding and tests.',
         noAlias: true,
       })
@@ -210,7 +210,7 @@ describe('Profile Routes', () => {
           },
         },
         state: {
-          user: { openid: 'ou_owner', profile: 'sunke' },
+          user: { openid: 'ou_owner', profile: 'user_a' },
         },
         status: 200,
         body: undefined,
@@ -221,7 +221,7 @@ describe('Profile Routes', () => {
 
       expect(hermesCli.createProfile).toHaveBeenCalledWith('coder1', {
         clone: true,
-        cloneFrom: 'sunke',
+        cloneFrom: 'user_a',
         description: 'Software engineering agent.',
         noAlias: true,
       })
@@ -266,7 +266,7 @@ describe('Profile Routes', () => {
           },
         },
         state: {
-          user: { openid: 'ou_owner', profile: 'feishu_g41a5b5g' },
+          user: { openid: 'ou_owner', profile: 'feishu_user_a' },
         },
         status: 200,
         body: undefined,
@@ -278,7 +278,7 @@ describe('Profile Routes', () => {
       expect(provisionOwnedProfileViaBroker).toHaveBeenCalledWith({
         ownerOpenId: 'ou_owner',
         profileName: 'web_operator',
-        upstreamProfile: 'feishu_g41a5b5g',
+        upstreamProfile: 'feishu_user_a',
         displayLabel: 'web_operator',
         description: 'Operations agent for recurring tasks.',
       })
@@ -314,8 +314,8 @@ describe('Profile Routes', () => {
 
     it('stores generated profile avatars and omits avatar binary paths from the response', async () => {
       const ctx: any = {
-        params: { name: 'sunke' },
-        request: { body: { type: 'generated', seed: 'sunke-seed' } },
+        params: { name: 'user_a' },
+        request: { body: { type: 'generated', seed: 'user_a-seed' } },
         state: {},
         status: 200,
         body: undefined,
@@ -325,7 +325,7 @@ describe('Profile Routes', () => {
 
       expect(ctx.body.avatar).toMatchObject({
         type: 'generated',
-        seed: 'sunke-seed',
+        seed: 'user_a-seed',
       })
       expect(JSON.stringify(ctx.body)).not.toContain('profile-metadata')
     })
@@ -336,7 +336,7 @@ describe('Profile Routes', () => {
       const ctx: any = {
         params: { name: 'other_profile' },
         request: { body: { type: 'generated', seed: 'other-seed' } },
-        state: { user: { openid: 'ou_owner', profile: 'sunke', role: 'user' } },
+        state: { user: { openid: 'ou_owner', profile: 'user_a', role: 'user' } },
         status: 200,
         body: undefined,
       }
@@ -353,13 +353,13 @@ describe('Profile Routes', () => {
       const updateCtx: any = {
         params: { name: 'team_room' },
         request: { body: { type: 'generated', seed: 'room-seed' } },
-        state: { user: { openid: 'ou_owner', profile: 'sunke', role: 'user' } },
+        state: { user: { openid: 'ou_owner', profile: 'user_a', role: 'user' } },
         status: 200,
         body: undefined,
       }
       const deleteCtx: any = {
         params: { name: 'team_room' },
-        state: { user: { openid: 'ou_owner', profile: 'sunke', role: 'user' } },
+        state: { user: { openid: 'ou_owner', profile: 'user_a', role: 'user' } },
         status: 200,
         body: undefined,
       }

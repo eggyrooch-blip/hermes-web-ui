@@ -46,7 +46,7 @@ describe('agent ownership helpers', () => {
     try {
       db.prepare(`
         INSERT INTO multitenancy_routing (user_id, profile_name, open_id, active, owner_open_id)
-        VALUES ('sunke', 'feishu_sunke', 'ou_sunke', 1, 'ou_sunke')
+        VALUES ('user_a', 'feishu_user_a', 'ou_user_a', 1, 'ou_user_a')
       `).run()
     } finally {
       db.close()
@@ -54,9 +54,9 @@ describe('agent ownership helpers', () => {
 
     const { ownerOwnsProfile, listOwnedProfileNames, listOwnedProfileMetadata } = await loadOwnership(dbPath)
 
-    expect(ownerOwnsProfile('ou_sunke', 'feishu_sunke')).toBe(true)
-    expect(listOwnedProfileNames('ou_sunke')).toEqual(new Set(['feishu_sunke']))
-    expect(Array.from(listOwnedProfileMetadata('ou_sunke').keys())).toEqual(['feishu_sunke'])
+    expect(ownerOwnsProfile('ou_user_a', 'feishu_user_a')).toBe(true)
+    expect(listOwnedProfileNames('ou_user_a')).toEqual(new Set(['feishu_user_a']))
+    expect(Array.from(listOwnedProfileMetadata('ou_user_a').keys())).toEqual(['feishu_user_a'])
   })
 
   it('does not treat an agent row that reuses the owner open_id as an open_id-owned root profile', async () => {
@@ -67,17 +67,17 @@ describe('agent ownership helpers', () => {
           (user_id, profile_name, open_id, active, owner_open_id, kind, provenance, display_label, agent_id)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      stmt.run('root', 'feishu_sunke', 'ou_sunke', 1, 'ou_sunke', 'user', 'sync', null, null)
-      stmt.run('bad-agent', 'bad_agent', 'ou_sunke', 1, 'ou_other', 'agent', 'sync', 'Bad Agent', 'bad-agent')
+      stmt.run('root', 'feishu_user_a', 'ou_user_a', 1, 'ou_user_a', 'user', 'sync', null, null)
+      stmt.run('bad-agent', 'bad_agent', 'ou_user_a', 1, 'ou_other', 'agent', 'sync', 'Bad Agent', 'bad-agent')
     } finally {
       db.close()
     }
 
     const { ownerOwnsProfile, listOwnedProfileNames, listOwnedProfileMetadata } = await loadOwnership(dbPath)
 
-    expect(ownerOwnsProfile('ou_sunke', 'bad_agent')).toBe(false)
-    expect(listOwnedProfileNames('ou_sunke')).toEqual(new Set(['feishu_sunke']))
-    expect(Array.from(listOwnedProfileMetadata('ou_sunke').keys())).toEqual(['feishu_sunke'])
+    expect(ownerOwnsProfile('ou_user_a', 'bad_agent')).toBe(false)
+    expect(listOwnedProfileNames('ou_user_a')).toEqual(new Set(['feishu_user_a']))
+    expect(Array.from(listOwnedProfileMetadata('ou_user_a').keys())).toEqual(['feishu_user_a'])
   })
 
   it('applies kind filtering even when a schema has kind but not provenance', async () => {
@@ -88,17 +88,17 @@ describe('agent ownership helpers', () => {
           (user_id, profile_name, open_id, active, owner_open_id, kind, display_label, agent_id)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      stmt.run('root', 'feishu_sunke', 'ou_sunke', 1, 'ou_sunke', 'user', null, null)
-      stmt.run('bad-agent', 'bad_agent', 'ou_sunke', 1, 'ou_other', 'agent', 'Bad Agent', 'bad-agent')
+      stmt.run('root', 'feishu_user_a', 'ou_user_a', 1, 'ou_user_a', 'user', null, null)
+      stmt.run('bad-agent', 'bad_agent', 'ou_user_a', 1, 'ou_other', 'agent', 'Bad Agent', 'bad-agent')
     } finally {
       db.close()
     }
 
     const { ownerOwnsProfile, listOwnedProfileNames, listOwnedProfileMetadata } = await loadOwnership(dbPath)
 
-    expect(ownerOwnsProfile('ou_sunke', 'bad_agent')).toBe(false)
-    expect(listOwnedProfileNames('ou_sunke')).toEqual(new Set(['feishu_sunke']))
-    expect(Array.from(listOwnedProfileMetadata('ou_sunke').keys())).toEqual(['feishu_sunke'])
+    expect(ownerOwnsProfile('ou_user_a', 'bad_agent')).toBe(false)
+    expect(listOwnedProfileNames('ou_user_a')).toEqual(new Set(['feishu_user_a']))
+    expect(Array.from(listOwnedProfileMetadata('ou_user_a').keys())).toEqual(['feishu_user_a'])
   })
 
   it('still lists owner-scoped agent child profiles through owner_open_id', async () => {
@@ -109,23 +109,23 @@ describe('agent ownership helpers', () => {
           (user_id, profile_name, open_id, active, owner_open_id, kind, provenance, display_label, agent_id)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      stmt.run('root', 'feishu_sunke', 'ou_sunke', 1, 'ou_sunke', 'user', 'sync', null, null)
-      stmt.run('webui:ou_sunke:coder', 'coder_profile', 'webui:ou_sunke:coder', 1, 'ou_sunke', 'agent', 'webui-agent', 'Coder', 'webui:ou_sunke:coder')
+      stmt.run('root', 'feishu_user_a', 'ou_user_a', 1, 'ou_user_a', 'user', 'sync', null, null)
+      stmt.run('webui:ou_user_a:coder', 'coder_profile', 'webui:ou_user_a:coder', 1, 'ou_user_a', 'agent', 'webui-agent', 'Coder', 'webui:ou_user_a:coder')
     } finally {
       db.close()
     }
 
     const { ownerOwnsProfile, listOwnedProfileNames, listOwnedProfileMetadata } = await loadOwnership(dbPath)
-    const metadata = listOwnedProfileMetadata('ou_sunke')
+    const metadata = listOwnedProfileMetadata('ou_user_a')
 
-    expect(ownerOwnsProfile('ou_sunke', 'coder_profile')).toBe(true)
-    expect(listOwnedProfileNames('ou_sunke')).toEqual(new Set(['feishu_sunke', 'coder_profile']))
+    expect(ownerOwnsProfile('ou_user_a', 'coder_profile')).toBe(true)
+    expect(listOwnedProfileNames('ou_user_a')).toEqual(new Set(['feishu_user_a', 'coder_profile']))
     expect(metadata.get('coder_profile')).toMatchObject({
       profileName: 'coder_profile',
       kind: 'agent',
       displayLabel: 'Coder',
-      ownerOpenId: 'ou_sunke',
-      agentId: 'webui:ou_sunke:coder',
+      ownerOpenId: 'ou_user_a',
+      agentId: 'webui:ou_user_a:coder',
     })
   })
 
@@ -135,7 +135,7 @@ describe('agent ownership helpers', () => {
       db.prepare(`
         INSERT INTO multitenancy_routing
           (user_id, profile_name, open_id, active, owner_open_id, kind, provenance, display_label, agent_id)
-        VALUES ('root', 'feishu_sunke', 'ou_sunke', 1, 'ou_sunke', NULL, 'sync', NULL, NULL)
+        VALUES ('root', 'feishu_user_a', 'ou_user_a', 1, 'ou_user_a', NULL, 'sync', NULL, NULL)
       `).run()
     } finally {
       db.close()
@@ -143,9 +143,9 @@ describe('agent ownership helpers', () => {
 
     const { ownerOwnsProfile, listOwnedProfileNames, listOwnedProfileMetadata } = await loadOwnership(dbPath)
 
-    expect(ownerOwnsProfile('ou_sunke', 'feishu_sunke')).toBe(true)
-    expect(listOwnedProfileNames('ou_sunke')).toEqual(new Set(['feishu_sunke']))
-    expect(Array.from(listOwnedProfileMetadata('ou_sunke').keys())).toEqual(['feishu_sunke'])
+    expect(ownerOwnsProfile('ou_user_a', 'feishu_user_a')).toBe(true)
+    expect(listOwnedProfileNames('ou_user_a')).toEqual(new Set(['feishu_user_a']))
+    expect(Array.from(listOwnedProfileMetadata('ou_user_a').keys())).toEqual(['feishu_user_a'])
   })
 
   it('keeps migrated sync user rows with empty kind visible', async () => {
@@ -154,7 +154,7 @@ describe('agent ownership helpers', () => {
       db.prepare(`
         INSERT INTO multitenancy_routing
           (user_id, profile_name, open_id, active, owner_open_id, kind, provenance, display_label, agent_id)
-        VALUES ('root', 'feishu_sunke', 'ou_sunke', 1, 'ou_sunke', '', 'sync', NULL, NULL)
+        VALUES ('root', 'feishu_user_a', 'ou_user_a', 1, 'ou_user_a', '', 'sync', NULL, NULL)
       `).run()
     } finally {
       db.close()
@@ -162,8 +162,8 @@ describe('agent ownership helpers', () => {
 
     const { ownerOwnsProfile, listOwnedProfileNames, listOwnedProfileMetadata } = await loadOwnership(dbPath)
 
-    expect(ownerOwnsProfile('ou_sunke', 'feishu_sunke')).toBe(true)
-    expect(listOwnedProfileNames('ou_sunke')).toEqual(new Set(['feishu_sunke']))
-    expect(Array.from(listOwnedProfileMetadata('ou_sunke').keys())).toEqual(['feishu_sunke'])
+    expect(ownerOwnsProfile('ou_user_a', 'feishu_user_a')).toBe(true)
+    expect(listOwnedProfileNames('ou_user_a')).toEqual(new Set(['feishu_user_a']))
+    expect(Array.from(listOwnedProfileMetadata('ou_user_a').keys())).toEqual(['feishu_user_a'])
   })
 })

@@ -67,7 +67,7 @@ describe('Feishu OAuth session helpers', () => {
 
   it('rejects an authenticated cookie whose profile is not the required canonical profile', async () => {
     process.env.FEISHU_SESSION_SECRET = 'session-secret'
-    process.env.HERMES_REQUIRED_PROFILE = 'sunke'
+    process.env.HERMES_REQUIRED_PROFILE = 'user_a'
     vi.resetModules()
     const {
       createFeishuSessionCookie,
@@ -76,7 +76,7 @@ describe('Feishu OAuth session helpers', () => {
 
     const cookie = createFeishuSessionCookie({
       openid: 'ou_test',
-      profile: 'feishu_sunke',
+      profile: 'feishu_user_a',
       secret: 'session-secret',
       now: Math.floor(Date.now() / 1000),
       maxAgeSeconds: 3600,
@@ -210,7 +210,7 @@ describe('Feishu OAuth controller', () => {
   })
 
   it('does not canonicalize proxied Feishu login requests that already match the configured redirect origin', async () => {
-    process.env.FEISHU_REDIRECT_URI = 'https://hermes.gotokeep.com/api/auth/feishu/callback'
+    process.env.FEISHU_REDIRECT_URI = 'https://hermes.example.com/api/auth/feishu/callback'
     vi.resetModules()
     const { feishuLogin } = await import('../../packages/server/src/controllers/auth')
     const setCookie = vi.fn()
@@ -225,7 +225,7 @@ describe('Feishu OAuth controller', () => {
       get: vi.fn((name: string) => {
         const headers: Record<string, string> = {
           'x-forwarded-proto': 'https',
-          'x-forwarded-host': 'hermes.gotokeep.com',
+          'x-forwarded-host': 'hermes.example.com',
         }
         return headers[name.toLowerCase()] || ''
       }),
@@ -238,7 +238,7 @@ describe('Feishu OAuth controller', () => {
       secure: true,
     }))
     expect(redirect).toHaveBeenCalledWith(expect.stringContaining('https://open.feishu.cn/open-apis/authen/v1/index'))
-    expect(redirect).not.toHaveBeenCalledWith('https://hermes.gotokeep.com/api/auth/feishu/login')
+    expect(redirect).not.toHaveBeenCalledWith('https://hermes.example.com/api/auth/feishu/login')
   })
 
   it('rejects callback when state does not match the state cookie', async () => {
@@ -294,8 +294,8 @@ describe('Feishu OAuth controller', () => {
 
   it('wakes the bound profile gateway after OAuth login when it is stopped', async () => {
     const gatewayManager = {
-      detectStatus: vi.fn().mockResolvedValue({ profile: 'feishu_sunke', running: false }),
-      startApiOnly: vi.fn().mockResolvedValue({ profile: 'feishu_sunke', running: true }),
+      detectStatus: vi.fn().mockResolvedValue({ profile: 'feishu_user_a', running: false }),
+      startApiOnly: vi.fn().mockResolvedValue({ profile: 'feishu_user_a', running: true }),
     }
     vi.doMock('../../packages/server/src/services/gateway-bootstrap', () => ({
       getGatewayManagerInstance: () => gatewayManager,
@@ -303,10 +303,10 @@ describe('Feishu OAuth controller', () => {
 
     const { wakeBoundProfileGateway } = await import('../../packages/server/src/controllers/auth')
 
-    await wakeBoundProfileGateway('feishu_sunke')
+    await wakeBoundProfileGateway('feishu_user_a')
 
-    expect(gatewayManager.detectStatus).toHaveBeenCalledWith('feishu_sunke')
-    expect(gatewayManager.startApiOnly).toHaveBeenCalledWith('feishu_sunke')
+    expect(gatewayManager.detectStatus).toHaveBeenCalledWith('feishu_user_a')
+    expect(gatewayManager.startApiOnly).toHaveBeenCalledWith('feishu_user_a')
   })
 
   it('keeps Feishu logout public so it can always clear the session cookie', async () => {
@@ -323,13 +323,13 @@ describe('Feishu OAuth controller', () => {
     vi.resetModules()
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       status: 'valid',
-      profile_name: 'sunke',
-      subject_id: 'ou_sunke',
+      profile_name: 'user_a',
+      subject_id: 'ou_user_a',
     }), { status: 200, headers: { 'content-type': 'application/json' } }))
     vi.stubGlobal('fetch', fetchMock)
     const { feishuUatStatus } = await import('../../packages/server/src/controllers/auth')
     const ctx: any = {
-      state: { user: { profile: 'sunke', openid: 'ou_sunke', role: 'user' } },
+      state: { user: { profile: 'user_a', openid: 'ou_user_a', role: 'user' } },
       query: { profile_name: 'attacker', user_key: 'ou_attacker', required_scopes: 'wiki:wiki:readonly' },
     }
 
@@ -338,7 +338,7 @@ describe('Feishu OAuth controller', () => {
     expect(ctx.status).toBe(200)
     expect(ctx.body.status).toBe('valid')
     const [url, init] = fetchMock.mock.calls[0]
-    expect(url.toString()).toBe('http://broker.test/api/run-broker/credentials/feishu/uat/status?profile_name=sunke&user_key=ou_sunke&required_scopes=wiki%3Awiki%3Areadonly')
+    expect(url.toString()).toBe('http://broker.test/api/run-broker/credentials/feishu/uat/status?profile_name=user_a&user_key=ou_user_a&required_scopes=wiki%3Awiki%3Areadonly')
     expect(init.headers.Authorization).toBe('Bearer broker-secret')
   })
 
@@ -355,7 +355,7 @@ describe('Feishu OAuth controller', () => {
     vi.stubGlobal('fetch', fetchMock)
     const { feishuUatStart } = await import('../../packages/server/src/controllers/auth')
     const ctx: any = {
-      state: { user: { profile: 'sunke', openid: 'ou_sunke', role: 'user' } },
+      state: { user: { profile: 'user_a', openid: 'ou_user_a', role: 'user' } },
       request: { body: { profile_name: 'attacker', user_key: 'ou_attacker', scope: 'wiki:wiki:readonly' } },
     }
 
@@ -365,8 +365,8 @@ describe('Feishu OAuth controller', () => {
     expect(ctx.body.session_id).toBe('sess-1')
     const [_url, init] = fetchMock.mock.calls[0]
     expect(JSON.parse(init.body)).toEqual({
-      profile_name: 'sunke',
-      user_key: 'ou_sunke',
+      profile_name: 'user_a',
+      user_key: 'ou_user_a',
       scope: 'wiki:wiki:readonly',
     })
   })

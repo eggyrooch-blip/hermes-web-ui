@@ -13,9 +13,9 @@ describe('group-chat context prompt', () => {
       agentProfile: 'hello',
       roomName: 'room-1',
       agentDescription: 'Writing agent',
-      memberNames: ['feishu_g41a5b5g', 'hello'],
+      memberNames: ['feishu_user_a', 'hello'],
       members: [
-        { userId: 'owner', name: 'feishu_g41a5b5g', description: 'Owner profile' },
+        { userId: 'owner', name: 'feishu_user_a', description: 'Owner profile' },
         { userId: 'hello', name: 'hello', description: 'Writing agent' },
       ],
     } as any)

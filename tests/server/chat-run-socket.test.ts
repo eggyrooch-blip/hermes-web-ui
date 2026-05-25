@@ -163,17 +163,17 @@ describe('ChatRunSocket gateway lifecycle', () => {
     const gatewayManager = {
       detectStatus: vi.fn()
         .mockResolvedValueOnce({
-        profile: 'g41a5b5g',
+        profile: 'user_a',
         running: false,
         url: 'http://127.0.0.1:8654',
         })
         .mockResolvedValueOnce({
-          profile: 'g41a5b5g',
+          profile: 'user_a',
           running: true,
           url: 'http://127.0.0.1:8654',
         }),
       startApiOnly: vi.fn().mockResolvedValue({
-        profile: 'g41a5b5g',
+        profile: 'user_a',
         running: true,
         url: 'http://127.0.0.1:8654',
       }),
@@ -191,18 +191,18 @@ describe('ChatRunSocket gateway lifecycle', () => {
       join: vi.fn(),
     }
 
-    await (chatRun as any).handleRun(socket, { input: 'hello' }, 'g41a5b5g')
+    await (chatRun as any).handleRun(socket, { input: 'hello' }, 'user_a')
 
-    expect(gatewayManager.detectStatus).toHaveBeenCalledWith('g41a5b5g')
-    expect(gatewayManager.startApiOnly).toHaveBeenCalledWith('g41a5b5g')
-    expect(gatewayManager.getUpstream).toHaveBeenCalledWith('g41a5b5g')
+    expect(gatewayManager.detectStatus).toHaveBeenCalledWith('user_a')
+    expect(gatewayManager.startApiOnly).toHaveBeenCalledWith('user_a')
+    expect(gatewayManager.getUpstream).toHaveBeenCalledWith('user_a')
   })
 
   it('forwards provider with the selected model to the upstream run request', async () => {
     const { io } = createSocketServer()
     const gatewayManager = {
       detectStatus: vi.fn().mockResolvedValue({
-        profile: 'g41a5b5g',
+        profile: 'user_a',
         running: true,
         url: 'http://127.0.0.1:8654',
       }),
@@ -228,7 +228,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
       session_id: 'session-1',
       model: 'gpt-5.4',
       provider: 'openai',
-    }, 'g41a5b5g')
+    }, 'user_a')
 
     const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
     expect(body).toEqual(expect.objectContaining({
@@ -241,7 +241,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
     const { io } = createSocketServer()
     const gatewayManager = {
       detectStatus: vi.fn().mockResolvedValue({
-        profile: 'g41a5b5g',
+        profile: 'user_a',
         running: true,
         url: 'http://127.0.0.1:8654',
       }),
@@ -266,7 +266,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
       input: 'hello',
       session_id: 'session-native',
       model: 'gpt-5.4',
-    }, 'g41a5b5g')
+    }, 'user_a')
 
     const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
     expect(body).toEqual(expect.objectContaining({
@@ -328,7 +328,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
       isWorking: false,
       events: [],
       queue: [],
-      profile: 'sunke',
+      profile: 'user_a',
     })
     const socket = {
       data: { user: { openid: 'ou_webui_user' } },
@@ -342,7 +342,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
       session_id: 'session-broker',
       model: 'gpt-5.4',
       provider: 'openai',
-    }, 'sunke')
+    }, 'user_a')
 
     expect(gatewayManager.getUpstream).not.toHaveBeenCalled()
     expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:8766/api/run-broker/runs', expect.objectContaining({
@@ -355,7 +355,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
     const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
     expect(body).toEqual(expect.objectContaining({
       channel: 'webui',
-      profile_name: 'sunke',
+      profile_name: 'user_a',
       user_key: 'ou_webui_user',
       content: 'hello broker',
       session_id: 'session-broker',
@@ -418,7 +418,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
         { event: 'compression.started', data: { event: 'compression.started', token_count: 1000 } },
       ],
       queue: [],
-      profile: 'sunke',
+      profile: 'user_a',
     })
     const socket = {
       data: { user: { openid: 'ou_webui_user' } },
@@ -430,7 +430,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
     const runPromise = (chatRun as any).handleRun(socket, {
       input: 'next broker run',
       session_id: 'session-stale-events',
-    }, 'sunke')
+    }, 'user_a')
 
     await waitFor(() => fetchMock.mock.calls.length > 0)
     const state = (chatRun as any).sessionMap.get('session-stale-events')
@@ -478,7 +478,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
         { type: 'image', name: 'page.png', path: 'uploads/page.png', media_type: 'image/png' },
       ],
       session_id: sessionId,
-    }, 'baiguannan')
+    }, 'user_c')
 
     const state = (chatRun as any).sessionMap.get(sessionId)
     const assistantError = state.messages.find((message: any) => (
@@ -546,7 +546,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
         { type: 'image', name: 'page.png', path: 'uploads/page.png', media_type: 'image/png' },
       ],
       session_id: sessionId,
-    }, 'baiguannan')
+    }, 'user_c')
 
     await waitFor(() => !!getSessionDetail(sessionId)?.messages?.length)
     expect(getSessionDetail(sessionId)?.messages).toEqual([
@@ -603,7 +603,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
     await (chatRun as any).handleRun(socket, {
       input: '页面效果还是错的呢？你看看？',
       session_id: sessionId,
-    }, 'baiguannan')
+    }, 'user_c')
 
     await waitFor(() => !!getSessionDetail(sessionId)?.messages?.length)
     const assistantMessages = getSessionDetail(sessionId)?.messages.filter(message => message.role === 'assistant')
@@ -773,7 +773,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
     await (chatRun as any).handleRun(socket, {
       input: 'run terminal',
       session_id: 'session-no-id',
-    }, 'sunke')
+    }, 'user_a')
 
     const started = room.emit.mock.calls.find(([event]) => event === 'tool.started')?.[1]
     const completed = room.emit.mock.calls.find(([event]) => event === 'tool.completed')?.[1]
@@ -950,7 +950,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
       messages: [],
       isWorking: true,
       events: [],
-      profile: 'g41a5b5g',
+      profile: 'user_a',
     })
     ;(chatRun as any).hermesSessionIds.set('local-session', 'eph-delayed')
 
@@ -969,7 +969,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
       socket,
       'local-session',
       'eph-delayed',
-      'g41a5b5g',
+      'user_a',
       { maxAttempts: 10, delayMs: 500 },
     )
   })
@@ -995,10 +995,10 @@ describe('ChatRunSocket gateway lifecycle', () => {
           model: 'gpt-5.4',
           provider: 'openai',
           instructions: 'be brief',
-          profile: 'sunke',
+          profile: 'user_a',
         },
       ],
-      profile: 'sunke',
+      profile: 'user_a',
     })
     const socket = { connected: true, emit: vi.fn(), join: vi.fn() }
 
@@ -1017,7 +1017,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
       model: 'gpt-5.4',
       provider: 'openai',
       instructions: 'be brief',
-    }, 'sunke', true)
+    }, 'user_a', true)
   })
 
   it('posts clarify responses to the owner-scoped run broker endpoint', async () => {
@@ -1042,7 +1042,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
     const onConnection = namespace.on.mock.calls.find(([event]) => event === 'connection')?.[1]
     const socket = {
       data: { user: { openid: 'ou_owner' } },
-      handshake: { query: { profile: 'sunke' }, auth: {} },
+      handshake: { query: { profile: 'user_a' }, auth: {} },
       on: vi.fn(),
       emit: vi.fn(),
       join: vi.fn(),
@@ -1066,7 +1066,7 @@ describe('ChatRunSocket gateway lifecycle', () => {
           'X-Hermes-Owner-Open-Id': 'ou_owner',
         }),
         body: JSON.stringify({
-          profile_name: 'sunke',
+          profile_name: 'user_a',
           session_id: 'session-1',
           response: 'brief',
         }),

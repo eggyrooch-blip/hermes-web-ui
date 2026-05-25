@@ -49,7 +49,7 @@ describe('CredentialsView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     fetchSkillCredentialsMock.mockResolvedValue({
-      profile_name: 'feishu_sunke',
+      profile_name: 'feishu_user_a',
       credentials: [
         {
           id: 'lark-cli',
@@ -143,7 +143,7 @@ describe('CredentialsView', () => {
     startSkillCredentialAuthMock.mockResolvedValueOnce({
       id: 'kep-cli',
       status: 'auth_pending',
-      verification_uri: 'https://auth.gotokeep.com/?response_url=http://localhost:52237&oauth2=1',
+      verification_uri: 'https://auth.example.com/?response_url=http://localhost:52237&oauth2=1',
       action: { kind: 'oauth_url', label: '打开 kep-cli 认证' },
     })
     const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
@@ -157,7 +157,7 @@ describe('CredentialsView', () => {
     expect(startSkillCredentialAuthMock).toHaveBeenCalledWith('kep-cli', '')
     expect(openSpy).toHaveBeenCalledWith('about:blank', '_blank')
     expect(authWindow.opener).toBe(null)
-    expect(authWindow.location.href).toBe('https://auth.gotokeep.com/?response_url=http://localhost:52237&oauth2=1')
+    expect(authWindow.location.href).toBe('https://auth.example.com/?response_url=http://localhost:52237&oauth2=1')
   })
 
   it('renders and completes Keep-record QR auth without exposing token values', async () => {

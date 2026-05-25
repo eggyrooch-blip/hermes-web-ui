@@ -29,7 +29,7 @@ describe('run-chat broker compatibility module', () => {
       'description: Query Hades 投放管理系统 through kep-cli.',
       '---',
       '# Hades CLI',
-      'Run `/Users/kite/.hermes/bin/hades-cli --profile "$KEP_PROFILE" --env online misc get --id <id> --output json`.',
+      'Run `<local-home>/.hermes/bin/hades-cli --profile "$KEP_PROFILE" --env online misc get --id <id> --output json`.',
     ].join('\n'), 'utf-8')
     writeFileSync(join(profileDir, 'skills', 'Keep', 'keep-record', 'SKILL.md'), [
       '---',
@@ -46,7 +46,7 @@ describe('run-chat broker compatibility module', () => {
   it('builds broker requests with owner identity, channel, session history and metadata', async () => {
     const request = await buildRunBrokerRequest({
       input: 'hello broker',
-      profile: 'sunke',
+      profile: 'user_a',
       ownerOpenId: 'ou_owner',
       sessionId: 'session-broker',
       model: 'gpt-5.4',
@@ -61,7 +61,7 @@ describe('run-chat broker compatibility module', () => {
 
     expect(request).toEqual(expect.objectContaining({
       channel: 'webui',
-      profile_name: 'sunke',
+      profile_name: 'user_a',
       user_key: 'ou_owner',
       content: 'hello broker',
       session_id: 'session-broker',
@@ -87,14 +87,14 @@ describe('run-chat broker compatibility module', () => {
   it('uses an explicit per-turn idempotency key for WebUI broker runs', async () => {
     const first = await buildRunBrokerRequest({
       input: 'same text',
-      profile: 'sunke',
+      profile: 'user_a',
       ownerOpenId: 'ou_owner',
       sessionId: 'session-a',
       idempotencyKey: 'webui:session-a:turn-1',
     })
     const second = await buildRunBrokerRequest({
       input: 'same text',
-      profile: 'sunke',
+      profile: 'user_a',
       ownerOpenId: 'ou_owner',
       sessionId: 'session-b',
       idempotencyKey: 'webui:session-b:turn-1',
@@ -115,7 +115,7 @@ describe('run-chat broker compatibility module', () => {
     const profileDir = makeProfile()
     const request = await buildRunBrokerRequest({
       input: '/hades get 69df030c1f01cb45ba7ff585',
-      profile: 'feishu_sunke',
+      profile: 'feishu_user_a',
       profileDir,
     })
 
@@ -144,7 +144,7 @@ describe('run-chat broker compatibility module', () => {
 
     const request = await buildRunBrokerRequest({
       input: '/kep-prd-analysis 260',
-      profile: 'feishu_sunke',
+      profile: 'feishu_user_a',
       profileDir,
     })
 
@@ -156,7 +156,7 @@ describe('run-chat broker compatibility module', () => {
     const profileDir = makeProfile()
     const request = await buildRunBrokerRequest({
       input: '在keep 记录下中午吃的肥肠面+鸡蛋+鸡腿+青椒',
-      profile: 'feishu_sunke',
+      profile: 'feishu_user_a',
       profileDir,
     })
 

@@ -86,7 +86,7 @@ ctx.request.body = {
   clone: true,
   description: 'Software engineering agent for coding and tests.',
 }
-ctx.state.user = { openid: 'ou_owner', profile: 'feishu_g41a5b5g' }
+ctx.state.user = { openid: 'ou_owner', profile: 'feishu_user_a' }
 ```
 
 Expected before implementation: `hermesCli.createProfile` is called without description.
@@ -402,7 +402,7 @@ git commit -m "feat(profiles): expose owner profile manager in user mode"
 
 ## Task 4: Multitenancy Provisioning API For Owned WebUI Profiles
 
-**Repository:** `/Users/kite/code/hermes-multitenancy`
+**Repository:** `<local-repo>/hermes-multitenancy`
 
 **Files:**
 - Create or modify: `hermes_multitenancy/profile_provisioning.py`
@@ -412,10 +412,10 @@ git commit -m "feat(profiles): expose owner profile manager in user mode"
 
 **Step 1: Start an ftask worktree for multitenancy**
 
-Run from `/Users/kite/code/hermes-multitenancy`:
+Run from `<local-repo>/hermes-multitenancy`:
 
 ```bash
-bun ~/.claude/PAI/TOOLS/ftask.ts new webui-profile-provisioning --repo /Users/kite/code/hermes-multitenancy
+bun ~/.claude/PAI/TOOLS/ftask.ts new webui-profile-provisioning --repo <local-repo>/hermes-multitenancy
 ```
 
 Fill/approve the ftask spec before code, per repo rules.
@@ -432,7 +432,7 @@ def test_webui_profile_provisioning_creates_owned_agent_route(tmp_path, monkeypa
     # kind='agent'
     # provenance='webui-agent'
     # owner_open_id='ou_owner'
-    # upstream_profile='feishu_g41a5b5g'
+    # upstream_profile='feishu_user_a'
     # agent_id='webui:ou_owner:web_coder' or another stable unique id
     # display_label='web_coder'
 ```
@@ -484,7 +484,7 @@ Payload:
 ```json
 {
   "profile_name": "web_coder",
-  "upstream_profile": "feishu_g41a5b5g",
+  "upstream_profile": "feishu_user_a",
   "display_label": "web_coder",
   "description": "Software engineering agent..."
 }
@@ -519,7 +519,7 @@ git commit -m "feat(webui): provision owner-scoped profiles"
 
 ## Task 5: WebUI Uses Multitenancy Provisioning When Available
 
-**Repository:** `/Users/kite/code/hermes-web-ui.tasks/webui-upstream-0530`
+**Repository:** `<local-repo>/hermes-web-ui.tasks/webui-upstream-0530`
 
 **Files:**
 - Modify: `packages/server/src/controllers/hermes/profiles.ts`
@@ -662,8 +662,8 @@ git commit -m "feat(group-chat): reuse profile descriptions for agents"
 
 **Files:**
 - Update: `ARCHITECTURE-GUIDE.md`
-- Update: `/Users/kite/Library/Mobile Documents/iCloud~md~obsidian/Documents/My-Second-Brain/hermes/ARCHITECTURE-GUIDE.md`
-- Update: `/Users/kite/Library/Mobile Documents/iCloud~md~obsidian/Documents/My-Second-Brain/hermes/生产环境的实况.md`
+- Update: `<private-obsidian-vault>/hermes/ARCHITECTURE-GUIDE.md`
+- Update: `<private-obsidian-vault>/hermes/生产环境的实况.md`
 
 **Step 1: Run WebUI focused tests**
 
@@ -770,7 +770,7 @@ bun ~/.claude/PAI/TOOLS/ftask.ts state webui-profile-provisioning --note "Implem
 - Do not publish to 66 until WebUI and multitenancy branches are both shipped to their canonical main branches and local canary is green.
 - Production publish requires the normal path: GitHub push, production `git pull --ff-only`, WebUI build, systemd restart, health/log/canary verification.
 - If multitenancy endpoint is not ready, WebUI may keep compatibility fallback, but mark it as transitional in docs.
-- Do not patch `/Users/kite/.hermes/hermes-feishu-uat` for this feature. If Hermes core lacks a capability, stop and re-scope rather than forking it.
+- Do not patch `<local-hermes-home>/hermes-feishu-uat` for this feature. If Hermes core lacks a capability, stop and re-scope rather than forking it.
 
 ## Open Decisions Before Implementation
 

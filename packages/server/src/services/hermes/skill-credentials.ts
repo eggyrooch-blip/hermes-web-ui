@@ -741,8 +741,7 @@ function findGitlabSkill(skills: ProfileSkill[]): ProfileSkill | undefined {
   return skills.find(skill => {
     const text = skill.text.toLowerCase()
     return skill.name === 'kep-prd-analysis' ||
-      text.includes('gitlab_token') ||
-      text.includes('gitlab.gotokeep.com')
+      text.includes('gitlab_token')
   })
 }
 

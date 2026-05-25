@@ -62,7 +62,7 @@ describe('API Client', () => {
       expect(isUserMode()).toBe(true)
 
       localStorage.setItem('hermes_web_plane', 'both')
-      localStorage.setItem('hermes_current_user', '{"profile":"g41a5b5g"}')
+      localStorage.setItem('hermes_current_user', '{"profile":"user_a"}')
       expect(isUserMode()).toBe(true)
     })
 

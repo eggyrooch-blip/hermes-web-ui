@@ -213,9 +213,9 @@ describe('AppSidebar search entry', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const profilesStore = useProfilesStore(pinia)
-    profilesStore.setBoundProfile('g41a5b5g', {
-      openid: 'ou_cf23e7c262afa4b7a006baa75f863ed5',
-      profile: 'g41a5b5g',
+    profilesStore.setBoundProfile('user_a', {
+      openid: 'ou_test_owner_a',
+      profile: 'user_a',
       role: 'user',
       name: '陈先生',
       avatarUrl: 'https://example.com/avatar.png',
@@ -237,7 +237,7 @@ describe('AppSidebar search entry', () => {
     expect(wrapper.text()).toContain('陈先生')
     expect(wrapper.text()).not.toContain('飞书 OAuth')
     expect(wrapper.text()).not.toContain('飞书登录')
-    expect(wrapper.text()).toContain('g41a5b5g')
+    expect(wrapper.text()).toContain('user_a')
     expect(wrapper.text()).not.toContain('已锁定')
     expect(wrapper.text()).not.toContain('ou_cf23e')
     const card = wrapper.find('.sidebar-user')
@@ -259,9 +259,9 @@ describe('AppSidebar search entry', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const profilesStore = useProfilesStore(pinia)
-    profilesStore.setBoundProfile('g41a5b5g', {
-      openid: 'ou_cf23e7c262afa4b7a006baa75f863ed5',
-      profile: 'g41a5b5g',
+    profilesStore.setBoundProfile('user_a', {
+      openid: 'ou_test_owner_a',
+      profile: 'user_a',
       role: 'user',
       name: '陈先生',
     })
@@ -320,7 +320,7 @@ describe('AppSidebar search entry', () => {
     isUserModeMock.mockReturnValue(true)
     fetchCurrentUserMock.mockResolvedValue({
       openid: 'ou_bound',
-      profile: 'g41a5b5g',
+      profile: 'user_a',
       role: 'user',
       name: '陈先生',
     })
@@ -341,7 +341,7 @@ describe('AppSidebar search entry', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     const profilesStore = useProfilesStore(pinia)
-    expect(profilesStore.activeProfileName).toBe('g41a5b5g')
+    expect(profilesStore.activeProfileName).toBe('user_a')
   })
 
   it('does not render the retired Feishu connector in the sidebar', async () => {
@@ -350,7 +350,7 @@ describe('AppSidebar search entry', () => {
     isUserModeMock.mockReturnValue(true)
     fetchCurrentUserMock.mockResolvedValue({
       openid: 'ou_bound',
-      profile: 'g41a5b5g',
+      profile: 'user_a',
       role: 'user',
       name: '陈先生',
     })

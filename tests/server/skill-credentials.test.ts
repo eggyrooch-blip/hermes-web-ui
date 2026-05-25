@@ -37,16 +37,16 @@ describe('skill credential status', () => {
       '  hermes:',
       '    tags: [kep-cli, hades]',
       '---',
-      '/Users/kite/.hermes/bin/kep-auth --profile "$KEP_PROFILE" --env online status',
+      '<local-home>/.hermes/bin/kep-auth --profile "$KEP_PROFILE" --env online status',
     ].join('\n'), 'utf-8')
     writeFileSync(join(profileDir, 'skills', 'Keep', 'kep-prd-analysis', 'SKILL.md'), [
       '---',
       'name: kep-prd-analysis',
       '---',
-      'Clone https://oauth2:${GITLAB_TOKEN}@gitlab.gotokeep.com/AITools/KEPKnowledge.git',
+      'Clone https://oauth2:${GITLAB_TOKEN}@gitlab.example.com/org/repo.git',
     ].join('\n'), 'utf-8')
     writeFileSync(join(profileDir, 'home', '.keepai', '.env'), 'keep_auth_token=keep-secret-token\nkeep_username=Keep User\n', 'utf-8')
-    writeFileSync(join(profileDir, 'home', '.kep-cli', 'keyring-fallback', 'token-key:online:feishu_sunke'), 'kep-secret-token', 'utf-8')
+    writeFileSync(join(profileDir, 'home', '.kep-cli', 'keyring-fallback', 'token-key:online:feishu_user_a'), 'kep-secret-token', 'utf-8')
     writeFileSync(join(profileDir, 'workspace', 'credentials', 'gitlab.token'), 'gitlab-secret-token', 'utf-8')
     return profileDir
   }
@@ -60,11 +60,11 @@ describe('skill credential status', () => {
     process.env.HERMES_KEP_AUTH_BIN = kepAuth
 
     const result = await listSkillCredentialStatuses({
-      profileName: 'feishu_sunke',
+      profileName: 'feishu_user_a',
       profileDir,
       user: {
-        openid: 'ou_sunke',
-        profile: 'feishu_sunke',
+        openid: 'ou_user_a',
+        profile: 'feishu_user_a',
         role: 'user',
         name: '孙可',
       },
@@ -77,7 +77,7 @@ describe('skill credential status', () => {
       },
     })
 
-    expect(result.profile_name).toBe('feishu_sunke')
+    expect(result.profile_name).toBe('feishu_user_a')
     expect(result.credentials.map(item => item.id)).toEqual([
       'lark-cli',
       'keep-record',
@@ -137,7 +137,7 @@ describe('skill credential status', () => {
       '---',
       'name: product-prd-helper',
       '---',
-      'Use GITLAB_TOKEN to read gitlab.gotokeep.com repositories.',
+      'Use GITLAB_TOKEN to read gitlab.example.com repositories.',
     ].join('\n'), 'utf-8')
     writeFileSync(join(profileDir, 'home', '.keepai', '.env'), 'keep_auth_token=keep-secret-token\n', 'utf-8')
     writeFileSync(join(profileDir, 'workspace', 'credentials', 'gitlab.token'), 'gitlab-secret-token', 'utf-8')
@@ -172,7 +172,7 @@ describe('skill credential status', () => {
     const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
     const hermesHome = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-symlink-home-'))
     roots.push(hermesHome)
-    const profileDir = join(hermesHome, 'profiles', 'sunke')
+    const profileDir = join(hermesHome, 'profiles', 'user_a')
     const sharedSkillDir = join(hermesHome, 'skills', 'Keep', 'kep-hades-cli')
     mkdirSync(sharedSkillDir, { recursive: true })
     mkdirSync(join(profileDir, 'skills', 'Keep'), { recursive: true })
@@ -188,7 +188,7 @@ describe('skill credential status', () => {
     symlinkSync(sharedSkillDir, join(profileDir, 'skills', 'Keep', 'kep-hades-cli'), 'dir')
 
     const result = await listSkillCredentialStatuses({
-      profileName: 'sunke',
+      profileName: 'user_a',
       profileDir,
     })
 
@@ -208,7 +208,7 @@ describe('skill credential status', () => {
     process.env.HERMES_KEP_AUTH_BIN = kepAuth
 
     const result = await listSkillCredentialStatuses({
-      profileName: 'feishu_sunke',
+      profileName: 'feishu_user_a',
       profileDir,
     })
 
@@ -226,26 +226,26 @@ describe('skill credential status', () => {
     writeFileSync(kepAuth, [
       '#!/bin/sh',
       `test "$HERMES_HOME" = "${profileDir}" || { echo "bad HERMES_HOME=$HERMES_HOME"; exit 9; }`,
-      'test "$KEP_PROFILE" = "feishu_sunke" || { echo "bad KEP_PROFILE=$KEP_PROFILE"; exit 9; }',
+      'test "$KEP_PROFILE" = "feishu_user_a" || { echo "bad KEP_PROFILE=$KEP_PROFILE"; exit 9; }',
       `test "$HOME" = "${join(profileDir, 'home')}" || { echo "bad HOME=$HOME"; exit 9; }`,
       'echo "env: online"',
       'echo "state: valid"',
-      'echo "operator: sunke"',
+      'echo "operator: user_a"',
     ].join('\n'), 'utf-8')
     chmodSync(kepAuth, 0o755)
     process.env.HERMES_KEP_AUTH_BIN = kepAuth
 
     const result = await listSkillCredentialStatuses({
-      profileName: 'feishu_sunke',
+      profileName: 'feishu_user_a',
       profileDir,
     })
 
     expect(result.credentials.find(item => item.id === 'kep-cli')).toMatchObject({
       status: 'authenticated',
       detail: 'kep-auth status verified this profile login.',
-      account_hint: 'sunke',
+      account_hint: 'user_a',
     })
-    expect(JSON.stringify(result)).not.toContain('sunke@keep.com')
+    expect(JSON.stringify(result)).not.toContain('user-a@example.com')
   })
 
   it('starts kep-cli OAuth login from WebUI and returns the browser authorization URL', async () => {
@@ -255,9 +255,9 @@ describe('skill credential status', () => {
     writeFileSync(kepAuth, [
       '#!/bin/sh',
       `test "$HERMES_HOME" = "${profileDir}" || { echo "bad HERMES_HOME=$HERMES_HOME" >&2; exit 9; }`,
-      'test "$KEP_PROFILE" = "feishu_sunke" || { echo "bad KEP_PROFILE=$KEP_PROFILE" >&2; exit 9; }',
+      'test "$KEP_PROFILE" = "feishu_user_a" || { echo "bad KEP_PROFILE=$KEP_PROFILE" >&2; exit 9; }',
       `test "$HOME" = "${join(profileDir, 'home')}" || { echo "bad HOME=$HOME" >&2; exit 9; }`,
-      'echo "https://auth.gotokeep.com/?response_url=http://localhost:52237&oauth2=1" >&2',
+      'echo "https://auth.example.com/?response_url=http://localhost:52237&oauth2=1" >&2',
       'sleep 0.2',
     ].join('\n'), 'utf-8')
     chmodSync(kepAuth, 0o755)
@@ -265,14 +265,14 @@ describe('skill credential status', () => {
 
     const result = await startKepCliAuth({
       id: 'kep-cli',
-      profileName: 'feishu_sunke',
+      profileName: 'feishu_user_a',
       profileDir,
     })
 
     expect(result).toMatchObject({
       id: 'kep-cli',
       status: 'auth_pending',
-      verification_uri: 'https://auth.gotokeep.com/?response_url=http://localhost:52237&oauth2=1',
+      verification_uri: 'https://auth.example.com/?response_url=http://localhost:52237&oauth2=1',
       action: {
         kind: 'oauth_url',
         label: '打开 kep-cli 认证',
@@ -289,7 +289,7 @@ describe('skill credential status', () => {
     const kepAuth = join(profileDir, 'kep-auth')
     writeFileSync(kepAuth, [
       '#!/bin/sh',
-      'echo "https://auth.gotokeep.com/?response_url=http://localhost:52237&oauth2=1" >&2',
+      'echo "https://auth.example.com/?response_url=http://localhost:52237&oauth2=1" >&2',
       'sleep 0.2',
     ].join('\n'), 'utf-8')
     chmodSync(kepAuth, 0o755)
@@ -297,14 +297,14 @@ describe('skill credential status', () => {
 
     const result = await startKepCliAuth({
       id: 'kep-cli',
-      profileName: 'feishu_sunke',
+      profileName: 'feishu_user_a',
       profileDir,
-      publicOrigin: 'https://hermes.gotokeep.com',
+      publicOrigin: 'https://hermes.example.com',
     })
 
     const authUrl = new URL(result.verification_uri)
     const responseUrl = new URL(authUrl.searchParams.get('response_url') || '')
-    expect(responseUrl.origin).toBe('https://hermes.gotokeep.com')
+    expect(responseUrl.origin).toBe('https://hermes.example.com')
     expect(responseUrl.pathname).toMatch(/^\/api\/auth\/kep-cli\/callback\/[A-Za-z0-9_-]+$/)
     expect(result.verification_uri).not.toContain('response_url=http://localhost')
 
@@ -341,7 +341,7 @@ describe('skill credential status', () => {
     const profileDir = makeProfile()
 
     const result = await listSkillCredentialStatuses({
-      profileName: 'feishu_sunke',
+      profileName: 'feishu_user_a',
       profileDir,
     })
 
@@ -358,9 +358,9 @@ describe('skill credential status', () => {
     const profileDir = makeProfile()
     mkdirSync(join(profileDir, 'feishu_uat'), { recursive: true })
     writeFileSync(
-      join(profileDir, 'feishu_uat', 'ou_sunke.json'),
+      join(profileDir, 'feishu_uat', 'ou_user_a.json'),
       JSON.stringify({
-        user_open_id: 'ou_sunke',
+        user_open_id: 'ou_user_a',
         access_token: 'lark-secret-token',
         expires_at: Date.now() + 60 * 60 * 1000,
       }),
@@ -368,7 +368,7 @@ describe('skill credential status', () => {
     )
 
     const result = await listSkillCredentialStatuses({
-      profileName: 'feishu_sunke',
+      profileName: 'feishu_user_a',
       profileDir,
     })
 
@@ -377,7 +377,7 @@ describe('skill credential status', () => {
       default_identity: 'user',
     })
     expect(JSON.stringify(result)).not.toContain('lark-secret-token')
-    expect(JSON.stringify(result)).not.toContain('ou_sunke')
+    expect(JSON.stringify(result)).not.toContain('ou_user_a')
   })
 
   it('does not treat bot-only Lark-cli runtime availability as personal user authorization', async () => {
@@ -385,11 +385,11 @@ describe('skill credential status', () => {
     const profileDir = makeProfile()
 
     const result = await listSkillCredentialStatuses({
-      profileName: 'sunyinglun',
+      profileName: 'user_b',
       profileDir,
       user: {
-        openid: 'ou_sunyinglun',
-        profile: 'sunyinglun',
+        openid: 'ou_user_b',
+        profile: 'user_b',
         role: 'user',
         name: '孙迎仑',
       },
@@ -418,7 +418,7 @@ describe('skill credential status', () => {
 
     await expect(getSkillCredentialStartAction({
       id: 'lark-cli',
-      profileName: 'feishu_sunke',
+      profileName: 'feishu_user_a',
       profileDir,
     })).resolves.toMatchObject({
       id: 'lark-cli',
@@ -429,7 +429,7 @@ describe('skill credential status', () => {
 
     await expect(getSkillCredentialStartAction({
       id: 'keep-record',
-      profileName: 'feishu_sunke',
+      profileName: 'feishu_user_a',
       profileDir,
     })).resolves.toMatchObject({
       id: 'keep-record',
@@ -441,7 +441,7 @@ describe('skill credential status', () => {
 
     const gitlab = await getSkillCredentialStartAction({
       id: 'gitlab',
-      profileName: 'feishu_sunke',
+      profileName: 'feishu_user_a',
       profileDir,
     })
     expect(JSON.stringify(gitlab)).not.toContain('gitlab-secret-token')
@@ -481,7 +481,7 @@ describe('skill credential status', () => {
 
     const started = await startKeepRecordAuth({
       id: 'keep-record',
-      profileName: 'feishu_sunke',
+      profileName: 'feishu_user_a',
       profileDir,
     })
 
@@ -495,7 +495,7 @@ describe('skill credential status', () => {
 
     const completed = await completeKeepRecordAuth({
       id: 'keep-record',
-      profileName: 'feishu_sunke',
+      profileName: 'feishu_user_a',
       profileDir,
       qrcodeId: 'qr-1',
     })
@@ -508,7 +508,7 @@ describe('skill credential status', () => {
     expect(JSON.stringify(completed)).not.toContain('keep-secret-token')
 
     const listed = await listSkillCredentialStatuses({
-      profileName: 'feishu_sunke',
+      profileName: 'feishu_user_a',
       profileDir,
     })
     expect(listed.credentials.find(item => item.id === 'keep-record')).toMatchObject({
@@ -547,7 +547,7 @@ describe('skill credential status', () => {
 
     const started = await startKeepRecordAuth({
       id: 'keep-record',
-      profileName: 'feishu_sunke',
+      profileName: 'feishu_user_a',
       profileDir,
     })
 

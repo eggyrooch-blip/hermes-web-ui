@@ -18,10 +18,10 @@ describe('Hermes user-auth middleware adapter', () => {
     const ctx: any = {
       state: {
         user: {
-          openid: 'ou_sunke',
-          profile: 'sunke',
+          openid: 'ou_user_a',
+          profile: 'user_a',
           role: 'user',
-          name: 'sunke',
+          name: 'user_a',
         },
       },
       get: vi.fn(),
@@ -34,25 +34,25 @@ describe('Hermes user-auth middleware adapter', () => {
     expect(next).toHaveBeenCalledOnce()
     expect(getRequestProfileMock).toHaveBeenCalledWith(ctx)
     expect(ctx.state.user).toMatchObject({
-      id: 'ou_sunke',
-      username: 'sunke',
+      id: 'ou_user_a',
+      username: 'user_a',
       role: 'user',
-      openid: 'ou_sunke',
-      profile: 'sunke',
-      profiles: ['sunke'],
+      openid: 'ou_user_a',
+      profile: 'user_a',
+      profiles: ['user_a'],
     })
     expect(ctx.state.profile).toEqual({ name: 'feishu_group_alpha' })
   })
 
   it('does not trust a raw requested profile when request-context falls back to the signed profile', async () => {
-    getRequestProfileMock.mockReturnValue('sunke')
+    getRequestProfileMock.mockReturnValue('user_a')
     const { populateHermesUserProfile } = await import('../../packages/server/src/middleware/user-auth')
     const next = vi.fn(async () => {})
     const ctx: any = {
       state: {
         user: {
-          openid: 'ou_sunke',
-          profile: 'sunke',
+          openid: 'ou_user_a',
+          profile: 'user_a',
           role: 'user',
         },
       },
@@ -64,7 +64,7 @@ describe('Hermes user-auth middleware adapter', () => {
     await populateHermesUserProfile(ctx, next)
 
     expect(next).toHaveBeenCalledOnce()
-    expect(ctx.state.profile).toEqual({ name: 'sunke' })
+    expect(ctx.state.profile).toEqual({ name: 'user_a' })
   })
 
   it('leaves unauthenticated token-mode requests compatible with existing auth-disabled behavior', async () => {

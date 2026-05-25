@@ -76,6 +76,6 @@ describe('GatewayManager diagnostics', () => {
     const { GatewayManager } = await import('../../packages/server/src/services/hermes/gateway-manager')
     const manager = new GatewayManager('default')
 
-    expect(manager.getUpstream('feishu_g41a5b5g')).toBe('http://127.0.0.1:8724')
+    expect(manager.getUpstream('feishu_user_a')).toBe('http://127.0.0.1:8724')
   })
 })

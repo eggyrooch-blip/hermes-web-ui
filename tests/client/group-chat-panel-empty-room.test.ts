@@ -24,7 +24,7 @@ const storeMock = vi.hoisted(() => ({
   setUserInfo: vi.fn(),
 }))
 const profilesStoreMock = vi.hoisted(() => ({
-  profiles: [{ name: 'feishu_g41a5b5g' }],
+  profiles: [{ name: 'feishu_user_a' }],
   fetchProfiles: vi.fn(),
 }))
 

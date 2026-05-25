@@ -11,11 +11,11 @@ describe('ProfileAvatar', () => {
     const ProfileAvatar = (await import('@/components/hermes/profiles/ProfileAvatar.vue')).default
 
     const wrapper = mount(ProfileAvatar, {
-      props: { name: 'feishu_sunke', size: 32 },
+      props: { name: 'feishu_user_a', size: 32 },
     })
 
     expect(wrapper.find('.profile-avatar-view').attributes('style')).toContain('width: 32px')
-    expect(wrapper.find('.profile-avatar-svg').html()).toContain('data-seed="feishu_sunke"')
+    expect(wrapper.find('.profile-avatar-svg').html()).toContain('data-seed="feishu_user_a"')
   })
 
   it('prefers image avatars without exposing generated SVG markup', async () => {
@@ -23,7 +23,7 @@ describe('ProfileAvatar', () => {
 
     const wrapper = mount(ProfileAvatar, {
       props: {
-        name: 'feishu_sunke',
+        name: 'feishu_user_a',
         avatar: {
           type: 'image',
           dataUrl: 'data:image/png;base64,abc',

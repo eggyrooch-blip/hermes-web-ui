@@ -24,7 +24,7 @@ function mockCtx(overrides: Record<string, any> = {}) {
     state: {
       user: {
         openid: 'ou_test',
-        profile: 'g41a5b5g',
+        profile: 'user_a',
         role: 'user',
       },
     },
@@ -129,7 +129,7 @@ describe('chat plane user-mode controllers', () => {
   beforeEach(() => {
     vi.resetModules()
     baseDir = mkdtempSync(join(tmpdir(), 'hermes-web-ui-user-mode-'))
-    mkdirSync(join(baseDir, 'profiles', 'g41a5b5g', 'memories'), { recursive: true })
+    mkdirSync(join(baseDir, 'profiles', 'user_a', 'memories'), { recursive: true })
     writeYaml(join(baseDir, 'config.yaml'), `
 display:
   compact: false
@@ -140,7 +140,7 @@ platforms:
 model:
   default: root-model
 `)
-    writeYaml(join(baseDir, 'profiles', 'g41a5b5g', 'config.yaml'), `
+    writeYaml(join(baseDir, 'profiles', 'user_a', 'config.yaml'), `
 display:
   compact: true
 agent:
@@ -191,7 +191,7 @@ custom_providers:
 
     await updateConfig(ctx)
 
-    const updated = readFileSync(join(baseDir, 'profiles', 'g41a5b5g', 'config.yaml'), 'utf-8')
+    const updated = readFileSync(join(baseDir, 'profiles', 'user_a', 'config.yaml'), 'utf-8')
     expect(ctx.body).toEqual({ success: true })
     expect(updated).toContain('show_reasoning')
     expect(updated).toContain('true')
@@ -223,15 +223,15 @@ custom_providers:
     await setConfigModel(ctx)
 
     expect(ctx.status).toBe(403)
-    const updated = readFileSync(join(baseDir, 'profiles', 'g41a5b5g', 'config.yaml'), 'utf-8')
+    const updated = readFileSync(join(baseDir, 'profiles', 'user_a', 'config.yaml'), 'utf-8')
     expect(updated).toContain('default: profile-model')
     expect(updated).not.toContain('root-model')
   })
 
   it('reads and writes profile memory and SOUL in chat plane', async () => {
     const { get, save } = await import('../../packages/server/src/controllers/hermes/memory')
-    writeFileSync(join(baseDir, 'profiles', 'g41a5b5g', 'memories', 'MEMORY.md'), 'profile memory', 'utf-8')
-    writeFileSync(join(baseDir, 'profiles', 'g41a5b5g', 'SOUL.md'), 'profile soul', 'utf-8')
+    writeFileSync(join(baseDir, 'profiles', 'user_a', 'memories', 'MEMORY.md'), 'profile memory', 'utf-8')
+    writeFileSync(join(baseDir, 'profiles', 'user_a', 'SOUL.md'), 'profile soul', 'utf-8')
     writeFileSync(join(baseDir, 'SOUL.md'), 'root soul', 'utf-8')
 
     const getCtx = mockCtx()
@@ -244,14 +244,14 @@ custom_providers:
       request: { body: { section: 'memory', content: 'updated memory' } },
     })
     await save(saveCtx)
-    expect(readFileSync(join(baseDir, 'profiles', 'g41a5b5g', 'memories', 'MEMORY.md'), 'utf-8')).toBe('updated memory')
+    expect(readFileSync(join(baseDir, 'profiles', 'user_a', 'memories', 'MEMORY.md'), 'utf-8')).toBe('updated memory')
 
     const soulCtx = mockCtx({
       request: { body: { section: 'soul', content: 'new system prompt' } },
     })
     await save(soulCtx)
     expect(soulCtx.status).toBe(200)
-    expect(readFileSync(join(baseDir, 'profiles', 'g41a5b5g', 'SOUL.md'), 'utf-8')).toBe('new system prompt')
+    expect(readFileSync(join(baseDir, 'profiles', 'user_a', 'SOUL.md'), 'utf-8')).toBe('new system prompt')
     expect(readFileSync(join(baseDir, 'SOUL.md'), 'utf-8')).not.toBe('new system prompt')
   })
 
@@ -264,7 +264,7 @@ custom_providers:
       actual_cost_usd: 12.34,
       api_call_count: 9,
     }])
-    await writeStateDb(join(baseDir, 'profiles', 'g41a5b5g'), [{
+    await writeStateDb(join(baseDir, 'profiles', 'user_a'), [{
       id: 'profile-session',
       model: 'profile-model',
       input_tokens: 20,
@@ -293,12 +293,12 @@ custom_providers:
 
   it('lists skills from the bound profile without admin-only modified checks in chat plane', async () => {
     const rootSkillDir = join(baseDir, 'skills', 'root-cat', 'root-skill')
-    const profileSkillDir = join(baseDir, 'profiles', 'g41a5b5g', 'skills', 'profile-cat', 'profile-skill')
+    const profileSkillDir = join(baseDir, 'profiles', 'user_a', 'skills', 'profile-cat', 'profile-skill')
     mkdirSync(rootSkillDir, { recursive: true })
     mkdirSync(profileSkillDir, { recursive: true })
     writeFileSync(join(rootSkillDir, 'SKILL.md'), '# Root\n\nroot only', 'utf-8')
     writeFileSync(join(profileSkillDir, 'SKILL.md'), '# Profile\n\nprofile only', 'utf-8')
-    writeFileSync(join(baseDir, 'profiles', 'g41a5b5g', 'skills', '.bundled_manifest'), 'profile-skill: stale-hash\n', 'utf-8')
+    writeFileSync(join(baseDir, 'profiles', 'user_a', 'skills', '.bundled_manifest'), 'profile-skill: stale-hash\n', 'utf-8')
 
     const { list } = await import('../../packages/server/src/controllers/hermes/skills')
     const ctx = mockCtx()
@@ -323,7 +323,7 @@ custom_providers:
   })
 
   it('does not read files from skill-prefix sibling directories in chat plane', async () => {
-    const siblingSecretDir = join(baseDir, 'profiles', 'g41a5b5g', 'skills-secret')
+    const siblingSecretDir = join(baseDir, 'profiles', 'user_a', 'skills-secret')
     mkdirSync(siblingSecretDir, { recursive: true })
     writeFileSync(join(siblingSecretDir, 'gitlab.token'), 'sibling-secret', 'utf-8')
 
@@ -355,9 +355,9 @@ custom_providers:
     await list(ctx)
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://upstream.test/g41a5b5g/api/jobs?limit=5',
+      'http://upstream.test/user_a/api/jobs?limit=5',
       expect.objectContaining({
-        headers: expect.objectContaining({ Authorization: 'Bearer key-g41a5b5g' }),
+        headers: expect.objectContaining({ Authorization: 'Bearer key-user_a' }),
       }),
     )
   })
@@ -387,17 +387,17 @@ custom_providers:
 
   it('wakes only the API runtime for the bound profile in chat plane', async () => {
     const startApiOnly = vi.fn().mockResolvedValue({
-      profile: 'g41a5b5g',
+      profile: 'user_a',
       running: true,
-      url: 'http://upstream.test/g41a5b5g',
+      url: 'http://upstream.test/user_a',
     })
     const start = vi.fn()
     vi.doMock('../../packages/server/src/services/gateway-bootstrap', () => ({
       getGatewayManagerInstance: () => ({
         detectStatus: vi.fn().mockResolvedValue({
-          profile: 'g41a5b5g',
+          profile: 'user_a',
           running: false,
-          url: 'http://upstream.test/g41a5b5g',
+          url: 'http://upstream.test/user_a',
         }),
         startApiOnly,
         start,
@@ -409,19 +409,19 @@ custom_providers:
 
     await wake(ctx)
 
-    expect(startApiOnly).toHaveBeenCalledWith('g41a5b5g')
+    expect(startApiOnly).toHaveBeenCalledWith('user_a')
     expect(start).not.toHaveBeenCalled()
     expect(ctx.body).toEqual({
-      profile: 'g41a5b5g',
+      profile: 'user_a',
       running: true,
       status: 'ready',
-      url: 'http://upstream.test/g41a5b5g',
+      url: 'http://upstream.test/user_a',
     })
   })
 
   it('sleeps only the API runtime for the bound profile in chat plane', async () => {
     const stopApiOnly = vi.fn().mockResolvedValue({
-      profile: 'g41a5b5g',
+      profile: 'user_a',
       running: false,
       status: 'stopped',
     })
@@ -438,10 +438,10 @@ custom_providers:
 
     await sleep(ctx)
 
-    expect(stopApiOnly).toHaveBeenCalledWith('g41a5b5g')
+    expect(stopApiOnly).toHaveBeenCalledWith('user_a')
     expect(stop).not.toHaveBeenCalled()
     expect(ctx.body).toEqual({
-      profile: 'g41a5b5g',
+      profile: 'user_a',
       running: false,
       status: 'stopped',
     })
@@ -485,7 +485,7 @@ custom_providers:
     expect(forwarded).toMatchObject({
       name: 'job',
       owner_open_id: 'ou_test',
-      owner_profile: 'g41a5b5g',
+      owner_profile: 'user_a',
       prompt: 'run safely',
       deliver: 'feishu',
     })
@@ -500,7 +500,7 @@ custom_providers:
 
   it('serves files only from the bound profile workspace in chat plane', async () => {
     const rootWorkspace = join(baseDir, 'workspace')
-    const profileWorkspace = join(baseDir, 'profiles', 'g41a5b5g', 'workspace')
+    const profileWorkspace = join(baseDir, 'profiles', 'user_a', 'workspace')
     mkdirSync(rootWorkspace, { recursive: true })
     mkdirSync(profileWorkspace, { recursive: true })
     writeFileSync(join(rootWorkspace, 'root-only.txt'), 'root workspace', 'utf-8')
@@ -521,7 +521,7 @@ custom_providers:
   })
 
   it('writes files only into the bound profile workspace in chat plane', async () => {
-    const profileWorkspace = join(baseDir, 'profiles', 'g41a5b5g', 'workspace')
+    const profileWorkspace = join(baseDir, 'profiles', 'user_a', 'workspace')
     mkdirSync(profileWorkspace, { recursive: true })
     const ctx = mockCtx({
       method: 'PUT',
@@ -536,7 +536,7 @@ custom_providers:
   })
 
   it('does not expose profile or root config through the chat-plane files workspace', async () => {
-    const profileWorkspace = join(baseDir, 'profiles', 'g41a5b5g', 'workspace')
+    const profileWorkspace = join(baseDir, 'profiles', 'user_a', 'workspace')
     mkdirSync(profileWorkspace, { recursive: true })
     const ctx = mockCtx({ query: { path: 'config.yaml' } })
 
@@ -547,7 +547,7 @@ custom_providers:
   })
 
   it('does not expose materialized workspace credentials in chat-plane files or downloads', async () => {
-    const profileWorkspace = join(baseDir, 'profiles', 'g41a5b5g', 'workspace')
+    const profileWorkspace = join(baseDir, 'profiles', 'user_a', 'workspace')
     mkdirSync(join(profileWorkspace, 'credentials'), { recursive: true })
     mkdirSync(join(profileWorkspace, 'Downloads'), { recursive: true })
     writeFileSync(join(profileWorkspace, 'credentials', 'gitlab.token'), 'secret-token', 'utf-8')
@@ -577,7 +577,7 @@ custom_providers:
   })
 
   it('does not allow chat-plane file mutations inside sensitive workspace paths', async () => {
-    const profileWorkspace = join(baseDir, 'profiles', 'g41a5b5g', 'workspace')
+    const profileWorkspace = join(baseDir, 'profiles', 'user_a', 'workspace')
     mkdirSync(join(profileWorkspace, 'credentials'), { recursive: true })
     writeFileSync(join(profileWorkspace, 'safe.txt'), 'safe', 'utf-8')
 
@@ -617,7 +617,7 @@ custom_providers:
   })
 
   it('deletes chat-plane workspace files from query params when DELETE bodies are not parsed', async () => {
-    const profileWorkspace = join(baseDir, 'profiles', 'g41a5b5g', 'workspace')
+    const profileWorkspace = join(baseDir, 'profiles', 'user_a', 'workspace')
     mkdirSync(profileWorkspace, { recursive: true })
     writeFileSync(join(profileWorkspace, 'probe.txt'), 'probe', 'utf-8')
     const ctx = mockCtx({
@@ -634,7 +634,7 @@ custom_providers:
 
   it('downloads files only from the bound profile workspace in chat plane', async () => {
     const rootWorkspace = join(baseDir, 'workspace')
-    const profileWorkspace = join(baseDir, 'profiles', 'g41a5b5g', 'workspace')
+    const profileWorkspace = join(baseDir, 'profiles', 'user_a', 'workspace')
     mkdirSync(rootWorkspace, { recursive: true })
     mkdirSync(profileWorkspace, { recursive: true })
     writeFileSync(join(rootWorkspace, 'artifact.txt'), 'root artifact', 'utf-8')
@@ -649,7 +649,7 @@ custom_providers:
   })
 
   it('does not download profile or root config through chat-plane download paths', async () => {
-    const profileWorkspace = join(baseDir, 'profiles', 'g41a5b5g', 'workspace')
+    const profileWorkspace = join(baseDir, 'profiles', 'user_a', 'workspace')
     mkdirSync(profileWorkspace, { recursive: true })
 
     const relativeCtx = mockCtx({ query: { path: 'config.yaml' } })
@@ -666,7 +666,7 @@ custom_providers:
 
   it('serves cron run history from the bound profile in chat plane', async () => {
     const rootOutput = join(baseDir, 'cron', 'output', 'root-job')
-    const profileOutput = join(baseDir, 'profiles', 'g41a5b5g', 'cron', 'output', 'profile-job')
+    const profileOutput = join(baseDir, 'profiles', 'user_a', 'cron', 'output', 'profile-job')
     mkdirSync(rootOutput, { recursive: true })
     mkdirSync(profileOutput, { recursive: true })
     writeFileSync(join(rootOutput, '2026-05-06T01-00-00.000000+00-00.md'), '# root\n', 'utf-8')
@@ -729,7 +729,7 @@ custom_providers:
     expect(uploaded.name).toBe('note.txt')
     expect(uploaded.path).toMatch(/^uploads\/[a-f0-9]{16}\.txt$/)
     expect(uploaded.path.startsWith('/')).toBe(false)
-    expect(readFileSync(join(baseDir, 'profiles', 'g41a5b5g', 'workspace', uploaded.path), 'utf-8')).toBe('profile attachment')
+    expect(readFileSync(join(baseDir, 'profiles', 'user_a', 'workspace', uploaded.path), 'utf-8')).toBe('profile attachment')
     expect(existsSync(join(baseDir, 'upload'))).toBe(false)
   })
 })

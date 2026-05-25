@@ -23,25 +23,25 @@ describe('GatewayManager API-only lifecycle', () => {
 
   it('binds full profile gateway tools to the profile workspace', () => {
     const manager = new GatewayManager('default') as any
-    const hermesHome = '/profiles/g41a5b5g'
+    const hermesHome = '/profiles/user_a'
 
     const env = manager.buildProfileEnv(hermesHome)
 
     expect(env.HERMES_HOME).toBe(hermesHome)
-    expect(env.TERMINAL_CWD).toBe('/profiles/g41a5b5g/workspace')
-    expect(env.HERMES_WRITE_SAFE_ROOT).toBe('/profiles/g41a5b5g/workspace')
+    expect(env.TERMINAL_CWD).toBe('/profiles/user_a/workspace')
+    expect(env.HERMES_WRITE_SAFE_ROOT).toBe('/profiles/user_a/workspace')
     expect(env.TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE).toBe('true')
   })
 
   it('binds API-only gateway tools to the runtime profile workspace', () => {
     const manager = new GatewayManager('default') as any
-    const runtimeHome = '/runtime/g41a5b5g'
+    const runtimeHome = '/runtime/user_a'
 
     const env = manager.buildApiOnlyEnv(runtimeHome, 8654, '127.0.0.1')
 
     expect(env.HERMES_HOME).toBe(runtimeHome)
-    expect(env.TERMINAL_CWD).toBe('/runtime/g41a5b5g/workspace')
-    expect(env.HERMES_WRITE_SAFE_ROOT).toBe('/runtime/g41a5b5g/workspace')
+    expect(env.TERMINAL_CWD).toBe('/runtime/user_a/workspace')
+    expect(env.HERMES_WRITE_SAFE_ROOT).toBe('/runtime/user_a/workspace')
     expect(env.TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE).toBe('true')
   })
 
@@ -52,19 +52,19 @@ describe('GatewayManager API-only lifecycle', () => {
         cwd: '/tmp/old',
         docker_mount_cwd_to_workspace: false,
       },
-    }, '/runtime/g41a5b5g/workspace')
+    }, '/runtime/user_a/workspace')
 
-    expect(cfg.terminal.cwd).toBe('/runtime/g41a5b5g/workspace')
+    expect(cfg.terminal.cwd).toBe('/runtime/user_a/workspace')
     expect(cfg.terminal.docker_mount_cwd_to_workspace).toBe(true)
   })
 
   it('starts gateway processes from the same profile workspace used by tools', () => {
     const manager = new GatewayManager('default') as any
-    const env = { HERMES_HOME: '/runtime/g41a5b5g' }
+    const env = { HERMES_HOME: '/runtime/user_a' }
 
-    const options = manager.buildGatewayRunOptions(env, '/runtime/g41a5b5g/workspace', 'ignore')
+    const options = manager.buildGatewayRunOptions(env, '/runtime/user_a/workspace', 'ignore')
 
-    expect(options.cwd).toBe('/runtime/g41a5b5g/workspace')
+    expect(options.cwd).toBe('/runtime/user_a/workspace')
     expect(options.env).toBe(env)
     expect(options.detached).toBe(true)
   })
@@ -87,8 +87,8 @@ describe('GatewayManager API-only lifecycle', () => {
   it('writes API-only configs with Hermes Agent readable fallback providers', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'hermes-gateway-manager-'))
     try {
-      const sourceDir = join(tmp, 'profiles', 'g41a5b5g')
-      const runtimeDir = join(tmp, 'api-gateways', 'g41a5b5g')
+      const sourceDir = join(tmp, 'profiles', 'user_a')
+      const runtimeDir = join(tmp, 'api-gateways', 'user_a')
       mkdirSync(sourceDir, { recursive: true })
       writeFileSync(join(sourceDir, 'config.yaml'), yaml.dump({
         model: {
@@ -105,7 +105,7 @@ describe('GatewayManager API-only lifecycle', () => {
       manager.profileDir = vi.fn(() => sourceDir)
       manager.apiOnlyDir = vi.fn(() => runtimeDir)
 
-      manager.prepareApiOnlyHome('g41a5b5g', 8656, '127.0.0.1')
+      manager.prepareApiOnlyHome('user_a', 8656, '127.0.0.1')
 
       const runtimeConfig = yaml.load(readFileSync(join(runtimeDir, 'config.yaml'), 'utf-8')) as any
       expect(runtimeConfig.fallback_providers).toEqual([
@@ -119,7 +119,7 @@ describe('GatewayManager API-only lifecycle', () => {
 
   it('stops only gateways that were started as API-only runtime', async () => {
     const manager = new GatewayManager('default') as any
-    manager.gateways.set('g41a5b5g', {
+    manager.gateways.set('user_a', {
       pid: 424242,
       port: 8654,
       host: '127.0.0.1',
@@ -131,20 +131,20 @@ describe('GatewayManager API-only lifecycle', () => {
       .mockResolvedValueOnce(false)
     const kill = vi.spyOn(process, 'kill').mockImplementation(() => true)
 
-    const result = await manager.stopApiOnly('g41a5b5g')
+    const result = await manager.stopApiOnly('user_a')
 
     expect(kill).toHaveBeenCalledWith(-424242, 'SIGTERM')
     expect(result).toMatchObject({
-      profile: 'g41a5b5g',
+      profile: 'user_a',
       running: false,
       status: 'stopped',
     })
-    expect(manager.gateways.has('g41a5b5g')).toBe(false)
+    expect(manager.gateways.has('user_a')).toBe(false)
   })
 
   it('does not stop a full profile gateway from the API-only control path', async () => {
     const manager = new GatewayManager('default') as any
-    manager.gateways.set('g41a5b5g', {
+    manager.gateways.set('user_a', {
       pid: 424242,
       port: 8654,
       host: '127.0.0.1',
@@ -154,15 +154,15 @@ describe('GatewayManager API-only lifecycle', () => {
     manager.checkHealth = vi.fn().mockResolvedValue(true)
     const kill = vi.spyOn(process, 'kill').mockImplementation(() => true)
 
-    const result = await manager.stopApiOnly('g41a5b5g')
+    const result = await manager.stopApiOnly('user_a')
 
     expect(kill).not.toHaveBeenCalled()
     expect(result).toMatchObject({
-      profile: 'g41a5b5g',
+      profile: 'user_a',
       running: true,
       status: 'not_api_only',
     })
-    expect(manager.gateways.has('g41a5b5g')).toBe(true)
+    expect(manager.gateways.has('user_a')).toBe(true)
   })
 
   it('recovers a detached API-only runtime from its pid file before stopping it', async () => {
@@ -174,15 +174,15 @@ describe('GatewayManager API-only lifecycle', () => {
       .mockResolvedValueOnce(false)
     const kill = vi.spyOn(process, 'kill').mockImplementation(() => true)
 
-    const result = await manager.stopApiOnly('g41a5b5g')
+    const result = await manager.stopApiOnly('user_a')
 
     expect(kill).toHaveBeenCalledWith(-424242, 'SIGTERM')
     expect(result).toMatchObject({
-      profile: 'g41a5b5g',
+      profile: 'user_a',
       running: false,
       status: 'stopped',
     })
-    expect(manager.gateways.has('g41a5b5g')).toBe(false)
+    expect(manager.gateways.has('user_a')).toBe(false)
   })
 
   it('stops a detached API-only runtime from its pid file even if the current port health check fails', async () => {
@@ -192,14 +192,14 @@ describe('GatewayManager API-only lifecycle', () => {
     manager.checkHealth = vi.fn().mockResolvedValue(false)
     const kill = vi.spyOn(process, 'kill').mockImplementation(() => true)
 
-    const result = await manager.stopApiOnly('g41a5b5g')
+    const result = await manager.stopApiOnly('user_a')
 
     expect(kill).toHaveBeenCalledWith(-424242, 'SIGTERM')
     expect(result).toMatchObject({
-      profile: 'g41a5b5g',
+      profile: 'user_a',
       running: false,
       status: 'stopped',
     })
-    expect(manager.gateways.has('g41a5b5g')).toBe(false)
+    expect(manager.gateways.has('user_a')).toBe(false)
   })
 })

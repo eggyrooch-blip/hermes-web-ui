@@ -17,7 +17,7 @@ const appStoreMock = vi.hoisted(() => ({
 }))
 
 const profilesStoreMock = vi.hoisted(() => ({
-  activeProfileName: 'g41a5b5g',
+  activeProfileName: 'user_a',
 }))
 
 vi.mock('@/stores/hermes/chat', () => ({
