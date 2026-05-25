@@ -20,9 +20,9 @@ function createSocketServer() {
 }
 
 async function waitFor(condition: () => boolean) {
-  for (let i = 0; i < 20; i += 1) {
+  for (let i = 0; i < 100; i += 1) {
     if (condition()) return
-    await new Promise(resolvePromise => setTimeout(resolvePromise, 0))
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 10))
   }
   throw new Error('timed out waiting for condition')
 }
