@@ -21,7 +21,7 @@ related:
 > 当前本机开发入口是 `/Users/kite/code/hermes-web-ui`；生产入口是 `root@10.250.1.66` 的 `hermes-web-ui.service`，监听 `0.0.0.0:8648`。不要用旧 launchd PID 判断生产状态。
 
 > [!success] 2026-05-25 已发布 — PR #25 upstream 0.6 baseline 本地等价版
-> `main@ef0d033473d8` 已发布到生产 `10.250.1.66`。本轮把 2026-05-24/25 的 upstream 0.6 baseline worktree 合入 PR #25，同时保持本 fork 的 Feishu OAuth/open_id 身份源、multitenancy owner/profile ACL、Run Broker 执行路径和 Credentials/UAT 边界。生产发布先配套发布 `hermes-multitenancy@ed6e4b4620ce`，再 WebUI `git pull --ff-only`、`pnpm install --frozen-lockfile`、`pnpm run build`、重启 `hermes-web-ui.service`；备份目录 `/home/hermes/backups/webui-multitenancy-upstream060-20260525-121617`。
+> 运行代码 `main@ef0d033473d8` 已发布到生产 `10.250.1.66`；生产仓库 HEAD 可能包含后续 docs-only commit。本轮把 2026-05-24/25 的 upstream 0.6 baseline worktree 合入 PR #25，同时保持本 fork 的 Feishu OAuth/open_id 身份源、multitenancy owner/profile ACL、Run Broker 执行路径和 Credentials/UAT 边界。生产发布先配套发布 `hermes-multitenancy@ed6e4b4620ce`，再 WebUI `git pull --ff-only`、`pnpm install --frozen-lockfile`、`pnpm run build`、重启 `hermes-web-ui.service`；备份目录 `/home/hermes/backups/webui-multitenancy-upstream060-20260525-121617`。
 >
 > 线上验证：`8648/health` OK，公网 `https://hermes.gotokeep.com/` 200；签名 `sunke` Feishu session 访问 `/api/auth/me` 返回 200 且包含 upstream-compatible `{ user }` 包装，`/api/hermes/profiles` 返回 5 个 owner-visible profiles（2 group、1 user、2 webui agent），没有全局 profile 泄漏。本机发布门禁：`bun run test` 为 127 files / 820 passed / 2 skipped，`pnpm run build` passed；生产 build 只有既有大 chunk warning。下面 worktree 段落保留为决策历史，其中“未发布生产”已被本段取代。
 
