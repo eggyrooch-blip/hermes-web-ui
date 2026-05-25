@@ -1681,12 +1681,22 @@ export class ChatRunSocket {
   private flushResponseRunToDb(state: SessionState, sessionId: string) {
     const run = state.responseRun
     if (!run?.runMarker) return
+    const firstUser = state.messages.find(msg => msg.role === 'user')?.content || ''
     if (!getSession(sessionId)) {
-      const firstUser = state.messages.find(msg => msg.role === 'user')?.content || ''
       createSession({
         id: sessionId,
         profile: state.profile || 'default',
         title: firstUser.replace(/[\r\n]/g, ' ').slice(0, 100),
+      })
+    }
+    const detail = getSessionDetail(sessionId)
+    const hasUserMessage = detail?.messages?.some(message => message.role === 'user')
+    if (firstUser && !hasUserMessage) {
+      addMessage({
+        session_id: sessionId,
+        role: 'user',
+        content: firstUser,
+        timestamp: state.messages.find(msg => msg.role === 'user')?.timestamp,
       })
     }
     let flushed = 0
