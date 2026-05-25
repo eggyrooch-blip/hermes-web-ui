@@ -32,6 +32,16 @@ describe('CLI login recovery commands', () => {
     expect(existsSync(lockFile)).toBe(false)
   })
 
+  it('cleans a stale server PID file during stop', async () => {
+    const pidFile = join(home, 'server.pid')
+    await mkdir(home, { recursive: true })
+    await writeFile(pidFile, '999999999\n')
+
+    cli.stopDaemon()
+
+    expect(existsSync(pidFile)).toBe(false)
+  })
+
   it('resets the default file-backed password login used by this fork', async () => {
     const result = cli.resetDefaultLogin({ silent: true })
 

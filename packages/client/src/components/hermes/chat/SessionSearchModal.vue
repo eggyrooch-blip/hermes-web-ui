@@ -99,7 +99,7 @@ async function runSearch(text: string) {
   loading.value = true
   try {
     const results = text.trim()
-      ? await searchSessions(text.trim(), undefined, 10)
+      ? await searchSessions(text.trim(), undefined, 10, chatStore.activeSession?.profile)
       : []
     if (seq !== requestSeq) return
     searchResults.value = results

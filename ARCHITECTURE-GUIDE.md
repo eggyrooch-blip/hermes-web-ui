@@ -19,6 +19,12 @@ related:
 > `webui-slash-registry` 保持生产聊天执行路径在 multitenancy Run Broker，不启用 upstream `agent-bridge`。WebUI 新增 `/api/hermes/slash/commands` BFF，只负责合并本地 UI 命令与 broker 返回的 profile-scoped skill slash 元数据；可执行 skill registry 的事实源是 multitenancy `/api/run-broker/slash/commands`。
 >
 > ChatInput 在用户输入 `/` 时加载当前 profile 的 slash registry，按 category/source 分组展示，并支持键盘上下选择、Enter/Tab 插入、Esc 临时关闭；命令后出现空格即退出建议态，避免拦截正常发送。选择 skill 后仍把 `/skill ...` 作为普通聊天文本发送，server 侧继续由既有 `handle-broker-run` profile-local skill slash rewrite 在进入 Run Broker 前展开。未知 slash 保持普通用户文本，不触发 WebUI 本地路径扫描或任意 profile 读取。验证：slash/request-context/chat-input focused tests 通过，run-chat-broker/skills 回归通过，`npm run build` 通过；尚未合入、未 push、未发布生产。
+>
+> 继续按用户要求吸收截至 upstream `689237f` 的低风险好特性：`9e35d81` 的移动/弱网 socket transient disconnect 现在不会立刻把 run 标失败，重连后会对当前 session 发 `resume` 并用 server replay 修复消息、queue、abort/compression/clarify/subagent 状态；`689237f` 的 Jobs 投递目标 UX 已端口，表单加载 settings 后展示所有支持渠道，未配置渠道禁用，新增 QQBot，同时保留本 fork 新建任务默认投递到 Feishu 的生产语义；`56c6cf3` 的 profile-aware session history action 思路已补到批量删除和搜索路径，batch delete 会发送 `{id, profile}` target。`0eab6a1`/`badb17c` 的 `/plan`、`/goal` UI/UX 思路不直连 upstream `agent-bridge`，而是由 multitenancy 这个 worktree 已提供的 Run Broker command contract 承接。验证追加：reconnect/job/session/api focused tests 通过，扩展 focused 93 tests 通过，`npm run build` 通过。
+>
+> 23:09 追加 Run Broker-compatible session commands：WebUI 拦截 multitenancy 已支持的 `/new`、`/reset`、`/status`、`/plan`、`/goal`、`/subgoal`，用服务端 owner identity POST 到 `/api/run-broker/session-commands`。history commands 只写 `role=command` transcript 并发 `session.command`；`/plan` 与 `/goal` 由 Run Broker 返回 expanded/kickoff prompt，WebUI 以 hidden run 送入既有 `/api/run-broker/runs`，不直接端口 upstream `agent-bridge` 执行语义。验证：slash/chat socket/run-broker focused 35 passed，`npm run build` 通过；本机黑盒联调通过 direct broker `registry/status/plan/goal` 与 WebUI `bff_registry/socket_plan_hidden_run`；尚未合入、未 push、未发布生产。
+>
+> 23:44 追加 upstream `6e2e502` 的 CLI stale PID 回归：`stopDaemon()` 仍会清理已死亡的 `server.pid`，并导出给 CLI 测试直接覆盖；不改变 WebUI Run Broker、Feishu owner/open_id 或生产服务启动边界。验证：`npm test -- --run tests/server/cli-login-recovery.test.ts` 为 3 passed；扩展 slash/socket/broker/CLI/client focused suite 为 38 passed。
 
 > [!info] 这是哪一个 web-ui？
 > **EKKO 系 `hermes-web-ui`**：`https://github.com/EKKOLearnAI/hermes-web-ui`，Koa 2 + Vue 3 + Naive UI + Pinia 全家桶。本机 fork 不在 nesquena 那条 Python+vanilla-JS 单体老版本上。

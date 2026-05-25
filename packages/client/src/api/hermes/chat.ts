@@ -57,6 +57,17 @@ export interface RunEvent {
   dequeued_queue_id?: string
 }
 
+export interface ResumeSessionPayload {
+  session_id: string
+  messages: any[]
+  isWorking: boolean
+  isAborting?: boolean
+  events: Array<{ event: string; data: RunEvent }>
+  inputTokens?: number
+  outputTokens?: number
+  queueLength?: number
+}
+
 // ============================
 // Socket.IO chat run connection
 // ============================
@@ -64,6 +75,12 @@ export interface RunEvent {
 let chatRunSocket: Socket | null = null
 let globalListenersRegistered = false
 let chatRunSocketProfile: string | null = null
+
+const TRANSIENT_DISCONNECT_REASONS = new Set([
+  'transport close',
+  'transport error',
+  'ping timeout',
+])
 
 /**
  * Session event handlers map
@@ -472,6 +489,18 @@ export function disconnectChatRun(): void {
   }
 }
 
+function removeSocketListener(socket: Socket, event: string, handler: (...args: any[]) => void): void {
+  const candidate = socket as Socket & {
+    off?: (event: string, handler: (...args: any[]) => void) => Socket
+    removeListener?: (event: string, handler: (...args: any[]) => void) => Socket
+  }
+  if (typeof candidate.off === 'function') {
+    candidate.off(event, handler)
+    return
+  }
+  candidate.removeListener?.(event, handler)
+}
+
 /**
  * Start a chat run via Socket.IO and stream events back.
  * Returns an AbortController-compatible handle for cancellation.
@@ -481,7 +510,7 @@ export function disconnectChatRun(): void {
  */
 export function resumeSession(
   sessionId: string,
-  onResumed: (data: { session_id: string; messages: any[]; isWorking: boolean; isAborting?: boolean; events: any[]; inputTokens?: number; outputTokens?: number; queueLength?: number }) => void,
+  onResumed: (data: ResumeSessionPayload) => void,
   profile?: string | null,
 ): Socket {
   const socket = connectChatRun(profile)
@@ -498,6 +527,9 @@ export function startRunViaSocket(
   onDone: () => void,
   onError: (err: Error) => void,
   onStarted?: (runId: string) => void,
+  options?: {
+    onReconnectResume?: (data: ResumeSessionPayload) => void
+  },
 ): { abort: () => void } {
   const sid = body.session_id
   if (!sid) {
@@ -516,6 +548,68 @@ export function startRunViaSocket(
         }
       },
     }
+  }
+
+  let sawTransientDisconnect = false
+  let removeTerminalSocketListeners: () => void = () => {}
+  let reconnectResumeHandler: ((data: ResumeSessionPayload) => void) | null = null
+
+  const clearReconnectResumeHandler = () => {
+    if (!reconnectResumeHandler) return
+    removeSocketListener(socket, 'resumed', reconnectResumeHandler)
+    reconnectResumeHandler = null
+  }
+
+  const emitReconnectResume = () => {
+    clearReconnectResumeHandler()
+    if (options?.onReconnectResume) {
+      reconnectResumeHandler = (data: ResumeSessionPayload) => {
+        clearReconnectResumeHandler()
+        if (closed || data.session_id !== sid) return
+        options.onReconnectResume?.(data)
+      }
+      socket.on('resumed', reconnectResumeHandler)
+    }
+    socket.emit('resume', { session_id: sid, ...(body.profile ? { profile: body.profile } : {}) })
+  }
+
+  const handleSocketError = (err: Error) => {
+    if (closed) return
+    closed = true
+    removeTerminalSocketListeners()
+    sessionEventHandlers.delete(sid)
+    onError(err)
+  }
+
+  const handleSocketConnectError = (err: Error) => {
+    if (closed) return
+    if (sawTransientDisconnect) return
+    handleSocketError(err)
+  }
+  socket.on('connect_error', handleSocketConnectError)
+
+  const handleSocketDisconnect = (reason: string) => {
+    if (closed || reason === 'io client disconnect') return
+    if (TRANSIENT_DISCONNECT_REASONS.has(reason)) {
+      sawTransientDisconnect = true
+      return
+    }
+    handleSocketError(new Error(`Socket disconnected: ${reason}`))
+  }
+  socket.on('disconnect', handleSocketDisconnect)
+
+  const handleSocketReconnect = () => {
+    if (closed || !sawTransientDisconnect) return
+    sawTransientDisconnect = false
+    emitReconnectResume()
+  }
+  socket.on('connect', handleSocketReconnect)
+
+  removeTerminalSocketListeners = () => {
+    clearReconnectResumeHandler()
+    removeSocketListener(socket, 'connect_error', handleSocketConnectError)
+    removeSocketListener(socket, 'disconnect', handleSocketDisconnect)
+    removeSocketListener(socket, 'connect', handleSocketReconnect)
   }
 
   // Define event handlers for this session
@@ -554,6 +648,7 @@ export function startRunViaSocket(
       onEvent(evt)
       if ((evt as any).queue_remaining > 0) return
       closed = true
+      removeTerminalSocketListeners()
       onDone()
     },
     onRunFailed: (evt: RunEvent) => {
@@ -561,6 +656,7 @@ export function startRunViaSocket(
       onEvent(evt)
       if ((evt as any).queue_remaining > 0) return
       closed = true
+      removeTerminalSocketListeners()
       onError(new Error(evt.error || 'Run failed'))
     },
     onCompressionStarted: (evt: RunEvent) => {
@@ -580,6 +676,7 @@ export function startRunViaSocket(
       onEvent(evt)
       if ((evt as any).queue_length > 0) return
       closed = true
+      removeTerminalSocketListeners()
       onDone()
     },
     onUsageUpdated: (evt: RunEvent) => {

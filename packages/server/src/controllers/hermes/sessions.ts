@@ -40,6 +40,19 @@ function localSessionBelongsToRequestProfile(ctx: any, sessionId: string): boole
   return !!session && session.profile === getRequestProfile(ctx)
 }
 
+function localSessionBelongsToProfile(ctx: any, sessionId: string, profile?: string | null): boolean {
+  const session = localGetSessionDetail(sessionId)
+  const requestProfile = getRequestProfile(ctx)
+  const targetProfile = profile || requestProfile
+  if (targetProfile !== requestProfile && isChatPlaneRequest(ctx)) return false
+  return !!session && session.profile === targetProfile
+}
+
+interface BatchDeleteTarget {
+  id: string
+  profile?: string | null
+}
+
 export async function listConversations(ctx: any) {
   const source = (ctx.query.source as string) || undefined
   const humanOnly = (ctx.query.humanOnly as string) !== 'false' && ctx.query.humanOnly !== '0'
@@ -337,15 +350,31 @@ export async function remove(ctx: any) {
 }
 
 export async function batchRemove(ctx: any) {
-  const { ids } = ctx.request.body as { ids?: string[] }
-  if (!ids || !Array.isArray(ids) || ids.length === 0) {
+  const { ids, sessions } = ctx.request.body as { ids?: string[]; sessions?: BatchDeleteTarget[] }
+  const rawTargets = Array.isArray(sessions) && sessions.length > 0 ? sessions : ids
+  if (!rawTargets || !Array.isArray(rawTargets) || rawTargets.length === 0) {
     ctx.status = 400
     ctx.body = { error: 'ids is required and must be a non-empty array' }
     return
   }
 
-  const validIds = ids.filter(id => typeof id === 'string' && id.trim() !== '')
-  if (validIds.length === 0) {
+  const targets = rawTargets
+    .map((target): BatchDeleteTarget | null => {
+      if (typeof target === 'string') {
+        const id = target.trim()
+        return id ? { id } : null
+      }
+      if (!target || typeof target.id !== 'string') return null
+      const id = target.id.trim()
+      if (!id) return null
+      const profile = typeof target.profile === 'string' && target.profile.trim()
+        ? target.profile.trim()
+        : undefined
+      return { id, profile }
+    })
+    .filter((target): target is BatchDeleteTarget => Boolean(target))
+
+  if (targets.length === 0) {
     ctx.status = 400
     ctx.body = { error: 'No valid session ids provided' }
     return
@@ -358,30 +387,30 @@ export async function batchRemove(ctx: any) {
   }
 
   if (useLocalSessionStore()) {
-    for (const id of validIds) {
-      if (!localSessionBelongsToRequestProfile(ctx, id)) {
+    for (const target of targets) {
+      if (!localSessionBelongsToProfile(ctx, target.id, target.profile)) {
         results.failed++
-        results.errors.push({ id, error: 'Session not found' })
+        results.errors.push({ id: target.id, error: 'Session not found' })
         continue
       }
-      const ok = localDeleteSession(id)
+      const ok = localDeleteSession(target.id)
       if (ok) {
-        deleteUsage(id)
+        deleteUsage(target.id)
         results.deleted++
       } else {
         results.failed++
-        results.errors.push({ id, error: 'Failed to delete session' })
+        results.errors.push({ id: target.id, error: 'Failed to delete session' })
       }
     }
   } else {
-    for (const id of validIds) {
-      const ok = await hermesCli.deleteSession(id)
+    for (const target of targets) {
+      const ok = await hermesCli.deleteSession(target.id)
       if (ok) {
-        deleteUsage(id)
+        deleteUsage(target.id)
         results.deleted++
       } else {
         results.failed++
-        results.errors.push({ id, error: 'Failed to delete session' })
+        results.errors.push({ id: target.id, error: 'Failed to delete session' })
       }
     }
   }

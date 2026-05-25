@@ -23,7 +23,7 @@ import {
   request,
 } from '../../packages/client/src/api/client'
 import { fetchCurrentUser } from '../../packages/client/src/api/auth'
-import { fetchHermesSessions, fetchSession } from '../../packages/client/src/api/hermes/sessions'
+import { batchDeleteSessions, fetchHermesSessions, fetchSession } from '../../packages/client/src/api/hermes/sessions'
 import router from '@/router'
 
 describe('API Client', () => {
@@ -240,6 +240,30 @@ describe('API Client', () => {
 
       expect(mockFetch.mock.calls[0][0]).toBe('/api/hermes/sessions/hermes?profile=tester')
       expect(mockFetch.mock.calls[1][0]).toBe('/api/hermes/sessions/s1?profile=tester')
+    })
+
+    it('sends profile-qualified targets for batch deletes', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ deleted: 2, failed: 0, errors: [] }),
+      })
+
+      await batchDeleteSessions([
+        { id: 'session-default', profile: 'default' },
+        { id: 'session-travel', profile: 'travel' },
+      ])
+
+      const [url, options] = mockFetch.mock.calls[0]
+      expect(url).toBe('/api/hermes/sessions/batch-delete')
+      expect(options.method).toBe('POST')
+      expect(JSON.parse(options.body)).toEqual({
+        ids: ['session-default', 'session-travel'],
+        sessions: [
+          { id: 'session-default', profile: 'default' },
+          { id: 'session-travel', profile: 'travel' },
+        ],
+      })
     })
   })
 })

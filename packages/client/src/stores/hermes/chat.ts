@@ -1,4 +1,4 @@
-import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondClarify as respondClarifyApi, type RunEvent, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
+import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondClarify as respondClarifyApi, type RunEvent, type ResumeSessionPayload, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
 import { deleteSession as deleteSessionApi, fetchSession, fetchSessions, setSessionModel, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
 import { getApiKey, isUserMode } from '@/api/client'
 import { defineStore } from 'pinia'
@@ -959,6 +959,105 @@ export const useChatStore = defineStore('chat', () => {
         activeAssistantMessageId = null
       }
 
+      const applyReconnectResume = (data: ResumeSessionPayload) => {
+        if (data.session_id !== sid) return
+        const target = sessions.value.find(s => s.id === sid)
+        if (!target) return
+
+        if (data.isWorking) serverWorking.value.add(sid)
+        else serverWorking.value.delete(sid)
+
+        if (data.queueLength && data.queueLength > 0) {
+          queueLengths.value.set(sid, data.queueLength)
+        } else {
+          queueLengths.value.delete(sid)
+        }
+
+        if (data.isAborting) {
+          setAbortState({ aborting: true, synced: null })
+        } else if (!data.isWorking) {
+          setAbortState(null)
+        }
+
+        if (data.inputTokens != null) target.inputTokens = data.inputTokens
+        if (data.outputTokens != null) target.outputTokens = data.outputTokens
+
+        if (Array.isArray(data.messages)) {
+          target.messages = mapHermesMessages(data.messages as any[])
+          const lastAssistant = [...target.messages].reverse().find(m => m.role === 'assistant')
+          if (data.isWorking && lastAssistant) {
+            lastAssistant.isStreaming = true
+            activeAssistantMessageId = lastAssistant.id
+            if (lastAssistant.reasoning) noteReasoningStart(lastAssistant.id)
+          } else {
+            activeAssistantMessageId = null
+          }
+        }
+
+        if (data.events?.length) {
+          for (const evt of data.events) {
+            const e = evt.data as RunEvent
+            switch (e.event) {
+              case 'compression.started':
+                setCompressionState({
+                  compressing: true,
+                  messageCount: (e as any).message_count || 0,
+                  beforeTokens: (e as any).token_count || 0,
+                  afterTokens: 0,
+                  compressed: null,
+                })
+                break
+              case 'compression.completed':
+                setCompressionState({
+                  compressing: false,
+                  messageCount: (e as any).totalMessages || 0,
+                  beforeTokens: (e as any).beforeTokens || 0,
+                  afterTokens: (e as any).afterTokens || 0,
+                  compressed: (e as any).compressed ?? false,
+                  error: (e as any).error,
+                })
+                break
+              case 'abort.started':
+                setAbortState({ aborting: true, synced: null })
+                break
+              case 'abort.completed':
+                setAbortState({ aborting: false, synced: (e as any).synced ?? false })
+                break
+              case 'subagent.start':
+              case 'subagent.tool':
+              case 'subagent.progress':
+              case 'subagent.complete':
+                handleSubagentEvent(sid, e)
+                break
+              case 'clarify.requested':
+                handleClarifyRequested(sid, e)
+                break
+              case 'clarify.resolved':
+              case 'clarify.failed':
+                handleClarifyResolved(sid, e)
+                break
+              case 'run.failed':
+                if (e.error) {
+                  addMessage(sid, {
+                    id: uid(),
+                    role: 'system',
+                    content: `Error: ${e.error}`,
+                    timestamp: Date.now(),
+                  })
+                }
+                break
+            }
+          }
+        }
+
+        if (activeSessionId.value === sid) activeSession.value = target
+        if (!data.isWorking && !(data.queueLength && data.queueLength > 0)) {
+          cleanup()
+          activeAssistantMessageId = null
+          updateSessionTitle(sid)
+        }
+      }
+
       // Send run via Socket.IO and listen to streamed events — all closures capture `sid`
       const ctrl = startRunViaSocket(
         runPayload,
@@ -1368,6 +1467,7 @@ export const useChatStore = defineStore('chat', () => {
           }
         },
         undefined,
+        { onReconnectResume: applyReconnectResume },
       )
 
       streamStates.value.set(sid, ctrl)

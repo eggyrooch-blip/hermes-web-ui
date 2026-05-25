@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { NModal, NForm, NFormItem, NInput, NButton, NSelect, NInputNumber, useMessage } from 'naive-ui'
 import { useJobsStore } from '@/stores/hermes/jobs'
+import { useSettingsStore } from '@/stores/hermes/settings'
 import {
   buildJobUpdateRequest,
   getJob,
@@ -23,6 +24,7 @@ const emit = defineEmits<{
 }>()
 
 const jobsStore = useJobsStore()
+const settingsStore = useSettingsStore()
 const message = useMessage()
 
 const showModal = ref(true)
@@ -52,18 +54,69 @@ const schedulePresets = computed(() => [
 
 const originalJob = ref<Job | null>(null)
 
+function hasText(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function isDeliverTargetConfigured(key: string): boolean {
+  const config = settingsStore.platforms[key] || {}
+  switch (key) {
+    case 'telegram':
+    case 'discord':
+    case 'slack':
+      return hasText(config.token)
+    case 'whatsapp':
+      return config.enabled === true || config.enabled === 'true'
+    case 'matrix':
+      return hasText(config.token) && hasText(config.extra?.homeserver)
+    case 'weixin':
+      return hasText(config.token) && hasText(config.extra?.account_id)
+    case 'wecom':
+      return hasText(config.extra?.bot_id) && hasText(config.extra?.secret)
+    case 'dingtalk':
+      return (hasText(config.extra?.client_id) && hasText(config.extra?.client_secret))
+        || (hasText(config.extra?.app_key) && hasText(config.extra?.client_secret))
+    case 'qqbot':
+      return hasText(config.extra?.app_id) && hasText(config.extra?.client_secret)
+    default:
+      return false
+  }
+}
+
 const targetOptions = computed(() => {
-  const options = [
+  const options: Array<{ label: string; value: string; disabled?: boolean }> = [
     { label: t('jobs.feishu'), value: 'feishu' },
     { label: t('jobs.local'), value: 'local' },
   ]
   if (originalJob.value?.origin?.platform) {
     options.splice(1, 0, { label: t('jobs.origin'), value: 'origin' })
   }
+  const channels = [
+    { key: 'telegram', label: 'Telegram' },
+    { key: 'discord', label: 'Discord' },
+    { key: 'slack', label: 'Slack' },
+    { key: 'whatsapp', label: 'WhatsApp' },
+    { key: 'matrix', label: 'Matrix' },
+    { key: 'weixin', label: 'WeChat' },
+    { key: 'wecom', label: 'WeCom' },
+    { key: 'dingtalk', label: 'DingTalk' },
+    { key: 'qqbot', label: 'QQBot' },
+  ]
+  for (const channel of channels) {
+    options.push({
+      label: channel.label,
+      value: channel.key,
+      disabled: !isDeliverTargetConfigured(channel.key),
+    })
+  }
   return options
 })
 
 onMounted(async () => {
+  if (Object.keys(settingsStore.platforms || {}).length === 0) {
+    await settingsStore.fetchSettings()
+  }
+
   if (props.jobId) {
     try {
       const job = await getJob(props.jobId)

@@ -275,13 +275,16 @@ function isSessionSelected(id: string): boolean {
 async function handleBatchDelete() {
   if (selectedSessionIds.value.size === 0) return;
 
-  const ids = Array.from(selectedSessionIds.value);
+  const selected = Array.from(selectedSessionIds.value).map(id => {
+    const session = chatStore.sessions.find(s => s.id === id)
+    return { id, profile: session?.profile || undefined }
+  });
   try {
-    const result = await batchDeleteSessions(ids);
+    const result = await batchDeleteSessions(selected);
     if (result.deleted > 0) {
       // Remove from pinned sessions
-      for (const id of ids) {
-        sessionBrowserPrefsStore.removePinned(id);
+      for (const session of selected) {
+        sessionBrowserPrefsStore.removePinned(session.id);
       }
 
       // Remove deleted sessions from local store (without calling API again)

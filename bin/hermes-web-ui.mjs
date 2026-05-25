@@ -490,4 +490,5 @@ if (process.argv[1] && realpathSync(resolve(process.argv[1])) === __filename) {
 export {
   clearLoginLocks,
   resetDefaultLogin,
+  stopDaemon,
 }

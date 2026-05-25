@@ -72,11 +72,12 @@ export async function fetchHermesSessions(source?: string, limit?: number, profi
   return res.sessions
 }
 
-export async function searchSessions(q: string, source?: string, limit?: number): Promise<SessionSearchResult[]> {
+export async function searchSessions(q: string, source?: string, limit?: number, profile?: string | null): Promise<SessionSearchResult[]> {
   const params = new URLSearchParams()
   params.set('q', q)
   if (source) params.set('source', source)
   if (limit) params.set('limit', String(limit))
+  if (profile) params.set('profile', profile)
   const query = params.toString()
   const res = await request<{ results: SessionSearchResult[] }>(`/api/hermes/search/sessions?${query}`)
   return res.results
@@ -121,13 +122,26 @@ export async function deleteSession(id: string, profile?: string | null): Promis
   }
 }
 
-export async function batchDeleteSessions(ids: string[]): Promise<{ deleted: number; failed: number; errors: Array<{ id: string; error: string }> }> {
+export interface BatchDeleteSessionTarget {
+  id: string
+  profile?: string | null
+}
+
+export async function batchDeleteSessions(targets: Array<string | BatchDeleteSessionTarget>): Promise<{ deleted: number; failed: number; errors: Array<{ id: string; error: string }> }> {
   try {
+    const sessions = targets.map(target =>
+      typeof target === 'string'
+        ? { id: target }
+        : { id: target.id, profile: target.profile || undefined },
+    )
     const res = await request<{ deleted: number; failed: number; errors: Array<{ id: string; error: string }> }>(
       '/api/hermes/sessions/batch-delete',
       {
         method: 'POST',
-        body: JSON.stringify({ ids }),
+        body: JSON.stringify({
+          ids: sessions.map(session => session.id),
+          sessions,
+        }),
       }
     )
     return res
