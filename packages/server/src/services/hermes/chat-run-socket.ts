@@ -1681,6 +1681,14 @@ export class ChatRunSocket {
   private flushResponseRunToDb(state: SessionState, sessionId: string) {
     const run = state.responseRun
     if (!run?.runMarker) return
+    if (!getSession(sessionId)) {
+      const firstUser = state.messages.find(msg => msg.role === 'user')?.content || ''
+      createSession({
+        id: sessionId,
+        profile: state.profile || 'default',
+        title: firstUser.replace(/[\r\n]/g, ' ').slice(0, 100),
+      })
+    }
     let flushed = 0
     for (const msg of state.messages) {
       if (msg.runMarker !== run.runMarker) continue
