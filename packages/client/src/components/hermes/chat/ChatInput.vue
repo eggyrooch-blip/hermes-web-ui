@@ -591,6 +591,8 @@ function isImage(type: string): boolean {
 @use '@/styles/variables' as *;
 
 .chat-input-area {
+  position: relative;
+  z-index: 30;
   padding: 12px 20px 16px;
   border-top: 1px solid $border-color;
   flex-shrink: 0;

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { shallowMount, flushPromises } from '@vue/test-utils'
 
@@ -179,5 +180,16 @@ describe('ChatInput slash registry', () => {
     await textarea.trigger('keydown', { key: 'Enter', shiftKey: false, isComposing: false })
 
     expect(chatStoreMock.sendMessage).toHaveBeenCalledWith('/unknown do not scan paths', undefined)
+  })
+
+  it('keeps slash suggestions above the message list stacking context', () => {
+    const source = readFileSync(
+      `${process.cwd()}/packages/client/src/components/hermes/chat/ChatInput.vue`,
+      'utf8',
+    )
+
+    expect(source).toMatch(/\.chat-input-area\s*\{[^}]*position:\s*relative;/s)
+    expect(source).toMatch(/\.chat-input-area\s*\{[^}]*z-index:\s*30;/s)
+    expect(source).toMatch(/\.slash-suggestions\s*\{[^}]*z-index:\s*20;/s)
   })
 })
