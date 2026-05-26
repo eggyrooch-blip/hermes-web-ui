@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import type { Dirent } from 'fs'
-import { basename, delimiter, dirname, join } from 'path'
+import { basename, delimiter, dirname, join, resolve } from 'path'
 import { execFile, spawn } from 'child_process'
 import type { ChildProcessByStdio } from 'child_process'
 import type { Readable, Writable } from 'stream'
@@ -300,7 +300,7 @@ export async function startFeishuProjectAuth(options: SkillCredentialStartOption
   const args = [...invocation.argsPrefix, 'auth', 'login', '--device-code', '--host', host]
   const child = spawn(invocation.command, args, {
     cwd: options.profileDir,
-    env: meegleEnv(options.profileDir, host),
+    env: meegleEnv(options.profileDir, host, invocation),
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   activeFeishuProjectLogins.set(sessionKey, { child, sessionKey })
@@ -352,10 +352,15 @@ function findExecutableOnPath(name: string): string | null {
 }
 
 function executableSearchDirs(): string[] {
+  return meeglePathDirs()
+}
+
+function meeglePathDirs(extraDirs: string[] = []): string[] {
   const seen = new Set<string>()
   const dirs = [
     ...(process.env.PATH || '').split(delimiter),
     ...(process.env.HERMES_MEEGLE_EXTRA_PATHS || '').split(delimiter),
+    ...extraDirs,
     '/opt/homebrew/bin',
     '/usr/local/bin',
   ]
@@ -376,19 +381,25 @@ function meegleHost(): string {
   return String(process.env.HERMES_MEEGLE_HOST || MEEGLE_DEFAULT_HOST).trim() || MEEGLE_DEFAULT_HOST
 }
 
-function meegleEnv(profileDir: string, host = meegleHost()): NodeJS.ProcessEnv {
+function meegleEnv(profileDir: string, host = meegleHost(), invocation?: MeegleInvocation): NodeJS.ProcessEnv {
   return {
     ...process.env,
     HOME: join(profileDir, 'home'),
     MEEGLE_HOST: host,
+    PATH: meegleChildPath(invocation),
   }
+}
+
+function meegleChildPath(invocation?: MeegleInvocation): string {
+  const commandDir = invocation?.command ? dirname(resolve(invocation.command)) : ''
+  return meeglePathDirs(commandDir ? [commandDir] : []).join(delimiter)
 }
 
 async function configureMeegleHost(invocation: MeegleInvocation, profileDir: string, host: string): Promise<void> {
   try {
     await execFileAsync(invocation.command, [...invocation.argsPrefix, 'config', 'set', 'host', host], {
       cwd: profileDir,
-      env: meegleEnv(profileDir, host),
+      env: meegleEnv(profileDir, host, invocation),
       timeout: 10_000,
       maxBuffer: 256 * 1024,
     })
@@ -754,7 +765,7 @@ async function readMeegleAuthStatus(profileDir: string): Promise<MeegleAuthStatu
   try {
     const { stdout } = await execFileAsync(invocation.command, [...invocation.argsPrefix, 'auth', 'status', '--format', 'json'], {
       cwd: profileDir,
-      env: meegleEnv(profileDir),
+      env: meegleEnv(profileDir, meegleHost(), invocation),
       timeout: 5_000,
       maxBuffer: 256 * 1024,
     })

@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'fs'
 import { dirname, join } from 'path'
 import { tmpdir } from 'os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -192,8 +192,10 @@ describe('skill credential status', () => {
     const binDir = join(profileDir, 'bin')
     mkdirSync(binDir, { recursive: true })
     const npx = join(binDir, 'npx')
+    const invoked = join(profileDir, 'npx-status-invoked.txt')
     writeFileSync(npx, [
       '#!/bin/sh',
+      `touch "${invoked}"`,
       'exit 9',
     ].join('\n'), 'utf-8')
     chmodSync(npx, 0o755)
@@ -209,6 +211,7 @@ describe('skill credential status', () => {
       status: 'needs_auth',
       detail: '飞书项目需要授权后才能查询和更新工作项。',
     })
+    expect(existsSync(invoked)).toBe(false)
   })
 
   it('finds the official npm package launcher when launchd starts WebUI with a narrow PATH', async () => {
@@ -357,6 +360,56 @@ describe('skill credential status', () => {
 
     expect(result.verification_uri).toBe('https://project.feishu.cn/oauth/device?user_code=BREW-1234')
     expect(readFileSync(invoked, 'utf-8')).toContain('@lark-project/meegle')
+  })
+
+  it('adds the common-bin directory to Meegle child PATH so npx can find node under launchd', async () => {
+    const { startFeishuProjectAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-node-path-'))
+    roots.push(profileDir)
+    const launchdBin = join(profileDir, 'launchd-bin')
+    const homebrewBin = join(profileDir, 'homebrew-bin')
+    mkdirSync(launchdBin, { recursive: true })
+    mkdirSync(homebrewBin, { recursive: true })
+
+    const node = join(homebrewBin, 'node')
+    writeFileSync(node, [
+      '#!/bin/sh',
+      `exec ${JSON.stringify(process.execPath)} "$@"`,
+    ].join('\n'), 'utf-8')
+    chmodSync(node, 0o755)
+
+    const npx = join(homebrewBin, 'npx')
+    const invoked = join(profileDir, 'node-path-npx-start-args.txt')
+    writeFileSync(npx, [
+      '#!/usr/bin/env node',
+      'const fs = require("fs");',
+      `const invoked = ${JSON.stringify(invoked)};`,
+      'const args = process.argv.slice(2);',
+      'fs.appendFileSync(invoked, `PATH=${process.env.PATH}\\n${args.join("\\n")}\\n---\\n`);',
+      'const packageIndex = args.indexOf("@lark-project/meegle");',
+      'const command = packageIndex >= 0 ? args.slice(packageIndex + 1) : args;',
+      'if (command[0] === "config" && command[1] === "set" && command[2] === "host") process.exit(0);',
+      'if (command[0] === "auth" && command[1] === "login" && command[2] === "--device-code") {',
+      '  console.log("Open https://project.feishu.cn/oauth/device?user_code=NODEPATH-1234");',
+      '  setTimeout(() => process.exit(0), 200);',
+      '} else {',
+      '  process.exit(9);',
+      '}',
+    ].join('\n'), 'utf-8')
+    chmodSync(npx, 0o755)
+
+    process.env.PATH = launchdBin
+    process.env.HERMES_MEEGLE_EXTRA_PATHS = homebrewBin
+
+    const result = await startFeishuProjectAuth({
+      id: 'feishu-project',
+      profileName: 'feishu_user_a',
+      profileDir,
+    })
+
+    expect(result.verification_uri).toBe('https://project.feishu.cn/oauth/device?user_code=NODEPATH-1234')
+    expect(readFileSync(invoked, 'utf-8')).toContain(`PATH=${launchdBin}`)
+    expect(readFileSync(invoked, 'utf-8')).toContain(homebrewBin)
   })
 
   it('returns a readable error when Feishu Project CLI cannot be spawned', async () => {
