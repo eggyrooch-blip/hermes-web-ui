@@ -196,13 +196,9 @@ export function detectSkillCredentialRequirements(input: SkillCredentialRequirem
   const needsFeishuProject = [
     /\bmeegle\b/,
     /\bmeego\b/,
+    /\bfeishu[-_ ]?project\b/,
     /project\.feishu\.cn/,
     /飞书项目/,
-    /工作项/,
-    /项目视图/,
-    /需求/,
-    /缺陷/,
-    /排期/,
   ].some(pattern => pattern.test(text))
 
   if (needsLark) required.push('lark-cli')
@@ -297,11 +293,12 @@ export async function startFeishuProjectAuth(options: SkillCredentialStartOption
   const existing = activeFeishuProjectLogins.get(sessionKey)
   if (existing && !existing.child.killed) existing.child.kill()
 
-  const command = meegleCommand()
-  await configureMeegleHost(command, options.profileDir, host)
+  const invocation = resolveMeegleInvocation()
+  if (!invocation) throw missingMeegleCommandError()
+  await configureMeegleHost(invocation, options.profileDir, host)
 
-  const args = ['auth', 'login', '--device-code', '--host', host]
-  const child = spawn(command, args, {
+  const args = [...invocation.argsPrefix, 'auth', 'login', '--device-code', '--host', host]
+  const child = spawn(invocation.command, args, {
     cwd: options.profileDir,
     env: meegleEnv(options.profileDir, host),
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -324,8 +321,41 @@ export async function startFeishuProjectAuth(options: SkillCredentialStartOption
   }
 }
 
-function meegleCommand(): string {
-  return String(process.env.HERMES_MEEGLE_BIN || 'meegle').trim() || 'meegle'
+interface MeegleInvocation {
+  command: string
+  argsPrefix: string[]
+}
+
+function resolveMeegleInvocation(options: { allowNpx?: boolean } = {}): MeegleInvocation | null {
+  const explicit = String(process.env.HERMES_MEEGLE_BIN || '').trim()
+  if (explicit) return { command: explicit, argsPrefix: [] }
+  const direct = findExecutableOnPath('meegle')
+  if (direct) return { command: direct, argsPrefix: [] }
+  if (options.allowNpx === false) return null
+  const npx = findExecutableOnPath('npx')
+  if (npx) return { command: npx, argsPrefix: ['-y', '@lark-project/meegle'] }
+  return null
+}
+
+function findExecutableOnPath(name: string): string | null {
+  const pathValue = process.env.PATH || ''
+  for (const dir of pathValue.split(delimiter)) {
+    if (!dir) continue
+    const candidate = join(dir, name)
+    try {
+      const stat = statSync(candidate)
+      if (stat.isFile() && (stat.mode & 0o111)) return candidate
+    } catch {
+      // Continue scanning PATH.
+    }
+  }
+  return null
+}
+
+function missingMeegleCommandError(): Error & { status: number } {
+  const err: any = new Error('Meegle CLI command was not found. Install @lark-project/meegle or configure HERMES_MEEGLE_BIN for WebUI.')
+  err.status = 502
+  return err
 }
 
 function meegleHost(): string {
@@ -340,9 +370,9 @@ function meegleEnv(profileDir: string, host = meegleHost()): NodeJS.ProcessEnv {
   }
 }
 
-async function configureMeegleHost(command: string, profileDir: string, host: string): Promise<void> {
+async function configureMeegleHost(invocation: MeegleInvocation, profileDir: string, host: string): Promise<void> {
   try {
-    await execFileAsync(command, ['config', 'set', 'host', host], {
+    await execFileAsync(invocation.command, [...invocation.argsPrefix, 'config', 'set', 'host', host], {
       cwd: profileDir,
       env: meegleEnv(profileDir, host),
       timeout: 10_000,
@@ -350,7 +380,7 @@ async function configureMeegleHost(command: string, profileDir: string, host: st
     })
   } catch (err: any) {
     const wrapped: any = new Error(err?.code === 'ENOENT'
-      ? 'Meegle CLI command was not found. Install @lark-project/meegle or configure HERMES_MEEGLE_BIN for WebUI.'
+      ? missingMeegleCommandError().message
       : `Meegle CLI host configuration failed: ${err?.stderr || err?.message || err}`)
     wrapped.status = 502
     throw wrapped
@@ -703,9 +733,12 @@ interface MeegleAuthStatus {
 }
 
 async function readMeegleAuthStatus(profileDir: string): Promise<MeegleAuthStatus> {
-  const command = meegleCommand()
+  const invocation = resolveMeegleInvocation({ allowNpx: false })
+  if (!invocation) {
+    return { available: Boolean(findExecutableOnPath('npx')), authenticated: false }
+  }
   try {
-    const { stdout } = await execFileAsync(command, ['auth', 'status', '--format', 'json'], {
+    const { stdout } = await execFileAsync(invocation.command, [...invocation.argsPrefix, 'auth', 'status', '--format', 'json'], {
       cwd: profileDir,
       env: meegleEnv(profileDir),
       timeout: 5_000,

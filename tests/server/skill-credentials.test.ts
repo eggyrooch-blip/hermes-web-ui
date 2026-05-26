@@ -184,6 +184,32 @@ describe('skill credential status', () => {
     expect(JSON.stringify(result)).not.toContain('refresh_token')
   })
 
+  it('treats Feishu Project CLI as installable through the official npm package when npx is available', async () => {
+    const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-npx-'))
+    roots.push(profileDir)
+    const binDir = join(profileDir, 'bin')
+    mkdirSync(binDir, { recursive: true })
+    const npx = join(binDir, 'npx')
+    writeFileSync(npx, [
+      '#!/bin/sh',
+      'exit 9',
+    ].join('\n'), 'utf-8')
+    chmodSync(npx, 0o755)
+    process.env.PATH = binDir
+
+    const result = await listSkillCredentialStatuses({
+      profileName: 'feishu_user_a',
+      profileDir,
+    })
+
+    expect(result.credentials.find(item => item.id === 'feishu-project')).toMatchObject({
+      installed: true,
+      status: 'needs_auth',
+      detail: '飞书项目需要授权后才能查询和更新工作项。',
+    })
+  })
+
   it('starts Feishu Project CLI device-code auth without writing MCP config', async () => {
     const { startFeishuProjectAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
     const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-start-'))
@@ -234,6 +260,41 @@ describe('skill credential status', () => {
     expect(config).not.toContain('mcp_server')
     expect(JSON.stringify(result)).not.toContain('access_token')
     expect(JSON.stringify(result)).not.toContain('refresh_token')
+  })
+
+  it('starts Feishu Project auth through npx when no global meegle command is installed', async () => {
+    const { startFeishuProjectAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-npx-start-'))
+    roots.push(profileDir)
+    const binDir = join(profileDir, 'bin')
+    mkdirSync(binDir, { recursive: true })
+    const npx = join(binDir, 'npx')
+    const invoked = join(profileDir, 'npx-start-args.txt')
+    writeFileSync(npx, [
+      '#!/bin/sh',
+      `printf '%s\\n' "$@" >> "${invoked}"`,
+      'shift 2',
+      'if [ "$1" = "config" ] && [ "$2" = "set" ] && [ "$3" = "host" ] && [ "$4" = "project.feishu.cn" ]; then',
+      '  exit 0',
+      'fi',
+      'if [ "$1" = "auth" ] && [ "$2" = "login" ] && [ "$3" = "--device-code" ]; then',
+      '  echo "Open https://project.feishu.cn/oauth/device?user_code=NPX-1234"',
+      '  sleep 0.2',
+      '  exit 0',
+      'fi',
+      'exit 9',
+    ].join('\n'), 'utf-8')
+    chmodSync(npx, 0o755)
+    process.env.PATH = binDir
+
+    const result = await startFeishuProjectAuth({
+      id: 'feishu-project',
+      profileName: 'feishu_user_a',
+      profileDir,
+    })
+
+    expect(result.verification_uri).toBe('https://project.feishu.cn/oauth/device?user_code=NPX-1234')
+    expect(readFileSync(invoked, 'utf-8')).toContain('@lark-project/meegle')
   })
 
   it('returns a readable error when Feishu Project CLI cannot be spawned', async () => {
@@ -342,6 +403,19 @@ describe('skill credential status', () => {
     })).toEqual(['feishu-project'])
 
     expect(detectSkillCredentialRequirements({
+      name: 'kep-prd-analysis',
+      tags: ['aidock'],
+      text: '分析 PRD 需求、任务、工作项和排期，并调用 proxy.cms.gotokeep.com。',
+      source: 'hub',
+    })).toEqual(['kep-cli'])
+
+    expect(detectSkillCredentialRequirements({
+      name: 'lark-base',
+      tags: [],
+      text: 'Use lark base and open.feishu.cn to organize requirement tables and schedules.',
+    })).toEqual(['lark-cli'])
+
+    expect(detectSkillCredentialRequirements({
       name: 'another-digest',
       tags: [],
       text: 'Prepare the digest from the current workspace.',
@@ -367,11 +441,12 @@ describe('skill credential status', () => {
     roots.push(profileDir)
     mkdirSync(join(profileDir, 'skills', 'internal', 'wiki-helper'), { recursive: true })
     mkdirSync(join(profileDir, 'skills', 'internal', 'aidock-helper'), { recursive: true })
+    mkdirSync(join(profileDir, 'skills', 'internal', 'meegle'), { recursive: true })
     writeFileSync(join(profileDir, 'skills', 'internal', 'wiki-helper', 'SKILL.md'), [
       '---',
       'name: wiki-helper',
       '---',
-      'Use lark_cli to read Feishu wiki pages.',
+      'Use lark_cli to read Feishu wiki pages and summarize 需求排期 tables.',
     ].join('\n'), 'utf-8')
     writeFileSync(join(profileDir, 'skills', 'internal', 'aidock-helper', 'SKILL.md'), [
       '---',
@@ -380,7 +455,13 @@ describe('skill credential status', () => {
       '  hermes:',
       '    tags: [aidock]',
       '---',
-      'Call proxy.cms.gotokeep.com through kep-auth.',
+      'Call proxy.cms.gotokeep.com through kep-auth to analyze PRD 需求、任务、工作项 and 排期.',
+    ].join('\n'), 'utf-8')
+    writeFileSync(join(profileDir, 'skills', 'internal', 'meegle', 'SKILL.md'), [
+      '---',
+      'name: meegle',
+      '---',
+      '飞书项目（Meego/Meegle）操作工具，Use with project.feishu.cn URLs.',
     ].join('\n'), 'utf-8')
     const kepAuth = join(profileDir, 'kep-auth')
     writeFileSync(kepAuth, '#!/bin/sh\necho "state: valid"\n', 'utf-8')
@@ -402,6 +483,7 @@ describe('skill credential status', () => {
       status: 'authenticated',
       required_by: ['aidock-helper'],
     })
+    expect(result.credentials.find(item => item.id === 'feishu-project')?.required_by).toEqual(['meegle'])
   })
 
   it('detects kep-cli-backed skills installed as multitenancy directory symlinks', async () => {

@@ -20,7 +20,7 @@ related:
 >
 > WebUI bundled skills 新增官方 `meegle` skill（`packages/skills/meegle`），跟随现有 `HermesSkillInjector` 同步到 default 和每个 profile。该 skill 自带飞书项目/Meegle 触发词、Auth Guard、URL decode、MQL、字段格式、创建/更新/流转 SOP；模型遇到飞书项目、工作项、需求、任务、缺陷、排期、视图、待办或 `project.feishu.cn` URL 时由 skill 指导调用 `meegle ... --format json`，而不是依赖 MCP tool schema 命中。
 >
-> Credentials 页 grid `align-items: start` 与 required skill 滚动区保留，避免 Lark-cli/kep-cli 关联技能列表撑高同排卡片。Meegle CLI 缺失时卡片显示未安装；启动授权返回可打开的 device-code URL；状态响应不包含 access/refresh token 或 keychain 内容。
+> Credentials 页 grid `align-items: start` 与 required skill 滚动区保留，避免 Lark-cli/kep-cli 关联技能列表撑高同排卡片。`meegle-credential-card-fix` 追加修正：没有全局 `meegle` 但 PATH 有 `npx` 时，卡片不再显示“未安装”，点击授权才走 `npx -y @lark-project/meegle`；状态页不会主动跑 npx 以免 npm 下载拖慢。飞书项目 `required_by` 只认明确 Meegle/Meego/飞书项目/project.feishu.cn 信号，不再把含“需求/工作项/排期”的 kep/lark 技能误挂到飞书项目。状态响应不包含 access/refresh token 或 keychain 内容。
 
 > [!info] 2026-05-25 worktree — slash registry 第一批贴合
 > `webui-slash-registry` 保持生产聊天执行路径在 multitenancy Run Broker，不启用 upstream `agent-bridge`。WebUI 新增 `/api/hermes/slash/commands` BFF，只负责合并本地 UI 命令与 broker 返回的 profile-scoped skill slash 元数据；可执行 skill registry 的事实源是 multitenancy `/api/run-broker/slash/commands`。BFF 会把当前 selected profile 作为 `profile_name` 转发给 broker 做 owner-scoped 校验，但不会转发浏览器 token 或任意 secret query。
