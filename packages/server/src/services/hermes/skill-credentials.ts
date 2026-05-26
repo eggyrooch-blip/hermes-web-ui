@@ -286,7 +286,7 @@ export async function startFeishuProjectMcpAuth(options: SkillCredentialStartOpt
   const existing = activeFeishuProjectMcpLogins.get(sessionKey)
   if (existing && !existing.child.killed) existing.child.kill()
 
-  const command = process.env.HERMES_MCP_AUTH_BIN || process.env.HERMES_CLI_BIN || 'hermes'
+  const command = process.env.HERMES_MCP_AUTH_BIN || process.env.HERMES_CLI_BIN || process.env.HERMES_BIN || 'hermes'
   const args = feishuProjectMcpAuthArgs()
   const child = spawn(command, args, {
     cwd: options.profileDir,
@@ -524,6 +524,7 @@ function waitForKepAuthUrl(child: KepAuthLoginProcess): Promise<string> {
       child.stdout.off('data', onData)
       child.stderr.off('data', onData)
       child.off('exit', onExit)
+      child.off('error', onError)
       if (err) reject(err)
       else resolve(url || '')
     }
@@ -535,6 +536,14 @@ function waitForKepAuthUrl(child: KepAuthLoginProcess): Promise<string> {
     const onExit = (code: number | null) => {
       done(new Error(`kep-auth login exited before returning an authorization URL${code === null ? '' : ` (code ${code})`}`))
     }
+    const onError = (err: Error & { code?: string }) => {
+      const message = err.code === 'ENOENT'
+        ? 'Hermes MCP OAuth command was not found. Configure HERMES_BIN or HERMES_MCP_AUTH_BIN for WebUI.'
+        : err.message
+      const wrapped: any = new Error(message)
+      wrapped.status = 502
+      done(wrapped)
+    }
     const timer = setTimeout(() => {
       done(new Error('kep-auth login did not return an authorization URL in time'))
       if (!child.killed) child.kill()
@@ -542,6 +551,7 @@ function waitForKepAuthUrl(child: KepAuthLoginProcess): Promise<string> {
     child.stdout.on('data', onData)
     child.stderr.on('data', onData)
     child.on('exit', onExit)
+    child.on('error', onError)
   })
 }
 

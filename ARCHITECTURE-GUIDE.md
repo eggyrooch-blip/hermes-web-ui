@@ -20,6 +20,9 @@ related:
 >
 > Start flow 会写当前 profile 的 `mcp_servers.FeishuProjectMcp = { url: https://project.feishu.cn/mcp_server/v1, auth: oauth }`，保留已有 `mcp_servers` 和其它 config，再启动 profile-scoped Hermes MCP OAuth login 进程并把授权 URL 返回给浏览器。本机开发环境可直接让浏览器完成 localhost OAuth callback；Header/Stdio `MCP_USER_TOKEN` 不是主流程。验证：server/client focused credentials tests 通过，`npm run build` 通过，本机 `AUTH_DISABLED=1` smoke 在 `8648` 返回凭证状态并写入 profile-local config。生产未发布。
 
+> [!info] 2026-05-26 follow-up — Feishu Project MCP WebUI fix
+> `feishu-project-mcp-ui-fix` 修复本机 main 验证时暴露的两个问题：Credentials 页 grid 改为 `align-items: start`，并给 `required_by` 技能列表加高度上限/滚动，避免 Lark-cli 长技能列表把同排飞书项目 MCP/kep-cli 卡片撑满整屏；Feishu Project MCP start flow 的 CLI 查找链补上 launchd 已配置的 `HERMES_BIN`，并给 child process `error` 事件返回 502 可读错误，避免裸 `hermes` 不在 PATH 时请求断连显示 `Failed to fetch`。
+
 > [!info] 2026-05-25 worktree — slash registry 第一批贴合
 > `webui-slash-registry` 保持生产聊天执行路径在 multitenancy Run Broker，不启用 upstream `agent-bridge`。WebUI 新增 `/api/hermes/slash/commands` BFF，只负责合并本地 UI 命令与 broker 返回的 profile-scoped skill slash 元数据；可执行 skill registry 的事实源是 multitenancy `/api/run-broker/slash/commands`。BFF 会把当前 selected profile 作为 `profile_name` 转发给 broker 做 owner-scoped 校验，但不会转发浏览器 token 或任意 secret query。
 >

@@ -157,7 +157,7 @@ onMounted(loadCredentials)
       <div v-else class="credentials-sections">
         <section v-for="group in credentialGroups" :key="group.id" class="credential-section" :data-credential-group="group.id">
           <h3 class="credential-section-title">{{ group.title }}</h3>
-          <div class="credentials-grid">
+          <div class="credentials-grid credentials-grid-compact">
             <article
               v-for="entry in group.entries"
               :key="entry.id"
@@ -177,7 +177,7 @@ onMounted(loadCredentials)
                     <span v-if="entry.account_hint">{{ entry.account_hint }}</span>
                   </div>
                   <p v-if="entry.detail" class="credential-detail">{{ entry.detail }}</p>
-                  <div v-if="entry.required_by?.length" class="credential-required">
+                  <div v-if="entry.required_by?.length" class="credential-required credential-required-scroll">
                     <span class="required-label">关联技能</span>
                     <span v-for="skill in entry.required_by" :key="skill" class="required-skill">{{ skill }}</span>
                   </div>
@@ -254,6 +254,10 @@ onMounted(loadCredentials)
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 12px;
+}
+
+.credentials-grid-compact {
+  align-items: start;
 }
 
 .credential-card {
@@ -348,6 +352,12 @@ onMounted(loadCredentials)
   gap: 6px;
   margin-top: 8px;
   font-size: 12px;
+}
+
+.credential-required-scroll {
+  max-height: 188px;
+  overflow-y: auto;
+  padding-right: 3px;
 }
 
 .required-label {

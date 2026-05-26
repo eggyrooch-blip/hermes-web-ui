@@ -154,6 +154,16 @@ describe('CredentialsView', () => {
     expect(html).not.toContain('gitlab-secret-token')
   })
 
+  it('keeps dense required-skill lists from stretching sibling credential cards', async () => {
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.credentials-grid').classes()).toContain('credentials-grid-compact')
+    expect(wrapper.find('.credential-required').classes()).toContain('credential-required-scroll')
+  })
+
   it('starts the selected skill credential action from the page', async () => {
     const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
     const wrapper = mount(CredentialsView)

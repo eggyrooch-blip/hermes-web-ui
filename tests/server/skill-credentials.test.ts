@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 describe('skill credential status', () => {
   const roots: string[] = []
+  const originalPath = process.env.PATH
 
   afterEach(() => {
     for (const root of roots.splice(0)) {
@@ -12,9 +13,12 @@ describe('skill credential status', () => {
     }
     vi.resetModules()
     delete process.env.HERMES_HOME
+    if (originalPath === undefined) delete process.env.PATH
+    else process.env.PATH = originalPath
     delete process.env.HERMES_KEP_AUTH_BIN
     delete process.env.HERMES_MCP_AUTH_BIN
     delete process.env.HERMES_MCP_AUTH_ARGS
+    delete process.env.HERMES_BIN
     delete process.env.HERMES_FEISHU_PROJECT_MCP_URL
     delete process.env.HERMES_FEISHU_PROJECT_MCP_DOMAIN
     delete process.env.HERMES_MULTITENANCY_DB
@@ -230,6 +234,47 @@ describe('skill credential status', () => {
     expect(config).toContain('auth: oauth')
     expect(JSON.stringify(result)).not.toContain('access_token')
     expect(JSON.stringify(result)).not.toContain('refresh_token')
+  })
+
+  it('starts Feishu Project MCP OAuth with HERMES_BIN when launchd does not expose hermes on PATH', async () => {
+    const { startFeishuProjectMcpAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-feishu-project-mcp-hermes-bin-'))
+    roots.push(profileDir)
+    const mcpLogin = join(profileDir, 'fake-hermes-bin')
+    writeFileSync(mcpLogin, [
+      '#!/bin/sh',
+      `test "$HERMES_HOME" = "${profileDir}" || { echo "bad HERMES_HOME=$HERMES_HOME" >&2; exit 9; }`,
+      'echo "https://project.feishu.cn/oauth/authorize?client_id=from-hermes-bin" >&2',
+      'sleep 0.2',
+    ].join('\n'), 'utf-8')
+    chmodSync(mcpLogin, 0o755)
+    process.env.HERMES_BIN = mcpLogin
+    process.env.PATH = dirname(mcpLogin)
+
+    const result = await startFeishuProjectMcpAuth({
+      id: 'feishu-project-mcp',
+      profileName: 'feishu_user_a',
+      profileDir,
+    })
+
+    expect(result.verification_uri).toBe('https://project.feishu.cn/oauth/authorize?client_id=from-hermes-bin')
+  })
+
+  it('returns a readable error when Feishu Project MCP OAuth command cannot be spawned', async () => {
+    const { startFeishuProjectMcpAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-feishu-project-mcp-missing-bin-'))
+    roots.push(profileDir)
+    process.env.HERMES_BIN = join(profileDir, 'missing-hermes-bin')
+    process.env.PATH = profileDir
+
+    await expect(startFeishuProjectMcpAuth({
+      id: 'feishu-project-mcp',
+      profileName: 'feishu_user_a',
+      profileDir,
+    })).rejects.toMatchObject({
+      status: 502,
+      message: 'Hermes MCP OAuth command was not found. Configure HERMES_BIN or HERMES_MCP_AUTH_BIN for WebUI.',
+    })
   })
 
   it('detects credential adapters from installed skill metadata instead of fixed folders', async () => {
