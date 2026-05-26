@@ -25,7 +25,7 @@ const oauthPollingId = ref('')
 
 const credentials = computed(() => data.value?.credentials || [])
 const requestedProfile = computed(() => typeof route.query.profile === 'string' ? route.query.profile.trim() : '')
-const internalCredentialIds = new Set(['lark-cli', 'feishu-project-mcp', 'kep-cli'])
+const internalCredentialIds = new Set(['lark-cli', 'feishu-project', 'kep-cli'])
 const credentialGroups = computed(() => {
   const internal = credentials.value.filter(entry => internalCredentialIds.has(entry.id))
   const other = credentials.value.filter(entry => !internalCredentialIds.has(entry.id))

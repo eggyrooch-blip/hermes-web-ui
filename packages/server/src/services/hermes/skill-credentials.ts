@@ -6,7 +6,6 @@ import type { ChildProcessByStdio } from 'child_process'
 import type { Readable, Writable } from 'stream'
 import { promisify } from 'util'
 import { createHash, randomBytes } from 'crypto'
-import YAML from 'js-yaml'
 import type { WebUser } from '../request-context'
 
 export type SkillCredentialState = 'authenticated' | 'configured' | 'missing' | 'needs_auth' | 'unknown' | 'error'
@@ -20,7 +19,7 @@ interface KepAuthLoginSession {
   sessionKey: string
 }
 
-interface FeishuProjectMcpLoginSession {
+interface FeishuProjectLoginSession {
   child: KepAuthLoginProcess
   sessionKey: string
 }
@@ -32,11 +31,11 @@ interface KepAuthCallbackSession {
 }
 
 const KEP_AUTH_CALLBACK_TTL_MS = 10 * 60 * 1000
-const FEISHU_PROJECT_MCP_SERVER_NAME = 'FeishuProjectMcp'
-const FEISHU_PROJECT_MCP_CREDENTIAL_ID = 'feishu-project-mcp'
+const FEISHU_PROJECT_CREDENTIAL_ID = 'feishu-project'
+const MEEGLE_DEFAULT_HOST = 'project.feishu.cn'
 const activeKepAuthLogins = new Map<string, KepAuthLoginSession>()
 const activeKepAuthCallbacks = new Map<string, KepAuthCallbackSession>()
-const activeFeishuProjectMcpLogins = new Map<string, FeishuProjectMcpLoginSession>()
+const activeFeishuProjectLogins = new Map<string, FeishuProjectLoginSession>()
 
 export interface SkillCredentialAction {
   kind: SkillCredentialActionKind
@@ -120,8 +119,8 @@ export interface KepCliAuthStartResult {
   action: SkillCredentialAction
 }
 
-export interface FeishuProjectMcpAuthStartResult {
-  id: 'feishu-project-mcp'
+export interface FeishuProjectAuthStartResult {
+  id: 'feishu-project'
   status: 'auth_pending'
   verification_uri: string
   action: SkillCredentialAction
@@ -141,7 +140,7 @@ export async function listSkillCredentialStatuses(options: ListSkillCredentialOp
     profile_name: profileName,
     credentials: [
       larkCliStatus(options, requiredBy.get('lark-cli')),
-      feishuProjectMcpStatus(profileDir),
+      await feishuProjectStatus(profileDir, requiredBy.get(FEISHU_PROJECT_CREDENTIAL_ID)),
       keepRecordStatus(profileDir, skills),
       await kepCliStatus(profileDir, profileName, skills, requiredBy.get('kep-cli')),
       gitlabStatus(profileDir, skills),
@@ -157,7 +156,6 @@ export function detectSkillCredentialRequirements(input: SkillCredentialRequirem
   const needsLark = [
     /\blark[-_ ]?cli\b/,
     /\blarksuite\b/,
-    /\bfeishu\b/,
     /open\.feishu\.cn/,
     /feishu\.cn\/(docx|docs|sheets|wiki|base|minutes|file)/,
     /\bwiki:wiki:readonly\b/,
@@ -195,7 +193,20 @@ export function detectSkillCredentialRequirements(input: SkillCredentialRequirem
     /\bpersist_auth\b/,
   ].some(pattern => pattern.test(text))
 
+  const needsFeishuProject = [
+    /\bmeegle\b/,
+    /\bmeego\b/,
+    /project\.feishu\.cn/,
+    /飞书项目/,
+    /工作项/,
+    /项目视图/,
+    /需求/,
+    /缺陷/,
+    /排期/,
+  ].some(pattern => pattern.test(text))
+
   if (needsLark) required.push('lark-cli')
+  if (needsFeishuProject) required.push(FEISHU_PROJECT_CREDENTIAL_ID)
   if (needsKep) required.push('kep-cli')
   if (needsKeepRecord) required.push('keep-record')
   if (needsGitlab) required.push('gitlab')
@@ -238,13 +249,13 @@ export async function getSkillCredentialStartAction(options: SkillCredentialStar
       },
     }
   }
-  if (id === FEISHU_PROJECT_MCP_CREDENTIAL_ID) {
+  if (id === FEISHU_PROJECT_CREDENTIAL_ID) {
     return {
       id,
       action: {
         kind: 'oauth_url',
-        label: '授权飞书项目 MCP',
-        description: 'Start Feishu Project MCP OAuth for the current Hermes profile.',
+        label: '授权飞书项目',
+        description: 'Start Feishu Project CLI device-code authorization for the current Hermes profile.',
       },
     }
   }
@@ -278,59 +289,71 @@ export async function getSkillCredentialStartAction(options: SkillCredentialStar
   }
 }
 
-export async function startFeishuProjectMcpAuth(options: SkillCredentialStartOptions): Promise<FeishuProjectMcpAuthStartResult> {
-  ensureFeishuProjectMcpConfig(options.profileDir)
+export async function startFeishuProjectAuth(options: SkillCredentialStartOptions): Promise<FeishuProjectAuthStartResult> {
   mkdirSync(join(options.profileDir, 'home'), { recursive: true })
 
-  const sessionKey = `${options.profileName}:${FEISHU_PROJECT_MCP_SERVER_NAME}`
-  const existing = activeFeishuProjectMcpLogins.get(sessionKey)
+  const host = meegleHost()
+  const sessionKey = `${options.profileName}:${host}`
+  const existing = activeFeishuProjectLogins.get(sessionKey)
   if (existing && !existing.child.killed) existing.child.kill()
 
-  const command = process.env.HERMES_MCP_AUTH_BIN || process.env.HERMES_CLI_BIN || process.env.HERMES_BIN || 'hermes'
-  const args = feishuProjectMcpAuthArgs()
+  const command = meegleCommand()
+  await configureMeegleHost(command, options.profileDir, host)
+
+  const args = ['auth', 'login', '--device-code', '--host', host]
   const child = spawn(command, args, {
     cwd: options.profileDir,
-    env: feishuProjectMcpAuthEnv(options.profileDir, options.profileName),
+    env: meegleEnv(options.profileDir, host),
     stdio: ['pipe', 'pipe', 'pipe'],
   })
-  activeFeishuProjectMcpLogins.set(sessionKey, { child, sessionKey })
+  activeFeishuProjectLogins.set(sessionKey, { child, sessionKey })
   child.on('exit', () => {
-    if (activeFeishuProjectMcpLogins.get(sessionKey)?.child === child) activeFeishuProjectMcpLogins.delete(sessionKey)
+    if (activeFeishuProjectLogins.get(sessionKey)?.child === child) activeFeishuProjectLogins.delete(sessionKey)
   })
 
-  const verificationUri = await waitForKepAuthUrl(child)
+  const verificationUri = await waitForKepAuthUrl(child, 'Meegle CLI command was not found. Install @lark-project/meegle or configure HERMES_MEEGLE_BIN for WebUI.')
   return {
-    id: FEISHU_PROJECT_MCP_CREDENTIAL_ID,
+    id: FEISHU_PROJECT_CREDENTIAL_ID,
     status: 'auth_pending',
     verification_uri: verificationUri,
     action: {
       kind: 'oauth_url',
-      label: '授权飞书项目 MCP',
-      description: 'Complete Feishu Project MCP OAuth in the browser. In local development the MCP OAuth callback is handled by the profile-scoped Hermes process.',
+      label: '授权飞书项目',
+      description: 'Open the Meegle CLI device-code authorization URL. The CLI stores credentials under the current Hermes profile home.',
     },
   }
 }
 
-function feishuProjectMcpAuthArgs(): string[] {
-  const raw = process.env.HERMES_MCP_AUTH_ARGS
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed) && parsed.every(item => typeof item === 'string')) return parsed
-    } catch {
-      // Fall back to a simple whitespace split for local development overrides.
-    }
-    return raw.split(/\s+/).filter(Boolean)
-  }
-  return ['mcp', 'login', FEISHU_PROJECT_MCP_SERVER_NAME]
+function meegleCommand(): string {
+  return String(process.env.HERMES_MEEGLE_BIN || 'meegle').trim() || 'meegle'
 }
 
-function feishuProjectMcpAuthEnv(profileDir: string, profileName: string): NodeJS.ProcessEnv {
+function meegleHost(): string {
+  return String(process.env.HERMES_MEEGLE_HOST || MEEGLE_DEFAULT_HOST).trim() || MEEGLE_DEFAULT_HOST
+}
+
+function meegleEnv(profileDir: string, host = meegleHost()): NodeJS.ProcessEnv {
   return {
     ...process.env,
     HOME: join(profileDir, 'home'),
-    HERMES_HOME: profileDir,
-    HERMES_PROFILE: profileName,
+    MEEGLE_HOST: host,
+  }
+}
+
+async function configureMeegleHost(command: string, profileDir: string, host: string): Promise<void> {
+  try {
+    await execFileAsync(command, ['config', 'set', 'host', host], {
+      cwd: profileDir,
+      env: meegleEnv(profileDir, host),
+      timeout: 10_000,
+      maxBuffer: 256 * 1024,
+    })
+  } catch (err: any) {
+    const wrapped: any = new Error(err?.code === 'ENOENT'
+      ? 'Meegle CLI command was not found. Install @lark-project/meegle or configure HERMES_MEEGLE_BIN for WebUI.'
+      : `Meegle CLI host configuration failed: ${err?.stderr || err?.message || err}`)
+    wrapped.status = 502
+    throw wrapped
   }
 }
 
@@ -513,7 +536,7 @@ function deleteKepAuthCallbacksForSessionKey(sessionKey: string): void {
   }
 }
 
-function waitForKepAuthUrl(child: KepAuthLoginProcess): Promise<string> {
+function waitForKepAuthUrl(child: KepAuthLoginProcess, notFoundMessage = 'Authentication command was not found.'): Promise<string> {
   return new Promise((resolve, reject) => {
     let settled = false
     let buffer = ''
@@ -538,7 +561,7 @@ function waitForKepAuthUrl(child: KepAuthLoginProcess): Promise<string> {
     }
     const onError = (err: Error & { code?: string }) => {
       const message = err.code === 'ENOENT'
-        ? 'Hermes MCP OAuth command was not found. Configure HERMES_BIN or HERMES_MCP_AUTH_BIN for WebUI.'
+        ? notFoundMessage
         : err.message
       const wrapped: any = new Error(message)
       wrapped.status = 502
@@ -650,85 +673,54 @@ function localFeishuUatStatus(profileDir: string): { connected: boolean } {
   return { connected: false }
 }
 
-function feishuProjectMcpStatus(profileDir: string): SkillCredentialEntry {
-  const configured = readFeishuProjectMcpServerConfig(profileDir)
-  const hasToken = feishuProjectMcpTokenPresent(profileDir)
+async function feishuProjectStatus(profileDir: string, requiredBy?: string[]): Promise<SkillCredentialEntry> {
+  const status = await readMeegleAuthStatus(profileDir)
+  const authenticated = status.authenticated
   return {
-    id: FEISHU_PROJECT_MCP_CREDENTIAL_ID,
-    title: '飞书项目 MCP',
+    id: FEISHU_PROJECT_CREDENTIAL_ID,
+    title: '飞书项目',
     provider: 'feishu-project',
-    installed: true,
-    status: hasToken ? 'configured' : 'needs_auth',
-    detail: hasToken
-      ? 'Feishu Project MCP OAuth material exists for this profile; token contents are not displayed.'
-      : configured
-        ? 'Feishu Project MCP is configured for this profile and needs OAuth authorization.'
-        : 'Feishu Project MCP OAuth is not configured for this profile yet.',
+    installed: status.available,
+    status: !status.available ? 'missing' : authenticated ? 'authenticated' : 'needs_auth',
+    account_hint: safeAccountHint(status.account),
+    detail: !status.available
+      ? '飞书项目 CLI 未安装，无法授权或调用飞书项目能力。'
+      : authenticated
+        ? '飞书项目 CLI 已在当前 profile 完成授权，可查询和更新工作项。'
+        : '飞书项目需要授权后才能查询和更新工作项。',
+    required_by: requiredBy,
     action: {
       kind: 'oauth_url',
-      label: hasToken ? '重新授权' : '授权',
+      label: authenticated ? '重新授权' : '授权',
     },
   }
 }
 
-function readFeishuProjectMcpServerConfig(profileDir: string): Record<string, any> | null {
-  const cfg = readProfileConfig(profileDir)
-  const servers = cfg?.mcp_servers || cfg?.mcpServers
-  if (!servers || typeof servers !== 'object') return null
-  const server = servers[FEISHU_PROJECT_MCP_SERVER_NAME]
-  return server && typeof server === 'object' ? server : null
+interface MeegleAuthStatus {
+  available: boolean
+  authenticated: boolean
+  account?: string
 }
 
-function feishuProjectMcpTokenPresent(profileDir: string): boolean {
-  const tokenPath = join(profileDir, 'mcp-tokens', `${FEISHU_PROJECT_MCP_SERVER_NAME}.json`)
-  const raw = readSmallText(tokenPath)
-  if (!raw) return false
+async function readMeegleAuthStatus(profileDir: string): Promise<MeegleAuthStatus> {
+  const command = meegleCommand()
   try {
-    const parsed = JSON.parse(raw)
-    return typeof parsed?.access_token === 'string' || typeof parsed?.refresh_token === 'string'
-  } catch {
-    return false
-  }
-}
-
-function ensureFeishuProjectMcpConfig(profileDir: string): void {
-  const configPath = join(profileDir, 'config.yaml')
-  const cfg = readProfileConfig(profileDir) || {}
-  if (!cfg.mcp_servers || typeof cfg.mcp_servers !== 'object' || Array.isArray(cfg.mcp_servers)) {
-    cfg.mcp_servers = {}
-  }
-  cfg.mcp_servers[FEISHU_PROJECT_MCP_SERVER_NAME] = {
-    ...((cfg.mcp_servers[FEISHU_PROJECT_MCP_SERVER_NAME] && typeof cfg.mcp_servers[FEISHU_PROJECT_MCP_SERVER_NAME] === 'object')
-      ? cfg.mcp_servers[FEISHU_PROJECT_MCP_SERVER_NAME]
-      : {}),
-    url: feishuProjectMcpUrl(),
-    auth: 'oauth',
-  }
-  if (!cfg.mcp_servers[FEISHU_PROJECT_MCP_SERVER_NAME].oauth) {
-    cfg.mcp_servers[FEISHU_PROJECT_MCP_SERVER_NAME].oauth = {
-      client_name: 'Hermes WebUI',
+    const { stdout } = await execFileAsync(command, ['auth', 'status', '--format', 'json'], {
+      cwd: profileDir,
+      env: meegleEnv(profileDir),
+      timeout: 5_000,
+      maxBuffer: 256 * 1024,
+    })
+    const parsed = JSON.parse(stdout || '{}')
+    return {
+      available: true,
+      authenticated: parsed?.authenticated === true,
+      account: safeAccountHint(parsed?.account || parsed?.user?.name || parsed?.user?.email || parsed?.host),
     }
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return { available: false, authenticated: false }
+    return { available: true, authenticated: false }
   }
-  mkdirSync(profileDir, { recursive: true })
-  writeFileSync(configPath, YAML.dump(cfg, { lineWidth: -1, noRefs: true }), 'utf-8')
-}
-
-function readProfileConfig(profileDir: string): Record<string, any> {
-  const raw = readSmallText(join(profileDir, 'config.yaml'))
-  if (!raw) return {}
-  try {
-    const parsed = YAML.load(raw)
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, any> : {}
-  } catch {
-    return {}
-  }
-}
-
-function feishuProjectMcpUrl(): string {
-  const explicit = String(process.env.HERMES_FEISHU_PROJECT_MCP_URL || '').trim()
-  if (explicit) return explicit
-  const domain = String(process.env.HERMES_FEISHU_PROJECT_MCP_DOMAIN || 'https://project.feishu.cn').replace(/\/+$/, '')
-  return `${domain}/mcp_server/v1`
 }
 
 function keepRecordStatus(profileDir: string, skills = scanProfileSkills(profileDir)): SkillCredentialEntry {
@@ -1041,7 +1033,7 @@ function normalizeId(id: string): string {
   const normalized = String(id || '').trim().toLowerCase()
   if (normalized === 'lark_cli') return 'lark-cli'
   if (normalized === 'keep-cli') return 'kep-cli'
-  if (normalized === 'feishu_project_mcp' || normalized === 'feishu-project' || normalized === 'feishu-project-mcp') return FEISHU_PROJECT_MCP_CREDENTIAL_ID
+  if (normalized === 'feishu_project_mcp' || normalized === 'feishu-project' || normalized === 'feishu-project-mcp' || normalized === 'meegle' || normalized === 'meegle-cli') return FEISHU_PROJECT_CREDENTIAL_ID
   return normalized
 }
 

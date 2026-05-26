@@ -69,12 +69,12 @@ describe('CredentialsView', () => {
           action: { kind: 'feishu_device_flow', label: '重新授权' },
         },
         {
-          id: 'feishu-project-mcp',
-          title: '飞书项目 MCP',
+          id: 'feishu-project',
+          title: '飞书项目',
           provider: 'feishu-project',
           installed: true,
           status: 'needs_auth',
-          detail: 'Feishu Project MCP needs OAuth authorization.',
+          detail: '飞书项目需要授权后才能查询和更新工作项。',
           action: { kind: 'oauth_url', label: '授权' },
         },
         {
@@ -129,7 +129,7 @@ describe('CredentialsView', () => {
     expect(wrapper.findAll('.credential-card')).toHaveLength(5)
     expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('Internal systems')
     expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('Lark-cli')
-    expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('飞书项目 MCP')
+    expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('飞书项目')
     expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('kep-cli')
     expect(wrapper.find('[data-credential-group="other-credentials"]').text()).toContain('Other credentials')
     expect(wrapper.find('[data-credential-group="other-credentials"]').text()).toContain('Keep-record')
@@ -141,8 +141,9 @@ describe('CredentialsView', () => {
     expect(wrapper.text()).toContain('待验证')
     expect(wrapper.text()).toContain('Keep User')
     expect(wrapper.text()).toContain('kep-cli')
-    expect(wrapper.text()).toContain('飞书项目 MCP')
-    expect(wrapper.text()).toContain('Feishu Project MCP needs OAuth authorization.')
+    expect(wrapper.text()).toContain('飞书项目')
+    expect(wrapper.text()).toContain('飞书项目需要授权后才能查询和更新工作项。')
+    expect(wrapper.text()).not.toContain('MCP')
     expect(wrapper.text()).toContain('wiki-helper')
     expect(wrapper.text()).toContain('aidock-helper')
     expect(wrapper.text()).toContain('keep-login-skill')
@@ -198,27 +199,27 @@ describe('CredentialsView', () => {
     expect(authWindow.location.href).toBe('https://auth.example.com/?response_url=http://localhost:52237&oauth2=1')
   })
 
-  it('opens the OAuth authorization URL returned by Feishu Project MCP start', async () => {
+  it('opens the OAuth authorization URL returned by Feishu Project start', async () => {
     const authWindow = { opener: {}, location: { href: '' } } as any
     const openSpy = vi.spyOn(window, 'open').mockReturnValue(authWindow)
     startSkillCredentialAuthMock.mockResolvedValueOnce({
-      id: 'feishu-project-mcp',
+      id: 'feishu-project',
       status: 'auth_pending',
-      verification_uri: 'https://project.feishu.cn/oauth/authorize?client_id=dynamic',
-      action: { kind: 'oauth_url', label: '授权飞书项目 MCP' },
+      verification_uri: 'https://project.feishu.cn/oauth/device?user_code=ABCD-1234',
+      action: { kind: 'oauth_url', label: '授权飞书项目' },
     })
     const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
     const wrapper = mount(CredentialsView)
     await new Promise(resolve => setTimeout(resolve, 0))
     await wrapper.vm.$nextTick()
 
-    await wrapper.find('[data-credential-action="feishu-project-mcp"]').trigger('click')
+    await wrapper.find('[data-credential-action="feishu-project"]').trigger('click')
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(startSkillCredentialAuthMock).toHaveBeenCalledWith('feishu-project-mcp', '')
+    expect(startSkillCredentialAuthMock).toHaveBeenCalledWith('feishu-project', '')
     expect(openSpy).toHaveBeenCalledWith('about:blank', '_blank')
     expect(authWindow.opener).toBe(null)
-    expect(authWindow.location.href).toBe('https://project.feishu.cn/oauth/authorize?client_id=dynamic')
+    expect(authWindow.location.href).toBe('https://project.feishu.cn/oauth/device?user_code=ABCD-1234')
   })
 
   it('renders and completes Keep-record QR auth without exposing token values', async () => {

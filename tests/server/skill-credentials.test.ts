@@ -16,11 +16,9 @@ describe('skill credential status', () => {
     if (originalPath === undefined) delete process.env.PATH
     else process.env.PATH = originalPath
     delete process.env.HERMES_KEP_AUTH_BIN
-    delete process.env.HERMES_MCP_AUTH_BIN
-    delete process.env.HERMES_MCP_AUTH_ARGS
     delete process.env.HERMES_BIN
-    delete process.env.HERMES_FEISHU_PROJECT_MCP_URL
-    delete process.env.HERMES_FEISHU_PROJECT_MCP_DOMAIN
+    delete process.env.HERMES_MEEGLE_BIN
+    delete process.env.HERMES_MEEGLE_HOST
     delete process.env.HERMES_MULTITENANCY_DB
     delete process.env.HERMES_WEB_PLANE
   })
@@ -118,7 +116,7 @@ describe('skill credential status', () => {
     expect(result.profile_name).toBe('feishu_user_a')
     expect(result.credentials.map(item => item.id)).toEqual([
       'lark-cli',
-      'feishu-project-mcp',
+      'feishu-project',
       'keep-record',
       'kep-cli',
       'gitlab',
@@ -148,132 +146,110 @@ describe('skill credential status', () => {
     expect(serialized).not.toContain('gitlab-secret-token')
   })
 
-  it('reports Feishu Project MCP OAuth status from profile-local config and token files without leaking token contents', async () => {
+  it('reports Feishu Project CLI auth status without exposing token material or MCP wording', async () => {
     const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
-    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-feishu-project-mcp-'))
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-cli-'))
     roots.push(profileDir)
-    mkdirSync(join(profileDir, 'mcp-tokens'), { recursive: true })
-    writeFileSync(join(profileDir, 'config.yaml'), [
-      'model:',
-      '  default: claude',
-      'mcp_servers:',
-      '  FeishuProjectMcp:',
-      '    url: https://project.feishu.cn/mcp_server/v1',
-      '    auth: oauth',
-      '',
+    const meegle = join(profileDir, 'fake-meegle')
+    writeFileSync(meegle, [
+      '#!/bin/sh',
+      'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then',
+      '  echo \'{"authenticated":true,"host":"project.feishu.cn","source":"token_store","expires_in_minutes":60,"account":"Meegle User"}\'',
+      '  exit 0',
+      'fi',
+      'exit 9',
     ].join('\n'), 'utf-8')
-    writeFileSync(join(profileDir, 'mcp-tokens', 'FeishuProjectMcp.json'), JSON.stringify({
-      access_token: 'feishu-project-access-secret',
-      refresh_token: 'feishu-project-refresh-secret',
-      expires_in: 3600,
-    }), 'utf-8')
+    chmodSync(meegle, 0o755)
+    process.env.HERMES_MEEGLE_BIN = meegle
 
     const result = await listSkillCredentialStatuses({
       profileName: 'feishu_user_a',
       profileDir,
     })
 
-    expect(result.credentials.find(item => item.id === 'feishu-project-mcp')).toMatchObject({
-      id: 'feishu-project-mcp',
-      title: '飞书项目 MCP',
+    expect(result.credentials.find(item => item.id === 'feishu-project')).toMatchObject({
+      id: 'feishu-project',
+      title: '飞书项目',
       provider: 'feishu-project',
       installed: true,
-      status: 'configured',
+      status: 'authenticated',
+      account_hint: 'Meegle User',
       action: {
         kind: 'oauth_url',
         label: '重新授权',
       },
     })
-    expect(JSON.stringify(result)).not.toContain('feishu-project-access-secret')
-    expect(JSON.stringify(result)).not.toContain('feishu-project-refresh-secret')
+    expect(JSON.stringify(result)).not.toContain('MCP')
+    expect(JSON.stringify(result)).not.toContain('access_token')
+    expect(JSON.stringify(result)).not.toContain('refresh_token')
   })
 
-  it('starts Feishu Project MCP OAuth by writing profile config and returning the authorization URL', async () => {
-    const { startFeishuProjectMcpAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
-    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-feishu-project-mcp-start-'))
+  it('starts Feishu Project CLI device-code auth without writing MCP config', async () => {
+    const { startFeishuProjectAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-start-'))
     roots.push(profileDir)
     writeFileSync(join(profileDir, 'config.yaml'), [
       'model:',
       '  default: claude',
-      'mcp_servers:',
-      '  existing:',
-      '    url: https://example.com/mcp',
       '',
     ].join('\n'), 'utf-8')
-    const mcpLogin = join(profileDir, 'fake-hermes-mcp-login')
-    writeFileSync(mcpLogin, [
+    const meegle = join(profileDir, 'fake-meegle')
+    writeFileSync(meegle, [
       '#!/bin/sh',
-      `test "$HERMES_HOME" = "${profileDir}" || { echo "bad HERMES_HOME=$HERMES_HOME" >&2; exit 9; }`,
       `test "$HOME" = "${join(profileDir, 'home')}" || { echo "bad HOME=$HOME" >&2; exit 9; }`,
-      'echo "MCP OAuth: authorization required" >&2',
-      'echo "https://project.feishu.cn/oauth/authorize?client_id=dynamic&redirect_uri=http%3A%2F%2F127.0.0.1%3A51234%2Fcallback" >&2',
-      'sleep 0.2',
+      'if [ "$1" = "config" ] && [ "$2" = "set" ] && [ "$3" = "host" ]; then',
+      '  test "$4" = "project.feishu.cn" || exit 8',
+      '  exit 0',
+      'fi',
+      'if [ "$1" = "auth" ] && [ "$2" = "login" ]; then',
+      '  test "$3" = "--device-code" || exit 7',
+      '  test "$4" = "--host" || exit 6',
+      '  test "$5" = "project.feishu.cn" || exit 5',
+      '  echo "Open https://project.feishu.cn/oauth/device?user_code=ABCD-1234" >&2',
+      '  sleep 0.2',
+      '  exit 0',
+      'fi',
+      'exit 9',
     ].join('\n'), 'utf-8')
-    chmodSync(mcpLogin, 0o755)
-    process.env.HERMES_MCP_AUTH_BIN = mcpLogin
+    chmodSync(meegle, 0o755)
+    process.env.HERMES_MEEGLE_BIN = meegle
 
-    const result = await startFeishuProjectMcpAuth({
-      id: 'feishu-project-mcp',
+    const result = await startFeishuProjectAuth({
+      id: 'feishu-project',
       profileName: 'feishu_user_a',
       profileDir,
     })
 
     expect(result).toMatchObject({
-      id: 'feishu-project-mcp',
+      id: 'feishu-project',
       status: 'auth_pending',
-      verification_uri: 'https://project.feishu.cn/oauth/authorize?client_id=dynamic&redirect_uri=http%3A%2F%2F127.0.0.1%3A51234%2Fcallback',
+      verification_uri: 'https://project.feishu.cn/oauth/device?user_code=ABCD-1234',
       action: {
         kind: 'oauth_url',
-        label: '授权飞书项目 MCP',
+        label: '授权飞书项目',
       },
     })
     const config = readFileSync(join(profileDir, 'config.yaml'), 'utf-8')
-    expect(config).toContain('existing:')
-    expect(config).toContain('FeishuProjectMcp:')
-    expect(config).toContain('url: https://project.feishu.cn/mcp_server/v1')
-    expect(config).toContain('auth: oauth')
+    expect(config).not.toContain('FeishuProjectMcp')
+    expect(config).not.toContain('mcp_server')
     expect(JSON.stringify(result)).not.toContain('access_token')
     expect(JSON.stringify(result)).not.toContain('refresh_token')
   })
 
-  it('starts Feishu Project MCP OAuth with HERMES_BIN when launchd does not expose hermes on PATH', async () => {
-    const { startFeishuProjectMcpAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
-    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-feishu-project-mcp-hermes-bin-'))
+  it('returns a readable error when Feishu Project CLI cannot be spawned', async () => {
+    const { startFeishuProjectAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-missing-bin-'))
     roots.push(profileDir)
-    const mcpLogin = join(profileDir, 'fake-hermes-bin')
-    writeFileSync(mcpLogin, [
-      '#!/bin/sh',
-      `test "$HERMES_HOME" = "${profileDir}" || { echo "bad HERMES_HOME=$HERMES_HOME" >&2; exit 9; }`,
-      'echo "https://project.feishu.cn/oauth/authorize?client_id=from-hermes-bin" >&2',
-      'sleep 0.2',
-    ].join('\n'), 'utf-8')
-    chmodSync(mcpLogin, 0o755)
-    process.env.HERMES_BIN = mcpLogin
-    process.env.PATH = dirname(mcpLogin)
-
-    const result = await startFeishuProjectMcpAuth({
-      id: 'feishu-project-mcp',
-      profileName: 'feishu_user_a',
-      profileDir,
-    })
-
-    expect(result.verification_uri).toBe('https://project.feishu.cn/oauth/authorize?client_id=from-hermes-bin')
-  })
-
-  it('returns a readable error when Feishu Project MCP OAuth command cannot be spawned', async () => {
-    const { startFeishuProjectMcpAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
-    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-feishu-project-mcp-missing-bin-'))
-    roots.push(profileDir)
-    process.env.HERMES_BIN = join(profileDir, 'missing-hermes-bin')
+    process.env.HERMES_MEEGLE_BIN = join(profileDir, 'missing-meegle-bin')
     process.env.PATH = profileDir
 
-    await expect(startFeishuProjectMcpAuth({
-      id: 'feishu-project-mcp',
+    await expect(startFeishuProjectAuth({
+      id: 'feishu-project',
       profileName: 'feishu_user_a',
       profileDir,
     })).rejects.toMatchObject({
       status: 502,
-      message: 'Hermes MCP OAuth command was not found. Configure HERMES_BIN or HERMES_MCP_AUTH_BIN for WebUI.',
+      message: 'Meegle CLI command was not found. Install @lark-project/meegle or configure HERMES_MEEGLE_BIN for WebUI.',
     })
   })
 
@@ -358,6 +334,12 @@ describe('skill credential status', () => {
       text: 'Prepare the daily digest from the current workspace.',
       source: 'hub',
     })).toEqual(['kep-cli'])
+
+    expect(detectSkillCredentialRequirements({
+      name: 'meegle',
+      tags: [],
+      text: '飞书项目（Meego/Meegle）操作工具。Use when user needs to work with Feishu/Lark Meego project management, including querying work items, requirements, tasks, bugs, schedules, views and todos.',
+    })).toEqual(['feishu-project'])
 
     expect(detectSkillCredentialRequirements({
       name: 'another-digest',
