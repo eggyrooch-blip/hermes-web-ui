@@ -35,10 +35,10 @@ related:
 > ⚠️ 别把它跟同名笔记里的 `hermes-webui (nesquena)` 混了——那是另一条嵌入式单体 Python 实现，对比详见 [[对比 — hermes-webui (nesquena) vs hermes-web-ui (EKKO) 架构 2026-05-06]]。
 > 当前本机开发入口是 `<local-repo>/hermes-web-ui`；生产入口是 `root@<prod-host>` 的 `hermes-web-ui.service`，监听 `0.0.0.0:8648`。不要用旧 launchd PID 判断生产状态。
 
-> [!info] 2026-05-26 worktree — profile-local skill editor
-> `webui-edit-generated-content` 回应 songtingting “生成的技能不能编辑”的反馈。上游截至本轮检索只有 Skills 只读渲染和 agent 侧 `skill_manage` 写入统计，没有 WebUI 写文件能力；本 fork 在当前 worktree 增加受限编辑面：只有当前 profile 的真实本地/SkillHub skill 目录可编辑，托管 symlink、symlink 子目录逃逸、external dirs、archive/builtin、敏感路径、二进制/非文本、超大文件和路径逃逸全部只读。
+> [!success] 2026-05-26 已发布 — profile-local skill editor
+> `main@6d8f38d` 已发布。`webui-edit-generated-content` 回应 songtingting “生成的技能不能编辑”的反馈。上游截至本轮检索只有 Skills 只读渲染和 agent 侧 `skill_manage` 写入统计，没有 WebUI 写文件能力；本 fork 增加受限编辑面：只有当前 profile 的真实本地/SkillHub skill 目录可编辑，托管 symlink、symlink 子目录逃逸、external dirs、archive/builtin、敏感路径、二进制/非文本、超大文件和路径逃逸全部只读。
 >
-> BFF 新增 `PUT /api/hermes/skills/file`，保存 `SKILL.md` 或文本附件时走 `safeFileStore` backup；chat-plane 只放开这个文件编辑 endpoint，skills toggle/pin 等配置写入仍被 user mode 拦截。验证：request-context / skills-controller / skills-user-mode focused tests 40 passed，`npm run build` passed，本机 HTTP smoke 通过；Browser 插件在本轮不可用，未做交互式截图。尚未 ftask review/ship，未发布生产。
+> BFF 新增 `PUT /api/hermes/skills/file`，保存 `SKILL.md` 或文本附件时走 `safeFileStore` backup；chat-plane 只放开这个文件编辑 endpoint，skills toggle/pin 等配置写入仍被 user mode 拦截。门禁：Claude review pass，simulation 4 场景 pass，`bun run test` pass，public leak check 0 hits；本机 `npm run build` pass。生产用 hermes 用户的 pnpm 构建通过，重启 user-level `hermes-web-ui.service` 后 `8648/health` OK。
 
 > [!success] 2026-05-25 已发布 — SkillHub 来源自动归类到 kep-cli
 > `main@c89c75d` 已发布到生产。WebUI 现在有三段链路：SkillHub 安装成功后写 profile-local `skills/.hermes-skillhub.json` provenance；Credentials/Skills 扫描同时读取 `.hub/lock.json` 与 `.hermes-skillhub.json`，把命中的 skill 标记为 `source: "hub"`；凭证分类器看到 `source === "hub"` 或 `source === "aidock-skillhub"` 就把该 skill 归到 `kep-cli`，不要求业务 skill 在 `SKILL.md` 正文暴露 `keep-login-skill` 或其它内部鉴权 marker。
