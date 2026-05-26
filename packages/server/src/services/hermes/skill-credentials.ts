@@ -338,8 +338,7 @@ function resolveMeegleInvocation(options: { allowNpx?: boolean } = {}): MeegleIn
 }
 
 function findExecutableOnPath(name: string): string | null {
-  const pathValue = process.env.PATH || ''
-  for (const dir of pathValue.split(delimiter)) {
+  for (const dir of executableSearchDirs()) {
     if (!dir) continue
     const candidate = join(dir, name)
     try {
@@ -350,6 +349,21 @@ function findExecutableOnPath(name: string): string | null {
     }
   }
   return null
+}
+
+function executableSearchDirs(): string[] {
+  const seen = new Set<string>()
+  const dirs = [
+    ...(process.env.PATH || '').split(delimiter),
+    ...(process.env.HERMES_MEEGLE_EXTRA_PATHS || '').split(delimiter),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+  ]
+  return dirs.filter(dir => {
+    if (!dir || seen.has(dir)) return false
+    seen.add(dir)
+    return true
+  })
 }
 
 function missingMeegleCommandError(): Error & { status: number } {

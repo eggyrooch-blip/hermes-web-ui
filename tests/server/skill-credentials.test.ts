@@ -18,6 +18,7 @@ describe('skill credential status', () => {
     delete process.env.HERMES_KEP_AUTH_BIN
     delete process.env.HERMES_BIN
     delete process.env.HERMES_MEEGLE_BIN
+    delete process.env.HERMES_MEEGLE_EXTRA_PATHS
     delete process.env.HERMES_MEEGLE_HOST
     delete process.env.HERMES_MULTITENANCY_DB
     delete process.env.HERMES_WEB_PLANE
@@ -210,6 +211,31 @@ describe('skill credential status', () => {
     })
   })
 
+  it('finds the official npm package launcher when launchd starts WebUI with a narrow PATH', async () => {
+    const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-launchd-'))
+    roots.push(profileDir)
+    const launchdBin = join(profileDir, 'launchd-bin')
+    const homebrewBin = join(profileDir, 'homebrew-bin')
+    mkdirSync(launchdBin, { recursive: true })
+    mkdirSync(homebrewBin, { recursive: true })
+    const npx = join(homebrewBin, 'npx')
+    writeFileSync(npx, '#!/bin/sh\nexit 9\n', 'utf-8')
+    chmodSync(npx, 0o755)
+    process.env.PATH = launchdBin
+    process.env.HERMES_MEEGLE_EXTRA_PATHS = homebrewBin
+
+    const result = await listSkillCredentialStatuses({
+      profileName: 'feishu_user_a',
+      profileDir,
+    })
+
+    expect(result.credentials.find(item => item.id === 'feishu-project')).toMatchObject({
+      installed: true,
+      status: 'needs_auth',
+    })
+  })
+
   it('starts Feishu Project CLI device-code auth without writing MCP config', async () => {
     const { startFeishuProjectAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
     const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-start-'))
@@ -294,6 +320,42 @@ describe('skill credential status', () => {
     })
 
     expect(result.verification_uri).toBe('https://project.feishu.cn/oauth/device?user_code=NPX-1234')
+    expect(readFileSync(invoked, 'utf-8')).toContain('@lark-project/meegle')
+  })
+
+  it('starts Feishu Project auth through the common-bin npx fallback under a narrow launchd PATH', async () => {
+    const { startFeishuProjectAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-launchd-start-'))
+    roots.push(profileDir)
+    const launchdBin = join(profileDir, 'launchd-bin')
+    const homebrewBin = join(profileDir, 'homebrew-bin')
+    mkdirSync(launchdBin, { recursive: true })
+    mkdirSync(homebrewBin, { recursive: true })
+    const npx = join(homebrewBin, 'npx')
+    const invoked = join(profileDir, 'common-npx-start-args.txt')
+    writeFileSync(npx, [
+      '#!/bin/sh',
+      `printf '%s\\n' "$@" >> "${invoked}"`,
+      'shift 2',
+      'if [ "$1" = "config" ]; then exit 0; fi',
+      'if [ "$1" = "auth" ] && [ "$2" = "login" ]; then',
+      '  echo "Open https://project.feishu.cn/oauth/device?user_code=BREW-1234"',
+      '  sleep 0.2',
+      '  exit 0',
+      'fi',
+      'exit 9',
+    ].join('\n'), 'utf-8')
+    chmodSync(npx, 0o755)
+    process.env.PATH = launchdBin
+    process.env.HERMES_MEEGLE_EXTRA_PATHS = homebrewBin
+
+    const result = await startFeishuProjectAuth({
+      id: 'feishu-project',
+      profileName: 'feishu_user_a',
+      profileDir,
+    })
+
+    expect(result.verification_uri).toBe('https://project.feishu.cn/oauth/device?user_code=BREW-1234')
     expect(readFileSync(invoked, 'utf-8')).toContain('@lark-project/meegle')
   })
 
