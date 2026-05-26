@@ -108,6 +108,9 @@ describe('chat store user-mode model selection', () => {
       expect.any(Function),
       expect.any(Function),
       undefined,
+      expect.objectContaining({
+        onReconnectResume: expect.any(Function),
+      }),
     )
   })
 

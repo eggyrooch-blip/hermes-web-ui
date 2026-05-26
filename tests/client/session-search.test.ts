@@ -16,6 +16,7 @@ vi.mock('@/api/hermes/sessions', () => ({
 
 const chatStoreMock = vi.hoisted(() => ({
   sessions: [] as Array<Record<string, any>>,
+  activeSession: null as Record<string, any> | null,
   loadSessions: vi.fn(),
   switchSession: vi.fn(),
   newChat: vi.fn(),
@@ -79,6 +80,7 @@ describe('session search modal', () => {
     vi.useFakeTimers()
     vi.clearAllMocks()
     chatStoreMock.sessions = []
+    chatStoreMock.activeSession = null
     chatStoreMock.loadSessions.mockResolvedValue(undefined)
     chatStoreMock.switchSession.mockResolvedValue(undefined)
     apiMocks.fetchSessionsMock.mockResolvedValue([
@@ -160,6 +162,7 @@ describe('session search modal', () => {
   })
 
   it('searches by content and opens the matched session', async () => {
+    chatStoreMock.activeSession = { id: 'active-1', profile: 'selected_profile' }
     const { openSessionSearch } = useSessionSearch()
     const wrapper = mount(SessionSearchModal)
 
@@ -173,7 +176,7 @@ describe('session search modal', () => {
     await flushPromises()
     await nextTick()
 
-    expect(apiMocks.searchSessionsMock).toHaveBeenCalledWith('docker', undefined, 10)
+    expect(apiMocks.searchSessionsMock).toHaveBeenCalledWith('docker', undefined, 10, 'selected_profile')
     expect(wrapper.text()).toContain('Debugging session')
 
     await wrapper.find('button.result-item').trigger('click')
@@ -182,6 +185,22 @@ describe('session search modal', () => {
     expect(chatStoreMock.loadSessions).toHaveBeenCalled()
     expect(chatStoreMock.switchSession).toHaveBeenCalledWith('match-1', '17')
     expect(apiMocks.routerPushMock).toHaveBeenCalledWith({ name: 'hermes.chat' })
+  })
+
+  it('searches without a profile when no active session is selected', async () => {
+    const { openSessionSearch } = useSessionSearch()
+    const wrapper = mount(SessionSearchModal)
+
+    openSessionSearch()
+    await flushPromises()
+    await nextTick()
+
+    const input = wrapper.find('input.n-input-stub')
+    await input.setValue('docker')
+    await vi.advanceTimersByTimeAsync(200)
+    await flushPromises()
+
+    expect(apiMocks.searchSessionsMock).toHaveBeenCalledWith('docker', undefined, 10, undefined)
   })
 })
 

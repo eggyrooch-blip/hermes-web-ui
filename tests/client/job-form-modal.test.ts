@@ -108,7 +108,7 @@ describe('JobFormModal deliver targets', () => {
     expect(settingsStoreMock.fetchSettings).not.toHaveBeenCalled()
     const deliverSelect = wrapper.findAll('.n-select-stub')[1]
     expect(deliverSelect.text()).toContain('jobs.feishu')
-    expect(deliverSelect.text()).toContain('jobs.local')
+    expect(deliverSelect.find('option[value="local"]').exists()).toBe(true)
     expect(deliverSelect.text()).toContain('Telegram')
     expect(deliverSelect.text()).toContain('Discord')
     expect(deliverSelect.text()).toContain('Slack')
