@@ -40,6 +40,11 @@ related:
 >
 > BFF 新增 `PUT /api/hermes/skills/file`，保存 `SKILL.md` 或文本附件时走 `safeFileStore` backup；chat-plane 只放开这个文件编辑 endpoint，skills toggle/pin 等配置写入仍被 user mode 拦截。验证：request-context / skills-controller / skills-user-mode focused tests 40 passed，`npm run build` passed，本机 HTTP smoke 通过；Browser 插件在本轮不可用，未做交互式截图。尚未 ftask review/ship，未发布生产。
 
+> [!success] 2026-05-25 已发布 — SkillHub 来源自动归类到 kep-cli
+> `main@c89c75d` 已发布到生产。WebUI 现在有三段链路：SkillHub 安装成功后写 profile-local `skills/.hermes-skillhub.json` provenance；Credentials/Skills 扫描同时读取 `.hub/lock.json` 与 `.hermes-skillhub.json`，把命中的 skill 标记为 `source: "hub"`；凭证分类器看到 `source === "hub"` 或 `source === "aidock-skillhub"` 就把该 skill 归到 `kep-cli`，不要求业务 skill 在 `SKILL.md` 正文暴露 `keep-login-skill` 或其它内部鉴权 marker。
+>
+> 安装 API 的目标 profile 只来自服务端 request profile，不接受请求体指定 profile；服务端通过当前 profile 的 `kep-auth` 获取 token 后调用 AiDock zip API，Bearer、signed URL 和服务器路径不返回浏览器或 manifest。zip 下载只允许安全 `https` URL，拒绝 localhost/内网/链路本地地址，redirect 每跳重验；解包拒绝路径逃逸、缺 `SKILL.md` 和压缩/解压超限包。发布门禁：`ftask ship` 通过 spec/review/simulation、`bun run test` 和 public leak check；生产 build passed，重启 `hermes-web-ui.service` 后 health OK。
+
 > [!success] 2026-05-25 已发布 — PR #25 upstream 0.6 baseline 本地等价版
 > 运行代码 `main@ef0d033473d8` 已发布到生产 `192.0.2.10`；生产仓库 HEAD 可能包含后续 docs-only commit。本轮把 2026-05-24/25 的 upstream 0.6 baseline worktree 合入 PR #25，同时保持本 fork 的 Feishu OAuth/open_id 身份源、multitenancy owner/profile ACL、Run Broker 执行路径和 Credentials/UAT 边界。生产发布先配套发布 `hermes-multitenancy@ed6e4b4620ce`，再 WebUI `git pull --ff-only`、`pnpm install --frozen-lockfile`、`pnpm run build`、重启 `hermes-web-ui.service`；备份目录 `<prod-home>/backups/webui-multitenancy-upstream060-20260525-121617`。
 >
