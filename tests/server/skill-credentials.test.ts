@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'fs'
 import { dirname, join } from 'path'
 import { tmpdir } from 'os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -13,6 +13,10 @@ describe('skill credential status', () => {
     vi.resetModules()
     delete process.env.HERMES_HOME
     delete process.env.HERMES_KEP_AUTH_BIN
+    delete process.env.HERMES_MCP_AUTH_BIN
+    delete process.env.HERMES_MCP_AUTH_ARGS
+    delete process.env.HERMES_FEISHU_PROJECT_MCP_URL
+    delete process.env.HERMES_FEISHU_PROJECT_MCP_DOMAIN
     delete process.env.HERMES_MULTITENANCY_DB
     delete process.env.HERMES_WEB_PLANE
   })
@@ -110,6 +114,7 @@ describe('skill credential status', () => {
     expect(result.profile_name).toBe('feishu_user_a')
     expect(result.credentials.map(item => item.id)).toEqual([
       'lark-cli',
+      'feishu-project-mcp',
       'keep-record',
       'kep-cli',
       'gitlab',
@@ -137,6 +142,94 @@ describe('skill credential status', () => {
     expect(serialized).not.toContain('keep-secret-token')
     expect(serialized).not.toContain('kep-secret-token')
     expect(serialized).not.toContain('gitlab-secret-token')
+  })
+
+  it('reports Feishu Project MCP OAuth status from profile-local config and token files without leaking token contents', async () => {
+    const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-feishu-project-mcp-'))
+    roots.push(profileDir)
+    mkdirSync(join(profileDir, 'mcp-tokens'), { recursive: true })
+    writeFileSync(join(profileDir, 'config.yaml'), [
+      'model:',
+      '  default: claude',
+      'mcp_servers:',
+      '  FeishuProjectMcp:',
+      '    url: https://project.feishu.cn/mcp_server/v1',
+      '    auth: oauth',
+      '',
+    ].join('\n'), 'utf-8')
+    writeFileSync(join(profileDir, 'mcp-tokens', 'FeishuProjectMcp.json'), JSON.stringify({
+      access_token: 'feishu-project-access-secret',
+      refresh_token: 'feishu-project-refresh-secret',
+      expires_in: 3600,
+    }), 'utf-8')
+
+    const result = await listSkillCredentialStatuses({
+      profileName: 'feishu_user_a',
+      profileDir,
+    })
+
+    expect(result.credentials.find(item => item.id === 'feishu-project-mcp')).toMatchObject({
+      id: 'feishu-project-mcp',
+      title: '飞书项目 MCP',
+      provider: 'feishu-project',
+      installed: true,
+      status: 'configured',
+      action: {
+        kind: 'oauth_url',
+        label: '重新授权',
+      },
+    })
+    expect(JSON.stringify(result)).not.toContain('feishu-project-access-secret')
+    expect(JSON.stringify(result)).not.toContain('feishu-project-refresh-secret')
+  })
+
+  it('starts Feishu Project MCP OAuth by writing profile config and returning the authorization URL', async () => {
+    const { startFeishuProjectMcpAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-feishu-project-mcp-start-'))
+    roots.push(profileDir)
+    writeFileSync(join(profileDir, 'config.yaml'), [
+      'model:',
+      '  default: claude',
+      'mcp_servers:',
+      '  existing:',
+      '    url: https://example.com/mcp',
+      '',
+    ].join('\n'), 'utf-8')
+    const mcpLogin = join(profileDir, 'fake-hermes-mcp-login')
+    writeFileSync(mcpLogin, [
+      '#!/bin/sh',
+      `test "$HERMES_HOME" = "${profileDir}" || { echo "bad HERMES_HOME=$HERMES_HOME" >&2; exit 9; }`,
+      `test "$HOME" = "${join(profileDir, 'home')}" || { echo "bad HOME=$HOME" >&2; exit 9; }`,
+      'echo "MCP OAuth: authorization required" >&2',
+      'echo "https://project.feishu.cn/oauth/authorize?client_id=dynamic&redirect_uri=http%3A%2F%2F127.0.0.1%3A51234%2Fcallback" >&2',
+      'sleep 0.2',
+    ].join('\n'), 'utf-8')
+    chmodSync(mcpLogin, 0o755)
+    process.env.HERMES_MCP_AUTH_BIN = mcpLogin
+
+    const result = await startFeishuProjectMcpAuth({
+      id: 'feishu-project-mcp',
+      profileName: 'feishu_user_a',
+      profileDir,
+    })
+
+    expect(result).toMatchObject({
+      id: 'feishu-project-mcp',
+      status: 'auth_pending',
+      verification_uri: 'https://project.feishu.cn/oauth/authorize?client_id=dynamic&redirect_uri=http%3A%2F%2F127.0.0.1%3A51234%2Fcallback',
+      action: {
+        kind: 'oauth_url',
+        label: '授权飞书项目 MCP',
+      },
+    })
+    const config = readFileSync(join(profileDir, 'config.yaml'), 'utf-8')
+    expect(config).toContain('existing:')
+    expect(config).toContain('FeishuProjectMcp:')
+    expect(config).toContain('url: https://project.feishu.cn/mcp_server/v1')
+    expect(config).toContain('auth: oauth')
+    expect(JSON.stringify(result)).not.toContain('access_token')
+    expect(JSON.stringify(result)).not.toContain('refresh_token')
   })
 
   it('detects credential adapters from installed skill metadata instead of fixed folders', async () => {

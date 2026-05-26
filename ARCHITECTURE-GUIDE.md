@@ -15,6 +15,11 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
+> [!info] 2026-05-26 worktree — Feishu Project MCP OAuth credential adapter
+> `feishu-project-mcp-webui` 在 WebUI「凭证」页新增 `飞书项目 MCP` 作为 profile-local OAuth credential adapter。状态读取会检查当前 request profile 的 `config.yaml` 里 `mcp_servers.FeishuProjectMcp` 和 `mcp-tokens/FeishuProjectMcp.json`，只返回 `needs_auth/configured` 等 redacted 状态，不返回 access/refresh token。
+>
+> Start flow 会写当前 profile 的 `mcp_servers.FeishuProjectMcp = { url: https://project.feishu.cn/mcp_server/v1, auth: oauth }`，保留已有 `mcp_servers` 和其它 config，再启动 profile-scoped Hermes MCP OAuth login 进程并把授权 URL 返回给浏览器。本机开发环境可直接让浏览器完成 localhost OAuth callback；Header/Stdio `MCP_USER_TOKEN` 不是主流程。验证：server/client focused credentials tests 通过，`npm run build` 通过，本机 `AUTH_DISABLED=1` smoke 在 `8648` 返回凭证状态并写入 profile-local config。生产未发布。
+
 > [!info] 2026-05-25 worktree — slash registry 第一批贴合
 > `webui-slash-registry` 保持生产聊天执行路径在 multitenancy Run Broker，不启用 upstream `agent-bridge`。WebUI 新增 `/api/hermes/slash/commands` BFF，只负责合并本地 UI 命令与 broker 返回的 profile-scoped skill slash 元数据；可执行 skill registry 的事实源是 multitenancy `/api/run-broker/slash/commands`。BFF 会把当前 selected profile 作为 `profile_name` 转发给 broker 做 owner-scoped 校验，但不会转发浏览器 token 或任意 secret query。
 >

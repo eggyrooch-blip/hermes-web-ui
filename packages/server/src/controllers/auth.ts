@@ -23,6 +23,7 @@ import {
   completeKeepRecordAuth,
   getSkillCredentialStartAction,
   listSkillCredentialStatuses,
+  startFeishuProjectMcpAuth,
   startKepCliAuth,
   startKeepRecordAuth,
 } from '../services/hermes/skill-credentials'
@@ -416,6 +417,16 @@ export async function skillCredentialStart(ctx: Context) {
     if (normalized === 'kep-cli' || normalized === 'keep-cli') {
       ctx.status = 200
       ctx.body = await startKepCliAuth({
+        id,
+        profileName,
+        profileDir: getProfileDir(profileName),
+        publicOrigin: externalRequestOrigin(ctx),
+      })
+      return
+    }
+    if (normalized === 'feishu-project-mcp' || normalized === 'feishu_project_mcp' || normalized === 'feishu-project') {
+      ctx.status = 200
+      ctx.body = await startFeishuProjectMcpAuth({
         id,
         profileName,
         profileDir: getProfileDir(profileName),

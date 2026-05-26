@@ -3,18 +3,24 @@ import type { Dirent } from 'fs'
 import { basename, delimiter, dirname, join } from 'path'
 import { execFile, spawn } from 'child_process'
 import type { ChildProcessByStdio } from 'child_process'
-import type { Readable } from 'stream'
+import type { Readable, Writable } from 'stream'
 import { promisify } from 'util'
 import { createHash, randomBytes } from 'crypto'
+import YAML from 'js-yaml'
 import type { WebUser } from '../request-context'
 
 export type SkillCredentialState = 'authenticated' | 'configured' | 'missing' | 'needs_auth' | 'unknown' | 'error'
 export type SkillCredentialActionKind = 'feishu_device_flow' | 'skill_flow' | 'qr_flow' | 'oauth_url' | 'manual'
 
 const execFileAsync = promisify(execFile)
-type KepAuthLoginProcess = ChildProcessByStdio<null, Readable, Readable>
+type KepAuthLoginProcess = ChildProcessByStdio<Writable | null, Readable, Readable>
 
 interface KepAuthLoginSession {
+  child: KepAuthLoginProcess
+  sessionKey: string
+}
+
+interface FeishuProjectMcpLoginSession {
   child: KepAuthLoginProcess
   sessionKey: string
 }
@@ -26,8 +32,11 @@ interface KepAuthCallbackSession {
 }
 
 const KEP_AUTH_CALLBACK_TTL_MS = 10 * 60 * 1000
+const FEISHU_PROJECT_MCP_SERVER_NAME = 'FeishuProjectMcp'
+const FEISHU_PROJECT_MCP_CREDENTIAL_ID = 'feishu-project-mcp'
 const activeKepAuthLogins = new Map<string, KepAuthLoginSession>()
 const activeKepAuthCallbacks = new Map<string, KepAuthCallbackSession>()
+const activeFeishuProjectMcpLogins = new Map<string, FeishuProjectMcpLoginSession>()
 
 export interface SkillCredentialAction {
   kind: SkillCredentialActionKind
@@ -111,6 +120,13 @@ export interface KepCliAuthStartResult {
   action: SkillCredentialAction
 }
 
+export interface FeishuProjectMcpAuthStartResult {
+  id: 'feishu-project-mcp'
+  status: 'auth_pending'
+  verification_uri: string
+  action: SkillCredentialAction
+}
+
 export interface KepCliAuthCallbackResult {
   status: 'ok'
   body: string
@@ -125,6 +141,7 @@ export async function listSkillCredentialStatuses(options: ListSkillCredentialOp
     profile_name: profileName,
     credentials: [
       larkCliStatus(options, requiredBy.get('lark-cli')),
+      feishuProjectMcpStatus(profileDir),
       keepRecordStatus(profileDir, skills),
       await kepCliStatus(profileDir, profileName, skills, requiredBy.get('kep-cli')),
       gitlabStatus(profileDir, skills),
@@ -221,6 +238,16 @@ export async function getSkillCredentialStartAction(options: SkillCredentialStar
       },
     }
   }
+  if (id === FEISHU_PROJECT_MCP_CREDENTIAL_ID) {
+    return {
+      id,
+      action: {
+        kind: 'oauth_url',
+        label: '授权飞书项目 MCP',
+        description: 'Start Feishu Project MCP OAuth for the current Hermes profile.',
+      },
+    }
+  }
   if (id === 'kep-cli') {
     return {
       id,
@@ -248,6 +275,62 @@ export async function getSkillCredentialStartAction(options: SkillCredentialStar
       label: 'Open skill authentication',
       description: 'This skill does not have a WebUI authentication adapter yet.',
     },
+  }
+}
+
+export async function startFeishuProjectMcpAuth(options: SkillCredentialStartOptions): Promise<FeishuProjectMcpAuthStartResult> {
+  ensureFeishuProjectMcpConfig(options.profileDir)
+  mkdirSync(join(options.profileDir, 'home'), { recursive: true })
+
+  const sessionKey = `${options.profileName}:${FEISHU_PROJECT_MCP_SERVER_NAME}`
+  const existing = activeFeishuProjectMcpLogins.get(sessionKey)
+  if (existing && !existing.child.killed) existing.child.kill()
+
+  const command = process.env.HERMES_MCP_AUTH_BIN || process.env.HERMES_CLI_BIN || 'hermes'
+  const args = feishuProjectMcpAuthArgs()
+  const child = spawn(command, args, {
+    cwd: options.profileDir,
+    env: feishuProjectMcpAuthEnv(options.profileDir, options.profileName),
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  activeFeishuProjectMcpLogins.set(sessionKey, { child, sessionKey })
+  child.on('exit', () => {
+    if (activeFeishuProjectMcpLogins.get(sessionKey)?.child === child) activeFeishuProjectMcpLogins.delete(sessionKey)
+  })
+
+  const verificationUri = await waitForKepAuthUrl(child)
+  return {
+    id: FEISHU_PROJECT_MCP_CREDENTIAL_ID,
+    status: 'auth_pending',
+    verification_uri: verificationUri,
+    action: {
+      kind: 'oauth_url',
+      label: '授权飞书项目 MCP',
+      description: 'Complete Feishu Project MCP OAuth in the browser. In local development the MCP OAuth callback is handled by the profile-scoped Hermes process.',
+    },
+  }
+}
+
+function feishuProjectMcpAuthArgs(): string[] {
+  const raw = process.env.HERMES_MCP_AUTH_ARGS
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed) && parsed.every(item => typeof item === 'string')) return parsed
+    } catch {
+      // Fall back to a simple whitespace split for local development overrides.
+    }
+    return raw.split(/\s+/).filter(Boolean)
+  }
+  return ['mcp', 'login', FEISHU_PROJECT_MCP_SERVER_NAME]
+}
+
+function feishuProjectMcpAuthEnv(profileDir: string, profileName: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    HOME: join(profileDir, 'home'),
+    HERMES_HOME: profileDir,
+    HERMES_PROFILE: profileName,
   }
 }
 
@@ -555,6 +638,87 @@ function localFeishuUatStatus(profileDir: string): { connected: boolean } {
     }
   }
   return { connected: false }
+}
+
+function feishuProjectMcpStatus(profileDir: string): SkillCredentialEntry {
+  const configured = readFeishuProjectMcpServerConfig(profileDir)
+  const hasToken = feishuProjectMcpTokenPresent(profileDir)
+  return {
+    id: FEISHU_PROJECT_MCP_CREDENTIAL_ID,
+    title: '飞书项目 MCP',
+    provider: 'feishu-project',
+    installed: true,
+    status: hasToken ? 'configured' : 'needs_auth',
+    detail: hasToken
+      ? 'Feishu Project MCP OAuth material exists for this profile; token contents are not displayed.'
+      : configured
+        ? 'Feishu Project MCP is configured for this profile and needs OAuth authorization.'
+        : 'Feishu Project MCP OAuth is not configured for this profile yet.',
+    action: {
+      kind: 'oauth_url',
+      label: hasToken ? '重新授权' : '授权',
+    },
+  }
+}
+
+function readFeishuProjectMcpServerConfig(profileDir: string): Record<string, any> | null {
+  const cfg = readProfileConfig(profileDir)
+  const servers = cfg?.mcp_servers || cfg?.mcpServers
+  if (!servers || typeof servers !== 'object') return null
+  const server = servers[FEISHU_PROJECT_MCP_SERVER_NAME]
+  return server && typeof server === 'object' ? server : null
+}
+
+function feishuProjectMcpTokenPresent(profileDir: string): boolean {
+  const tokenPath = join(profileDir, 'mcp-tokens', `${FEISHU_PROJECT_MCP_SERVER_NAME}.json`)
+  const raw = readSmallText(tokenPath)
+  if (!raw) return false
+  try {
+    const parsed = JSON.parse(raw)
+    return typeof parsed?.access_token === 'string' || typeof parsed?.refresh_token === 'string'
+  } catch {
+    return false
+  }
+}
+
+function ensureFeishuProjectMcpConfig(profileDir: string): void {
+  const configPath = join(profileDir, 'config.yaml')
+  const cfg = readProfileConfig(profileDir) || {}
+  if (!cfg.mcp_servers || typeof cfg.mcp_servers !== 'object' || Array.isArray(cfg.mcp_servers)) {
+    cfg.mcp_servers = {}
+  }
+  cfg.mcp_servers[FEISHU_PROJECT_MCP_SERVER_NAME] = {
+    ...((cfg.mcp_servers[FEISHU_PROJECT_MCP_SERVER_NAME] && typeof cfg.mcp_servers[FEISHU_PROJECT_MCP_SERVER_NAME] === 'object')
+      ? cfg.mcp_servers[FEISHU_PROJECT_MCP_SERVER_NAME]
+      : {}),
+    url: feishuProjectMcpUrl(),
+    auth: 'oauth',
+  }
+  if (!cfg.mcp_servers[FEISHU_PROJECT_MCP_SERVER_NAME].oauth) {
+    cfg.mcp_servers[FEISHU_PROJECT_MCP_SERVER_NAME].oauth = {
+      client_name: 'Hermes WebUI',
+    }
+  }
+  mkdirSync(profileDir, { recursive: true })
+  writeFileSync(configPath, YAML.dump(cfg, { lineWidth: -1, noRefs: true }), 'utf-8')
+}
+
+function readProfileConfig(profileDir: string): Record<string, any> {
+  const raw = readSmallText(join(profileDir, 'config.yaml'))
+  if (!raw) return {}
+  try {
+    const parsed = YAML.load(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, any> : {}
+  } catch {
+    return {}
+  }
+}
+
+function feishuProjectMcpUrl(): string {
+  const explicit = String(process.env.HERMES_FEISHU_PROJECT_MCP_URL || '').trim()
+  if (explicit) return explicit
+  const domain = String(process.env.HERMES_FEISHU_PROJECT_MCP_DOMAIN || 'https://project.feishu.cn').replace(/\/+$/, '')
+  return `${domain}/mcp_server/v1`
 }
 
 function keepRecordStatus(profileDir: string, skills = scanProfileSkills(profileDir)): SkillCredentialEntry {
@@ -867,6 +1031,7 @@ function normalizeId(id: string): string {
   const normalized = String(id || '').trim().toLowerCase()
   if (normalized === 'lark_cli') return 'lark-cli'
   if (normalized === 'keep-cli') return 'kep-cli'
+  if (normalized === 'feishu_project_mcp' || normalized === 'feishu-project' || normalized === 'feishu-project-mcp') return FEISHU_PROJECT_MCP_CREDENTIAL_ID
   return normalized
 }
 
