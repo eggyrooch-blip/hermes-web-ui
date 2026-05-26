@@ -765,7 +765,7 @@ interface MeegleAuthStatus {
 }
 
 async function readMeegleAuthStatus(profileDir: string, profileName: string): Promise<MeegleAuthStatus> {
-  const invocation = resolveMeegleInvocation({ allowNpx: false })
+  const invocation = resolveMeegleInvocation({ allowNpx: shouldAllowNpxForMeegleStatus() })
   if (!invocation) {
     return { available: Boolean(findExecutableOnPath('npx')), authenticated: false }
   }
@@ -773,7 +773,7 @@ async function readMeegleAuthStatus(profileDir: string, profileName: string): Pr
     const { stdout } = await execFileAsync(invocation.command, meegleArgs(invocation, profileName, ['auth', 'status', '--format', 'json']), {
       cwd: profileDir,
       env: meegleEnv(meegleHost(), invocation),
-      timeout: 5_000,
+      timeout: 10_000,
       maxBuffer: 256 * 1024,
     })
     const parsed = JSON.parse(stdout || '{}')
@@ -786,6 +786,12 @@ async function readMeegleAuthStatus(profileDir: string, profileName: string): Pr
     if (err?.code === 'ENOENT') return { available: false, authenticated: false }
     return { available: true, authenticated: false }
   }
+}
+
+function shouldAllowNpxForMeegleStatus(): boolean {
+  const override = String(process.env.HERMES_MEEGLE_STATUS_ALLOW_NPX || '').trim().toLowerCase()
+  if (override) return !['0', 'false', 'no', 'off'].includes(override)
+  return process.env.NODE_ENV !== 'test'
 }
 
 function keepRecordStatus(profileDir: string, skills = scanProfileSkills(profileDir)): SkillCredentialEntry {

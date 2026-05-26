@@ -20,6 +20,7 @@ describe('skill credential status', () => {
     delete process.env.HERMES_MEEGLE_BIN
     delete process.env.HERMES_MEEGLE_EXTRA_PATHS
     delete process.env.HERMES_MEEGLE_HOST
+    delete process.env.HERMES_MEEGLE_STATUS_ALLOW_NPX
     delete process.env.HERMES_MULTITENANCY_DB
     delete process.env.HERMES_WEB_PLANE
   })
@@ -204,6 +205,7 @@ describe('skill credential status', () => {
     ].join('\n'), 'utf-8')
     chmodSync(npx, 0o755)
     process.env.PATH = binDir
+    process.env.HERMES_MEEGLE_STATUS_ALLOW_NPX = '1'
 
     const result = await listSkillCredentialStatuses({
       profileName: 'feishu_user_a',
@@ -216,6 +218,92 @@ describe('skill credential status', () => {
       detail: '飞书项目需要授权后才能查询和更新工作项。',
     })
     expect(existsSync(invoked)).toBe(false)
+  })
+
+  it('reads Feishu Project auth status through npx when the global meegle command is absent', async () => {
+    const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-npx-status-'))
+    roots.push(profileDir)
+    const binDir = join(profileDir, 'bin')
+    mkdirSync(binDir, { recursive: true })
+    const npx = join(binDir, 'npx')
+    const invoked = join(profileDir, 'npx-auth-status-args.txt')
+    writeFileSync(npx, [
+      '#!/bin/sh',
+      `printf '%s\\n' "$@" > "${invoked}"`,
+      'test "$1" = "-y" || exit 12',
+      'test "$2" = "@lark-project/meegle" || exit 11',
+      'shift 2',
+      'if [ "$1" = "--profile" ]; then',
+      '  test "$2" = "hermes_feishu_user_a" || exit 10',
+      '  shift 2',
+      'fi',
+      'if [ "$1" = "auth" ] && [ "$2" = "status" ] && [ "$3" = "--format" ] && [ "$4" = "json" ]; then',
+      '  echo \'{"authenticated":true,"host":"project.feishu.cn","expires_in_minutes":110,"access_token":"secret-token"}\'',
+      '  exit 0',
+      'fi',
+      'exit 9',
+    ].join('\n'), 'utf-8')
+    chmodSync(npx, 0o755)
+    process.env.PATH = binDir
+    process.env.HERMES_MEEGLE_STATUS_ALLOW_NPX = '1'
+
+    const result = await listSkillCredentialStatuses({
+      profileName: 'feishu_user_a',
+      profileDir,
+    })
+
+    expect(result.credentials.find(item => item.id === 'feishu-project')).toMatchObject({
+      installed: true,
+      status: 'authenticated',
+      account_hint: 'project.feishu.cn',
+      action: {
+        label: '重新授权',
+      },
+    })
+    expect(readFileSync(invoked, 'utf-8')).toContain('--profile\nhermes_feishu_user_a')
+    expect(JSON.stringify(result)).not.toContain('secret-token')
+    expect(JSON.stringify(result)).not.toContain('access_token')
+    expect(JSON.stringify(result)).not.toContain('refresh_token')
+    expect(JSON.stringify(result)).not.toMatch(/keychain/i)
+  })
+
+  it('degrades Feishu Project npx status failures to needs_auth without exposing stderr', async () => {
+    const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-npx-status-fail-'))
+    roots.push(profileDir)
+    const binDir = join(profileDir, 'bin')
+    mkdirSync(binDir, { recursive: true })
+    const npx = join(binDir, 'npx')
+    const invoked = join(profileDir, 'npx-auth-status-fail-args.txt')
+    writeFileSync(npx, [
+      '#!/bin/sh',
+      `printf '%s\\n' "$@" > "${invoked}"`,
+      'echo "auth status failed: refresh_token=secret-refresh keychain=/Users/example/Library/Keychains/login.keychain-db" >&2',
+      'exit 1',
+    ].join('\n'), 'utf-8')
+    chmodSync(npx, 0o755)
+    process.env.PATH = binDir
+    process.env.HERMES_MEEGLE_STATUS_ALLOW_NPX = '1'
+
+    const result = await listSkillCredentialStatuses({
+      profileName: 'feishu_user_a',
+      profileDir,
+    })
+
+    expect(result.credentials.find(item => item.id === 'feishu-project')).toMatchObject({
+      installed: true,
+      status: 'needs_auth',
+      account_hint: undefined,
+      action: {
+        label: '授权',
+      },
+    })
+    expect(readFileSync(invoked, 'utf-8')).toContain('--profile\nhermes_feishu_user_a')
+    const serialized = JSON.stringify(result)
+    expect(serialized).not.toContain('secret-refresh')
+    expect(serialized).not.toContain('refresh_token')
+    expect(serialized).not.toMatch(/keychain/i)
   })
 
   it('finds the official npm package launcher when launchd starts WebUI with a narrow PATH', async () => {
