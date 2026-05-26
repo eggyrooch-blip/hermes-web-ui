@@ -17,10 +17,21 @@
 
 ---
 
+### STEP 0 — 设置 Hermes Meegle Profile
+
+如果环境变量 `KEP_PROFILE` 存在，先执行：
+
+```bash
+MEEGLE_PROFILE="hermes_${KEP_PROFILE}"
+MEEGLE_PROFILE_FLAG=(--profile "$MEEGLE_PROFILE")
+```
+
+后续所有 `meegle` 命令都必须带 `"${MEEGLE_PROFILE_FLAG[@]}"`。如果 `KEP_PROFILE` 不存在，则设置 `MEEGLE_PROFILE_FLAG=()`，即省略 `--profile`。
+
 ### STEP 1 — 检查登录状态
 
 ```bash
-meegle auth status --format json
+meegle "${MEEGLE_PROFILE_FLAG[@]}" auth status --format json
 ```
 
 返回值示例：
@@ -57,7 +68,7 @@ SAVE `$host` from user reply → GOTO STEP 2
 ### STEP 2 — OAuth 登录
 
 ```bash
-meegle auth login --host $host
+meegle "${MEEGLE_PROFILE_FLAG[@]}" auth login --host $host
 ```
 
 命令会自动打开浏览器完成 OAuth 授权。等待命令执行完毕。

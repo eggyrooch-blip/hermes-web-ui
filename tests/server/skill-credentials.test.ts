@@ -154,6 +154,10 @@ describe('skill credential status', () => {
     const meegle = join(profileDir, 'fake-meegle')
     writeFileSync(meegle, [
       '#!/bin/sh',
+      'if [ "$1" = "--profile" ]; then',
+      '  test "$2" = "hermes_feishu_user_a" || exit 10',
+      '  shift 2',
+      'fi',
       'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then',
       '  echo \'{"authenticated":true,"host":"project.feishu.cn","source":"token_store","expires_in_minutes":60,"account":"Meegle User"}\'',
       '  exit 0',
@@ -251,7 +255,10 @@ describe('skill credential status', () => {
     const meegle = join(profileDir, 'fake-meegle')
     writeFileSync(meegle, [
       '#!/bin/sh',
-      `test "$HOME" = "${join(profileDir, 'home')}" || { echo "bad HOME=$HOME" >&2; exit 9; }`,
+      'if [ "$1" = "--profile" ]; then',
+      '  test "$2" = "hermes_feishu_user_a" || exit 10',
+      '  shift 2',
+      'fi',
       'if [ "$1" = "config" ] && [ "$2" = "set" ] && [ "$3" = "host" ]; then',
       '  test "$4" = "project.feishu.cn" || exit 8',
       '  exit 0',
@@ -291,6 +298,46 @@ describe('skill credential status', () => {
     expect(JSON.stringify(result)).not.toContain('refresh_token')
   })
 
+  it('uses a Meegle profile without overriding HOME so macOS keychain can use the login keychain', async () => {
+    const { startFeishuProjectAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-keychain-home-'))
+    roots.push(profileDir)
+    const realHome = join(profileDir, 'real-home')
+    mkdirSync(realHome, { recursive: true })
+    const meegle = join(profileDir, 'fake-meegle')
+    const invoked = join(profileDir, 'meegle-profile-home-args.txt')
+    writeFileSync(meegle, [
+      '#!/bin/sh',
+      `test "$HOME" = "${realHome}" || { echo "bad HOME=$HOME" >&2; exit 12; }`,
+      `printf '%s\\n' "$@" >> "${invoked}"`,
+      'profile=""',
+      'while [ "$#" -gt 0 ]; do',
+      '  if [ "$1" = "--profile" ]; then profile="$2"; shift 2; continue; fi',
+      '  break',
+      'done',
+      'test "$profile" = "hermes_feishu_user_a" || { echo "bad profile=$profile" >&2; exit 11; }',
+      'if [ "$1" = "config" ]; then exit 0; fi',
+      'if [ "$1" = "auth" ] && [ "$2" = "login" ]; then',
+      '  echo "Open https://project.feishu.cn/oauth/device?user_code=KEYCHAIN-1234"',
+      '  sleep 0.2',
+      '  exit 0',
+      'fi',
+      'exit 9',
+    ].join('\n'), 'utf-8')
+    chmodSync(meegle, 0o755)
+    process.env.HERMES_MEEGLE_BIN = meegle
+    process.env.HOME = realHome
+
+    const result = await startFeishuProjectAuth({
+      id: 'feishu-project',
+      profileName: 'feishu_user_a',
+      profileDir,
+    })
+
+    expect(result.verification_uri).toBe('https://project.feishu.cn/oauth/device?user_code=KEYCHAIN-1234')
+    expect(readFileSync(invoked, 'utf-8')).toContain('--profile\nhermes_feishu_user_a')
+  })
+
   it('starts Feishu Project auth through npx when no global meegle command is installed', async () => {
     const { startFeishuProjectAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
     const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-npx-start-'))
@@ -303,6 +350,10 @@ describe('skill credential status', () => {
       '#!/bin/sh',
       `printf '%s\\n' "$@" >> "${invoked}"`,
       'shift 2',
+      'if [ "$1" = "--profile" ]; then',
+      '  test "$2" = "hermes_feishu_user_a" || exit 10',
+      '  shift 2',
+      'fi',
       'if [ "$1" = "config" ] && [ "$2" = "set" ] && [ "$3" = "host" ] && [ "$4" = "project.feishu.cn" ]; then',
       '  exit 0',
       'fi',
@@ -340,6 +391,10 @@ describe('skill credential status', () => {
       '#!/bin/sh',
       `printf '%s\\n' "$@" >> "${invoked}"`,
       'shift 2',
+      'if [ "$1" = "--profile" ]; then',
+      '  test "$2" = "hermes_feishu_user_a" || exit 10',
+      '  shift 2',
+      'fi',
       'if [ "$1" = "config" ]; then exit 0; fi',
       'if [ "$1" = "auth" ] && [ "$2" = "login" ]; then',
       '  echo "Open https://project.feishu.cn/oauth/device?user_code=BREW-1234"',
@@ -388,8 +443,10 @@ describe('skill credential status', () => {
       'fs.appendFileSync(invoked, `PATH=${process.env.PATH}\\n${args.join("\\n")}\\n---\\n`);',
       'const packageIndex = args.indexOf("@lark-project/meegle");',
       'const command = packageIndex >= 0 ? args.slice(packageIndex + 1) : args;',
-      'if (command[0] === "config" && command[1] === "set" && command[2] === "host") process.exit(0);',
-      'if (command[0] === "auth" && command[1] === "login" && command[2] === "--device-code") {',
+      'if (command[0] !== "--profile" || command[1] !== "hermes_feishu_user_a") process.exit(10);',
+      'const profiledCommand = command.slice(2);',
+      'if (profiledCommand[0] === "config" && profiledCommand[1] === "set" && profiledCommand[2] === "host") process.exit(0);',
+      'if (profiledCommand[0] === "auth" && profiledCommand[1] === "login" && profiledCommand[2] === "--device-code") {',
       '  console.log("Open https://project.feishu.cn/oauth/device?user_code=NODEPATH-1234");',
       '  setTimeout(() => process.exit(0), 200);',
       '} else {',

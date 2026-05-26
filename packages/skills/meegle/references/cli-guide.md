@@ -4,10 +4,20 @@
 
 运行环境需要 Node.js 18+。所有命令通过 `meegle` 执行。
 
+在 Hermes 里运行时，如果环境变量 `KEP_PROFILE` 存在，必须使用 profile-scoped Meegle 配置，避免读写 Meegle 的 `default` profile：
+
+```bash
+MEEGLE_PROFILE="hermes_${KEP_PROFILE}"
+MEEGLE_PROFILE_FLAG=(--profile "$MEEGLE_PROFILE")
+meegle "${MEEGLE_PROFILE_FLAG[@]}" <resource> <method> [flags] --format json
+```
+
+如果 `KEP_PROFILE` 不存在，才使用普通 `meegle <resource> <method>`。
+
 ## 命令结构
 
 ```bash
-meegle <resource> <method> [flags] --format json
+meegle "${MEEGLE_PROFILE_FLAG[@]}" <resource> <method> [flags] --format json
 ```
 
 命令采用 `resource method` 两级结构。所有输出推荐使用 `--format json` 获取结构化数据。

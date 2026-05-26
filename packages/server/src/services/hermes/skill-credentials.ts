@@ -140,7 +140,7 @@ export async function listSkillCredentialStatuses(options: ListSkillCredentialOp
     profile_name: profileName,
     credentials: [
       larkCliStatus(options, requiredBy.get('lark-cli')),
-      await feishuProjectStatus(profileDir, requiredBy.get(FEISHU_PROJECT_CREDENTIAL_ID)),
+      await feishuProjectStatus(profileDir, profileName, requiredBy.get(FEISHU_PROJECT_CREDENTIAL_ID)),
       keepRecordStatus(profileDir, skills),
       await kepCliStatus(profileDir, profileName, skills, requiredBy.get('kep-cli')),
       gitlabStatus(profileDir, skills),
@@ -286,21 +286,20 @@ export async function getSkillCredentialStartAction(options: SkillCredentialStar
 }
 
 export async function startFeishuProjectAuth(options: SkillCredentialStartOptions): Promise<FeishuProjectAuthStartResult> {
-  mkdirSync(join(options.profileDir, 'home'), { recursive: true })
-
   const host = meegleHost()
-  const sessionKey = `${options.profileName}:${host}`
+  const meegleProfile = meegleProfileName(options.profileName)
+  const sessionKey = `${options.profileName}:${host}:${meegleProfile}`
   const existing = activeFeishuProjectLogins.get(sessionKey)
   if (existing && !existing.child.killed) existing.child.kill()
 
   const invocation = resolveMeegleInvocation()
   if (!invocation) throw missingMeegleCommandError()
-  await configureMeegleHost(invocation, options.profileDir, host)
+  await configureMeegleHost(invocation, options.profileDir, options.profileName, host)
 
-  const args = [...invocation.argsPrefix, 'auth', 'login', '--device-code', '--host', host]
+  const args = meegleArgs(invocation, options.profileName, ['auth', 'login', '--device-code', '--host', host])
   const child = spawn(invocation.command, args, {
     cwd: options.profileDir,
-    env: meegleEnv(options.profileDir, host, invocation),
+    env: meegleEnv(host, invocation),
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   activeFeishuProjectLogins.set(sessionKey, { child, sessionKey })
@@ -316,7 +315,7 @@ export async function startFeishuProjectAuth(options: SkillCredentialStartOption
     action: {
       kind: 'oauth_url',
       label: '授权飞书项目',
-      description: 'Open the Meegle CLI device-code authorization URL. The CLI stores credentials under the current Hermes profile home.',
+      description: 'Open the Meegle CLI device-code authorization URL. The CLI stores credentials in the profile-scoped Meegle keychain entry.',
     },
   }
 }
@@ -381,10 +380,9 @@ function meegleHost(): string {
   return String(process.env.HERMES_MEEGLE_HOST || MEEGLE_DEFAULT_HOST).trim() || MEEGLE_DEFAULT_HOST
 }
 
-function meegleEnv(profileDir: string, host = meegleHost(), invocation?: MeegleInvocation): NodeJS.ProcessEnv {
+function meegleEnv(host = meegleHost(), invocation?: MeegleInvocation): NodeJS.ProcessEnv {
   return {
     ...process.env,
-    HOME: join(profileDir, 'home'),
     MEEGLE_HOST: host,
     PATH: meegleChildPath(invocation),
   }
@@ -395,11 +393,20 @@ function meegleChildPath(invocation?: MeegleInvocation): string {
   return meeglePathDirs(commandDir ? [commandDir] : []).join(delimiter)
 }
 
-async function configureMeegleHost(invocation: MeegleInvocation, profileDir: string, host: string): Promise<void> {
+function meegleProfileName(profileName: string): string {
+  const safeName = String(profileName || 'default').trim().replace(/[^A-Za-z0-9_.-]+/g, '_') || 'default'
+  return `hermes_${safeName}`
+}
+
+function meegleArgs(invocation: MeegleInvocation, profileName: string, args: string[]): string[] {
+  return [...invocation.argsPrefix, '--profile', meegleProfileName(profileName), ...args]
+}
+
+async function configureMeegleHost(invocation: MeegleInvocation, profileDir: string, profileName: string, host: string): Promise<void> {
   try {
-    await execFileAsync(invocation.command, [...invocation.argsPrefix, 'config', 'set', 'host', host], {
+    await execFileAsync(invocation.command, meegleArgs(invocation, profileName, ['config', 'set', 'host', host]), {
       cwd: profileDir,
-      env: meegleEnv(profileDir, host, invocation),
+      env: meegleEnv(host, invocation),
       timeout: 10_000,
       maxBuffer: 256 * 1024,
     })
@@ -728,8 +735,8 @@ function localFeishuUatStatus(profileDir: string): { connected: boolean } {
   return { connected: false }
 }
 
-async function feishuProjectStatus(profileDir: string, requiredBy?: string[]): Promise<SkillCredentialEntry> {
-  const status = await readMeegleAuthStatus(profileDir)
+async function feishuProjectStatus(profileDir: string, profileName: string, requiredBy?: string[]): Promise<SkillCredentialEntry> {
+  const status = await readMeegleAuthStatus(profileDir, profileName)
   const authenticated = status.authenticated
   return {
     id: FEISHU_PROJECT_CREDENTIAL_ID,
@@ -757,15 +764,15 @@ interface MeegleAuthStatus {
   account?: string
 }
 
-async function readMeegleAuthStatus(profileDir: string): Promise<MeegleAuthStatus> {
+async function readMeegleAuthStatus(profileDir: string, profileName: string): Promise<MeegleAuthStatus> {
   const invocation = resolveMeegleInvocation({ allowNpx: false })
   if (!invocation) {
     return { available: Boolean(findExecutableOnPath('npx')), authenticated: false }
   }
   try {
-    const { stdout } = await execFileAsync(invocation.command, [...invocation.argsPrefix, 'auth', 'status', '--format', 'json'], {
+    const { stdout } = await execFileAsync(invocation.command, meegleArgs(invocation, profileName, ['auth', 'status', '--format', 'json']), {
       cwd: profileDir,
-      env: meegleEnv(profileDir, meegleHost(), invocation),
+      env: meegleEnv(meegleHost(), invocation),
       timeout: 5_000,
       maxBuffer: 256 * 1024,
     })
