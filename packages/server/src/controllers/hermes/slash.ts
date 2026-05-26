@@ -1,7 +1,7 @@
 import type { Context } from 'koa'
 import { config } from '../../config'
 import { isChatPlaneRequest, type WebUser } from '../../services/request-context'
-import { resolveOwnedProfileAgentId } from '../../services/hermes/agent-ownership'
+import { ownerOwnsProfile, resolveOwnedProfileAgentId } from '../../services/hermes/agent-ownership'
 
 export interface SlashCommand {
   name: string
@@ -31,14 +31,29 @@ function chatPlaneOpenId(ctx: Context): string | undefined {
   return user?.openid?.trim() || undefined
 }
 
+function chatPlaneUserProfile(ctx: Context): string | undefined {
+  if (!isChatPlaneRequest(ctx)) return undefined
+  const user = ctx.state?.user as WebUser | undefined
+  return user?.profile?.trim() || undefined
+}
+
 function requestedProfile(ctx: Context): string {
   return String(ctx.query?.profile_name || ctx.query?.profile || '').trim()
 }
 
 function brokerAgentId(ctx: Context, profile: string): string | undefined {
   const openid = chatPlaneOpenId(ctx)
-  if (openid && profile) return resolveOwnedProfileAgentId(openid, profile)
+  if (openid) return profile ? resolveOwnedProfileAgentId(openid, profile) : undefined
   return String(ctx.query?.agent_id || ctx.get?.('x-hermes-agent-id') || '').trim() || undefined
+}
+
+function rejectUnownedChatPlaneProfile(ctx: Context, profile: string): boolean {
+  const openid = chatPlaneOpenId(ctx)
+  if (!openid || !profile || profile === chatPlaneUserProfile(ctx)) return false
+  if (ownerOwnsProfile(openid, profile)) return false
+  ctx.status = 403
+  ctx.body = { error: 'profile is not accessible for current owner' }
+  return true
 }
 
 function brokerHeaders(ctx: Context): Record<string, string> {
@@ -100,12 +115,14 @@ export async function listSlashCommands(ctx: Context): Promise<void> {
     return
   }
 
+  const profile = requestedProfile(ctx)
+  if (rejectUnownedChatPlaneProfile(ctx, profile)) return
+
   let res: Response
   try {
     res = await fetch(brokerSlashUrl(ctx), {
       method: 'GET',
       headers: brokerHeaders(ctx),
-      body: undefined,
       signal: AbortSignal.timeout(10_000),
     })
   } catch (e: any) {

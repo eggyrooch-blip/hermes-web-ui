@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-05-25
+updated: 2026-05-26
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.5.16)
 audience: Claude PAI / 孙可
@@ -27,6 +27,8 @@ related:
 > 23:44 追加 upstream `6e2e502` 的 CLI stale PID 回归：`stopDaemon()` 仍会清理已死亡的 `server.pid`，并导出给 CLI 测试直接覆盖；不改变 WebUI Run Broker、Feishu owner/open_id 或生产服务启动边界。验证：`npm test -- --run tests/server/cli-login-recovery.test.ts` 为 3 passed；扩展 slash/socket/broker/CLI/client focused suite 为 38 passed。
 >
 > 23:58 review 修正：chat-plane 选中 owner-owned agent/group profile 时，WebUI 不信任浏览器自报 `agent_id`，而是用已验证 Feishu openid + `multitenancy_routing` 解析 `agent_id`，再随 slash registry、session commands、clarify、goal evaluate 与 `/api/run-broker/runs` 转发给 multitenancy。这样 broker 会解析到当前 UI profile，而不是退回 owner root profile；`/goal` kickoff 与 continuation 也补了 hidden-run 回归，expanded prompt 不写入 user/command transcript。验证：slash/socket/broker/client focused suite 为 37 passed。
+>
+> 2026-05-26 发布前复审修正：`/api/hermes/slash/commands` 在 chat-plane 下如果带 selected profile，会先用 Feishu session openid 与本地 owner ACL 验证 profile 归属，未归属直接 403 且不触达 broker；无 selected profile 时不再转发浏览器 query/header 自报的 `agent_id`，只发送服务端 owner header，让 broker 自行解析 owner root。GET fetch 去掉无意义 `body: undefined`。验证：新增红绿回归后 focused slash/socket/broker suite 40 passed，server typecheck、`npm run build` 与 `git diff --check` 通过。
 
 > [!info] 这是哪一个 web-ui？
 > **EKKO 系 `hermes-web-ui`**：`https://github.com/EKKOLearnAI/hermes-web-ui`，Koa 2 + Vue 3 + Naive UI + Pinia 全家桶。本机 fork 不在 nesquena 那条 Python+vanilla-JS 单体老版本上。

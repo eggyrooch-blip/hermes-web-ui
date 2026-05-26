@@ -98,7 +98,6 @@ describe('slash controller', () => {
             'X-Hermes-Owner-Open-Id': 'ou_owner',
             'X-Hermes-Agent-Id': 'agent-owned',
           },
-          body: undefined,
         }),
       )
       expect(c.body).toEqual({
@@ -132,6 +131,84 @@ describe('slash controller', () => {
       config.multitenancyDb = originalMultitenancyDb
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  it('rejects chat-plane slash registry requests for unowned profiles before contacting the broker', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'slash-controller-unowned-'))
+    const dbPath = join(dir, 'multitenancy.db')
+    const originalMultitenancyDb = config.multitenancyDb
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(dbPath)
+    try {
+      db.exec(`
+        CREATE TABLE multitenancy_routing (
+          user_id TEXT PRIMARY KEY NOT NULL,
+          profile_name TEXT NOT NULL,
+          open_id TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1,
+          owner_open_id TEXT,
+          provenance TEXT DEFAULT 'sync',
+          agent_id TEXT
+        );
+      `)
+      db.prepare('INSERT INTO multitenancy_routing (user_id, profile_name, open_id, active, owner_open_id, provenance, agent_id) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+        'victim-root',
+        'victim_profile',
+        'ou_victim',
+        1,
+        null,
+        'sync',
+        null,
+      )
+    } finally {
+      db.close()
+    }
+    config.multitenancyDb = dbPath
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const c = ctx({ query: { profile: 'victim_profile' } })
+    await listSlashCommands(c)
+
+    try {
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(c.status).toBe(403)
+      expect(c.body).toEqual({ error: 'profile is not accessible for current owner' })
+    } finally {
+      config.multitenancyDb = originalMultitenancyDb
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores client-supplied agent_id in chat-plane slash registry requests without a selected profile', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      ok: true,
+      profile_name: 'owner_sync_profile',
+      commands: [],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const c = ctx({
+      query: { agent_id: 'client-forged-agent' },
+      get: vi.fn((name: string) => name.toLowerCase() === 'x-hermes-agent-id' ? 'client-forged-header-agent' : ''),
+    })
+    await listSlashCommands(c)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8766/api/run-broker/slash/commands',
+      expect.objectContaining({
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer broker-secret',
+          'X-Hermes-Owner-Open-Id': 'ou_owner',
+        },
+      }),
+    )
+    expect(c.status).toBe(200)
   })
 
   it('returns local commands with an unavailable marker when broker is not configured', async () => {
