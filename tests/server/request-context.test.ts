@@ -96,6 +96,23 @@ describe('chat plane access control', () => {
     expect(fileCtx.status).toBe(200)
   })
 
+  it('allows only the profile-local skill file editor write in chat plane', async () => {
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const editCtx = mockCtx('/api/hermes/skills/file', 'PUT')
+    const toggleCtx = mockCtx('/api/hermes/skills/toggle', 'PUT')
+    const pinCtx = mockCtx('/api/hermes/skills/pin', 'PUT')
+    const next = vi.fn(async () => {})
+
+    await enforcePlaneAccess(editCtx, next)
+    await enforcePlaneAccess(toggleCtx, next)
+    await enforcePlaneAccess(pinCtx, next)
+
+    expect(next).toHaveBeenCalledOnce()
+    expect(editCtx.status).toBe(200)
+    expect(toggleCtx.status).toBe(403)
+    expect(pinCtx.status).toBe(403)
+  })
+
   it('allows owner-scoped group chat endpoints in chat plane', async () => {
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
     const listCtx = mockCtx('/api/hermes/group-chat/rooms', 'GET')

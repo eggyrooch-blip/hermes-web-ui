@@ -105,8 +105,8 @@ describe('skills controller scanner', () => {
 
     const tools = merged.find((category: any) => category.name === 'tools')
     expect(tools?.skills).toEqual([
-      expect.objectContaining({ name: 'dupe-skill', source: 'local', description: 'local copy' }),
-      expect.objectContaining({ name: 'external-skill', source: 'external', description: 'external copy' }),
+      expect.objectContaining({ name: 'dupe-skill', source: 'local', description: 'local copy', editable: true }),
+      expect.objectContaining({ name: 'external-skill', source: 'external', description: 'external copy', editable: undefined }),
     ])
   })
 
@@ -184,6 +184,7 @@ describe('skills controller scanner', () => {
             expect.objectContaining({
               name: 'daily-breaking',
               source: 'hub',
+              editable: true,
               requiredCredentials: ['kep-cli'],
             }),
           ],
@@ -269,5 +270,78 @@ describe('skills controller scanner', () => {
       'profile-only': { pinned: true, use_count: 3 },
       'sample-skill': { patch_count: 0, use_count: 0, view_count: 0, pinned: true },
     })
+  })
+
+  it('updates a current profile local skill text file', async () => {
+    const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-webui-skill-edit-local-'))
+    const skillDir = join(hermesHome, 'profiles', 'alpha', 'skills', 'daily-writing')
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(join(skillDir, 'SKILL.md'), '# Daily Writing\nold instructions\n')
+
+    await withHermesHome(hermesHome, { HERMES_WEB_PLANE: 'chat' }, async ({ updateFile_ }) => {
+      const ctx = chatContext({
+        category: 'misc',
+        skill: 'daily-writing',
+        path: 'SKILL.md',
+        content: '# Daily Writing\nnew instructions\n',
+      })
+      await updateFile_(ctx)
+      expect(ctx.body).toEqual({ success: true, content: '# Daily Writing\nnew instructions\n' })
+    })
+
+    await expect(readFile(join(skillDir, 'SKILL.md'), 'utf-8')).resolves.toBe('# Daily Writing\nnew instructions\n')
+  })
+
+  it('rejects editing managed symlink skills so shared skills are not modified', async () => {
+    const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-webui-skill-edit-managed-'))
+    const sharedSkill = join(hermesHome, 'skills', 'Keep', 'kep-prd-analysis')
+    const profileSkills = join(hermesHome, 'profiles', 'alpha', 'skills')
+    await mkdir(sharedSkill, { recursive: true })
+    await mkdir(join(profileSkills, 'Keep'), { recursive: true })
+    await writeFile(join(sharedSkill, 'SKILL.md'), '# Shared Skill\nshared instructions\n')
+    await symlink(sharedSkill, join(profileSkills, 'Keep', 'kep-prd-analysis'), 'dir')
+    await writeFile(
+      join(profileSkills, '.hermes-managed.json'),
+      JSON.stringify({ version: 1, skills: { 'Keep/kep-prd-analysis': { install_mode: 'symlink', managed: true } } }),
+    )
+
+    await withHermesHome(hermesHome, { HERMES_WEB_PLANE: 'chat' }, async ({ updateFile_ }) => {
+      const ctx = chatContext({
+        category: 'Keep',
+        skill: 'kep-prd-analysis',
+        path: 'SKILL.md',
+        content: '# Shared Skill\nchanged through profile\n',
+      })
+      await updateFile_(ctx)
+      expect(ctx.status).toBe(403)
+      expect(ctx.body).toEqual({ error: 'Skill is read-only' })
+    })
+
+    await expect(readFile(join(sharedSkill, 'SKILL.md'), 'utf-8')).resolves.toBe('# Shared Skill\nshared instructions\n')
+  })
+
+  it('rejects editing files reached through symlinked subdirectories', async () => {
+    const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-webui-skill-edit-nested-link-'))
+    const skillDir = join(hermesHome, 'profiles', 'alpha', 'skills', 'daily-writing')
+    const outsideDir = join(hermesHome, 'outside')
+    await mkdir(skillDir, { recursive: true })
+    await mkdir(outsideDir, { recursive: true })
+    await writeFile(join(skillDir, 'SKILL.md'), '# Daily Writing\ninstructions\n')
+    await writeFile(join(outsideDir, 'note.md'), '# Outside\nunchanged\n')
+    await symlink(outsideDir, join(skillDir, 'assets'), 'dir')
+
+    await withHermesHome(hermesHome, { HERMES_WEB_PLANE: 'chat' }, async ({ updateFile_ }) => {
+      const ctx = chatContext({
+        category: 'misc',
+        skill: 'daily-writing',
+        path: 'assets/note.md',
+        content: '# Outside\nchanged\n',
+      })
+      await updateFile_(ctx)
+      expect(ctx.status).toBe(403)
+      expect(ctx.body).toEqual({ error: 'Access denied' })
+    })
+
+    await expect(readFile(join(outsideDir, 'note.md'), 'utf-8')).resolves.toBe('# Outside\nunchanged\n')
   })
 })

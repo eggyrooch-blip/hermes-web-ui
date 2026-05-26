@@ -35,6 +35,11 @@ related:
 > ⚠️ 别把它跟同名笔记里的 `hermes-webui (nesquena)` 混了——那是另一条嵌入式单体 Python 实现，对比详见 [[对比 — hermes-webui (nesquena) vs hermes-web-ui (EKKO) 架构 2026-05-06]]。
 > 当前本机开发入口是 `<local-repo>/hermes-web-ui`；生产入口是 `root@<prod-host>` 的 `hermes-web-ui.service`，监听 `0.0.0.0:8648`。不要用旧 launchd PID 判断生产状态。
 
+> [!info] 2026-05-26 worktree — profile-local skill editor
+> `webui-edit-generated-content` 回应 songtingting “生成的技能不能编辑”的反馈。上游截至本轮检索只有 Skills 只读渲染和 agent 侧 `skill_manage` 写入统计，没有 WebUI 写文件能力；本 fork 在当前 worktree 增加受限编辑面：只有当前 profile 的真实本地/SkillHub skill 目录可编辑，托管 symlink、symlink 子目录逃逸、external dirs、archive/builtin、敏感路径、二进制/非文本、超大文件和路径逃逸全部只读。
+>
+> BFF 新增 `PUT /api/hermes/skills/file`，保存 `SKILL.md` 或文本附件时走 `safeFileStore` backup；chat-plane 只放开这个文件编辑 endpoint，skills toggle/pin 等配置写入仍被 user mode 拦截。验证：request-context / skills-controller / skills-user-mode focused tests 40 passed，`npm run build` passed，本机 HTTP smoke 通过；Browser 插件在本轮不可用，未做交互式截图。尚未 ftask review/ship，未发布生产。
+
 > [!success] 2026-05-25 已发布 — PR #25 upstream 0.6 baseline 本地等价版
 > 运行代码 `main@ef0d033473d8` 已发布到生产 `192.0.2.10`；生产仓库 HEAD 可能包含后续 docs-only commit。本轮把 2026-05-24/25 的 upstream 0.6 baseline worktree 合入 PR #25，同时保持本 fork 的 Feishu OAuth/open_id 身份源、multitenancy owner/profile ACL、Run Broker 执行路径和 Credentials/UAT 边界。生产发布先配套发布 `hermes-multitenancy@ed6e4b4620ce`，再 WebUI `git pull --ff-only`、`pnpm install --frozen-lockfile`、`pnpm run build`、重启 `hermes-web-ui.service`；备份目录 `<prod-home>/backups/webui-multitenancy-upstream060-20260525-121617`。
 >

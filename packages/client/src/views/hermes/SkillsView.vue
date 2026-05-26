@@ -189,6 +189,7 @@ watch(visibleSkillEntries, syncSelectedSkill)
               :use-count="selectedSkillData?.useCount"
               :view-count="selectedSkillData?.viewCount"
               :pinned="selectedSkillData?.pinned"
+              :editable="selectedSkillData?.editable"
               @pin-toggled="handlePinToggled"
             />
             <div v-else class="empty-detail">

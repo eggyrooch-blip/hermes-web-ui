@@ -13,6 +13,7 @@ export interface SkillInfo {
   viewCount?: number
   pinned?: boolean
   requiredCredentials?: string[]
+  editable?: boolean
 }
 
 export interface SkillCategory {
@@ -53,6 +54,14 @@ export async function fetchSkills(): Promise<SkillsData> {
 
 export async function fetchSkillContent(skillPath: string): Promise<string> {
   const res = await request<{ content: string }>(`/api/hermes/skills/${skillPath}`)
+  return res.content
+}
+
+export async function updateSkillContent(category: string, skill: string, path: string, content: string): Promise<string> {
+  const res = await request<{ success: boolean; content: string }>('/api/hermes/skills/file', {
+    method: 'PUT',
+    body: JSON.stringify({ category, skill, path, content }),
+  })
   return res.content
 }
 

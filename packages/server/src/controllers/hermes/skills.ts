@@ -1,5 +1,5 @@
-import { readdir, readFile, realpath, stat } from 'fs/promises'
-import { isAbsolute, join, relative, resolve } from 'path'
+import { lstat, readdir, readFile, realpath, stat } from 'fs/promises'
+import { extname, isAbsolute, join, relative, resolve } from 'path'
 import { createHash } from 'crypto'
 import { homedir } from 'os'
 import YAML from 'js-yaml'
@@ -50,6 +50,8 @@ function readHubInstalledNames(lockContent: string | null, hermesSkillHubContent
 /** Compute md5 hash of all files in a directory (mirrors Hermes _dir_hash), with in-memory cache */
 const hashCache = new Map<string, { hash: string; mtime: number }>()
 const HASH_CACHE_TTL = 60_000 // 1 minute
+const MAX_SKILL_EDIT_BYTES = 256 * 1024
+const EDITABLE_SKILL_EXTENSIONS = new Set(['.md', '.txt', '.json', '.yaml', '.yml'])
 
 async function dirHash(directory: string): Promise<string> {
   const cached = hashCache.get(directory)
@@ -113,6 +115,29 @@ function isInsideDirectory(rootDir: string, targetPath: string): boolean {
   return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel))
 }
 
+function isEditableSkillTextPath(restPath: string): boolean {
+  const normalized = restPath.replace(/\\/g, '/')
+  if (normalized === 'SKILL.md') return true
+  return EDITABLE_SKILL_EXTENSIONS.has(extname(normalized).toLowerCase())
+}
+
+async function readManagedSkillPaths(skillsRoot: string): Promise<Set<string>> {
+  const raw = await safeReadFile(join(skillsRoot, '.hermes-managed.json'))
+  if (!raw) return new Set()
+  try {
+    const data = JSON.parse(raw)
+    const skills = data?.skills
+    if (!skills || typeof skills !== 'object') return new Set()
+    return new Set(Object.keys(skills))
+  } catch {
+    return new Set()
+  }
+}
+
+function normalizeSkillRelativePath(relativePath: string): string {
+  return relativePath.replace(/\\/g, '/').replace(/^\/+/, '')
+}
+
 function expandConfiguredPath(value: string): string {
   const expandedEnv = value.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, braced, bare) => {
     return process.env[braced || bare] || ''
@@ -173,11 +198,13 @@ async function buildSkillInfo(
   name: string,
   skillMd: string,
   skillDir: string,
+  skillsRoot: string,
   bundledManifest: Map<string, string>,
   hubNames: Set<string>,
   disabledList: string[],
   usageStats: Map<string, UsageStats>,
   chatPlane: boolean,
+  managedSkillPaths: Set<string>,
 ) {
   const source = getSkillSource(name, bundledManifest, hubNames)
   let modified = false
@@ -200,16 +227,37 @@ async function buildSkillInfo(
     viewCount: usage?.view_count,
     pinned: usage?.pinned || undefined,
     requiredCredentials: detectSkillCredentialRequirements({ name, text: skillMd, source }),
+    editable: await isEditableSkillDirectory(source, skillDir, skillsRoot, managedSkillPaths) || undefined,
+  }
+}
+
+async function isEditableSkillDirectory(
+  source: SkillSource,
+  skillDir: string,
+  skillsRoot: string,
+  managedSkillPaths: Set<string>,
+): Promise<boolean> {
+  if (source !== 'local' && source !== 'hub') return false
+  if (!isInsideDirectory(skillsRoot, skillDir)) return false
+  const skillRelPath = normalizeSkillRelativePath(relative(skillsRoot, skillDir))
+  if (managedSkillPaths.has(skillRelPath)) return false
+  try {
+    const info = await lstat(skillDir)
+    return info.isDirectory() && !info.isSymbolicLink()
+  } catch {
+    return false
   }
 }
 
 async function collectSkillsRecursive(
   directory: string,
+  skillsRoot: string,
   bundledManifest: Map<string, string>,
   hubNames: Set<string>,
   disabledList: string[],
   usageStats: Map<string, UsageStats>,
   chatPlane: boolean,
+  managedSkillPaths: Set<string>,
   visited = new Set<string>(),
 ): Promise<any[]> {
   const realDirectory = await realpath(directory).catch(() => resolve(directory))
@@ -224,10 +272,10 @@ async function collectSkillsRecursive(
     const dir = join(directory, entry.name)
     const skillMd = await safeReadFile(join(dir, 'SKILL.md'))
     if (skillMd) {
-      skills.push(await buildSkillInfo(entry.name, skillMd, dir, bundledManifest, hubNames, disabledList, usageStats, chatPlane))
+      skills.push(await buildSkillInfo(entry.name, skillMd, dir, skillsRoot, bundledManifest, hubNames, disabledList, usageStats, chatPlane, managedSkillPaths))
       continue
     }
-    skills.push(...await collectSkillsRecursive(dir, bundledManifest, hubNames, disabledList, usageStats, chatPlane, visited))
+    skills.push(...await collectSkillsRecursive(dir, skillsRoot, bundledManifest, hubNames, disabledList, usageStats, chatPlane, managedSkillPaths, visited))
   }
   return skills
 }
@@ -250,6 +298,7 @@ export async function scanSkillsDir(
   disabledList: string[],
   usageStats: Map<string, UsageStats>,
   chatPlane: boolean,
+  managedSkillPaths = new Set<string>(),
 ) {
   const allEntries = await readdir(skillsDir, { withFileTypes: true })
   const dirNames: string[] = []
@@ -294,7 +343,7 @@ export async function scanSkillsDir(
 
   for (const cat of categoryDirs) {
     const catDir = join(skillsDir, cat.name)
-    const skills = await collectSkillsRecursive(catDir, bundledManifest, hubNames, disabledList, usageStats, chatPlane)
+    const skills = await collectSkillsRecursive(catDir, skillsDir, bundledManifest, hubNames, disabledList, usageStats, chatPlane, managedSkillPaths)
     if (skills.length > 0) {
       categories.push({ name: cat.name, description: cat.description, skills })
     }
@@ -316,6 +365,7 @@ export async function scanSkillsDir(
         viewCount: usage?.view_count,
         pinned: usage?.pinned || undefined,
         requiredCredentials: detectSkillCredentialRequirements({ name: fs.name, text: fs.skillMd, source: fs.source }),
+        editable: await isEditableSkillDirectory(fs.source as SkillSource, join(skillsDir, fs.name), skillsDir, managedSkillPaths) || undefined,
       })
     }
     miscSkills.sort((a: any, b: any) => a.name.localeCompare(b.name))
@@ -342,6 +392,7 @@ export async function scanExternalSkillsDir(
     skills: category.skills.map((skill: any) => ({
       ...skill,
       source: 'external' as SkillSource,
+      editable: undefined,
       modified: undefined,
     })),
   }))
@@ -470,9 +521,10 @@ export async function list(ctx: any) {
       await safeReadFile(join(skillsDir, '.hermes-skillhub.json')),
     )
     const usageStats = readUsageStats(await safeReadFile(join(skillsDir, '.usage.json')))
+    const managedSkillPaths = await readManagedSkillPaths(skillsDir)
 
     // Scan all skills (supports both two-level and three-level directory structures)
-    let categories = await scanSkillsDir(skillsDir, bundledManifest, hubNames, disabledList, usageStats, chatPlane)
+    let categories = await scanSkillsDir(skillsDir, bundledManifest, hubNames, disabledList, usageStats, chatPlane, managedSkillPaths)
     for (const externalDir of await resolveExternalSkillsDirs(config, skillsDir)) {
       const externalCategories = await scanExternalSkillsDir(externalDir, disabledList, usageStats)
       categories = mergeExternalCategories(categories, externalCategories)
@@ -578,6 +630,109 @@ export async function readFile_(ctx: any) {
     return
   }
   ctx.body = { content }
+}
+
+export async function updateFile_(ctx: any) {
+  const body = (ctx.request.body || {}) as {
+    category?: unknown
+    skill?: unknown
+    path?: unknown
+    content?: unknown
+  }
+  const category = typeof body.category === 'string' ? body.category : ''
+  const skillName = typeof body.skill === 'string' ? body.skill : ''
+  const restPath = typeof body.path === 'string' ? body.path : ''
+  const content = typeof body.content === 'string' ? body.content : null
+  if (!category || !skillName || !restPath || content === null) {
+    ctx.status = 400
+    ctx.body = { error: 'Missing category, skill, path, or content' }
+    return
+  }
+  if (Buffer.byteLength(content, 'utf-8') > MAX_SKILL_EDIT_BYTES) {
+    ctx.status = 413
+    ctx.body = { error: 'File too large' }
+    return
+  }
+  if (category === '.archive' || isSensitivePath(category) || isSensitivePath(skillName) || isSensitivePath(restPath) || !isEditableSkillTextPath(restPath)) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return
+  }
+
+  const hd = requestHermesDir(ctx)
+  const skillsRoot = resolve(hd, 'skills')
+  const config = await readRequestConfig(ctx)
+  const skillDir = await resolveSkillDirFromConfig(config, skillsRoot, category, skillName)
+  if (!skillDir || !isInsideDirectory(skillsRoot, skillDir)) {
+    ctx.status = 403
+    ctx.body = { error: 'Skill is read-only' }
+    return
+  }
+
+  const skillRelPath = normalizeSkillRelativePath(relative(skillsRoot, skillDir))
+  const managedSkillPaths = await readManagedSkillPaths(skillsRoot)
+  if (managedSkillPaths.has(skillRelPath)) {
+    ctx.status = 403
+    ctx.body = { error: 'Skill is read-only' }
+    return
+  }
+
+  try {
+    const skillDirInfo = await lstat(skillDir)
+    if (skillDirInfo.isSymbolicLink()) {
+      ctx.status = 403
+      ctx.body = { error: 'Skill is read-only' }
+      return
+    }
+    if (!skillDirInfo.isDirectory()) {
+      ctx.status = 404
+      ctx.body = { error: 'Skill not found' }
+      return
+    }
+
+    const fullPath = resolve(join(skillDir, restPath))
+    if (!isInsideDirectory(skillDir, fullPath)) {
+      ctx.status = 403
+      ctx.body = { error: 'Access denied' }
+      return
+    }
+
+    const fileInfo = await lstat(fullPath)
+    if (fileInfo.isSymbolicLink()) {
+      ctx.status = 403
+      ctx.body = { error: 'Access denied' }
+      return
+    }
+    const realSkillDir = await realpath(skillDir)
+    const realFilePath = await realpath(fullPath)
+    if (!isInsideDirectory(realSkillDir, realFilePath)) {
+      ctx.status = 403
+      ctx.body = { error: 'Access denied' }
+      return
+    }
+    const fileStat = await stat(fullPath)
+    if (!fileStat.isFile()) {
+      ctx.status = 404
+      ctx.body = { error: 'File not found' }
+      return
+    }
+    if (fileStat.size > MAX_SKILL_EDIT_BYTES) {
+      ctx.status = 413
+      ctx.body = { error: 'File too large' }
+      return
+    }
+
+    await safeFileStore.writeText(fullPath, content, { backup: true })
+    ctx.body = { success: true, content }
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') {
+      ctx.status = 404
+      ctx.body = { error: 'File not found' }
+      return
+    }
+    ctx.status = 500
+    ctx.body = { error: err.message }
+  }
 }
 
 export async function pin_(ctx: any) {

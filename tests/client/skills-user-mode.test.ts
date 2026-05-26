@@ -20,6 +20,7 @@ const skillsApiMock = vi.hoisted(() => ({
   })),
   fetchSkillContent: vi.fn(async () => '# Skill'),
   fetchSkillFiles: vi.fn(async () => []),
+  updateSkillContent: vi.fn(async (_category: string, _skill: string, _path: string, content: string) => content),
   toggleSkill: vi.fn(),
   pinSkillApi: vi.fn(),
 }))
@@ -32,6 +33,7 @@ vi.mock('@/api/hermes/skills', () => ({
   fetchSkills: skillsApiMock.fetchSkills,
   fetchSkillContent: skillsApiMock.fetchSkillContent,
   fetchSkillFiles: skillsApiMock.fetchSkillFiles,
+  updateSkillContent: skillsApiMock.updateSkillContent,
   toggleSkill: skillsApiMock.toggleSkill,
   pinSkillApi: skillsApiMock.pinSkillApi,
 }))
@@ -60,6 +62,7 @@ vi.mock('naive-ui', () => ({
   },
   useMessage: () => ({
     error: vi.fn(),
+    success: vi.fn(),
   }),
 }))
 
@@ -89,6 +92,7 @@ describe('skills user mode presentation', () => {
     skillsApiMock.fetchSkills.mockClear()
     skillsApiMock.fetchSkillContent.mockClear()
     skillsApiMock.fetchSkillFiles.mockClear()
+    skillsApiMock.updateSkillContent.mockClear()
     skillsApiMock.toggleSkill.mockClear()
     skillsApiMock.pinSkillApi.mockClear()
   })
@@ -134,6 +138,7 @@ describe('skills user mode presentation', () => {
 
     expect(list.find('.skill-toggle').exists()).toBe(false)
     expect(detail.find('.pin-toggle').exists()).toBe(false)
+    expect(detail.find('.skill-edit-toggle').exists()).toBe(false)
   })
 
   it('keeps mutating controls outside chat plane user mode', () => {
@@ -159,6 +164,33 @@ describe('skills user mode presentation', () => {
 
     expect(list.find('.skill-toggle').exists()).toBe(true)
     expect(detail.find('.pin-toggle').exists()).toBe(true)
+  })
+
+  it('lets chat-plane users edit a current profile local skill', async () => {
+    isUserModeMock.mockReturnValue(true)
+    skillsApiMock.fetchSkillContent.mockResolvedValueOnce('# Old Skill\nold instructions\n')
+
+    const detail = mount(SkillDetail, {
+      props: {
+        category: 'misc',
+        skill: 'daily-writing',
+        skillName: 'daily-writing',
+        editable: true,
+      },
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await detail.get('.skill-edit-toggle').trigger('click')
+    await detail.get('.skill-editor-textarea').setValue('# Old Skill\nnew instructions\n')
+    await detail.get('.skill-save').trigger('click')
+
+    expect(skillsApiMock.updateSkillContent).toHaveBeenCalledWith(
+      'misc',
+      'daily-writing',
+      'SKILL.md',
+      '# Old Skill\nnew instructions\n',
+    )
+    expect(detail.get('.markdown').text()).toContain('new instructions')
   })
 
   it('loads the first visible skill detail after the list is fetched', async () => {
