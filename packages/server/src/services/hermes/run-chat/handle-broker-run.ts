@@ -217,9 +217,12 @@ function renderProfileSkillText(text: string, skillDir: string, sessionId?: stri
 }
 
 function shouldInjectProfileSkill(skill: ProfileSkillRuntimeEntry, inputText: string): boolean {
-  if (!isPreloadProfileSkill(skill)) return false
   const haystack = `${skill.name}\n${skill.description}\n${skill.text}`.toLowerCase()
   const input = inputText.toLowerCase()
+  if (skill.name === 'meegle') {
+    return /飞书项目|meegle|meego|project\.feishu\.cn|工作项/.test(input)
+  }
+  if (!isPreloadProfileSkill(skill)) return false
   if (skill.name === 'keep-record' || haystack.includes('record_tool') || haystack.includes('keep health')) {
     return /keep|记录|记一下|登记|打卡|饮食|吃|早餐|午餐|中午|晚餐|体重|体脂|围度|运动|睡眠|生理|肥肠|鸡蛋|鸡腿|青椒/.test(input)
   }

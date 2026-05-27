@@ -43,6 +43,31 @@ describe('run-chat broker compatibility module', () => {
     return profileDir
   }
 
+  function addMeegleSkill(profileDir: string) {
+    mkdirSync(join(profileDir, 'skills', 'meegle'), { recursive: true })
+    writeFileSync(join(profileDir, 'skills', 'meegle', 'SKILL.md'), [
+      '---',
+      'name: meegle',
+      'description: 飞书项目（Meego/Meegle）操作工具。支持查询和管理工作项、节点流转、视图查询、个人待办、排期统计等功能。',
+      '---',
+      '# 飞书项目 (Meego/Meegle) 操作指南',
+      '本技能通过 Meegle CLI 来操作飞书项目数据。',
+      '写操作必须先给执行计划和将要写入的字段，等用户确认后再执行。',
+    ].join('\n'), 'utf-8')
+  }
+
+  function addNonMeegleSkillThatMentionsMeegleCli(profileDir: string) {
+    mkdirSync(join(profileDir, 'skills', 'project-note'), { recursive: true })
+    writeFileSync(join(profileDir, 'skills', 'project-note', 'SKILL.md'), [
+      '---',
+      'name: project-note',
+      'description: Internal project notes that compare tools including Meegle CLI.',
+      '---',
+      '# Project note',
+      'This skill mentions Meegle CLI as background only.',
+    ].join('\n'), 'utf-8')
+  }
+
   it('builds broker requests with owner identity, channel, session history and metadata', async () => {
     const request = await buildRunBrokerRequest({
       input: 'hello broker',
@@ -164,6 +189,37 @@ describe('run-chat broker compatibility module', () => {
     expect(request.metadata.instructions).toContain('profile skill "keep-record"')
     expect(request.metadata.instructions).toContain('record_tool')
     expect(request.metadata.instructions).toContain(join(profileDir, 'skills', 'Keep', 'keep-record'))
+  })
+
+  it('injects the Meegle profile skill for Feishu Project natural WebUI requests', async () => {
+    const profileDir = makeProfile()
+    addMeegleSkill(profileDir)
+
+    const request = await buildRunBrokerRequest({
+      input: '请在飞书项目里准备创建一个测试任务，标题为「Hermes Meegle 验证测试」，先给我执行计划和将要写入的字段，不要执行，等我确认。',
+      profile: 'feishu_user_a',
+      profileDir,
+    })
+
+    expect(request.content).toBe('请在飞书项目里准备创建一个测试任务，标题为「Hermes Meegle 验证测试」，先给我执行计划和将要写入的字段，不要执行，等我确认。')
+    expect(request.metadata.instructions).toContain('profile skill "meegle"')
+    expect(request.metadata.instructions).toContain('Meegle CLI')
+    expect(request.metadata.instructions).toContain('写操作必须先给执行计划')
+    expect(request.metadata.instructions).toContain(join(profileDir, 'skills', 'meegle'))
+  })
+
+  it('does not treat non-Meegle skills that mention Meegle CLI as the Meegle skill', async () => {
+    const profileDir = makeProfile()
+    addNonMeegleSkillThatMentionsMeegleCli(profileDir)
+
+    const request = await buildRunBrokerRequest({
+      input: '请在飞书项目里准备创建一个测试任务',
+      profile: 'feishu_user_a',
+      profileDir,
+    })
+
+    expect(request.metadata.instructions).not.toContain('profile skill "project-note"')
+    expect(request.metadata.instructions).not.toContain('This skill mentions Meegle CLI')
   })
 
   it('builds broker headers without leaking profile identity into owner identity', () => {
