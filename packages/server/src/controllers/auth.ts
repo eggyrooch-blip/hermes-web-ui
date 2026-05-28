@@ -2,7 +2,7 @@ import type { Context } from 'koa'
 import { getCredentials, setCredentials, verifyCredentials, deleteCredentials } from '../services/credentials'
 import { getToken, HERMES_SESSION_COOKIE, SESSION_COOKIE_MAX_AGE_SECONDS } from '../services/auth'
 import { checkPassword, recordPasswordFailure, recordPasswordSuccess, extractIp, getLockedIps, unlockIp, unlockAll } from '../services/login-limiter'
-import { config } from '../config'
+import { config, parseBool } from '../config'
 import {
   buildFeishuAuthorizeUrl,
   createBoundFeishuSession,
@@ -113,6 +113,13 @@ function brokerUrl(path: string): string {
   return `${config.runBrokerUrl}${path}`
 }
 
+function shouldSkipBoundProfileGatewayWake(): boolean {
+  if (parseBool(process.env.HERMES_WEBUI_ALLOW_API_ONLY_GATEWAYS)) return false
+  // In chat broker mode, user chat runs through Run Broker; API-only gateways
+  // stay blocked by gateway-manager and should not be woken after OAuth login.
+  return config.webPlane === 'chat' && (config.webuiRunBroker || config.webuiJobsBroker)
+}
+
 async function pipeBrokerJson(ctx: Context, res: Response): Promise<void> {
   const body = await res.json().catch(async () => ({ error: await res.text().catch(() => 'Broker request failed') }))
   ctx.status = res.status
@@ -145,6 +152,13 @@ async function fetchFeishuUatStatusForUser(user: WebUser, requiredScopes = ''): 
 export async function wakeBoundProfileGateway(profile: string): Promise<void> {
   const mgr = getGatewayManagerInstance()
   if (!mgr || !profile) return
+  if (shouldSkipBoundProfileGatewayWake()) {
+    logger.debug(
+      'Skipping bound profile gateway wake for profile "%s": chat broker mode is active',
+      profile,
+    )
+    return
+  }
   try {
     const current = typeof mgr.detectStatus === 'function'
       ? await mgr.detectStatus(profile)

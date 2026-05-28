@@ -309,6 +309,46 @@ describe('Feishu OAuth controller', () => {
     expect(gatewayManager.startApiOnly).toHaveBeenCalledWith('feishu_user_a')
   })
 
+  it('does not start an API-only gateway after OAuth login in chat broker mode', async () => {
+    process.env.HERMES_WEB_PLANE = 'chat'
+    process.env.HERMES_WEBUI_RUN_BROKER = '1'
+    vi.resetModules()
+    const gatewayManager = {
+      detectStatus: vi.fn().mockResolvedValue({ profile: 'feishu_user_a', running: false }),
+      startApiOnly: vi.fn().mockRejectedValue(new Error('API-only gateways are disabled in chat broker mode')),
+    }
+    vi.doMock('../../packages/server/src/services/gateway-bootstrap', () => ({
+      getGatewayManagerInstance: () => gatewayManager,
+    }))
+
+    const { wakeBoundProfileGateway } = await import('../../packages/server/src/controllers/auth')
+
+    await wakeBoundProfileGateway('feishu_user_a')
+
+    expect(gatewayManager.startApiOnly).not.toHaveBeenCalled()
+  })
+
+  it('honors the API-only gateway wake escape hatch in chat broker mode', async () => {
+    process.env.HERMES_WEB_PLANE = 'chat'
+    process.env.HERMES_WEBUI_RUN_BROKER = '1'
+    process.env.HERMES_WEBUI_ALLOW_API_ONLY_GATEWAYS = '1'
+    vi.resetModules()
+    const gatewayManager = {
+      detectStatus: vi.fn().mockResolvedValue({ profile: 'feishu_user_a', running: false }),
+      startApiOnly: vi.fn().mockResolvedValue({ profile: 'feishu_user_a', running: true }),
+    }
+    vi.doMock('../../packages/server/src/services/gateway-bootstrap', () => ({
+      getGatewayManagerInstance: () => gatewayManager,
+    }))
+
+    const { wakeBoundProfileGateway } = await import('../../packages/server/src/controllers/auth')
+
+    await wakeBoundProfileGateway('feishu_user_a')
+
+    expect(gatewayManager.detectStatus).toHaveBeenCalledWith('feishu_user_a')
+    expect(gatewayManager.startApiOnly).toHaveBeenCalledWith('feishu_user_a')
+  })
+
   it('keeps Feishu logout public so it can always clear the session cookie', async () => {
     const { authPublicRoutes, authProtectedRoutes } = await import('../../packages/server/src/routes/auth')
     const hasLogout = (route: any) => route.path === '/api/auth/feishu/logout' && route.methods.includes('POST')
