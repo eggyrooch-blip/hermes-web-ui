@@ -3,6 +3,7 @@ import { resolve } from 'path'
 import * as hermesCli from '../services/hermes/hermes-cli'
 import { getGatewayManagerInstance } from '../services/gateway-bootstrap'
 import { config } from '../config'
+import { logger } from '../services/logger'
 
 declare const __APP_VERSION__: string
 
@@ -48,6 +49,7 @@ const HERMES_VERSION_CACHE_TTL_MS = 60_000
 let cachedHermesVersionRaw = ''
 let cachedHermesVersionAt = 0
 let pendingHermesVersion: Promise<string> | null = null
+let warnedMissingRunBrokerKey = false
 
 async function getCachedHermesVersion(): Promise<string> {
   const now = Date.now()
@@ -74,9 +76,14 @@ async function getCachedHermesVersion(): Promise<string> {
 async function isGatewayReachable(): Promise<boolean> {
   if (config.webuiRunBroker && config.runBrokerUrl) {
     try {
-      const brokerUrl = `${config.runBrokerUrl.replace(/\/$/, '')}/api/run-broker/credentials/feishu/uat/status`
-      const res = await fetch(brokerUrl, { signal: AbortSignal.timeout(5000) })
-      return res.status < 500
+      const brokerUrl = `${config.runBrokerUrl.replace(/\/$/, '')}/api/run-broker/health`
+      const headers = config.runBrokerKey ? { Authorization: `Bearer ${config.runBrokerKey}` } : undefined
+      if (!config.runBrokerKey && !warnedMissingRunBrokerKey) {
+        warnedMissingRunBrokerKey = true
+        logger.warn('Run Broker health probe is enabled but HERMES_RUN_BROKER_KEY is not configured')
+      }
+      const res = await fetch(brokerUrl, { headers, signal: AbortSignal.timeout(5000) })
+      return res.ok
     } catch {
       return false
     }

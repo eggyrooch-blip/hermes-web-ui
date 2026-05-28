@@ -60,9 +60,10 @@ async function loadHealthControllerWithHermesVersionMock(getVersion: ReturnType<
   return import('../../packages/server/src/controllers/health')
 }
 
-async function loadHealthControllerInRunBrokerMode() {
+async function loadHealthControllerInRunBrokerMode(options: { runBrokerKey?: string } = {}) {
   vi.resetModules()
   ;(globalThis as any).__APP_VERSION__ = 'test'
+  const loggerWarn = vi.fn()
 
   vi.doMock('../../packages/server/src/services/hermes/hermes-cli', () => ({
     getVersion: vi.fn().mockResolvedValue('Hermes Agent v0.14.0\n'),
@@ -80,10 +81,16 @@ async function loadHealthControllerInRunBrokerMode() {
       authMode: 'feishu-oauth-dev',
       webuiRunBroker: true,
       runBrokerUrl: 'http://127.0.0.1:8876',
+      runBrokerKey: options.runBrokerKey ?? 'broker-secret',
     },
   }))
 
-  return import('../../packages/server/src/controllers/health')
+  vi.doMock('../../packages/server/src/services/logger', () => ({
+    logger: { warn: loggerWarn },
+  }))
+
+  const mod = await import('../../packages/server/src/controllers/health')
+  return { ...mod, loggerWarn }
 }
 
 function createMockCtx() {
@@ -155,10 +162,10 @@ describe('health controller version metadata', () => {
     expect(ctxB.body.version).toBe('v0.11.0')
   })
 
-  it('uses run-broker reachability for chat-plane health when broker mode is enabled', async () => {
+  it('uses an authenticated non-credential run-broker probe for chat-plane health', async () => {
     const fetchMock = vi.fn(async (url: string) => {
-      if (url === 'http://127.0.0.1:8876/api/run-broker/credentials/feishu/uat/status') {
-        return { ok: false, status: 403 }
+      if (url === 'http://127.0.0.1:8876/api/run-broker/health') {
+        return { ok: true, status: 200 }
       }
       return { ok: false, status: 503 }
     })
@@ -170,10 +177,57 @@ describe('health controller version metadata', () => {
     await healthCheck(ctx)
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:8876/api/run-broker/credentials/feishu/uat/status',
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      'http://127.0.0.1:8876/api/run-broker/health',
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer broker-secret' },
+        signal: expect.any(AbortSignal),
+      }),
+    )
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('/api/run-broker/slash/commands'),
+      expect.anything(),
+    )
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('/api/run-broker/credentials/feishu/uat/status'),
+      expect.anything(),
     )
     expect(ctx.body.status).toBe('ok')
     expect(ctx.body.gateway).toBe('running')
+  })
+
+  it('marks run-broker health as stopped when the broker rejects auth', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 401 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { healthCheck } = await loadHealthControllerInRunBrokerMode()
+    const ctx = createMockCtx()
+
+    await healthCheck(ctx)
+
+    expect(ctx.body.status).toBe('error')
+    expect(ctx.body.gateway).toBe('stopped')
+  })
+
+  it('warns when run-broker mode is enabled without a broker key', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 401 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { healthCheck, loggerWarn } = await loadHealthControllerInRunBrokerMode({ runBrokerKey: '' })
+    const ctx = createMockCtx()
+
+    await healthCheck(ctx)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8876/api/run-broker/health',
+      expect.objectContaining({
+        headers: undefined,
+        signal: expect.any(AbortSignal),
+      }),
+    )
+    expect(loggerWarn).toHaveBeenCalledWith(
+      'Run Broker health probe is enabled but HERMES_RUN_BROKER_KEY is not configured',
+    )
+    expect(ctx.body.status).toBe('error')
+    expect(ctx.body.gateway).toBe('stopped')
   })
 })

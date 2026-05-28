@@ -15,6 +15,11 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
+> [!info] 2026-05-28 worktree — WebUI health 改用 RunBroker health endpoint
+> `ralph-runbroker-uat-status-401` 修复日志包里 `/api/run-broker/credentials/feishu/uat/status` 401 刷屏的 WebUI 侧根因：`/health` 不再把 Feishu UAT credential status endpoint 当 broker reachability probe，也不再把 401/403 视为健康。
+>
+> 新边界是 WebUI 只请求 multitenancy RunBroker 的 `GET /api/run-broker/health`，带 `Authorization: Bearer <HERMES_RUN_BROKER_KEY>`；只有 `res.ok` 才认为 gateway running。该改动依赖 multitenancy `runbroker-health-endpoint` 先提供轻量 health route，因此生产发布顺序必须先 multitenancy、后 WebUI，或同轮发布并验证 `8766/api/run-broker/health` 与 `8648/health`。
+
 > [!info] 2026-05-26 worktree — 飞书项目改走 Meegle CLI + 官方 skill
 > `meegle-cli-credential` 收口飞书项目产品面：WebUI「凭证」页只显示 `飞书项目`，不再显示 MCP/CLI 技术名词；底层使用官方 Meegle CLI 的 device-code 登录。`feishu-project-mcp-webui` 与 `feishu-project-mcp-ui-fix` 两个已经进入 main 的 MCP 方向提交在本分支中被功能性替换，不再写 `mcp_servers.FeishuProjectMcp`，旧 MCP token/config 只作为磁盘遗留物被忽略。
 >
