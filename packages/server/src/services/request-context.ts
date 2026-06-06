@@ -220,6 +220,11 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   if (path.startsWith('/api/hermes/v1/') || path.startsWith('/v1/')) return false
   if (path === '/api/hermes/available-models') return false
 
+  // Coding Agents launch/install/config is an ADMIN-ONLY host tool (it spawns
+  // codex/claude-code CLIs against global ~/.claude / ~/.codex config). It must
+  // never be reachable by multi-tenant chat-plane users — UI-hiding is not enough.
+  if (path.startsWith('/api/coding-agents')) return true
+
   const blockedPrefixes = [
     '/api/auth/',
     '/api/hermes/profiles',

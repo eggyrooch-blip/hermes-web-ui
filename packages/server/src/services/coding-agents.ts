@@ -1000,7 +1000,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
 
   if (tool.id === 'claude-code') {
     const proxyTarget = baseUrl && apiKey
-      ? registerClaudeCodeProxyTarget({ provider, model, baseUrl, apiKey, apiMode })
+      ? registerClaudeCodeProxyTarget({ profile: scope.profile, provider, model, baseUrl, apiKey, apiMode })
       : null
     const claudeBaseUrl = proxyTarget?.baseUrl || baseUrl
     const claudeApiKey = proxyTarget?.token || apiKey

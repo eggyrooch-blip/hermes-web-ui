@@ -6,6 +6,10 @@ import { config } from '../config'
 export type ApiMode = 'chat_completions' | 'codex_responses' | 'anthropic_messages' | 'bedrock_converse' | 'codex_app_server'
 
 export interface ClaudeCodeProxyTargetInput {
+  // profile is part of the target identity so two profiles using the same
+  // provider/model/baseUrl do NOT share a routeKey/token and cannot overwrite
+  // each other's apiKey (per-profile credential isolation — matches codex-proxy).
+  profile: string
   provider: string
   model: string
   baseUrl: string
@@ -27,12 +31,12 @@ const CLAUDE_PROXY_VISIBLE_MODELS = [
   'claude-opus-4-7',
 ]
 
-function targetKey(provider: string, model: string, apiMode: ApiMode, baseUrl: string): string {
-  return `${provider}\0${model}\0${apiMode}\0${baseUrl}`
+function targetKey(profile: string, provider: string, model: string, apiMode: ApiMode, baseUrl: string): string {
+  return `${profile}\0${provider}\0${model}\0${apiMode}\0${baseUrl}`
 }
 
-function routeKeyFor(provider: string, model: string, apiMode: ApiMode, baseUrl: string): string {
-  return Buffer.from(targetKey(provider, model, apiMode, baseUrl), 'utf-8').toString('base64url')
+function routeKeyFor(profile: string, provider: string, model: string, apiMode: ApiMode, baseUrl: string): string {
+  return Buffer.from(targetKey(profile, provider, model, apiMode, baseUrl), 'utf-8').toString('base64url')
 }
 
 function localProxyBaseUrl(routeKey: string): string {
@@ -40,13 +44,14 @@ function localProxyBaseUrl(routeKey: string): string {
 }
 
 export function registerClaudeCodeProxyTarget(input: ClaudeCodeProxyTargetInput): { baseUrl: string; token: string; routeKey: string } {
+  const profile = (input.profile || 'default').trim()
   const provider = input.provider.trim()
   const model = input.model.trim()
   const baseUrl = input.baseUrl.replace(/\/+$/, '')
   const apiMode = input.apiMode || 'chat_completions'
-  const key = targetKey(provider, model, apiMode, baseUrl)
+  const key = targetKey(profile, provider, model, apiMode, baseUrl)
   const existing = targets.get(key)
-  const routeKey = existing?.routeKey || routeKeyFor(provider, model, apiMode, baseUrl)
+  const routeKey = existing?.routeKey || routeKeyFor(profile, provider, model, apiMode, baseUrl)
   const token = existing?.token || `hwui_${randomBytes(24).toString('base64url')}`
 
   targets.set(key, {
