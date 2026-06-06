@@ -64,6 +64,15 @@ export async function fetchAvailableModels(): Promise<AvailableModelsResponse> {
   return request<AvailableModelsResponse>('/api/hermes/available-models')
 }
 
+// Upstream coding-agents feature: profile-scoped variant of fetchAvailableModels.
+// Reuses sunke's existing /api/hermes/available-models endpoint with a profile
+// query param so the coding-agent model picker respects multitenancy isolation.
+export async function fetchAvailableModelsForProfile(profile: string): Promise<AvailableModelsResponse> {
+  const params = new URLSearchParams()
+  params.set('profile', profile || 'default')
+  return request<AvailableModelsResponse>(`/api/hermes/available-models?${params.toString()}`)
+}
+
 export async function updateDefaultModel(data: {
   default: string
   provider?: string

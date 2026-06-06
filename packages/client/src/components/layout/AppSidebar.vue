@@ -212,6 +212,13 @@ onMounted(async () => {
             </svg>
             <span>{{ t("sidebar.models") }}</span>
           </RouteLinkItem>
+          <RouteLinkItem v-if="showAdminSurfaces" class="nav-item" :to="{ name: 'hermes.codingAgents' }" :active="selectedKey === 'hermes.codingAgents'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="16 18 22 12 16 6" />
+              <polyline points="8 6 2 12 8 18" />
+            </svg>
+            <span>{{ t("sidebar.codingAgents") }}</span>
+          </RouteLinkItem>
         </div>
       </div>
 

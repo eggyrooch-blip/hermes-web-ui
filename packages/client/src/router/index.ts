@@ -121,6 +121,14 @@ const router = createRouter({
       name: 'hermes.files',
       component: () => import('@/views/hermes/FilesView.vue'),
     },
+    {
+      // Upstream coding-agents feature: launch/manage codex & claude-code.
+      // Admin-only tool — hidden from the chat plane for normal profiles.
+      path: '/hermes/coding-agents',
+      name: 'hermes.codingAgents',
+      component: () => import('@/views/hermes/CodingAgentsView.vue'),
+      meta: { hiddenInChatPlane: true },
+    },
   ],
 })
 

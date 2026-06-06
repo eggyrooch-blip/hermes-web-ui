@@ -31,6 +31,10 @@ import { slashRoutes } from './hermes/slash'
 import { ttsRoutes } from './hermes/tts'
 import { proxyRoutes, proxyMiddleware } from './hermes/proxy'
 import { groupChatRoutes, setGroupChatServer } from './hermes/group-chat'
+// Upstream coding-agents feature (codex / claude-code launchers + proxies).
+import { codingAgentRoutes } from './coding-agents'
+import { claudeCodeProxyRoutes } from './claude-code-proxy'
+import { codexProxyRoutes } from './codex-proxy'
 import { enforcePlaneAccess } from '../services/request-context'
 import { populateHermesUserProfile } from '../middleware/user-auth'
 
@@ -45,6 +49,10 @@ export function registerRoutes(app: any, requireAuth: (ctx: Context, next: Next)
   app.use(webhookRoutes.routes())
   app.use(authPublicRoutes.routes())
   app.use(ttsRoutes.routes())              // TTS proxy/generation — must be before auth
+  // Coding-agent proxies are key-gated via the :key path segment and are hit by
+  // locally-launched codex/claude-code CLIs, so they must bypass session auth.
+  app.use(claudeCodeProxyRoutes.routes())
+  app.use(codexProxyRoutes.routes())
 
   // --- Auth middleware: all routes below require authentication ---
   app.use(requireAuth)
@@ -76,6 +84,7 @@ export function registerRoutes(app: any, requireAuth: (ctx: Context, next: Next)
   app.use(cronHistoryRoutes.routes())        // Must be before proxy
   app.use(kanbanRoutes.routes())             // Must be before proxy
   app.use(slashRoutes.routes())              // Must be before proxy
+  app.use(codingAgentRoutes.routes())        // Must be before proxy
   app.use(proxyRoutes.routes())
 
   // Proxy catch-all middleware (must be last)
