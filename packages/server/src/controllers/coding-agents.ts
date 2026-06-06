@@ -9,11 +9,15 @@ import {
   writeCodingAgentConfigFile,
   type CodingAgentConfigScope,
 } from '../services/coding-agents'
+import { getRequestProfile } from '../services/request-context'
 
 function configScope(ctx: Context): CodingAgentConfigScope {
-  const body = ctx.request.body as { profile?: unknown; provider?: unknown } | undefined
+  const body = ctx.request.body as { provider?: unknown } | undefined
   return {
-    profile: ctx.state.profile?.name || (typeof ctx.query.profile === 'string' ? ctx.query.profile : '') || (typeof body?.profile === 'string' ? body.profile : ''),
+    // Multitenancy: resolve the profile through getRequestProfile so the chat-plane
+    // ownership ACL is enforced — a request cannot launch/inspect a coding agent
+    // scoped to another owner's profile by passing ?profile= or body.profile.
+    profile: getRequestProfile(ctx),
     provider: (typeof ctx.query.provider === 'string' ? ctx.query.provider : '') || (typeof body?.provider === 'string' ? body.provider : ''),
   }
 }
@@ -79,7 +83,7 @@ export async function prepareLaunch(ctx: Context) {
     }
     ctx.body = await prepareCodingAgentLaunch(ctx.params.id, {
       mode: body.mode,
-      profile: ctx.state.profile?.name || body.profile,
+      profile: getRequestProfile(ctx),
       provider: body.provider,
       model: body.model,
       baseUrl: body.baseUrl,
@@ -105,7 +109,7 @@ export async function nativeLaunch(ctx: Context) {
     }
     ctx.body = await openCodingAgentNativeTerminal(ctx.params.id, {
       mode: body.mode,
-      profile: ctx.state.profile?.name || body.profile,
+      profile: getRequestProfile(ctx),
       provider: body.provider,
       model: body.model,
       baseUrl: body.baseUrl,
