@@ -1283,14 +1283,21 @@ onBeforeUnmount(() => {
     font-family: $font-code;
     color: $text-primary;
     font-weight: 600;
-    flex-shrink: 0;
-  }
-
-  .tool-preview {
+    flex: 0 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 400px;
+  }
+
+  .tool-preview {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: min(400px, 100%);
   }
 }
 

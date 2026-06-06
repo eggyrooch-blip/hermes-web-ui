@@ -42,15 +42,19 @@ const customModelSet = computed(() => {
   return set
 })
 
+function safeLower(value: unknown) {
+  return typeof value === 'string' ? value.toLowerCase() : ''
+}
+
 const filteredGroups = computed(() => {
-  const q = searchQuery.value.toLowerCase().trim()
+  const q = safeLower(searchQuery.value).trim()
   if (!q) return modelGroupsWithCustom.value
   return modelGroupsWithCustom.value
     .map(g => ({
       ...g,
-      models: g.models.filter(m => m.toLowerCase().includes(q)),
+      models: g.models.filter(m => safeLower(m).includes(q)),
     }))
-    .filter(g => g.models.length > 0 || g.label.toLowerCase().includes(q))
+    .filter(g => g.models.length > 0 || safeLower(g.label).includes(q))
 })
 
 function toggleGroup(provider: string) {
