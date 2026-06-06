@@ -69,6 +69,12 @@ const router = createRouter({
       component: () => import('@/views/hermes/SkillsView.vue'),
     },
     {
+      // Upstream Skills Usage stats — profile-scoped read-only view.
+      path: '/hermes/skills-usage',
+      name: 'hermes.skillsUsage',
+      component: () => import('@/views/hermes/SkillsUsageView.vue'),
+    },
+    {
       path: '/hermes/credentials',
       name: 'hermes.credentials',
       component: () => import('@/views/hermes/CredentialsView.vue'),

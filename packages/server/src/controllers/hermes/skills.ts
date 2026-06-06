@@ -11,6 +11,7 @@ import {
 import { validateSkillName } from '../../services/hermes/hermes-cli'
 import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 import { getRequestProfile } from '../../services/request-context'
+import { getSkillUsageStatsFromDb } from '../../db/hermes/sessions-db'
 import { isSensitivePath } from '../../services/hermes/file-provider'
 import { safeFileStore } from '../../services/safe-file-store'
 import { detectSkillCredentialRequirements } from '../../services/hermes/skill-credentials'
@@ -775,5 +776,18 @@ export async function installFromSkillHub(ctx: any) {
   } catch (err: any) {
     ctx.status = typeof err?.status === 'number' ? err.status : 500
     ctx.body = { error: err?.message || 'Failed to install SkillHub skill' }
+  }
+}
+
+// Upstream Skills Usage stats (#668/#698). Profile-scoped via sunke's
+// getRequestProfile so the per-profile session DB is queried (multitenancy).
+export async function usageStats(ctx: any) {
+  const rawDays = parseInt(String(ctx.query?.days ?? '7'), 10)
+  const days = Number.isFinite(rawDays) && rawDays > 0 ? Math.min(rawDays, 365) : 7
+  try {
+    ctx.body = await getSkillUsageStatsFromDb(days, undefined, getRequestProfile(ctx))
+  } catch (err: any) {
+    ctx.status = 500
+    ctx.body = { error: `Failed to read skill usage stats: ${err.message}` }
   }
 }
