@@ -2,7 +2,7 @@ import type { Context } from 'koa'
 import { getCredentials, setCredentials, verifyCredentials, deleteCredentials } from '../services/credentials'
 import { getToken, HERMES_SESSION_COOKIE, SESSION_COOKIE_MAX_AGE_SECONDS } from '../services/auth'
 import { checkPassword, recordPasswordFailure, recordPasswordSuccess, extractIp, getLockedIps, unlockIp, unlockAll } from '../services/login-limiter'
-import { config, parseBool } from '../config'
+import { config, parseBool, isAuthDisabled } from '../config'
 import {
   buildFeishuAuthorizeUrl,
   createBoundFeishuSession,
@@ -570,13 +570,23 @@ export async function feishuUatCancel(ctx: Context) {
 }
 
 export async function currentUser(ctx: Context) {
-  const user = ctx.state.user as (WebUser & Partial<AuthenticatedUser>) | undefined
+  let user = ctx.state.user as (WebUser & Partial<AuthenticatedUser>) | undefined
   if (!user) {
-    ctx.status = 401
-    ctx.body = { error: 'Unauthorized' }
-    return
+    // This handler sits behind requireAuth, so reaching it without a populated
+    // ctx.state.user means token-mode (or AUTH_DISABLED) with an already-valid
+    // token — requireAuth never sets a user object in those modes. Returning a
+    // default user (instead of 401) stops the client's fetchCurrentUser from
+    // tripping the global 401 handler and clearing the token (the "总是被登出"
+    // loop). Feishu modes always set ctx.state.user, so prod is unaffected.
+    if (config.authMode === 'token' || isAuthDisabled()) {
+      user = { openid: 'local', profile: 'default', role: 'admin', name: 'Local' } as any
+    } else {
+      ctx.status = 401
+      ctx.body = { error: 'Unauthorized' }
+      return
+    }
   }
-  const authenticated = toAuthenticatedUser(user)
+  const authenticated = toAuthenticatedUser(user!)
   const currentUser = {
     id: authenticated.id,
     username: authenticated.username,
