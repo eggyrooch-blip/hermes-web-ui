@@ -162,7 +162,8 @@ onMounted(async () => {
             </svg>
             <span>{{ t("sidebar.kanban") }}</span>
           </RouteLinkItem>
-          <RouteLinkItem v-if="showAdminSurfaces" class="nav-item" :to="{ name: 'hermes.channels' }" :active="selectedKey === 'hermes.channels'">
+          <!-- sunke: hidden from sidebar (route still reachable by URL) -->
+          <RouteLinkItem v-if="false" class="nav-item" :to="{ name: 'hermes.channels' }" :active="selectedKey === 'hermes.channels'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
             </svg>
@@ -206,7 +207,8 @@ onMounted(async () => {
             </svg>
             <span>{{ t("sidebar.files") }}</span>
           </RouteLinkItem>
-          <RouteLinkItem v-if="showAdminSurfaces" class="nav-item" :to="{ name: 'hermes.models' }" :active="selectedKey === 'hermes.models'">
+          <!-- sunke: hidden from sidebar (route still reachable by URL) -->
+          <RouteLinkItem v-if="false" class="nav-item" :to="{ name: 'hermes.models' }" :active="selectedKey === 'hermes.models'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3" />
               <path d="M12 1v4" />
@@ -269,7 +271,8 @@ onMounted(async () => {
           </svg>
         </div>
         <div v-show="!isGroupCollapsed('system')" class="nav-group-items">
-          <RouteLinkItem v-if="showAdminSurfaces" class="nav-item" :to="{ name: 'hermes.gateways' }" :active="selectedKey === 'hermes.gateways'">
+          <!-- sunke: hidden from sidebar (route still reachable by URL) -->
+          <RouteLinkItem v-if="false" class="nav-item" :to="{ name: 'hermes.gateways' }" :active="selectedKey === 'hermes.gateways'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <rect x="2" y="2" width="20" height="8" rx="2" ry="2" />
               <rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
