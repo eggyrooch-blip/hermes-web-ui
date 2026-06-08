@@ -82,6 +82,11 @@ const contentFiles = computed(() => {
 
 // Generate download URL with auth token
 function getDownloadUrl(path: string, name: string): string {
+	// Remote http(s) media (e.g. Tencent VOD/CDN images returned by AIGC image
+	// generation) is directly loadable by the browser. Wrapping it in the local
+	// download proxy makes the server treat the URL as a local file path → 404 →
+	// broken image. Return remote URLs untouched so <img>/<video> load directly.
+	if (/^https?:\/\//i.test(path)) return path;
 	const token = getApiKey();
 	const base = `/api/hermes/download?path=${encodeURIComponent(path)}&name=${encodeURIComponent(name)}`;
 	return token ? `${base}&token=${encodeURIComponent(token)}` : base;

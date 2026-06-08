@@ -11,6 +11,12 @@ import { getApiKey, getBaseUrlValue } from '../client'
  * replacement.
  */
 export function getDownloadUrl(filePath: string, fileName?: string): string {
+  // Remote http(s) media (e.g. Tencent VOD/CDN images returned by AIGC tools)
+  // is directly loadable by the browser. Wrapping it in the local download
+  // proxy makes the server treat the URL as a local file path → 404 → broken
+  // image. Return remote URLs untouched.
+  if (/^https?:\/\//i.test(filePath)) return filePath
+
   const base = getBaseUrlValue()
 
   // Guard: if filePath is already a full download URL, extract the real path
