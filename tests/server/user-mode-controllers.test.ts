@@ -82,6 +82,40 @@ function mockUploadCtx(body: Buffer, contentType: string) {
   return ctx
 }
 
+function writeRoutingDb(rows: Array<{
+  user_id: string
+  profile_name: string
+  open_id: string
+  owner_open_id?: string
+  active?: number
+  kind?: string
+  provenance?: string
+}>) {
+  const dbPath = join(baseDir, 'multitenancy.db')
+  const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite')
+  const db = new DatabaseSync(dbPath)
+  try {
+    db.exec(`
+      CREATE TABLE multitenancy_routing (
+        user_id TEXT PRIMARY KEY NOT NULL,
+        profile_name TEXT NOT NULL,
+        open_id TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        owner_open_id TEXT,
+        kind TEXT DEFAULT 'user',
+        provenance TEXT DEFAULT 'sync'
+      );
+    `)
+    const stmt = db.prepare('INSERT INTO multitenancy_routing (user_id, profile_name, open_id, active, owner_open_id, kind, provenance) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    for (const row of rows) {
+      stmt.run(row.user_id, row.profile_name, row.open_id, row.active ?? 1, row.owner_open_id ?? row.open_id, row.kind ?? 'user', row.provenance ?? 'sync')
+    }
+  } finally {
+    db.close()
+  }
+  return dbPath
+}
+
 async function writeStateDb(profileDir: string, rows: Array<{
   id: string
   model: string
@@ -213,19 +247,112 @@ custom_providers:
     expect(credentialsCtx.status).toBe(403)
   })
 
-  it('rejects default model config writes in chat plane', async () => {
+  it('writes default model config to the bound profile in chat plane', async () => {
     const { setConfigModel } = await import('../../packages/server/src/controllers/hermes/models')
     const ctx = mockCtx({
       method: 'PUT',
-      request: { body: { default: 'root-model', provider: 'secret-provider' } },
+      request: { body: { default: 'custom:litellm-sre/tencent-sonnet-4-6', provider: 'custom:litellm-sre' } },
+    })
+
+    await setConfigModel(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body).toEqual({ success: true })
+    const updated = readFileSync(join(baseDir, 'profiles', 'user_a', 'config.yaml'), 'utf-8')
+    expect(updated).toContain('default: custom:litellm-sre/tencent-sonnet-4-6')
+    expect(updated).toContain('provider: custom:litellm-sre')
+    expect(updated).toContain('api_key: provider-secret')
+    expect(readFileSync(join(baseDir, 'config.yaml'), 'utf-8')).toContain('default: root-model')
+  })
+
+  it('lists a selected group profile custom model from model config without provider secrets in chat plane', async () => {
+    process.env.HERMES_MULTITENANCY_DB = writeRoutingDb([
+      { user_id: 'user_a', profile_name: 'user_a', open_id: 'ou_test' },
+      { user_id: 'group_alpha', profile_name: 'feishu_group_alpha', open_id: '', owner_open_id: 'ou_test', kind: 'agent', provenance: 'group' },
+    ])
+    mkdirSync(join(baseDir, 'profiles', 'feishu_group_alpha'), { recursive: true })
+    writeYaml(join(baseDir, 'profiles', 'feishu_group_alpha', 'config.yaml'), `
+model:
+  default: custom:litellm-sre/tencent-sonnet-4-6
+  provider: custom:litellm-sre
+  base_url: https://litellm.sre.gotokeep.com/v1
+`)
+    const { getAvailable } = await import('../../packages/server/src/controllers/hermes/models')
+    const ctx = mockCtx({
+      get: (name: string) => name.toLowerCase() === 'x-hermes-profile' ? 'feishu_group_alpha' : '',
+    })
+
+    await getAvailable(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body.default).toBe('custom:litellm-sre/tencent-sonnet-4-6')
+    expect(ctx.body.default_provider).toBe('custom:litellm-sre')
+    expect(ctx.body.groups).toEqual([
+      expect.objectContaining({
+        provider: 'custom:litellm-sre',
+        label: 'litellm-sre',
+        base_url: '',
+        api_key: '',
+        models: ['custom:litellm-sre/tencent-sonnet-4-6'],
+      }),
+    ])
+  })
+
+  it('writes selected group profile model in chat plane without copying provider credentials', async () => {
+    process.env.HERMES_MULTITENANCY_DB = writeRoutingDb([
+      { user_id: 'user_a', profile_name: 'user_a', open_id: 'ou_test' },
+      { user_id: 'group_alpha', profile_name: 'feishu_group_alpha', open_id: '', owner_open_id: 'ou_test', kind: 'agent', provenance: 'group' },
+    ])
+    mkdirSync(join(baseDir, 'profiles', 'feishu_group_alpha'), { recursive: true })
+    writeYaml(join(baseDir, 'profiles', 'feishu_group_alpha', 'config.yaml'), `
+model:
+  default: custom:litellm-sre/tencent-sonnet-4-5
+  provider: custom:litellm-sre
+  base_url: https://litellm.sre.gotokeep.com/v1
+`)
+    const { setConfigModel } = await import('../../packages/server/src/controllers/hermes/models')
+    const ctx = mockCtx({
+      method: 'PUT',
+      get: (name: string) => name.toLowerCase() === 'x-hermes-profile' ? 'feishu_group_alpha' : '',
+      request: { body: { default: 'custom:litellm-sre/tencent-sonnet-4-6', provider: 'custom:litellm-sre' } },
+    })
+
+    await setConfigModel(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body).toEqual({ success: true })
+    const groupConfig = readFileSync(join(baseDir, 'profiles', 'feishu_group_alpha', 'config.yaml'), 'utf-8')
+    expect(groupConfig).toContain('default: custom:litellm-sre/tencent-sonnet-4-6')
+    expect(groupConfig).toContain('provider: custom:litellm-sre')
+    expect(groupConfig).toContain('base_url: https://litellm.sre.gotokeep.com/v1')
+    expect(groupConfig).not.toContain('provider-secret')
+    expect(groupConfig).not.toContain('api_key')
+    expect(readFileSync(join(baseDir, 'profiles', 'user_a', 'config.yaml'), 'utf-8')).toContain('default: profile-model')
+  })
+
+  it('rejects model writes to unowned selected profiles in chat plane', async () => {
+    process.env.HERMES_MULTITENANCY_DB = writeRoutingDb([
+      { user_id: 'user_a', profile_name: 'user_a', open_id: 'ou_test' },
+      { user_id: 'other_group', profile_name: 'feishu_group_other', open_id: '', owner_open_id: 'ou_other', kind: 'agent', provenance: 'group' },
+    ])
+    mkdirSync(join(baseDir, 'profiles', 'feishu_group_other'), { recursive: true })
+    writeYaml(join(baseDir, 'profiles', 'feishu_group_other', 'config.yaml'), `
+model:
+  default: other-model
+`)
+    const { setConfigModel } = await import('../../packages/server/src/controllers/hermes/models')
+    const ctx = mockCtx({
+      method: 'PUT',
+      get: (name: string) => name.toLowerCase() === 'x-hermes-profile' ? 'feishu_group_other' : '',
+      request: { body: { default: 'custom:litellm-sre/tencent-sonnet-4-6', provider: 'custom:litellm-sre' } },
     })
 
     await setConfigModel(ctx)
 
     expect(ctx.status).toBe(403)
-    const updated = readFileSync(join(baseDir, 'profiles', 'user_a', 'config.yaml'), 'utf-8')
-    expect(updated).toContain('default: profile-model')
-    expect(updated).not.toContain('root-model')
+    expect(ctx.body).toEqual({ error: 'Selected profile is not owned by this user' })
+    expect(readFileSync(join(baseDir, 'profiles', 'feishu_group_other', 'config.yaml'), 'utf-8')).toContain('default: other-model')
+    expect(readFileSync(join(baseDir, 'profiles', 'user_a', 'config.yaml'), 'utf-8')).toContain('default: profile-model')
   })
 
   it('reads and writes profile memory and SOUL in chat plane', async () => {

@@ -10,6 +10,7 @@ import { readAppConfig } from '../../services/app-config'
 import { getDb } from '../../db'
 import { MODEL_CONTEXT_TABLE } from '../../db/hermes/schemas'
 import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
+import { ownerOwnsProfile } from '../../services/hermes/agent-ownership'
 
 const PROVIDER_MODEL_CATALOG = buildProviderModelMap()
 type AvailableGroup = { provider: string; label: string; base_url: string; models: string[]; api_key: string; builtin?: boolean; model_meta?: Record<string, { preview?: boolean; disabled?: boolean }> }
@@ -53,6 +54,45 @@ function sanitizeAvailableGroups(groups: AvailableGroup[]): AvailableGroup[] {
   }))
 }
 
+function getExplicitSelectedProfile(ctx: any): string {
+  return String(ctx.get?.('x-hermes-profile') || ctx.query?.profile || '').trim()
+}
+
+function ensureChatPlaneSelectedProfileOwned(ctx: any): boolean {
+  if (!isChatPlaneRequest(ctx)) return true
+  const selectedProfile = getExplicitSelectedProfile(ctx)
+  if (!selectedProfile) return true
+
+  const user = ctx.state?.user as { openid?: string; profile?: string } | undefined
+  if (selectedProfile === user?.profile) return true
+  if (user?.openid && ownerOwnsProfile(user.openid, selectedProfile)) return true
+
+  ctx.status = 403
+  ctx.body = { error: 'Selected profile is not owned by this user' }
+  return false
+}
+
+function configuredCustomProviderGroup(
+  modelSection: unknown,
+  currentDefault: string,
+  currentDefaultProvider: string,
+): AvailableGroup | null {
+  if (!currentDefault || !currentDefaultProvider.startsWith('custom:')) return null
+
+  const providerName = currentDefaultProvider.replace(/^custom:/, '').trim()
+  const baseUrl = typeof modelSection === 'object' && modelSection !== null
+    ? String((modelSection as Record<string, any>).base_url || '').trim().replace(/\/+$/, '')
+    : ''
+
+  return {
+    provider: currentDefaultProvider,
+    label: providerName || 'custom',
+    base_url: baseUrl,
+    models: [currentDefault],
+    api_key: '',
+  }
+}
+
 // Copilot 授权检测：复用同一套 token 解析逻辑（含 ~/.config/github-copilot/apps.json
 // 与 ghp_ PAT 跳过），与 getCopilotModels 行为一致，避免出现"模型能拉到却被判未授权"。
 async function isCopilotAuthorized(envContent: string): Promise<boolean> {
@@ -79,6 +119,8 @@ export async function getAvailable(ctx: any) {
         )
         if (match) {
           currentDefaultProvider = `custom:${match.name.trim().toLowerCase().replace(/ /g, '-')}`
+        } else if (currentDefault.startsWith('custom:')) {
+          currentDefaultProvider = currentDefault.split('/')[0]
         }
       }
     } else if (typeof modelSection === 'string') {
@@ -222,6 +264,17 @@ export async function getAvailable(ctx: any) {
       }
     }
 
+    const configuredCustomGroup = configuredCustomProviderGroup(modelSection, currentDefault, currentDefaultProvider)
+    if (configuredCustomGroup) {
+      addGroup(
+        configuredCustomGroup.provider,
+        configuredCustomGroup.label,
+        configuredCustomGroup.base_url,
+        configuredCustomGroup.models,
+        configuredCustomGroup.api_key,
+      )
+    }
+
     for (const g of groups) { g.models = Array.from(new Set(g.models)) }
 
     // 动态拉一次 copilot 模型用于 allProviders 展示（同一请求复用缓存）
@@ -267,18 +320,14 @@ export async function getConfigModels(ctx: any) {
 }
 
 export async function setConfigModel(ctx: any) {
-  if (isChatPlaneRequest(ctx)) {
-    ctx.status = 403
-    ctx.body = { error: 'Model settings are not editable in chat plane' }
-    return
-  }
-
   const { default: defaultModel, provider: reqProvider } = ctx.request.body as { default: string; provider?: string }
   if (!defaultModel) {
     ctx.status = 400
     ctx.body = { error: 'Missing default model' }
     return
   }
+  if (!ensureChatPlaneSelectedProfileOwned(ctx)) return
+
   try {
     if (!isChatPlaneRequest(ctx)) {
       await updateConfigYaml((config) => {
@@ -289,9 +338,12 @@ export async function setConfigModel(ctx: any) {
       })
     } else {
       const config = await readRequestConfigYaml(ctx)
-      config.model = {}
-      config.model.default = defaultModel
+      const existingModel = typeof config.model === 'object' && config.model !== null ? config.model as Record<string, any> : {}
+      config.model = { default: defaultModel }
       if (reqProvider) { config.model.provider = reqProvider }
+      if (typeof existingModel.base_url === 'string' && existingModel.base_url.trim()) {
+        config.model.base_url = existingModel.base_url.trim()
+      }
       await writeRequestConfigYaml(ctx, config)
     }
     ctx.body = { success: true }

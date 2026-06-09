@@ -65,20 +65,20 @@ describe('chat plane access control', () => {
     expect(ctx.status).toBe(200)
   })
 
-  it('allows model listing but blocks model config and credential writes in chat plane', async () => {
+  it('allows model listing and model selection but blocks credential writes in chat plane', async () => {
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
     const allowedModelListCtx = mockCtx('/api/hermes/available-models', 'GET')
-    const blockedModelCtx = mockCtx('/api/hermes/config/model', 'PUT')
+    const allowedModelCtx = mockCtx('/api/hermes/config/model', 'PUT')
     const blockedCredentialsCtx = mockCtx('/api/hermes/config/credentials', 'PUT')
     const next = vi.fn(async () => {})
 
     await enforcePlaneAccess(allowedModelListCtx, next)
-    await enforcePlaneAccess(blockedModelCtx, next)
+    await enforcePlaneAccess(allowedModelCtx, next)
     await enforcePlaneAccess(blockedCredentialsCtx, next)
 
-    expect(next).toHaveBeenCalledOnce()
+    expect(next).toHaveBeenCalledTimes(2)
     expect(allowedModelListCtx.status).toBe(200)
-    expect(blockedModelCtx.status).toBe(403)
+    expect(allowedModelCtx.status).toBe(200)
     expect(blockedCredentialsCtx.status).toBe(403)
   })
 
