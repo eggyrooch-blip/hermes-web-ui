@@ -261,6 +261,7 @@ custom_providers:
     const updated = readFileSync(join(baseDir, 'profiles', 'user_a', 'config.yaml'), 'utf-8')
     expect(updated).toContain('default: custom:litellm-sre/tencent-sonnet-4-6')
     expect(updated).toContain('provider: custom:litellm-sre')
+    // Model switching replaces only config.model; existing provider credentials must stay on disk.
     expect(updated).toContain('api_key: provider-secret')
     expect(readFileSync(join(baseDir, 'config.yaml'), 'utf-8')).toContain('default: root-model')
   })
@@ -293,6 +294,35 @@ model:
         label: 'litellm-sre',
         base_url: '',
         api_key: '',
+        models: ['custom:litellm-sre/tencent-sonnet-4-6'],
+      }),
+    ])
+  })
+
+  it('resolves legacy custom provider config from a namespaced default model in chat plane', async () => {
+    process.env.HERMES_MULTITENANCY_DB = writeRoutingDb([
+      { user_id: 'user_a', profile_name: 'user_a', open_id: 'ou_test' },
+      { user_id: 'group_alpha', profile_name: 'feishu_group_alpha', open_id: '', owner_open_id: 'ou_test', kind: 'agent', provenance: 'group' },
+    ])
+    mkdirSync(join(baseDir, 'profiles', 'feishu_group_alpha'), { recursive: true })
+    writeYaml(join(baseDir, 'profiles', 'feishu_group_alpha', 'config.yaml'), `
+model:
+  default: custom:litellm-sre/tencent-sonnet-4-6
+  provider: custom
+  base_url: https://litellm.sre.gotokeep.com/v1
+`)
+    const { getAvailable } = await import('../../packages/server/src/controllers/hermes/models')
+    const ctx = mockCtx({
+      get: (name: string) => name.toLowerCase() === 'x-hermes-profile' ? 'feishu_group_alpha' : '',
+    })
+
+    await getAvailable(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body.default_provider).toBe('custom:litellm-sre')
+    expect(ctx.body.groups).toEqual([
+      expect.objectContaining({
+        provider: 'custom:litellm-sre',
         models: ['custom:litellm-sre/tencent-sonnet-4-6'],
       }),
     ])
@@ -343,7 +373,7 @@ model:
     const { setConfigModel } = await import('../../packages/server/src/controllers/hermes/models')
     const ctx = mockCtx({
       method: 'PUT',
-      get: (name: string) => name.toLowerCase() === 'x-hermes-profile' ? 'feishu_group_other' : '',
+      query: { profile: 'feishu_group_other' },
       request: { body: { default: 'custom:litellm-sre/tencent-sonnet-4-6', provider: 'custom:litellm-sre' } },
     })
 
