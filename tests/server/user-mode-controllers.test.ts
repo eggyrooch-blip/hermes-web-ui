@@ -328,6 +328,61 @@ model:
     ])
   })
 
+  it('does not duplicate configured custom providers when the current model already names the provider in chat plane', async () => {
+    process.env.HERMES_MULTITENANCY_DB = writeRoutingDb([
+      { user_id: 'user_a', profile_name: 'user_a', open_id: 'ou_test' },
+      { user_id: 'group_alpha', profile_name: 'feishu_group_alpha', open_id: '', owner_open_id: 'ou_test', kind: 'agent', provenance: 'group' },
+    ])
+    mkdirSync(join(baseDir, 'profiles', 'feishu_group_alpha'), { recursive: true })
+    writeYaml(join(baseDir, 'profiles', 'feishu_group_alpha', 'config.yaml'), `
+model:
+  default: custom:litellm-sre/tencent-sonnet-4-6
+  provider: custom:litellm-sre
+  base_url: https://litellm.sre.gotokeep.com/v1
+custom_providers:
+  - name: litellm-sre
+    base_url: https://litellm.sre.gotokeep.com/v1
+    model: custom:litellm-sre/tencent-sonnet-4-6
+    api_key: provider-secret
+`)
+    const { getAvailable } = await import('../../packages/server/src/controllers/hermes/models')
+    const ctx = mockCtx({
+      get: (name: string) => name.toLowerCase() === 'x-hermes-profile' ? 'feishu_group_alpha' : '',
+    })
+
+    await getAvailable(ctx)
+
+    expect(ctx.status).toBe(200)
+    const groups = ctx.body.groups.filter((group: { provider: string }) => group.provider === 'custom:litellm-sre')
+    expect(groups).toHaveLength(1)
+    expect(groups[0]).toEqual(expect.objectContaining({
+      api_key: '',
+      base_url: '',
+      models: ['custom:litellm-sre/tencent-sonnet-4-6'],
+    }))
+  })
+
+  it('rejects model listing for unowned selected profiles in chat plane', async () => {
+    process.env.HERMES_MULTITENANCY_DB = writeRoutingDb([
+      { user_id: 'user_a', profile_name: 'user_a', open_id: 'ou_test' },
+      { user_id: 'other_group', profile_name: 'feishu_group_other', open_id: '', owner_open_id: 'ou_other', kind: 'agent', provenance: 'group' },
+    ])
+    mkdirSync(join(baseDir, 'profiles', 'feishu_group_other'), { recursive: true })
+    writeYaml(join(baseDir, 'profiles', 'feishu_group_other', 'config.yaml'), `
+model:
+  default: other-model
+`)
+    const { getAvailable } = await import('../../packages/server/src/controllers/hermes/models')
+    const ctx = mockCtx({
+      query: { profile: 'feishu_group_other' },
+    })
+
+    await getAvailable(ctx)
+
+    expect(ctx.status).toBe(403)
+    expect(ctx.body).toEqual({ error: 'Selected profile is not owned by this user' })
+  })
+
   it('writes selected group profile model in chat plane without copying provider credentials', async () => {
     process.env.HERMES_MULTITENANCY_DB = writeRoutingDb([
       { user_id: 'user_a', profile_name: 'user_a', open_id: 'ou_test' },

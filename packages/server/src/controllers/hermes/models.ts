@@ -101,6 +101,8 @@ async function isCopilotAuthorized(envContent: string): Promise<boolean> {
 
 export async function getAvailable(ctx: any) {
   try {
+    if (!ensureChatPlaneSelectedProfileOwned(ctx)) return
+
     const chatPlane = isChatPlaneRequest(ctx)
     const config = await readRequestConfigYaml(ctx)
     const modelSection = config.model

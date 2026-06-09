@@ -20,7 +20,7 @@ related:
 >
 > 新边界：`GET /api/hermes/available-models` 在当前 request profile 没有 `custom_providers`、但 `model.default/provider/base_url` 指向 `custom:<provider>` 时，会合成一个无密钥 custom provider group 给前端展示；chat-plane 响应继续清空 `base_url` 与 `api_key`，避免把 provider secret 返给浏览器。
 >
-> `PUT /api/hermes/config/model` 在 chat-plane 下只允许写当前绑定 profile 或当前 Feishu openid 拥有的 selected profile；写入范围只限 `model.default/provider`，并保留 profile config 里已有 `model.base_url`，不会复制、创建或返回 `api_key/custom_providers`。伪造未拥有 profile 会 403，`/api/hermes/config/credentials` 与其它配置写入面仍保持 blocked。验证：新增 red/green 回归后 focused `request-context + user-mode-controllers` 50 passed，完整 `npm test` 894 passed / 2 skipped，`npm run build` passed。
+> `GET /api/hermes/available-models` 与 `PUT /api/hermes/config/model` 在 chat-plane 下都只允许当前绑定 profile 或当前 Feishu openid 拥有的 selected profile；写入范围只限 `model.default/provider`，并保留 profile config 里已有 `model.base_url`，不会复制、创建或返回 `api_key/custom_providers`。伪造未拥有 profile 会 403，`/api/hermes/config/credentials` 与其它配置写入面仍保持 blocked。验证：新增 red/green 回归后 focused `request-context + user-mode-controllers` 53 passed，完整 `npm test` 897 passed / 2 skipped，`npm run build` passed。
 
 > [!info] 2026-05-28 worktree — WebUI health 改用 RunBroker health endpoint
 > `ralph-runbroker-uat-status-401` 修复日志包里 `/api/run-broker/credentials/feishu/uat/status` 401 刷屏的 WebUI 侧根因：`/health` 不再把 Feishu UAT credential status endpoint 当 broker reachability probe，也不再把 401/403 视为健康。
