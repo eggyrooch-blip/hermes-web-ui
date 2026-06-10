@@ -25,6 +25,16 @@ const logoPath = '/logo.png';
 const currentUser = computed(() => profilesStore.currentUser);
 const displayName = computed(() => currentUser.value?.name || profilesStore.activeProfileName || '');
 const displayProfile = computed(() => profilesStore.activeProfileName || currentUser.value?.profile || '');
+// Hide the profile sub-line when it's only a raw internal id (e.g. feishu_xxx /
+// feishu_group_xxx) or duplicates the display name — those are placeholders, not
+// human-meaningful labels, so showing them reads as a bug.
+const showProfile = computed(() => {
+  const profile = displayProfile.value.trim();
+  if (!profile) return false;
+  if (/^feishu_/i.test(profile)) return false;
+  if (profile === displayName.value.trim()) return false;
+  return true;
+});
 const displayInitial = computed(() => (displayName.value || 'H').trim().slice(0, 1).toUpperCase());
 const showUserModeChrome = computed(() => isUserMode());
 const showAdminSurfaces = computed(() => !showUserModeChrome.value);
@@ -322,7 +332,7 @@ onMounted(async () => {
         <div class="user-name-row">
           <span class="user-name">{{ displayName }}</span>
         </div>
-        <div class="user-profile">{{ displayProfile }}</div>
+        <div v-if="showProfile" class="user-profile">{{ displayProfile }}</div>
       </div>
     </div>
     <ProfileSelector v-else />
