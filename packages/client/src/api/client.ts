@@ -74,6 +74,23 @@ function getActiveProfileName(): string | null {
   }
 }
 
+/**
+ * Header that binds a request to the user's currently-selected profile.
+ * Raw `fetch` callers (e.g. file uploads) must spread this in so their request
+ * targets the SAME profile the chat run executes under — otherwise an upload
+ * lands in the user's default profile workspace while the agent runs under the
+ * selected one and can never find the file. Mirrors the gating in `request()`.
+ */
+export function activeProfileHeaders(): Record<string, string> {
+  const profileName = getActiveProfileName()
+  const authMode = getAuthMode()
+  const webPlane = getWebPlane()
+  const canSendProfileHeader = authMode !== 'trusted-feishu' && (authMode !== 'feishu-oauth-dev' || webPlane === 'chat')
+  return canSendProfileHeader && profileName && profileName !== 'default'
+    ? { 'X-Hermes-Profile': profileName }
+    : {}
+}
+
 interface HermesRequestInit extends RequestInit {
   skipAuthRedirect?: boolean
 }
@@ -93,13 +110,7 @@ export async function request<T>(path: string, options: HermesRequestInit = {}):
   }
 
   // Inject active profile header for proxied gateway requests
-  const profileName = getActiveProfileName()
-  const authMode = getAuthMode()
-  const webPlane = getWebPlane()
-  const canSendProfileHeader = authMode !== 'trusted-feishu' && (authMode !== 'feishu-oauth-dev' || webPlane === 'chat')
-  if (canSendProfileHeader && profileName && profileName !== 'default') {
-    headers['X-Hermes-Profile'] = profileName
-  }
+  Object.assign(headers, activeProfileHeaders())
 
   // Send the HermesSession HttpOnly cookie alongside the bearer header. The
   // server prefers the cookie when both are present (services/auth.ts), so
