@@ -123,8 +123,16 @@ function shouldInlineFile(block: ContentBlock): boolean {
 async function readInlineFileBlock(profile: string, block: ContentBlock): Promise<string> {
   if (block.type !== 'file') return ''
   const resolvedPath = resolveUploadedPath(profile, block.path)
-  if (!resolvedPath || !existsSync(resolvedPath) || !shouldInlineFile(block)) {
+  if (!resolvedPath || !existsSync(resolvedPath)) {
     return `[File: ${block.name || block.path}]`
+  }
+  // Non-inlineable files (zip / pdf / binary): we can't dump the bytes into the
+  // prompt, but the file already lives in this agent's own workspace. Hand the
+  // agent the real path (absolute + relative) so it can read/unzip it with a
+  // tool, instead of a pathless `[File: name]` it has no way to locate.
+  if (!shouldInlineFile(block)) {
+    const name = block.name || block.path
+    return `\n\n[附件「${name}」已保存在你的工作目录：${resolvedPath}（相对路径：${block.path}）。请直接用工具读取/解压它，不要让用户粘贴内容。]`
   }
   const extension = extname(block.name || block.path).toLowerCase()
   const content = SPREADSHEET_FILE_EXTENSIONS.has(extension)
@@ -234,7 +242,7 @@ function decodeXmlText(text: string): string {
     .replace(/&apos;/g, "'")
 }
 
-async function buildResponsesInput(input: string | ContentBlock[], profile: string): Promise<any> {
+export async function buildResponsesInput(input: string | ContentBlock[], profile: string): Promise<any> {
   if (!isContentBlockArray(input)) return input
 
   const hasImage = input.some(block => block.type === 'image')
