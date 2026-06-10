@@ -16,6 +16,9 @@ import {
     stripMentionRoutingTokens,
 } from './mention-routing'
 import { resolveOwnedProfileAgentId } from '../agent-ownership'
+import { extractTextForPreview } from '../run-chat/content-blocks'
+import type { ContentBlock } from '../run-chat/types'
+import { enrichInputWithAttachments } from './attachment-enrichment'
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -38,7 +41,7 @@ interface MessageData {
 }
 
 interface MentionMessage {
-    content: string
+    content: string | ContentBlock[]
     senderName: string
     senderId: string
     timestamp: number
@@ -219,10 +222,13 @@ class AgentClient {
      */
     async replyToMention(
         roomId: string,
-        msg: { content: string; senderName: string; senderId: string; timestamp: number },
+        msg: { content: string | ContentBlock[]; senderName: string; senderId: string; timestamp: number },
         onStatus?: (status: 'compressing' | 'replying' | 'ready') => void,
     ): Promise<void> {
-        logger.debug(`[AgentClients] ${this.name} mentioned by ${msg.senderName}: "${msg.content.slice(0, 50)}"`)
+        // Plain-text view of the (possibly structured) message, used for every
+        // string consumer below: routing, mention stripping, logging, context.
+        const contentText = extractTextForPreview(msg.content)
+        logger.debug(`[AgentClients] ${this.name} mentioned by ${msg.senderName}: "${contentText.slice(0, 50)}"`)
         if (!this.gatewayManager) {
             logger.debug(`[AgentClients] ${this.name}: gatewayManager is null, skipping`)
             return
@@ -277,7 +283,7 @@ class AgentClient {
                         members,
                         upstream,
                         apiKey,
-                        currentMessage: msg,
+                        currentMessage: { ...msg, content: contentText },
                         compression,
                         profile: this.profile,
                     })
@@ -295,11 +301,15 @@ class AgentClient {
             // Keep routing explicit while removing only the mention tokens that
             // selected this agent. This avoids making @all look like an
             // instruction for the model to fan out another routing cycle.
-            const routedPrefix = isAllAgentsMentioned(msg.content)
+            const routedPrefix = isAllAgentsMentioned(contentText)
                 ? `群聊系统：这条消息通过 @all 提及所有 agent，你是其中之一。你当前以 ${this.name}（profile: ${this.profile}）回复，不要声称自己是其它成员或其它 profile。`
                 : `群聊系统：这条消息已经提及你（${this.name}）。你当前以 ${this.name}（profile: ${this.profile}）回复；即使消息同时提及其他成员，也不要因此输出空回复。`
-            const routedText = stripMentionRoutingTokens(msg.content, this.name) || msg.content
-            const input = `${routedPrefix}\n\n原始消息：${routedText}`
+            const routedText = stripMentionRoutingTokens(contentText, this.name) || contentText
+            const baseInput = `${routedPrefix}\n\n原始消息：${routedText}`
+            // Copy any uploaded attachments into THIS agent's workspace and append
+            // a usable reference (inlined text / explicit path) so the agent can
+            // actually read the file instead of flailing.
+            const input = await enrichInputWithAttachments(this.profile, msg.senderId, msg.content, baseInput)
 
             if (config.webuiRunBroker) {
                 await this.replyViaRunBroker(roomId, msg, input, conversationHistory, instructions, roomInfo, onStatus)
@@ -395,7 +405,7 @@ class AgentClient {
 
     private async replyViaRunBroker(
         roomId: string,
-        msg: { content: string; senderName: string; senderId: string; timestamp: number },
+        msg: { content: string | ContentBlock[]; senderName: string; senderId: string; timestamp: number },
         input: string,
         conversationHistory: Array<{ role: string; content: string }>,
         instructions: string | undefined,
@@ -808,7 +818,7 @@ export class AgentClients {
      */
     async processMentions(roomId: string, msg: MentionMessage): Promise<void> {
         const agents = this.getAgents(roomId)
-        const mentioned = resolveMentionTargets(agents, msg.content, msg.senderId)
+        const mentioned = resolveMentionTargets(agents, extractTextForPreview(msg.content), msg.senderId)
         if (mentioned.length === 0) return
 
         logger.debug(`[AgentClients] ${mentioned.map(a => a.name).join(', ')} mentioned by ${msg.senderName}`)

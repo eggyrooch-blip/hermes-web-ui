@@ -4,6 +4,8 @@ import { randomUUID } from 'crypto'
 import { getToken } from '../../../services/auth'
 import { config } from '../../../config'
 import { logger } from '../../../services/logger'
+import { contentBlocksToString } from '../run-chat/content-blocks'
+import type { ContentBlock } from '../run-chat/types'
 
 type SocketIoCorsOrigin =
     | boolean
@@ -674,7 +676,7 @@ export class GroupChatServer {
         logger.debug(`[GroupChat] Connected: ${userName} (socket=${socket.id}, user=${userId})`)
 
         socket.on('join', (data: { roomId?: string; name?: string }, ack?: (response?: unknown) => void) => this.handleJoin(socket, data, ack))
-        socket.on('message', (data: { roomId?: string; content: string }, ack?: (response?: unknown) => void) => this.handleMessage(socket, data, ack))
+        socket.on('message', (data: { roomId?: string; content: string | ContentBlock[] }, ack?: (response?: unknown) => void) => this.handleMessage(socket, data, ack))
         socket.on('typing', (data: { roomId?: string }) => this.handleTyping(socket, data))
         socket.on('stop_typing', (data: { roomId?: string }) => this.handleStopTyping(socket, data))
         socket.on('context_status', (data: { roomId?: string; agentName?: string; status?: string }) => this.handleContextStatus(socket, data))
@@ -751,7 +753,7 @@ export class GroupChatServer {
         logger.debug(`[GroupChat] ${userName} (user=${userId}) joined room: ${roomId}`)
     }
 
-    private handleMessage(socket: Socket, data: { roomId?: string; content: string }, ack?: (res: any) => void): void {
+    private handleMessage(socket: Socket, data: { roomId?: string; content: string | ContentBlock[] }, ack?: (res: any) => void): void {
         const socketId = socket.id
         const roomId = data.roomId || 'general'
         const room = this.rooms.get(roomId)
@@ -765,12 +767,17 @@ export class GroupChatServer {
         const userId = member?.userId || socketId
         const userName = member?.name || `User-${socketId.slice(0, 6)}`
 
+        // `content` may be a ContentBlock[] when the message carries attachments.
+        // Storage / broadcast / token-estimate all stay string-based (the array is
+        // JSON-stringified into the TEXT column), while the ORIGINAL structured
+        // content is forwarded to mention routing so agents can read the files.
+        const rawContent = data.content
         const msg: ChatMessage = {
             id: this.generateId(),
             roomId,
             senderId: userId,
             senderName: userName,
-            content: data.content,
+            content: contentBlocksToString(rawContent),
             timestamp: Date.now(),
         }
 
@@ -788,7 +795,7 @@ export class GroupChatServer {
 
         // Server-side @mention routing — parse mentions and invoke agents directly
         this.agentClients.processMentions(roomId, {
-            content: msg.content,
+            content: rawContent,
             senderName: msg.senderName,
             senderId: msg.senderId,
             senderIsAgent: this.agentSocketIds.has(socketId),
