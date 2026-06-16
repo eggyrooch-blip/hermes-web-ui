@@ -2,11 +2,9 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useUsageStore } from '@/stores/hermes/usage'
-import { isUserMode } from '@/api/client'
 
 const { t } = useI18n()
 const usageStore = useUsageStore()
-const showCost = computed(() => !isUserMode())
 
 function formatTokens(n: number): string {
   if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M'
@@ -27,7 +25,7 @@ function cacheHitRate(d: { input_tokens: number; cache_read_tokens: number }): s
 }
 
 const maxTokens = computed(() =>
-  Math.max(...usageStore.dailyUsage.map(d => d.input_tokens + d.output_tokens), 1),
+  Math.max(...usageStore.dailyUsage.map(d => d.visualTokens), 1),
 )
 </script>
 
@@ -43,12 +41,25 @@ const maxTokens = computed(() =>
       >
         <div class="bar-track">
           <div
-            class="bar-fill"
-            :style="{
-              height: ((d.input_tokens + d.output_tokens) / maxTokens * 100) + '%',
-              '--output-pct': (d.output_tokens / Math.max(d.input_tokens + d.output_tokens, 1) * 100) + '%',
-            }"
-          />
+            class="bar-stack"
+            :style="{ height: (d.visualTokens / maxTokens * 100) + '%' }"
+          >
+            <div
+              v-if="d.output_tokens > 0"
+              class="bar-segment output"
+              :style="{ height: d.outputPercent + '%' }"
+            />
+            <div
+              v-if="d.input_tokens > 0"
+              class="bar-segment input"
+              :style="{ height: d.inputPercent + '%' }"
+            />
+            <div
+              v-if="d.cache_read_tokens > 0"
+              class="bar-segment cache"
+              :style="{ height: d.cachePercent + '%' }"
+            />
+          </div>
         </div>
         <div class="bar-tooltip">
           <div class="tooltip-date">{{ d.date }}</div>
@@ -58,13 +69,19 @@ const maxTokens = computed(() =>
           <div class="tooltip-row">{{ t('usage.cacheWrite') }}: {{ formatTokens(d.cache_write_tokens) }}</div>
           <div class="tooltip-row">{{ t('usage.cacheHitRate') }}: {{ cacheHitRate(d) }}</div>
           <div class="tooltip-row">{{ t('usage.sessions') }}: {{ d.sessions }}</div>
-          <div v-if="showCost" class="tooltip-row">{{ t('usage.cost') }}: {{ formatCost(d.cost) }}</div>
+          <div class="tooltip-row">{{ t('usage.cost') }}: {{ formatCost(d.cost) }}</div>
         </div>
       </div>
     </div>
     <div class="bar-dates">
       <span>{{ usageStore.dailyUsage[0]?.date.slice(5) }}</span>
       <span>{{ usageStore.dailyUsage[usageStore.dailyUsage.length - 1]?.date.slice(5) }}</span>
+    </div>
+
+    <div class="chart-legend" aria-label="Token type legend">
+      <div class="legend-item"><span class="legend-swatch input" />{{ t('usage.inputTokens') }}</div>
+      <div class="legend-item"><span class="legend-swatch output" />{{ t('usage.outputTokens') }}</div>
+      <div class="legend-item"><span class="legend-swatch cache" />{{ t('usage.cacheRead') }}</div>
     </div>
 
     <div class="trend-table">
@@ -78,11 +95,11 @@ const maxTokens = computed(() =>
             <th>{{ t('usage.cacheWrite') }}</th>
             <th>{{ t('usage.cacheHitRate') }}</th>
             <th>{{ t('usage.sessions') }}</th>
-            <th v-if="showCost">{{ t('usage.cost') }}</th>
+            <th>{{ t('usage.cost') }}</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="d in [...usageStore.dailyUsage].reverse().slice(0, 30)" :key="d.date">
+          <tr v-for="d in [...usageStore.dailyUsage].reverse()" :key="d.date">
             <td>{{ d.date }}</td>
             <td>{{ formatTokens(d.input_tokens) }}</td>
             <td>{{ formatTokens(d.output_tokens) }}</td>
@@ -90,7 +107,7 @@ const maxTokens = computed(() =>
             <td>{{ formatTokens(d.cache_write_tokens) }}</td>
             <td>{{ cacheHitRate(d) }}</td>
             <td>{{ d.sessions }}</td>
-            <td v-if="showCost">{{ formatCost(d.cost) }}</td>
+            <td>{{ formatCost(d.cost) }}</td>
           </tr>
         </tbody>
       </table>
@@ -137,21 +154,38 @@ const maxTokens = computed(() =>
   border-radius: 2px 2px 0 0;
   display: flex;
   align-items: flex-end;
+  overflow: hidden;
+  position: relative;
 }
 
-.bar-fill {
+.bar-stack {
   width: 100%;
-  border-radius: 2px 2px 0 0;
+  display: flex;
+  flex-direction: column-reverse;
+  justify-content: flex-start;
+  overflow: hidden;
+  transition: height 0.3s ease;
+}
+
+.bar-segment {
+  width: 100%;
   min-height: 0;
   transition: height 0.3s ease;
-  /* Bottom = output (teal), top = input (blue) */
-  background: linear-gradient(
-    to top,
-    #26a69a 0%,
-    #26a69a var(--output-pct, 50%),
-    #5c6bc0 var(--output-pct, 50%),
-    #5c6bc0 100%
-  );
+}
+
+.bar-segment.output,
+.legend-swatch.output {
+  background: #26a69a;
+}
+
+.bar-segment.input,
+.legend-swatch.input {
+  background: #5c6bc0;
+}
+
+.bar-segment.cache,
+.legend-swatch.cache {
+  background: #f6ad55;
 }
 
 .bar-tooltip {
@@ -186,12 +220,10 @@ const maxTokens = computed(() =>
 
 .tooltip-date {
   font-weight: 600;
-  margin-bottom: 2px;
+  margin-bottom: 4px;
 }
 
 .tooltip-row {
-  font-size: 10px;
-  opacity: 0.85;
   line-height: 1.5;
 }
 
@@ -200,46 +232,59 @@ const maxTokens = computed(() =>
   justify-content: space-between;
   font-size: 10px;
   color: $text-muted;
-  margin-top: 4px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 0 0 16px;
+  color: $text-muted;
+  font-size: 11px;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legend-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
 }
 
 .trend-table {
   overflow-x: auto;
-}
 
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+  }
 
-thead {
-  position: sticky;
-  top: 0;
-}
+  th,
+  td {
+    text-align: right;
+    padding: 6px 8px;
+    border-bottom: 1px solid $border-color;
+  }
 
-th {
-  text-align: left;
-  padding: 8px 10px;
-  font-weight: 600;
-  color: $text-muted;
-  border-bottom: 1px solid $border-color;
-  background: $bg-card;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
+  th:first-child,
+  td:first-child {
+    text-align: left;
+  }
 
-td {
-  padding: 6px 10px;
-  color: $text-secondary;
-  border-bottom: 1px solid $border-light;
-  font-family: $font-code;
-  font-size: 11px;
-}
+  th {
+    color: $text-muted;
+    font-weight: 500;
+  }
 
-tr:last-child td {
-  border-bottom: none;
+  td {
+    color: $text-secondary;
+  }
 }
 </style>

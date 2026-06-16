@@ -13,13 +13,14 @@ vi.mock('vue-i18n', () => ({
 
 vi.mock('naive-ui', () => ({
   NDrawer: {
-    props: ['show', 'width', 'placement', 'showMask', 'trapFocus'],
-    emits: ['update:show'],
-    template: '<aside v-if="show" class="n-drawer"><slot name="header" /><slot /></aside>',
+    props: ['show'],
+    template: '<div v-if="show"><slot /></div>',
+  },
+  NDrawerContent: {
+    template: '<section><slot /></section>',
   },
   NSpin: {
-    props: ['show'],
-    template: '<div class="n-spin"><slot /></div>',
+    template: '<div><slot /></div>',
   },
   useMessage: () => ({
     error: vi.fn(),

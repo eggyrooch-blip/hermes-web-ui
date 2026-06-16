@@ -9,88 +9,74 @@ function readRootPackage() {
   }
 }
 
-async function loadHealthControllerWithoutInjectedVersion() {
+type LoadHealthControllerOptions = {
+  injectedVersion?: string
+  bridgeReadiness?: any
+  bridgeReadinessError?: Error
+  managerError?: Error
+  runtimeStateError?: Error
+}
+
+const defaultBridgeReadiness = {
+  endpoint: 'tcp://127.0.0.1:8123',
+  endpointKind: 'tcp',
+  status: 'ready',
+  reachable: true,
+  ready: true,
+  running: true,
+  attached: false,
+  starting: false,
+  stopping: false,
+  restartScheduled: false,
+  restartAttempts: 0,
+  pid: 4321,
+}
+
+async function loadHealthController(options: LoadHealthControllerOptions = {}) {
   vi.resetModules()
-  delete (globalThis as any).__APP_VERSION__
+
+  if (typeof options.injectedVersion === 'string') {
+    ;(globalThis as any).__APP_VERSION__ = options.injectedVersion
+  } else {
+    delete (globalThis as any).__APP_VERSION__
+  }
 
   vi.doMock('../../packages/server/src/services/hermes/hermes-cli', () => ({
     getVersion: vi.fn().mockResolvedValue('Hermes Agent v0.11.0\n'),
   }))
 
-  vi.doMock('../../packages/server/src/services/gateway-bootstrap', () => ({
-    getGatewayManagerInstance: vi.fn(() => ({
-      getUpstream: () => 'http://127.0.0.1:9999',
-    })),
+  const checkReadiness = options.bridgeReadinessError
+    ? vi.fn().mockRejectedValue(options.bridgeReadinessError)
+    : vi.fn().mockResolvedValue(options.bridgeReadiness || defaultBridgeReadiness)
+  const getRuntimeState = options.runtimeStateError
+    ? vi.fn(() => { throw options.runtimeStateError })
+    : vi.fn(() => ({
+        endpoint: options.bridgeReadiness?.endpoint || 'ipc:///tmp/hermes-agent-bridge.sock',
+      }))
+  const getAgentBridgeManager = options.managerError
+    ? vi.fn(() => { throw options.managerError })
+    : vi.fn(() => ({ checkReadiness, getRuntimeState }))
+
+  vi.doMock('../../packages/server/src/services/hermes/agent-bridge/manager', () => ({
+    getAgentBridgeManager,
   }))
 
-  return import('../../packages/server/src/controllers/health')
+  const health = await import('../../packages/server/src/controllers/health')
+
+  return {
+    ...health,
+    getAgentBridgeManager,
+    checkReadiness,
+    getRuntimeState,
+  }
+}
+
+async function loadHealthControllerWithoutInjectedVersion(options: Omit<LoadHealthControllerOptions, 'injectedVersion'> = {}) {
+  return loadHealthController(options)
 }
 
 async function loadHealthControllerWithInjectedVersion(version: string) {
-  vi.resetModules()
-  ;(globalThis as any).__APP_VERSION__ = version
-
-  vi.doMock('../../packages/server/src/services/hermes/hermes-cli', () => ({
-    getVersion: vi.fn().mockResolvedValue('Hermes Agent v0.11.0\n'),
-  }))
-
-  vi.doMock('../../packages/server/src/services/gateway-bootstrap', () => ({
-    getGatewayManagerInstance: vi.fn(() => ({
-      getUpstream: () => 'http://127.0.0.1:9999',
-    })),
-  }))
-
-  return import('../../packages/server/src/controllers/health')
-}
-
-async function loadHealthControllerWithHermesVersionMock(getVersion: ReturnType<typeof vi.fn>) {
-  vi.resetModules()
-  ;(globalThis as any).__APP_VERSION__ = 'test'
-
-  vi.doMock('../../packages/server/src/services/hermes/hermes-cli', () => ({
-    getVersion,
-  }))
-
-  vi.doMock('../../packages/server/src/services/gateway-bootstrap', () => ({
-    getGatewayManagerInstance: vi.fn(() => ({
-      getUpstream: () => 'http://127.0.0.1:9999',
-    })),
-  }))
-
-  return import('../../packages/server/src/controllers/health')
-}
-
-async function loadHealthControllerInRunBrokerMode(options: { runBrokerKey?: string } = {}) {
-  vi.resetModules()
-  ;(globalThis as any).__APP_VERSION__ = 'test'
-  const loggerWarn = vi.fn()
-
-  vi.doMock('../../packages/server/src/services/hermes/hermes-cli', () => ({
-    getVersion: vi.fn().mockResolvedValue('Hermes Agent v0.14.0\n'),
-  }))
-
-  vi.doMock('../../packages/server/src/services/gateway-bootstrap', () => ({
-    getGatewayManagerInstance: vi.fn(() => ({
-      getUpstream: () => 'http://127.0.0.1:9999',
-    })),
-  }))
-
-  vi.doMock('../../packages/server/src/config', () => ({
-    config: {
-      webPlane: 'chat',
-      authMode: 'feishu-oauth-dev',
-      webuiRunBroker: true,
-      runBrokerUrl: 'http://127.0.0.1:8876',
-      runBrokerKey: options.runBrokerKey ?? 'broker-secret',
-    },
-  }))
-
-  vi.doMock('../../packages/server/src/services/logger', () => ({
-    logger: { warn: loggerWarn },
-  }))
-
-  const mod = await import('../../packages/server/src/controllers/health')
-  return { ...mod, loggerWarn }
+  return loadHealthController({ injectedVersion: version })
 }
 
 function createMockCtx() {
@@ -130,104 +116,144 @@ describe('health controller version metadata', () => {
     expect(ctx.body.webui_version).toBe('9.9.9-test')
   })
 
-  it('does not expose Web UI latest-version or update-available metadata', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
-
-    const mod = await loadHealthControllerWithoutInjectedVersion()
-    const ctx = createMockCtx()
-
-    await mod.healthCheck(ctx)
-
-    expect('checkLatestVersion' in mod).toBe(false)
-    expect('startVersionCheck' in mod).toBe(false)
-    expect(ctx.body).not.toHaveProperty('webui_latest')
-    expect(ctx.body).not.toHaveProperty('webui_update_available')
-  })
-
-  it('coalesces concurrent Hermes version probes', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
-    const getVersion = vi.fn(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10))
-      return 'Hermes Agent v0.11.0\n'
-    })
-
-    const { healthCheck } = await loadHealthControllerWithHermesVersionMock(getVersion)
-    const ctxA = createMockCtx()
-    const ctxB = createMockCtx()
-
-    await Promise.all([healthCheck(ctxA), healthCheck(ctxB)])
-
-    expect(getVersion).toHaveBeenCalledTimes(1)
-    expect(ctxA.body.version).toBe('v0.11.0')
-    expect(ctxB.body.version).toBe('v0.11.0')
-  })
-
-  it('uses an authenticated non-credential run-broker probe for chat-plane health', async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      if (url === 'http://127.0.0.1:8876/api/run-broker/health') {
-        return { ok: true, status: 200 }
-      }
-      return { ok: false, status: 503 }
+  it('checks npm latest using the root package name', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const pkg = readRootPackage()
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ version: '99.99.99' }),
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    const { healthCheck } = await loadHealthControllerInRunBrokerMode()
+    const { checkLatestVersion, healthCheck } = await loadHealthControllerWithoutInjectedVersion()
+
+    await checkLatestVersion()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `https://registry.npmjs.org/${pkg.name}/latest`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+
+    const ctx = createMockCtx()
+    await healthCheck(ctx)
+
+    expect(ctx.body.webui_latest).toBe('99.99.99')
+    expect(ctx.body.webui_update_available).toBe(true)
+  })
+
+  it('does not throw when latest-version lookup fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
+
+    const { checkLatestVersion } = await loadHealthControllerWithoutInjectedVersion()
+
+    await expect(checkLatestVersion()).resolves.toBeUndefined()
+  })
+
+  it('includes sanitized agent bridge readiness fields without leaking the endpoint path', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
+
+    const { healthCheck, getAgentBridgeManager, checkReadiness } = await loadHealthControllerWithoutInjectedVersion({
+      bridgeReadiness: {
+        endpoint: 'ipc:///tmp/hermes-agent-bridge.sock',
+        endpointKind: 'ipc',
+        status: 'unreachable',
+        reachable: false,
+        ready: false,
+        running: false,
+        attached: false,
+        starting: false,
+        stopping: false,
+        restartScheduled: true,
+        restartAttempts: 3,
+        pid: 9876,
+        error: 'connect ENOENT /tmp/hermes-agent-bridge.sock',
+      },
+    })
     const ctx = createMockCtx()
 
     await healthCheck(ctx)
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:8876/api/run-broker/health',
-      expect.objectContaining({
-        headers: { Authorization: 'Bearer broker-secret' },
-        signal: expect.any(AbortSignal),
-      }),
-    )
-    expect(fetchMock).not.toHaveBeenCalledWith(
-      expect.stringContaining('/api/run-broker/slash/commands'),
-      expect.anything(),
-    )
-    expect(fetchMock).not.toHaveBeenCalledWith(
-      expect.stringContaining('/api/run-broker/credentials/feishu/uat/status'),
-      expect.anything(),
-    )
+    expect(getAgentBridgeManager).toHaveBeenCalledTimes(1)
+    expect(checkReadiness).toHaveBeenCalledWith({ timeoutMs: 75, connectRetryMs: 0 })
+    expect(ctx.body.agent_bridge).toEqual({
+      status: 'unreachable',
+      reachable: false,
+      ready: false,
+      running: false,
+      attached: false,
+      starting: false,
+      stopping: false,
+      restart_scheduled: true,
+      restart_attempts: 3,
+      endpoint_kind: 'ipc',
+      pid: 9876,
+      error: 'connect ENOENT [redacted endpoint]',
+    })
+    expect(ctx.body.agent_bridge).not.toHaveProperty('endpoint')
+    expect(JSON.stringify(ctx.body.agent_bridge)).not.toContain('/tmp/hermes-agent-bridge.sock')
+  })
+
+  it('handles agent bridge readiness probe errors without failing the health check', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
+
+    const { healthCheck, checkReadiness, getRuntimeState } = await loadHealthControllerWithoutInjectedVersion({
+      bridgeReadinessError: new Error('bridge manager unavailable at ipc:///tmp/hermes-agent-bridge.sock (ENOENT /tmp/hermes-agent-bridge.sock)'),
+    })
+    const ctx = createMockCtx()
+
+    await expect(healthCheck(ctx)).resolves.toBeUndefined()
+
+    expect(checkReadiness).toHaveBeenCalledWith({ timeoutMs: 75, connectRetryMs: 0 })
+    expect(getRuntimeState).toHaveBeenCalledTimes(1)
     expect(ctx.body.status).toBe('ok')
     expect(ctx.body.gateway).toBe('running')
+    expect(ctx.body.agent_bridge).toEqual({
+      status: 'unknown',
+      reachable: false,
+      error: 'bridge manager unavailable at [redacted endpoint] (ENOENT [redacted endpoint])',
+    })
+    expect(JSON.stringify(ctx.body.agent_bridge)).not.toContain('/tmp/hermes-agent-bridge.sock')
+    expect(JSON.stringify(ctx.body.agent_bridge)).not.toContain('ipc:///tmp/hermes-agent-bridge.sock')
   })
 
-  it('marks run-broker health as stopped when the broker rejects auth', async () => {
-    const fetchMock = vi.fn(async () => ({ ok: false, status: 401 }))
-    vi.stubGlobal('fetch', fetchMock)
+  it('handles manager construction errors without failing the base health check', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
 
-    const { healthCheck } = await loadHealthControllerInRunBrokerMode()
+    const { healthCheck, getAgentBridgeManager, checkReadiness } = await loadHealthControllerWithoutInjectedVersion({
+      managerError: new Error('bad bridge config /tmp/hermes-agent-bridge.sock'),
+    })
     const ctx = createMockCtx()
 
-    await healthCheck(ctx)
+    await expect(healthCheck(ctx)).resolves.toBeUndefined()
 
-    expect(ctx.body.status).toBe('error')
-    expect(ctx.body.gateway).toBe('stopped')
+    expect(getAgentBridgeManager).toHaveBeenCalledTimes(1)
+    expect(checkReadiness).not.toHaveBeenCalled()
+    expect(ctx.body.status).toBe('ok')
+    expect(ctx.body.agent_bridge).toEqual({
+      status: 'unknown',
+      reachable: false,
+      error: 'bad bridge config [redacted endpoint]',
+    })
   })
 
-  it('warns when run-broker mode is enabled without a broker key', async () => {
-    const fetchMock = vi.fn(async () => ({ ok: false, status: 401 }))
-    vi.stubGlobal('fetch', fetchMock)
+  it('handles runtime-state errors without failing the base health check', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
 
-    const { healthCheck, loggerWarn } = await loadHealthControllerInRunBrokerMode({ runBrokerKey: '' })
+    const { healthCheck, getRuntimeState, checkReadiness } = await loadHealthControllerWithoutInjectedVersion({
+      runtimeStateError: new Error('runtime state unavailable'),
+    })
     const ctx = createMockCtx()
 
-    await healthCheck(ctx)
+    await expect(healthCheck(ctx)).resolves.toBeUndefined()
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:8876/api/run-broker/health',
-      expect.objectContaining({
-        headers: undefined,
-        signal: expect.any(AbortSignal),
-      }),
-    )
-    expect(loggerWarn).toHaveBeenCalledWith(
-      'Run Broker health probe is enabled but HERMES_RUN_BROKER_KEY is not configured',
-    )
-    expect(ctx.body.status).toBe('error')
-    expect(ctx.body.gateway).toBe('stopped')
+    expect(getRuntimeState).toHaveBeenCalledTimes(1)
+    expect(checkReadiness).not.toHaveBeenCalled()
+    expect(ctx.body.status).toBe('ok')
+    expect(ctx.body.agent_bridge).toEqual({
+      status: 'unknown',
+      reachable: false,
+      error: 'runtime state unavailable',
+    })
   })
+
 })

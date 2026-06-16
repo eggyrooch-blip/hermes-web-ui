@@ -1,34 +1,76 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import {
   NTabs,
   NTabPane,
   NSpin,
 } from "naive-ui";
 import { useI18n } from "vue-i18n";
-import { isUserMode } from "@/api/client";
 import { useSettingsStore } from "@/stores/hermes/settings";
 import DisplaySettings from "@/components/hermes/settings/DisplaySettings.vue";
 import AgentSettings from "@/components/hermes/settings/AgentSettings.vue";
+import GatewayAutoStartSettings from "@/components/hermes/settings/GatewayAutoStartSettings.vue";
 import MemorySettings from "@/components/hermes/settings/MemorySettings.vue";
+import CompressionSettings from "@/components/hermes/settings/CompressionSettings.vue";
 import SessionSettings from "@/components/hermes/settings/SessionSettings.vue";
 import PrivacySettings from "@/components/hermes/settings/PrivacySettings.vue";
 import ModelSettings from "@/components/hermes/settings/ModelSettings.vue";
 import AccountSettings from "@/components/hermes/settings/AccountSettings.vue";
+import UserManagementSettings from "@/components/hermes/settings/UserManagementSettings.vue";
 import VoiceSettings from "@/components/hermes/settings/VoiceSettings.vue";
-import { ensureProfileSelection } from "@/utils/hermes/profile-ready";
+import { isStoredSuperAdmin } from "@/api/client";
+import { useProfilesStore } from "@/stores/hermes/profiles";
 
 const settingsStore = useSettingsStore();
+const profilesStore = useProfilesStore();
 const { t } = useI18n();
-const showAdminSettings = computed(() => !isUserMode());
+const canManageUsers = isStoredSuperAdmin();
+const route = useRoute();
+const router = useRouter();
+const activeTab = ref("account");
 
-async function loadSettings() {
-  await ensureProfileSelection();
+const validTabs = computed(() => new Set([
+  "account",
+  ...(canManageUsers ? ["users"] : []),
+  "display",
+  "agent",
+  "memory",
+  "compression",
+  "session",
+  "privacy",
+  "models",
+  "voice",
+]));
+
+function normalizeTab(value: unknown): string {
+  const tab = typeof value === "string" ? value : "";
+  return validTabs.value.has(tab) ? tab : "account";
+}
+
+function handleTabUpdate(tab: string) {
+  activeTab.value = normalizeTab(tab);
+  router.replace({
+    query: {
+      ...route.query,
+      tab: activeTab.value === "account" ? undefined : activeTab.value,
+    },
+  });
+}
+
+watch(() => route.query.tab, (tab) => {
+  activeTab.value = normalizeTab(tab);
+}, { immediate: true });
+
+async function loadSettingsForProfile() {
+  if (!profilesStore.activeProfileName || profilesStore.profiles.length === 0) {
+    await profilesStore.fetchProfiles();
+  }
   await settingsStore.fetchSettings();
 }
 
 onMounted(() => {
-  void loadSettings();
+  void loadSettingsForProfile();
 });
 </script>
 
@@ -39,36 +81,30 @@ onMounted(() => {
     </header>
 
     <div class="settings-content">
-      <section v-if="!showAdminSettings" class="user-mode-note">
-        <div class="note-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-            <rect x="3" y="11" width="18" height="11" rx="2" />
-            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-          </svg>
-        </div>
-        <div>
-          <h3>{{ t("settings.userMode.title") }}</h3>
-          <p>{{ t("settings.userMode.description") }}</p>
-        </div>
-      </section>
-
       <NSpin
         :show="settingsStore.loading || settingsStore.saving"
         size="large"
         :description="t('common.loading')"
       >
-        <NTabs type="line" animated :default-value="showAdminSettings ? 'account' : 'display'">
-          <NTabPane v-if="showAdminSettings" name="account" :tab="t('settings.tabs.account')">
+        <NTabs v-model:value="activeTab" type="line" animated @update:value="handleTabUpdate">
+          <NTabPane name="account" :tab="t('settings.tabs.account')">
             <AccountSettings />
+          </NTabPane>
+          <NTabPane v-if="canManageUsers" name="users" :tab="t('settings.tabs.users')">
+            <UserManagementSettings />
           </NTabPane>
           <NTabPane name="display" :tab="t('settings.tabs.display')">
             <DisplaySettings />
           </NTabPane>
           <NTabPane name="agent" :tab="t('settings.tabs.agent')">
             <AgentSettings />
+            <GatewayAutoStartSettings />
           </NTabPane>
           <NTabPane name="memory" :tab="t('settings.tabs.memory')">
             <MemorySettings />
+          </NTabPane>
+          <NTabPane name="compression" :tab="t('settings.tabs.compression')">
+            <CompressionSettings />
           </NTabPane>
           <NTabPane name="session" :tab="t('settings.tabs.session')">
             <SessionSettings />
@@ -76,7 +112,7 @@ onMounted(() => {
           <NTabPane name="privacy" :tab="t('settings.tabs.privacy')">
             <PrivacySettings />
           </NTabPane>
-          <NTabPane v-if="showAdminSettings" name="models" :tab="t('settings.tabs.models')">
+          <NTabPane name="models" :tab="t('settings.tabs.models')">
             <ModelSettings />
           </NTabPane>
           <NTabPane name="voice" :tab="t('settings.tabs.voice')">
@@ -101,43 +137,5 @@ onMounted(() => {
   flex: 1;
   overflow-y: auto;
   padding: 20px;
-}
-
-.user-mode-note {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  margin-bottom: 16px;
-  padding: 14px 16px;
-  border: 1px solid $border-color;
-  border-radius: $radius-md;
-  background: rgba(var(--accent-primary-rgb), 0.05);
-  color: $text-secondary;
-
-  .note-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    border-radius: $radius-sm;
-    color: $accent-primary;
-    background: rgba(var(--accent-primary-rgb), 0.1);
-    flex-shrink: 0;
-  }
-
-  h3 {
-    margin: 0 0 4px;
-    color: $text-primary;
-    font-size: 14px;
-    font-weight: 600;
-  }
-
-  p {
-    margin: 0;
-    max-width: 720px;
-    font-size: 13px;
-    line-height: 1.6;
-  }
 }
 </style>

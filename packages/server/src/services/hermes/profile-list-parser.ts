@@ -1,6 +1,6 @@
 export interface ProfileListRuntimeInfo {
   active: boolean
-  gateway?: string
+  gatewayStatus?: string
   alias?: string
 }
 
@@ -16,7 +16,7 @@ const GATEWAY_STATUS_TOKENS = new Set([
 
 function normalizeProfileLine(line: string): { active: boolean; body: string } | null {
   const trimmed = line.trim()
-  if (!trimmed || trimmed.startsWith('Profile') || /^─/.test(trimmed)) return null
+  if (!trimmed || trimmed.startsWith('Profile') || trimmed.match(/^─/)) return null
   const active = trimmed.startsWith('◆')
   return {
     active,
@@ -34,14 +34,14 @@ function matchProfileLine(body: string, profileNames: string[]): { profile: stri
   return null
 }
 
-function extractRuntimeInfo(rest: string): { gateway?: string; alias?: string } {
+function extractGatewayInfo(rest: string): { gatewayStatus?: string; alias?: string } {
   const parts = rest.split(/\s+/).filter(Boolean)
   for (let i = 0; i < parts.length; i += 1) {
     const token = parts[i]
     if (GATEWAY_STATUS_TOKENS.has(token.toLowerCase())) {
       const alias = parts[i + 1]
       return {
-        gateway: token,
+        gatewayStatus: token,
         alias: alias && alias !== '—' && alias !== '-' ? alias : undefined,
       }
     }
@@ -50,21 +50,32 @@ function extractRuntimeInfo(rest: string): { gateway?: string; alias?: string } 
 }
 
 export function parseProfileListRuntimeInfo(stdout: string, profileNames: string[]): Map<string, ProfileListRuntimeInfo> {
+  const result = new Map<string, ProfileListRuntimeInfo>()
   const sortedProfiles = [...new Set(profileNames.map(name => name.trim()).filter(Boolean))]
     .sort((a, b) => b.length - a.length)
   const normalized = stdout.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-  const result = new Map<string, ProfileListRuntimeInfo>()
+  const lines = normalized.trim().split('\n').filter(Boolean)
 
-  for (const line of normalized.trim().split('\n').filter(Boolean)) {
+  for (const line of lines) {
     const parsed = normalizeProfileLine(line)
     if (!parsed) continue
     const matched = matchProfileLine(parsed.body, sortedProfiles)
     if (!matched) continue
+    const gateway = extractGatewayInfo(matched.rest)
     result.set(matched.profile, {
       active: parsed.active,
-      ...extractRuntimeInfo(matched.rest),
+      ...gateway,
     })
   }
 
   return result
+}
+
+export function parseGatewayStatusesFromProfileList(stdout: string, profileNames: string[]): Map<string, string> {
+  const runtimes = parseProfileListRuntimeInfo(stdout, profileNames)
+  const statuses = new Map<string, string>()
+  for (const [profile, info] of runtimes) {
+    if (info.gatewayStatus) statuses.set(profile, info.gatewayStatus)
+  }
+  return statuses
 }

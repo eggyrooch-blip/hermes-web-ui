@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { getApiKey } from '@/api/client'
+import { getActiveProfileName, getApiKey, getStoredUsername } from '@/api/client'
+import { fetchCurrentUser } from '@/api/auth'
 import { getDownloadUrl } from '@/api/hermes/download'
 import type { Attachment, ContentBlock } from './chat'
 import {
@@ -31,10 +32,14 @@ async function uploadGroupFiles(attachments: Attachment[]): Promise<{ name: stri
         if (att.file) formData.append('file', att.file, att.name)
     }
     const token = getApiKey()
+    const profileName = getActiveProfileName()
+    const headers: Record<string, string> = {}
+    if (token) headers.Authorization = `Bearer ${token}`
+    if (profileName) headers['X-Hermes-Profile'] = profileName
     const res = await fetch('/upload', {
         method: 'POST',
         body: formData,
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        headers,
     })
     if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
     const data = await res.json() as { files: { name: string; path: string }[] }
@@ -71,6 +76,8 @@ function uid(): string {
 }
 
 const STREAM_FINAL_CONTENT_RECOVERY_DELAY_MS = 300
+export const GROUP_CHAT_MESSAGE_PAGE_SIZE = 150
+export const GROUP_CHAT_MAX_DISPLAY_MESSAGES = 600
 
 function normalizeLocalFilePath(path: string): string {
     return /^[a-zA-Z]:\\/.test(path) ? path.replace(/\\/g, '/') : path
@@ -78,6 +85,14 @@ function normalizeLocalFilePath(path: string): string {
 
 function hasText(value?: string | null): boolean {
     return !!value?.trim()
+}
+
+function authenticatedGroupUserId(authUserId: number): string {
+    return `auth:${authUserId}`
+}
+
+function getStoredGroupUserName(): string {
+    return getStoredUserName()?.trim() || ''
 }
 
 function hasToolCalls(message: ChatMessage): boolean {
@@ -107,6 +122,7 @@ export interface GroupPendingApproval {
     description: string
     choices: Array<'once' | 'session' | 'always' | 'deny'>
     allowPermanent: boolean
+    isMemoryWrite: boolean
     requestedAt: number
 }
 
@@ -125,6 +141,27 @@ export const useGroupChatStore = defineStore('groupChat', () => {
     const contextStatuses = ref<Map<string, { agentName: string; status: string }>>(new Map())
     const autoPlaySpeechEnabled = ref(false)
     const pendingApprovals = ref<Map<string, GroupPendingApproval>>(new Map())
+    const totalMessages = ref(0)
+    const loadedMessageCount = ref(0)
+    const hasMoreBefore = ref(false)
+    const isLoadingOlderMessages = ref(false)
+    const hasReachedMessageDisplayLimit = computed(() =>
+        hasMoreBefore.value && loadedMessageCount.value >= GROUP_CHAT_MAX_DISPLAY_MESSAGES,
+    )
+const currentUserAvatar = ref('')
+
+    function resetMessagePaging() {
+        totalMessages.value = 0
+        loadedMessageCount.value = 0
+        hasMoreBefore.value = false
+        isLoadingOlderMessages.value = false
+    }
+
+    function applyMessagePaging(res: { messages: ChatMessage[]; total?: number; hasMore?: boolean }) {
+        loadedMessageCount.value = res.messages.length
+        totalMessages.value = res.total ?? res.messages.length
+        hasMoreBefore.value = res.hasMore ?? loadedMessageCount.value < totalMessages.value
+    }
 
     function setAutoPlaySpeech(enabled: boolean) {
         autoPlaySpeechEnabled.value = enabled
@@ -176,7 +213,75 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         return null
     })
     const userId = ref(getStoredUserId())
-    const userName = ref(getStoredUserName() || '')
+    const userName = ref(getStoredGroupUserName() || getStoredUsername() || '')
+
+    function applyRealtimeJoinState(res: any, options: { syncMessages?: boolean } = {}) {
+        members.value = res.members || []
+        if (res.agents) agents.value = res.agents
+        if (res.roomName) roomName.value = res.roomName
+        const currentMember = members.value.find(member => member.userId === userId.value)
+        if (currentMember?.name) userName.value = currentMember.name
+        if (currentMember?.avatar) currentUserAvatar.value = currentMember.avatar
+        if (options.syncMessages && Array.isArray(res.messages)) {
+            const byId = new Map(messages.value.map(message => [message.id, message]))
+            for (const message of res.messages) {
+                const existing = byId.get(message.id)
+                byId.set(message.id, existing ? { ...existing, ...message } : message)
+            }
+            messages.value = Array.from(byId.values()).sort((a, b) => a.timestamp - b.timestamp)
+            if (typeof res.total === 'number' || typeof res.hasMore === 'boolean') {
+                applyMessagePaging(res)
+            } else {
+                loadedMessageCount.value = Math.max(loadedMessageCount.value, messages.value.length)
+                totalMessages.value = Math.max(totalMessages.value, loadedMessageCount.value)
+            }
+        }
+
+        // Restore typing state from server. Replace the local transient map so
+        // a reconnect cannot leave stale typers from the pre-reconnect socket.
+        for (const entry of typingUsers.value.values()) clearTimeout(entry.timer)
+        typingUsers.value.clear()
+        if (res.typingUsers) {
+            for (const u of res.typingUsers) {
+                const timer = setTimeout(() => typingUsers.value.delete(u.userId), 5000)
+                typingUsers.value.set(u.userId, { name: u.userName, timer })
+            }
+        }
+
+        // Restore context statuses from server
+        if (res.contextStatuses) {
+            contextStatuses.value = new Map(
+                res.contextStatuses.map((s: any) => [s.agentName, s])
+            )
+        } else {
+            contextStatuses.value.clear()
+        }
+    }
+
+    async function joinRealtimeRoom(roomId: string, options: { syncMessages?: boolean } = {}) {
+        const socket = getSocket()
+        if (!socket) return
+        const storedName = getStoredGroupUserName()
+
+        await new Promise<void>((resolve) => {
+            socket.emit('join', {
+                roomId,
+                name: storedName || undefined,
+                description: localStorage.getItem('gc_user_description') || undefined,
+            }, (res: any) => {
+                if (currentRoomId.value !== roomId) {
+                    resolve()
+                    return
+                }
+                if (!res?.error) {
+                    applyRealtimeJoinState(res, options)
+                } else {
+                    error.value = res.error
+                }
+                resolve()
+            })
+        })
+    }
 
     // ─── Computed ───────────────────────────────────────────
     const sortedMessages = computed(() => mapGroupMessages([...messages.value].sort((a, b) => a.timestamp - b.timestamp)))
@@ -198,10 +303,20 @@ export const useGroupChatStore = defineStore('groupChat', () => {
     })
 
     // ─── Connection ────────────────────────────────────────
-    function connect() {
+    async function connect() {
+        let authUserId: number | undefined
+        const connectionName = getStoredGroupUserName()
+        try {
+            const user = await fetchCurrentUser()
+            authUserId = user.id
+            userId.value = authenticatedGroupUserId(user.id)
+            if (!connectionName) userName.value = user.username
+            currentUserAvatar.value = user.avatar || ''
+        } catch { /* non-critical: avatar fallback handles missing id */ }
         const socket = connectGroupChat({
             userId: userId.value,
-            userName: userName.value || undefined,
+            userName: connectionName || undefined,
+            authUserId,
         })
         console.log('[GroupChat] connecting...', { userId: userId.value, userName: userName.value })
 
@@ -209,6 +324,12 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             console.log('[GroupChat] connected, socket id:', socket.id)
             connected.value = true
             error.value = null
+            const roomId = currentRoomId.value
+            if (roomId) {
+                void joinRealtimeRoom(roomId, { syncMessages: true }).catch((err: any) => {
+                    error.value = err.message
+                })
+            }
         })
 
         socket.on('disconnect', (reason) => {
@@ -232,6 +353,8 @@ export const useGroupChatStore = defineStore('groupChat', () => {
                     messages.value = [...messages.value]
                 } else {
                     messages.value.push(resolvedMsg)
+                    loadedMessageCount.value += 1
+                    totalMessages.value = Math.max(totalMessages.value + 1, loadedMessageCount.value)
                 }
                 if (autoPlaySpeechEnabled.value && resolvedMsg.role === 'assistant' && resolvedMsg.content?.trim()) {
                     setTimeout(() => playMessageSpeech(resolvedMsg.id, resolvedMsg.content), 300)
@@ -266,6 +389,8 @@ export const useGroupChatStore = defineStore('groupChat', () => {
                 messages.value = [...messages.value]
             } else {
                 messages.value.push(msg)
+                loadedMessageCount.value += 1
+                totalMessages.value = Math.max(totalMessages.value + 1, loadedMessageCount.value)
             }
         })
 
@@ -368,6 +493,13 @@ export const useGroupChatStore = defineStore('groupChat', () => {
 
         socket.on('approval.requested', (data: { roomId: string; agentName?: string; approval_id?: string; command?: string; description?: string; choices?: string[]; allow_permanent?: boolean }) => {
             if (!data.approval_id) return
+            const description = data.description || ''
+            const normalizedDescription = description.trim().toLowerCase().replace(/\s+/g, ' ')
+            const isMemoryWrite = !Boolean(data.allow_permanent) && (
+                normalizedDescription === 'save to memory' ||
+                normalizedDescription.startsWith('save to memory:') ||
+                normalizedDescription.startsWith('save to memory?')
+            )
             const choices = (Array.isArray(data.choices) ? data.choices : ['once', 'session', 'deny'])
                 .filter((choice): choice is GroupPendingApproval['choices'][number] =>
                     choice === 'once' || choice === 'session' || choice === 'always' || choice === 'deny')
@@ -376,9 +508,10 @@ export const useGroupChatStore = defineStore('groupChat', () => {
                 agentName: data.agentName || '',
                 approvalId: data.approval_id,
                 command: data.command || '',
-                description: data.description || '',
-                choices: choices.length ? choices : ['once', 'session', 'deny'],
+                description,
+                choices: isMemoryWrite ? ['once', 'deny'] : choices.length ? choices : ['once', 'session', 'deny'],
                 allowPermanent: Boolean(data.allow_permanent),
+                isMemoryWrite,
                 requestedAt: Date.now(),
             })
             pendingApprovals.value = new Map(pendingApprovals.value)
@@ -400,6 +533,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             if (room) room.totalTokens = data.totalTokens
             if (data.roomId === currentRoomId.value) {
                 messages.value = []
+                resetMessagePaging()
                 typingUsers.value.clear()
                 contextStatuses.value.clear()
                 pendingApprovals.value.clear()
@@ -412,6 +546,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         connected.value = false
         currentRoomId.value = null
         messages.value = []
+        resetMessagePaging()
         members.value = []
         agents.value = []
         roomName.value = ''
@@ -436,6 +571,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             currentRoomId.value = res.room.id
             roomName.value = res.room.name
             messages.value = res.messages
+            applyMessagePaging(res)
             agents.value = res.agents
             members.value = res.members || []
         } catch (err: any) {
@@ -445,39 +581,32 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             isJoining.value = false
         }
 
-        // Join via socket for real-time updates
-        const socket = getSocket()
-        if (socket) {
-            await new Promise<void>((resolve) => {
-                socket.emit('join', {
-                    roomId,
-                    name: userName.value || undefined,
-                    description: localStorage.getItem('gc_user_description') || undefined,
-                }, (res: any) => {
-                    if (!res?.error) {
-                        members.value = res.members || []
-                        if (res.agents) agents.value = res.agents
+        // Join via socket for real-time updates. Reconnect uses the same path
+        // so the browser socket is a room member before the next send.
+        await joinRealtimeRoom(roomId)
+    }
 
-                        // Restore typing state from server
-                        if (res.typingUsers) {
-                            for (const u of res.typingUsers) {
-                                if (!typingUsers.value.has(u.userId)) {
-                                    const timer = setTimeout(() => typingUsers.value.delete(u.userId), 5000)
-                                    typingUsers.value.set(u.userId, { name: u.userName, timer })
-                                }
-                            }
-                        }
-
-                        // Restore context statuses from server
-                        if (res.contextStatuses) {
-                            contextStatuses.value = new Map(
-                                res.contextStatuses.map((s: any) => [s.agentName, s])
-                            )
-                        }
-                    }
-                    resolve()
-                })
-            })
+    async function loadOlderMessages(): Promise<boolean> {
+        const roomId = currentRoomId.value
+        if (!roomId || isLoadingOlderMessages.value || !hasMoreBefore.value) return false
+        const offset = loadedMessageCount.value
+        if (offset >= GROUP_CHAT_MAX_DISPLAY_MESSAGES) return false
+        isLoadingOlderMessages.value = true
+        try {
+            const limit = Math.min(GROUP_CHAT_MESSAGE_PAGE_SIZE, GROUP_CHAT_MAX_DISPLAY_MESSAGES - offset)
+            const res = await getRoomDetail(roomId, { offset, limit })
+            const existingIds = new Set(messages.value.map(message => message.id))
+            const olderMessages = res.messages.filter(message => !existingIds.has(message.id))
+            messages.value = [...olderMessages, ...messages.value]
+            loadedMessageCount.value = offset + res.messages.length
+            totalMessages.value = res.total ?? totalMessages.value
+            hasMoreBefore.value = res.hasMore ?? loadedMessageCount.value < totalMessages.value
+            return olderMessages.length > 0
+        } catch (err: any) {
+            error.value = err.message
+            return false
+        } finally {
+            isLoadingOlderMessages.value = false
         }
     }
 
@@ -503,6 +632,8 @@ export const useGroupChatStore = defineStore('groupChat', () => {
                 role: 'user',
                 attachments: attachments.map(att => ({ ...att, url: urlMap.get(att.name) || att.url, file: undefined })),
             })
+            loadedMessageCount.value += 1
+            totalMessages.value = Math.max(totalMessages.value + 1, loadedMessageCount.value)
         }
 
         return new Promise<void>((resolve, reject) => {
@@ -560,6 +691,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
             if (currentRoomId.value === roomId) {
                 currentRoomId.value = null
                 messages.value = []
+                resetMessagePaging()
                 members.value = []
                 agents.value = []
                 roomName.value = ''
@@ -586,6 +718,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         try {
             const res = await clearRoomContext(currentRoomId.value)
             messages.value = []
+            resetMessagePaging()
             typingUsers.value.clear()
             contextStatuses.value.clear()
             const idx = rooms.value.findIndex(r => r.id === currentRoomId.value)
@@ -618,8 +751,9 @@ export const useGroupChatStore = defineStore('groupChat', () => {
 
     async function removeAgentFromRoom(roomId: string, agentId: string) {
         try {
-            await removeAgent(roomId, agentId)
-            agents.value = agents.value.filter(a => a.id !== agentId)
+            const res = await removeAgent(roomId, agentId)
+            agents.value = res.agents ?? agents.value.filter(a => a.id !== agentId && a.agentId !== agentId)
+            if (res.members) members.value = res.members
         } catch (err: any) {
             error.value = err.message
             throw err
@@ -689,8 +823,14 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         pendingApprovals,
         activePendingApproval,
         autoPlaySpeechEnabled,
+        totalMessages,
+        loadedMessageCount,
+        hasMoreBefore,
+        isLoadingOlderMessages,
+        hasReachedMessageDisplayLimit,
         userId,
         userName,
+        currentUserAvatar,
         // Computed
         sortedMessages,
         memberNames,
@@ -702,6 +842,7 @@ export const useGroupChatStore = defineStore('groupChat', () => {
         setUserInfo,
         setAutoPlaySpeech,
         joinRoom,
+        loadOlderMessages,
         sendMessage,
         loadRooms,
         emitTyping,
@@ -719,15 +860,35 @@ export const useGroupChatStore = defineStore('groupChat', () => {
     }
 })
 
+function hasRuntimeToolPayload(value: unknown): boolean {
+    return value !== null && value !== undefined && value !== ''
+}
+
+function runtimeToolPayloadOrUndefined(value: unknown): unknown | undefined {
+    return hasRuntimeToolPayload(value) ? value : undefined
+}
+
+function runtimePayloadText(value: unknown): string {
+    if (!hasRuntimeToolPayload(value)) return ''
+    if (typeof value === 'string') return value
+    try {
+        const serialized = JSON.stringify(value)
+        if (serialized !== undefined) return serialized
+    } catch {
+        // Fall through to String(value) for non-serializable runtime payloads.
+    }
+    return String(value)
+}
+
 function mapGroupMessages(msgs: ChatMessage[]): ChatMessage[] {
     const toolNameMap = new Map<string, string>()
-    const toolArgsMap = new Map<string, string>()
+    const toolArgsMap = new Map<string, unknown>()
     for (const msg of msgs) {
         if (msg.role === 'assistant' && msg.tool_calls?.length) {
             for (const tc of msg.tool_calls) {
                 if (!tc?.id) continue
                 if (tc.function?.name) toolNameMap.set(tc.id, tc.function.name)
-                if (tc.function?.arguments) toolArgsMap.set(tc.id, tc.function.arguments)
+                if (hasRuntimeToolPayload(tc.function?.arguments)) toolArgsMap.set(tc.id, tc.function.arguments)
             }
         }
     }
@@ -737,14 +898,14 @@ function mapGroupMessages(msgs: ChatMessage[]): ChatMessage[] {
         if (
             msg.role !== 'tool' &&
             !msg.tool_calls?.length &&
-            !msg.content?.trim() &&
+            !runtimePayloadText((msg as any).content).trim() &&
             !msg.reasoning?.trim() &&
             (!msg.isStreaming || msg.finish_reason === 'streaming')
         ) {
             continue
         }
 
-        if (msg.role === 'assistant' && msg.tool_calls?.length && !msg.content?.trim()) {
+        if (msg.role === 'assistant' && msg.tool_calls?.length && !runtimePayloadText((msg as any).content).trim()) {
             for (const tc of msg.tool_calls) {
                 result.push({
                     ...msg,
@@ -753,7 +914,7 @@ function mapGroupMessages(msgs: ChatMessage[]): ChatMessage[] {
                     content: '',
                     toolName: tc.function?.name || undefined,
                     toolCallId: tc.id,
-                    toolArgs: tc.function?.arguments || undefined,
+                    toolArgs: runtimeToolPayloadOrUndefined(tc.function?.arguments),
                     toolStatus: 'running',
                 })
             }
@@ -763,14 +924,17 @@ function mapGroupMessages(msgs: ChatMessage[]): ChatMessage[] {
         if (msg.role === 'tool') {
             const tcId = msg.tool_call_id || ''
             const toolName = msg.tool_name || toolNameMap.get(tcId) || undefined
-            const toolArgs = toolArgsMap.get(tcId) || undefined
+            const toolArgs = toolArgsMap.has(tcId) ? toolArgsMap.get(tcId) : undefined
             let preview = ''
-            if (msg.content) {
+            const contentText = runtimePayloadText((msg as any).content)
+            if (contentText) {
                 try {
-                    const parsed = JSON.parse(msg.content)
-                    preview = parsed.url || parsed.title || parsed.preview || parsed.summary || ''
+                    const parsed = typeof (msg as any).content === 'string'
+                        ? JSON.parse(contentText)
+                        : (msg as any).content
+                    preview = parsed?.url || parsed?.title || parsed?.preview || parsed?.summary || ''
                 } catch {
-                    preview = msg.content.slice(0, 80)
+                    preview = contentText.slice(0, 80)
                 }
             }
             const placeholderIdx = result.findIndex(
@@ -786,9 +950,9 @@ function mapGroupMessages(msgs: ChatMessage[]): ChatMessage[] {
                 content: '',
                 toolName: toolName || (placeholderIdx !== -1 ? result[placeholderIdx].toolName : undefined),
                 toolCallId: tcId || undefined,
-                toolArgs: toolArgs || (placeholderIdx !== -1 ? result[placeholderIdx].toolArgs : undefined),
+                toolArgs: toolArgs !== undefined ? toolArgs : (placeholderIdx !== -1 ? result[placeholderIdx].toolArgs : undefined),
                 toolPreview: typeof preview === 'string' ? preview.slice(0, 100) || undefined : undefined,
-                toolResult: msg.content || undefined,
+                toolResult: runtimeToolPayloadOrUndefined((msg as any).content),
                 toolStatus: 'done',
             }
             if (placeholderIdx !== -1) result[placeholderIdx] = merged

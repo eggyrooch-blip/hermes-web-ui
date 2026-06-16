@@ -1,7 +1,7 @@
 import * as esbuild from 'esbuild'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'fs'
+import { chmodSync, cpSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs'
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const pkg = JSON.parse(readFileSync(resolve(rootDir, 'package.json'), 'utf-8'))
@@ -22,17 +22,31 @@ await esbuild.build({
   define: {
     __APP_VERSION__: JSON.stringify(version),
   },
-  // Sourcemaps shipped to production reveal full server logic. Keep them only
-  // for local dev / CI where NODE_ENV is not 'production'.
-  sourcemap: process.env.NODE_ENV !== 'production',
+  sourcemap: true,
   minify: true,
   treeShaking: true,
   logLevel: 'info',
 })
 
-const skillsSourceDir = resolve(rootDir, 'packages/skills')
-if (existsSync(skillsSourceDir)) {
-  const skillsOutDir = resolve(rootDir, 'dist/skills')
-  rmSync(skillsOutDir, { recursive: true, force: true })
-  cpSync(skillsSourceDir, skillsOutDir, { recursive: true })
+const bridgeOutDir = resolve(serverOutDir, 'agent-bridge', 'python')
+const bridgeSrcDir = resolve(rootDir, 'packages/server/src/services/hermes/agent-bridge/python')
+mkdirSync(bridgeOutDir, { recursive: true })
+for (const fileName of readdirSync(bridgeSrcDir)) {
+  if (fileName.endsWith('.py')) {
+    cpSync(resolve(bridgeSrcDir, fileName), resolve(bridgeOutDir, fileName))
+  }
 }
+chmodSync(resolve(bridgeOutDir, 'hermes_bridge.py'), 0o755)
+
+cpSync(
+  resolve(rootDir, 'docs/openapi.json'),
+  resolve(serverOutDir, 'openapi.json'),
+)
+
+const skillsOutDir = resolve(rootDir, 'dist/skills')
+rmSync(skillsOutDir, { recursive: true, force: true })
+cpSync(
+  resolve(rootDir, 'packages/skills'),
+  skillsOutDir,
+  { recursive: true },
+)

@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
-import { defineComponent } from 'vue'
-import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
+import { mount } from '@vue/test-utils'
+import { defineComponent } from 'vue'
 import RouteLinkItem from '@/components/common/RouteLinkItem.vue'
 
 describe('RouteLinkItem', () => {
-  it('renders a real anchor with the RouterLink href', () => {
+  it('renders a real anchor with href from RouterLink custom slot', () => {
     const wrapper = mount(RouteLinkItem, {
       props: {
-        to: { name: 'hermes.session', params: { sessionId: 's1' } },
+        to: { name: 'hermes.session', params: { id: 's1' } },
         active: true,
       },
       slots: {

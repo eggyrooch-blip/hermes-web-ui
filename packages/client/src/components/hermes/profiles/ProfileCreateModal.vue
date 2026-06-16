@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { NModal, NForm, NFormItem, NInput, NButton, NSwitch, NText, NSelect, useMessage } from 'naive-ui'
+import { ref } from 'vue'
+import { NModal, NForm, NFormItem, NInput, NButton, NSwitch, NText, useMessage } from 'naive-ui'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useI18n } from 'vue-i18n'
 
@@ -18,27 +18,6 @@ const loading = ref(false)
 const name = ref('')
 const clone = ref(false)
 const nameValidationMessage = ref('')
-const selectedRole = ref<'coder' | 'researcher' | 'writer' | 'operator' | 'custom'>('coder')
-const customDescription = ref('')
-
-const rolePresets = [
-  { value: 'coder', labelKey: 'profiles.rolePresetCoder', descriptionKey: 'profiles.rolePresetCoderDescription' },
-  { value: 'researcher', labelKey: 'profiles.rolePresetResearcher', descriptionKey: 'profiles.rolePresetResearcherDescription' },
-  { value: 'writer', labelKey: 'profiles.rolePresetWriter', descriptionKey: 'profiles.rolePresetWriterDescription' },
-  { value: 'operator', labelKey: 'profiles.rolePresetOperator', descriptionKey: 'profiles.rolePresetOperatorDescription' },
-  { value: 'custom', labelKey: 'profiles.rolePresetCustom', descriptionKey: '' },
-] as const
-
-const roleOptions = computed(() => rolePresets.map(role => ({
-  label: t(role.labelKey),
-  value: role.value,
-})))
-
-const roleDescription = computed(() => {
-  if (selectedRole.value === 'custom') return customDescription.value.trim()
-  const preset = rolePresets.find(role => role.value === selectedRole.value)
-  return preset ? t(preset.descriptionKey).trim() : ''
-})
 
 function handleNameInput(value: string) {
   // 过滤掉不符合规则的字符，只保留小写字母、数字、下划线和连字符
@@ -64,10 +43,7 @@ async function handleSave() {
 
   loading.value = true
   try {
-    const res = await profilesStore.createProfile(name.value.trim(), {
-      clone: clone.value,
-      description: roleDescription.value || undefined,
-    })
+    const res = await profilesStore.createProfile(name.value.trim(), clone.value)
     if (res.success) {
       const stripped = res.strippedCredentials ?? []
       const disabled = res.disabledPlatforms ?? []
@@ -102,7 +78,7 @@ function handleClose() {
     v-model:show="showModal"
     preset="card"
     :title="t('profiles.create')"
-    :style="{ width: 'min(480px, calc(100vw - 32px))' }"
+    :style="{ width: 'min(420px, calc(100vw - 32px))' }"
     :mask-closable="!loading"
     @after-leave="emit('close')"
   >
@@ -116,27 +92,6 @@ function handleClose() {
       </NFormItem>
       <NText v-if="nameValidationMessage" depth="3" type="warning" style="font-size: 12px;">
         {{ nameValidationMessage }}
-      </NText>
-
-      <NFormItem :label="t('profiles.rolePreset')">
-        <NSelect
-          v-model:value="selectedRole"
-          :options="roleOptions"
-        />
-      </NFormItem>
-      <NFormItem
-        v-if="selectedRole === 'custom'"
-        :label="t('profiles.roleDescription')"
-      >
-        <NInput
-          v-model:value="customDescription"
-          type="textarea"
-          :autosize="{ minRows: 3, maxRows: 5 }"
-          :placeholder="t('profiles.roleDescriptionPlaceholder')"
-        />
-      </NFormItem>
-      <NText v-else depth="3" class="role-description">
-        {{ roleDescription }}
       </NText>
 
       <NFormItem :label="t('profiles.cloneFromCurrent')">
@@ -164,12 +119,12 @@ function handleClose() {
   justify-content: flex-end;
   gap: 8px;
 }
+</style>
 
-.role-description {
-  display: block;
-  margin: -6px 0 16px;
-  font-size: 12px;
-  line-height: 1.45;
-  word-break: break-word;
+<style scoped lang="scss">
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 </style>

@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { isUserMode } from '@/api/client'
 import TerminalPanel from './TerminalPanel.vue'
 import FilesPanel from './FilesPanel.vue'
 
@@ -20,17 +19,11 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<Emits>()
 const { t } = useI18n()
-const showTerminal = computed(() => !isUserMode())
 
-const activeTab = ref<'terminal' | 'files'>(showTerminal.value ? props.activeTab : 'files')
+const activeTab = ref<'terminal' | 'files'>(props.activeTab)
 
 watch(() => props.activeTab, (newVal) => {
-  if (!newVal) return
-  activeTab.value = showTerminal.value ? newVal : 'files'
-})
-
-watch(showTerminal, (enabled) => {
-  if (!enabled && activeTab.value === 'terminal') activeTab.value = 'files'
+  if (newVal) activeTab.value = newVal
 })
 
 function handleClose() {
@@ -51,7 +44,6 @@ function handleClose() {
             {{ t('drawer.files') }}
           </button>
           <button
-            v-if="showTerminal"
             :class="['tab-button', { active: activeTab === 'terminal' }]"
             @click="activeTab = 'terminal'"
           >
@@ -70,7 +62,7 @@ function handleClose() {
         <div v-show="activeTab === 'files'" class="drawer-pane">
           <FilesPanel />
         </div>
-        <div v-if="showTerminal" v-show="activeTab === 'terminal'" class="drawer-pane">
+        <div v-show="activeTab === 'terminal'" class="drawer-pane">
           <TerminalPanel :visible="activeTab === 'terminal' && show" />
         </div>
       </div>
@@ -94,9 +86,10 @@ function handleClose() {
 .drawer-panel {
   position: fixed;
   top: 0;
-  right: -900px;
-  width: 900px;
-  height: 100vh;
+  right: min(-1180px, -88vw);
+  width: min(1180px, 88vw);
+  height: calc(100 * var(--vh));
+  max-height: calc(100 * var(--vh));
   background: $bg-card;
   box-shadow: -2px 0 8px rgba(0, 0, 0, 0.15);
   display: flex;
@@ -188,4 +181,3 @@ function handleClose() {
   overflow: auto;
 }
 </style>
-

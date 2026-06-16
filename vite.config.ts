@@ -4,14 +4,21 @@ import type { ProxyOptions } from 'vite'
 import { resolve } from 'path'
 import pkg from './package.json'
 
-const BACKEND = 'http://127.0.0.1:8648'
+const FRONTEND_PORT = Number(process.env.HERMES_WEB_UI_FRONTEND_PORT || 8649)
+const BACKEND_PORT = process.env.HERMES_WEB_UI_BACKEND_PORT || '8648'
+const BACKEND = `http://127.0.0.1:${BACKEND_PORT}`
 
 function createProxyConfig(): ProxyOptions {
   return {
     target: BACKEND,
     changeOrigin: true,
+    ws: true,
     configure: (proxy) => {
       proxy.on('proxyReq', (proxyReq) => {
+        proxyReq.removeHeader('origin')
+        proxyReq.removeHeader('referer')
+      })
+      proxy.on('proxyReqWs', (proxyReq) => {
         proxyReq.removeHeader('origin')
         proxyReq.removeHeader('referer')
       })
@@ -89,6 +96,8 @@ export default defineConfig({
     ],
   },
   server: {
+    port: FRONTEND_PORT,
+    strictPort: true,
     proxy: {
       '/api': createProxyConfig(),
       '/v1': createProxyConfig(),

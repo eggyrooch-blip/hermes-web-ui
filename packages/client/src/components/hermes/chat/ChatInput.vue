@@ -5,27 +5,352 @@ import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { fetchContextLength } from '@/api/hermes/sessions'
 import { setModelContext } from '@/api/hermes/model-context'
-import { fetchSlashCommands, type SlashCommand } from '@/api/hermes/slash'
-import { NButton, NTooltip, NSwitch, NModal, NInputNumber, useMessage } from 'naive-ui'
-import { computed, ref, onMounted, watch, nextTick } from 'vue'
+import { fetchSkills, type SkillCategory, type SkillInfo } from '@/api/hermes/skills'
+import { NButton, NTooltip, NSwitch, NModal, NInputNumber, NPopselect, useMessage } from 'naive-ui'
+import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useToolTraceVisibility } from '@/composables/useToolTraceVisibility'
+import VoiceDialogueControls from './VoiceDialogueControls.vue'
+import { useMicRecorder } from '@/composables/useMicRecorder'
+import { useGlobalSpeech } from '@/composables/useSpeech'
+import { useVoiceDialogue } from '@/composables/useVoiceDialogue'
+import { transcribeSpeech } from '@/api/hermes/stt'
+import type { StoredSttProvider } from '@/api/hermes/stt-settings'
+import { useSttSettings } from '@/composables/useSttSettings'
+import { useBrowserSpeechRecognition } from '@/composables/useBrowserSpeechRecognition'
 
 const chatStore = useChatStore()
+const appStore = useAppStore()
+const profilesStore = useProfilesStore()
 const { t } = useI18n()
 const message = useMessage()
+const { toolTraceVisible, toggleToolTraceVisible } = useToolTraceVisibility()
+
+const reasoningEffortOptions = computed(() => [
+  { label: t('chat.reasoningEffort.options.default'), value: '' },
+  { label: t('chat.reasoningEffort.options.none'), value: 'none' },
+  { label: t('chat.reasoningEffort.options.minimal'), value: 'minimal' },
+  { label: t('chat.reasoningEffort.options.low'), value: 'low' },
+  { label: t('chat.reasoningEffort.options.medium'), value: 'medium' },
+  { label: t('chat.reasoningEffort.options.high'), value: 'high' },
+  { label: t('chat.reasoningEffort.options.xhigh'), value: 'xhigh' },
+])
+const currentReasoningEffort = computed<string>(() =>
+  chatStore.activeSession?.reasoningEffort || ''
+)
+const reasoningEffortLabel = computed<string>(() => {
+  const v = currentReasoningEffort.value
+  if (!v) return t('chat.reasoningEffort.defaultLabel')
+  const opt = reasoningEffortOptions.value.find(o => o.value === v)
+  return opt?.label || v
+})
+function onReasoningEffortChange(value: string | null | undefined) {
+  const sid = chatStore.activeSessionId
+  if (!sid) return
+  chatStore.setSessionReasoningEffort(sid, value || '')
+}
+const DRAFT_STORAGE_KEY = 'hermes_chat_input_drafts_v1'
+type DraftMap = Record<string, string>
 const inputText = ref('')
 const textareaRef = ref<HTMLTextAreaElement>()
+const commandDropdownRef = ref<HTMLDivElement>()
 const fileInputRef = ref<HTMLInputElement>()
 const attachments = ref<Attachment[]>([])
 const isDragging = ref(false)
 const dragCounter = ref(0)
 const isComposing = ref(false)
+const speech = useGlobalSpeech()
+const micRecorder = useMicRecorder({
+  messages: {
+    unsupported: t('chat.voiceInput.microphoneUnsupported'),
+    recordingFailed: t('chat.voiceInput.microphoneRecordingFailed'),
+  },
+})
+const sttSettings = useSttSettings()
+const browserRecognition = useBrowserSpeechRecognition({
+  messages: {
+    unsupported: t('chat.voiceInput.browserSpeechUnsupported'),
+    failed: t('chat.voiceInput.browserSpeechFailed'),
+    failedWithReason: (reason) => t('chat.voiceInput.browserSpeechFailedWithReason', { error: reason }),
+  },
+})
+const activeVoiceCaptureMode = ref<'browser' | 'backend' | null>(null)
+
+type SlashCommandOption = {
+  name: string
+  args: string
+  description: string
+  insertText?: string
+  key: string
+  opensSkillPicker?: boolean
+}
+
+function normalizeVoiceTranscript(text: string) {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+function backendTranscribeOptions(): {
+  provider: StoredSttProvider
+  language?: string
+  prompt?: string
+} {
+  if (sttSettings.provider.value === 'custom') {
+    return {
+      provider: 'custom',
+      language: sttSettings.customLanguage.value.trim() || undefined,
+      prompt: sttSettings.customPrompt.value.trim() || undefined,
+    }
+  }
+
+  return {
+    provider: 'openai',
+    language: sttSettings.openaiLanguage.value.trim() || undefined,
+    prompt: sttSettings.openaiPrompt.value.trim() || undefined,
+  }
+}
+
+function browserCaptureLanguage() {
+  return sttSettings.openaiLanguage.value.trim() || sttSettings.customLanguage.value.trim() || ''
+}
+
+function insertVoiceTranscriptIntoInput(text: string) {
+  const normalizedTranscript = normalizeVoiceTranscript(text)
+  if (!normalizedTranscript) return
+
+  const el = textareaRef.value
+  const currentValue = inputText.value
+  const selectionStart = el?.selectionStart ?? currentValue.length
+  const selectionEnd = el?.selectionEnd ?? selectionStart
+  const before = currentValue.slice(0, selectionStart)
+  const after = currentValue.slice(selectionEnd)
+  const prefix = before && !/\s$/.test(before) ? ' ' : ''
+  const suffix = after && !/^\s/.test(after) ? ' ' : ''
+  const nextValue = `${before}${prefix}${normalizedTranscript}${suffix}${after}`
+  const nextCursorPosition = before.length + prefix.length + normalizedTranscript.length
+
+  inputText.value = nextValue
+  slashActive.value = false
+
+  nextTick(() => {
+    const textarea = textareaRef.value
+    if (!textarea) return
+
+    textarea.focus()
+    textarea.setSelectionRange(nextCursorPosition, nextCursorPosition)
+
+    if (textareaHeight.value === null) {
+      textarea.style.height = 'auto'
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 100)}px`
+    }
+  })
+}
+
+const voiceDialogue = useVoiceDialogue({
+  transcribe: async (audio) => {
+    const { provider, language, prompt } = backendTranscribeOptions()
+    return transcribeSpeech({ audio, provider, language, prompt })
+  },
+  sendMessage: async (text) => {
+    insertVoiceTranscriptIntoInput(text)
+  },
+  stopOutputAudio: () => speech.stop(true),
+})
+const voiceDialogueTranscript = computed(() => {
+  if (activeVoiceCaptureMode.value !== 'browser' || voiceDialogue.status.value !== 'capturing') {
+    return voiceDialogue.transcript.value
+  }
+
+  return normalizeVoiceTranscript([
+    browserRecognition.transcript.value,
+    browserRecognition.partialTranscript.value,
+  ].filter(Boolean).join(' '))
+})
+const shouldShowBrowserRecognitionError = computed(() =>
+  sttSettings.provider.value === 'browser' || activeVoiceCaptureMode.value === 'browser',
+)
+const voiceDialogueError = computed(() =>
+  voiceDialogue.error.value?.message
+  ?? (shouldShowBrowserRecognitionError.value ? browserRecognition.error.value?.message : null)
+  ?? micRecorder.state.value.error?.message
+  ?? null,
+)
+
+const bridgeCommands = computed<SlashCommandOption[]>(() => [
+  { key: 'command:usage', name: 'usage', args: '', description: t('chat.slashCommands.usage') },
+  { key: 'command:status', name: 'status', args: '', description: t('chat.slashCommands.status') },
+  { key: 'command:abort', name: 'abort', args: '', description: t('chat.slashCommands.abort') },
+  { key: 'command:queue', name: 'queue', args: t('chat.slashCommandArgs.message'), description: t('chat.slashCommands.queue') },
+  { key: 'command:skill', name: 'skill', args: '', description: t('skills.title'), opensSkillPicker: true },
+  { key: 'command:plan', name: 'plan', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.plan') },
+  { key: 'command:goal', name: 'goal', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.goal') },
+  { key: 'command:goal-status', name: 'goal', args: 'status', insertText: 'goal status', description: t('chat.slashCommands.goalStatus') },
+  { key: 'command:goal-pause', name: 'goal', args: 'pause', insertText: 'goal pause', description: t('chat.slashCommands.goalPause') },
+  { key: 'command:goal-resume', name: 'goal', args: 'resume', insertText: 'goal resume', description: t('chat.slashCommands.goalResume') },
+  { key: 'command:goal-done', name: 'goal', args: 'done', insertText: 'goal done', description: t('chat.slashCommands.goalDone') },
+  { key: 'command:goal-clear', name: 'goal', args: 'clear', insertText: 'goal clear', description: t('chat.slashCommands.goalClear') },
+  { key: 'command:subgoal', name: 'subgoal', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.subgoal') },
+  { key: 'command:clear', name: 'clear', args: '', description: t('chat.slashCommands.clear') },
+  { key: 'command:clear-history', name: 'clear', args: '--history', insertText: 'clear --history', description: t('chat.slashCommands.clearHistory') },
+  { key: 'command:title', name: 'title', args: t('chat.slashCommandArgs.title'), description: t('chat.slashCommands.title') },
+  { key: 'command:compress', name: 'compress', args: '', description: t('chat.slashCommands.compress') },
+  { key: 'command:steer', name: 'steer', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.steer') },
+  { key: 'command:destroy', name: 'destroy', args: '', description: t('chat.slashCommands.destroy') },
+  { key: 'command:reload-mcp', name: 'reload-mcp', args: '', description: t('chat.slashCommands.reloadMcp') },
+])
+
+const slashActive = ref(false)
+const slashQuery = ref('')
+const slashActiveIndex = ref(0)
+const skillCategories = ref<SkillCategory[]>([])
+const showSkillPicker = ref(false)
+const skillSearch = ref('')
+const skillPickerLoading = ref(false)
+let skillsLoadedKey = ''
+let skillsLoadRequest: Promise<void> | null = null
+const isBridgeSession = computed(() => chatStore.activeSession?.source === 'cli')
+const skillPickerItems = computed(() => {
+  const byName = new Map<string, SkillInfo>()
+  for (const category of skillCategories.value) {
+    for (const skill of category.skills || []) {
+      if (skill.enabled === false) continue
+      if (!byName.has(skill.name)) byName.set(skill.name, skill)
+    }
+  }
+  return [...byName.values()].map(skill => {
+    const commandName = skillCommandName(skill.name)
+    return {
+      key: `skill:${commandName}`,
+      name: skill.name,
+      commandName,
+      description: skill.description || skill.name,
+    }
+  })
+})
+const filteredBridgeCommands = computed(() => {
+  const query = slashQuery.value.toLowerCase()
+  return bridgeCommands.value.filter(command =>
+    command.name.includes(query)
+    || command.insertText?.includes(query)
+    || command.description.toLowerCase().includes(query),
+  )
+})
+const filteredSkillPickerItems = computed(() => {
+  const query = skillSearch.value.trim().toLowerCase()
+  if (!query) return skillPickerItems.value
+  return skillPickerItems.value.filter(skill =>
+    skill.name.toLowerCase().includes(query)
+    || skill.commandName.includes(query)
+    || skill.description.toLowerCase().includes(query),
+  )
+})
+
+function skillCommandName(name: string) {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/_/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+}
+
+function currentSkillsKey() {
+  return chatStore.activeSession?.profile || profilesStore.activeProfileName || 'default'
+}
+
+async function loadSkills() {
+  if (!isBridgeSession.value) return
+  const key = currentSkillsKey()
+  if (skillsLoadedKey === key || skillsLoadRequest) return skillsLoadRequest
+  skillsLoadRequest = (async () => {
+    try {
+      const data = await fetchSkills(key)
+      if (currentSkillsKey() !== key) return
+      skillCategories.value = data.categories || []
+      skillsLoadedKey = key
+    } catch {
+      if (currentSkillsKey() !== key) return
+      skillCategories.value = []
+      skillsLoadedKey = key
+    } finally {
+      skillsLoadRequest = null
+    }
+  })()
+  return skillsLoadRequest
+}
+
+// 自定义高度拖拽
+const textareaHeight = ref<number | null>(null) // null = auto
+
+function startResize(e: MouseEvent) {
+  e.preventDefault()
+  const el = textareaRef.value
+  if (!el) return
+  // 如果当前是 auto，用实际 clientHeight 作为起始值
+  const startHeight = el.clientHeight
+  const startY = e.clientY
+
+  function onMouseMove(e: MouseEvent) {
+    const deltaY = e.clientY - startY
+    // 往上拖 (deltaY < 0) → 高度增加
+    const newHeight = startHeight - deltaY
+    textareaHeight.value = Math.max(20, Math.min(400, Math.round(newHeight)))
+  }
+
+  function onMouseUp() {
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+  }
+
+  document.body.style.cursor = 'row-resize'
+  document.body.style.userSelect = 'none'
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+}
 
 // 自动播放语音开关
 const autoPlaySpeech = ref(false)
 
+function readDraftMap(): DraftMap {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(DRAFT_STORAGE_KEY) || '{}')
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function getActiveDraftSessionId() {
+  return chatStore.activeSessionId || chatStore.activeSession?.id || ''
+}
+
+function loadDraftForActiveSession() {
+  const sessionId = getActiveDraftSessionId()
+  inputText.value = sessionId ? readDraftMap()[sessionId] || '' : ''
+}
+
+function saveDraftForActiveSession(value: string) {
+  const sessionId = getActiveDraftSessionId()
+  if (!sessionId) return
+  const drafts = readDraftMap()
+  if (value) {
+    drafts[sessionId] = value
+  } else {
+    delete drafts[sessionId]
+  }
+  if (Object.keys(drafts).length > 0) {
+    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(drafts))
+  } else {
+    localStorage.removeItem(DRAFT_STORAGE_KEY)
+  }
+}
+
 // 从 localStorage 读取设置
 onMounted(() => {
+  loadDraftForActiveSession()
   const saved = localStorage.getItem('autoPlaySpeech')
   if (saved !== null) {
     autoPlaySpeech.value = saved === 'true'
@@ -41,126 +366,108 @@ watch(autoPlaySpeech, (value) => {
   chatStore.setAutoPlaySpeech(value)
 })
 
-const canSend = computed(() => inputText.value.trim() || attachments.value.length > 0)
-
-const slashCommands = ref<SlashCommand[]>([])
-const slashCommandsLoadedFor = ref<string | null>(null)
-const slashCommandsLoading = ref(false)
-const slashActiveIndex = ref(0)
-const slashSuggestionsDismissedFor = ref<string | null>(null)
-
-const slashQuery = computed(() => {
-  const text = inputText.value
-  if (!text.startsWith('/')) return null
-  if (/\s/.test(text)) return null
-  const firstToken = text.split(/\s/, 1)[0] || ''
-  if (!firstToken.startsWith('/')) return null
-  return firstToken.slice(1).toLowerCase()
+watch(inputText, (value) => {
+  saveDraftForActiveSession(value)
 })
 
-const filteredSlashCommands = computed(() => {
-  const query = slashQuery.value
-  if (query === null) return []
-  return slashCommands.value
-    .filter(command => {
-      const name = command.name.toLowerCase()
-      const slash = command.slash.toLowerCase()
-      return !query || name.includes(query) || slash.includes(query)
-    })
-    .slice(0, 8)
+watch(() => chatStore.activeSession?.id, () => {
+  loadDraftForActiveSession()
 })
 
-const showSlashSuggestions = computed(() =>
-  slashQuery.value !== null
-  && filteredSlashCommands.value.length > 0
-  && slashSuggestionsDismissedFor.value !== inputText.value,
+watch(
+  () => [chatStore.activeSession?.profile, profilesStore.activeProfileName],
+  () => {
+    skillsLoadedKey = ''
+    skillCategories.value = []
+  },
 )
 
-const slashSuggestionGroups = computed(() => {
-  const groups: Array<{ key: string; label: string; entries: Array<{ command: SlashCommand; index: number }> }> = []
-  const byLabel = new Map<string, Array<{ command: SlashCommand; index: number }>>()
-  for (const [index, command] of filteredSlashCommands.value.entries()) {
-    const label = command.category || command.source || 'Commands'
-    const existing = byLabel.get(label) || []
-    existing.push({ command, index })
-    byLabel.set(label, existing)
-  }
-  for (const [label, entries] of byLabel.entries()) {
-    groups.push({ key: label, label, entries })
-  }
-  return groups
-})
+const canSend = computed(() => inputText.value.trim() || attachments.value.length > 0)
 
-const activeSlashCommand = computed(() => filteredSlashCommands.value[slashActiveIndex.value] || null)
-
-function slashCommandTestId(command: SlashCommand): string {
-  return `slash-suggestion-${command.name.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+function scrollCommandIntoView() {
+  nextTick(() => {
+    if (!commandDropdownRef.value) return
+    const active = commandDropdownRef.value.querySelector('.active') as HTMLElement | null
+    active?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
+  })
 }
 
-async function loadSlashCommands() {
-  const profile = useProfilesStore().activeProfileName || ''
-  if (slashCommandsLoadedFor.value === profile || slashCommandsLoading.value) return
-  slashCommandsLoading.value = true
-  try {
-    const response = await fetchSlashCommands(profile || undefined)
-    slashCommands.value = response.commands || []
-    slashCommandsLoadedFor.value = profile
-  } catch {
-    slashCommands.value = []
-    slashCommandsLoadedFor.value = profile
-  } finally {
-    slashCommandsLoading.value = false
-  }
-}
-
-function maybeLoadSlashCommands() {
-  if (slashQuery.value !== null) {
-    void loadSlashCommands()
-  }
-}
-
-async function selectSlashCommand(command: SlashCommand) {
-  inputText.value = `${command.slash} `
-  slashSuggestionsDismissedFor.value = null
-  await nextTick()
-  textareaRef.value?.focus()
-}
-
-function moveSlashSelection(delta: number) {
-  const count = filteredSlashCommands.value.length
-  if (!count) return
-  slashActiveIndex.value = (slashActiveIndex.value + delta + count) % count
-}
-
-watch(inputText, maybeLoadSlashCommands)
-watch(filteredSlashCommands, commands => {
-  if (!commands.length) {
-    slashActiveIndex.value = 0
+function updateSlashState() {
+  if (!isBridgeSession.value) {
+    slashActive.value = false
     return
   }
-  if (slashActiveIndex.value >= commands.length) {
-    slashActiveIndex.value = commands.length - 1
+  const el = textareaRef.value
+  if (!el) return
+  const cursorPos = el.selectionStart
+  const beforeCursor = inputText.value.slice(0, cursorPos)
+  if (!beforeCursor.startsWith('/') || beforeCursor.includes(' ') || beforeCursor.includes('\n')) {
+    slashActive.value = false
+    return
   }
-})
-watch(() => useProfilesStore().activeProfileName, () => {
-  slashCommands.value = []
-  slashCommandsLoadedFor.value = null
+  slashQuery.value = beforeCursor.slice(1)
   slashActiveIndex.value = 0
-  slashSuggestionsDismissedFor.value = null
-  maybeLoadSlashCommands()
-})
+  slashActive.value = filteredBridgeCommands.value.length > 0
+}
+
+function selectBridgeCommand(command: SlashCommandOption) {
+  if (command.opensSkillPicker) {
+    slashActive.value = false
+    void openSkillPicker()
+    return
+  }
+  inputText.value = `/${command.insertText || command.name} `
+  slashActive.value = false
+  nextTick(() => {
+    const el = textareaRef.value
+    if (!el) return
+    const pos = inputText.value.length
+    el.setSelectionRange(pos, pos)
+    el.focus()
+  })
+}
+
+async function openSkillPicker() {
+  if (!isBridgeSession.value) return
+  slashActive.value = false
+  skillSearch.value = ''
+  showSkillPicker.value = true
+  skillPickerLoading.value = true
+  try {
+    await loadSkills()
+  } finally {
+    skillPickerLoading.value = false
+  }
+}
+
+function selectSkill(skill: { commandName: string }) {
+  inputText.value = `/skill ${skill.commandName} `
+  showSkillPicker.value = false
+  nextTick(() => {
+    const el = textareaRef.value
+    if (!el) return
+    const pos = inputText.value.length
+    el.setSelectionRange(pos, pos)
+    el.focus()
+  })
+}
 
 // --- Context info ---
 
-const contextLength = ref(200000)
-const FALLBACK_CONTEXT = 200000
+const contextLength = ref(256000)
+const FALLBACK_CONTEXT = 256000
+let contextLengthLoadedKey = ''
+let contextLengthRequestKey = ''
+let contextLengthRequest: Promise<void> | null = null
 
 // Context length editing
 const showContextEditModal = ref(false)
-const editingContextLimit = ref(200000)
+const editingContextLimit = ref(256000)
 const isSavingContextLimit = ref(false)
+const isCodingAgentSession = computed(() => chatStore.activeSession?.source === 'coding_agent')
 
 async function handleEditContextLimit() {
+  if (isCodingAgentSession.value) return
   editingContextLimit.value = contextLength.value
   showContextEditModal.value = true
 }
@@ -173,9 +480,8 @@ async function saveContextLimit() {
 
   isSavingContextLimit.value = true
   try {
-    const appStore = useAppStore()
-    const provider = appStore.selectedProvider || ''
-    const model = appStore.selectedModel || ''
+    const provider = chatStore.activeSession?.provider || appStore.selectedProvider || ''
+    const model = chatStore.activeSession?.model || appStore.selectedModel || ''
 
     if (!provider || !model) {
       message.error(t('chat.contextEditFailed'))
@@ -184,6 +490,7 @@ async function saveContextLimit() {
 
     await setModelContext(provider, model, editingContextLimit.value)
     contextLength.value = editingContextLimit.value
+    contextLengthLoadedKey = currentContextLengthKey()
     showContextEditModal.value = false
     message.success(t('chat.contextEditSuccess'))
   } catch (err: any) {
@@ -193,24 +500,73 @@ async function saveContextLimit() {
   }
 }
 
-async function loadContextLength() {
-  try {
-    const profile = useProfilesStore().activeProfileName || undefined
-    contextLength.value = await fetchContextLength(profile)
-  } catch {
-    contextLength.value = FALLBACK_CONTEXT
+function currentContextLengthParams() {
+  const activeSession = chatStore.activeSession
+  return {
+    profile: activeSession?.profile || profilesStore.activeProfileName || undefined,
+    provider: activeSession?.provider || undefined,
+    model: activeSession?.model || undefined,
   }
 }
 
+function currentContextLengthKey() {
+  const params = currentContextLengthParams()
+  return `${params.profile || ''}|${params.provider || ''}|${params.model || ''}`
+}
+
+async function loadContextLength() {
+  if (isCodingAgentSession.value) return
+  const key = currentContextLengthKey()
+  if (key === contextLengthLoadedKey) return
+  if (key === contextLengthRequestKey && contextLengthRequest) return contextLengthRequest
+
+  contextLengthRequestKey = key
+  contextLengthRequest = (async () => {
+    const params = currentContextLengthParams()
+    try {
+      const value = await fetchContextLength(params.profile, params.provider, params.model)
+      if (currentContextLengthKey() !== key) return
+      contextLength.value = value
+      contextLengthLoadedKey = key
+    } catch {
+      if (currentContextLengthKey() !== key) return
+      contextLength.value = FALLBACK_CONTEXT
+      contextLengthLoadedKey = key
+    } finally {
+      if (contextLengthRequestKey === key) {
+        contextLengthRequest = null
+        contextLengthRequestKey = ''
+      }
+    }
+  })()
+  return contextLengthRequest
+}
+
 onMounted(loadContextLength)
-watch(() => useProfilesStore().activeProfileName, loadContextLength)
-watch(() => useAppStore().selectedModel, loadContextLength)
+watch(
+  () => [
+    profilesStore.activeProfileName,
+    appStore.selectedProvider,
+    appStore.selectedModel,
+    chatStore.activeSession?.id,
+    chatStore.activeSession?.profile,
+    chatStore.activeSession?.provider,
+    chatStore.activeSession?.model,
+    chatStore.activeSession?.source,
+  ],
+  loadContextLength,
+  { flush: 'post' },
+)
 
 const totalTokens = computed(() => {
+  if (isCodingAgentSession.value) return 0
+  const context = chatStore.activeSession?.contextTokens
+  if (typeof context === 'number' && Number.isFinite(context) && context > 0) return context
   const input = chatStore.activeSession?.inputTokens ?? 0
   const output = chatStore.activeSession?.outputTokens ?? 0
   return input + output
 })
+const showContextUsage = computed(() => totalTokens.value > 0)
 
 const remainingTokens = computed(() => Math.max(0, contextLength.value - totalTokens.value))
 
@@ -304,14 +660,107 @@ function handleDrop(e: DragEvent) {
 function handleSend() {
   const text = inputText.value.trim()
   if (!text && attachments.value.length === 0) return
+  if (isBridgeSession.value && text === '/skill' && attachments.value.length === 0) {
+    void openSkillPicker()
+    return
+  }
 
   chatStore.sendMessage(text, attachments.value.length > 0 ? attachments.value : undefined)
   inputText.value = ''
+  saveDraftForActiveSession('')
   attachments.value = []
+  slashActive.value = false
 
   if (textareaRef.value) {
     textareaRef.value.style.height = 'auto'
   }
+}
+
+async function startVoiceCapture() {
+  browserRecognition.clearError()
+  const { captureId } = await voiceDialogue.beginCapture()
+  const useBrowserProvider = sttSettings.provider.value === 'browser'
+
+  activeVoiceCaptureMode.value = useBrowserProvider ? 'browser' : 'backend'
+
+  try {
+    if (useBrowserProvider) {
+      await browserRecognition.start({ language: browserCaptureLanguage() })
+      return
+    }
+
+    await micRecorder.start()
+  } catch {
+    activeVoiceCaptureMode.value = null
+    voiceDialogue.cancelCapture(captureId)
+  }
+}
+
+async function stopVoiceCapture() {
+  const captureId = voiceDialogue.activeCaptureId.value
+  if (!captureId) return
+
+  if (activeVoiceCaptureMode.value === 'browser') {
+    let transcript = ''
+
+    try {
+      transcript = await browserRecognition.stop()
+    } catch {
+      activeVoiceCaptureMode.value = null
+      voiceDialogue.cancelCapture(captureId)
+      return
+    }
+
+    activeVoiceCaptureMode.value = null
+
+    try {
+      await voiceDialogue.commitTranscript(captureId, transcript)
+    } catch {
+      // Voice dialogue state already tracks send errors.
+    }
+    return
+  }
+
+  if (micRecorder.state.value.status === 'requesting') {
+    micRecorder.cancel()
+    activeVoiceCaptureMode.value = null
+    voiceDialogue.cancelCapture(captureId)
+    return
+  }
+
+  let audio: Blob
+
+  try {
+    audio = await micRecorder.stop()
+  } catch {
+    activeVoiceCaptureMode.value = null
+    voiceDialogue.cancelCapture(captureId)
+    return
+  }
+
+  activeVoiceCaptureMode.value = null
+
+  if (audio.size <= 0) {
+    voiceDialogue.cancelCapture(captureId)
+    return
+  }
+
+  try {
+    await voiceDialogue.transcribeAndSend(captureId, audio)
+  } catch {
+    // Voice dialogue state already tracks transcription/send errors.
+  }
+}
+
+function cancelVoiceCapture() {
+  if (activeVoiceCaptureMode.value === 'browser') {
+    browserRecognition.cancel()
+  } else {
+    micRecorder.cancel()
+  }
+
+  activeVoiceCaptureMode.value = null
+  voiceDialogue.cancelCapture()
 }
 
 function handleCompositionStart() {
@@ -321,6 +770,7 @@ function handleCompositionStart() {
 function handleCompositionEnd() {
   requestAnimationFrame(() => {
     isComposing.value = false
+    updateSlashState()
   })
 }
 
@@ -329,29 +779,28 @@ function isImeEnter(e: KeyboardEvent): boolean {
 }
 
 function handleKeydown(e: KeyboardEvent) {
-  if (showSlashSuggestions.value) {
+  if (slashActive.value && filteredBridgeCommands.value.length > 0) {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      moveSlashSelection(1)
+      slashActiveIndex.value = (slashActiveIndex.value + 1) % filteredBridgeCommands.value.length
+      scrollCommandIntoView()
       return
     }
     if (e.key === 'ArrowUp') {
       e.preventDefault()
-      moveSlashSelection(-1)
+      slashActiveIndex.value = (slashActiveIndex.value - 1 + filteredBridgeCommands.value.length) % filteredBridgeCommands.value.length
+      scrollCommandIntoView()
+      return
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault()
+      selectBridgeCommand(filteredBridgeCommands.value[slashActiveIndex.value])
       return
     }
     if (e.key === 'Escape') {
       e.preventDefault()
-      slashSuggestionsDismissedFor.value = inputText.value
+      slashActive.value = false
       return
-    }
-    if ((e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) && !isImeEnter(e)) {
-      const command = activeSlashCommand.value
-      if (command) {
-        e.preventDefault()
-        void selectSlashCommand(command)
-        return
-      }
     }
   }
 
@@ -364,10 +813,32 @@ function handleKeydown(e: KeyboardEvent) {
 
 function handleInput(e: Event) {
   const el = e.target as HTMLTextAreaElement
+  if (!isComposing.value) updateSlashState()
+  // 用户手动拖拽自定义高度时，不覆盖
+  if (textareaHeight.value !== null) return
   el.style.height = 'auto'
   el.style.height = Math.min(el.scrollHeight, 100) + 'px'
-  maybeLoadSlashCommands()
 }
+
+function handleCommandHover(index: number) {
+  slashActiveIndex.value = index
+}
+
+function onDocumentMousedown(e: MouseEvent) {
+  if (!slashActive.value) return
+  const target = e.target as HTMLElement
+  if (!target.closest('.slash-command-dropdown') && !target.closest('.input-wrapper')) {
+    slashActive.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', onDocumentMousedown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('mousedown', onDocumentMousedown)
+})
 
 function removeAttachment(id: string) {
   const idx = attachments.value.findIndex(a => a.id === id)
@@ -403,6 +874,35 @@ function isImage(type: string): boolean {
         {{ t('chat.attachFiles') }}
       </NTooltip>
 
+      <NPopselect
+        v-if="!isCodingAgentSession"
+        :value="currentReasoningEffort"
+        :options="reasoningEffortOptions"
+        trigger="click"
+        @update:value="onReasoningEffortChange"
+      >
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <NButton
+              quaternary
+              size="tiny"
+              circle
+              class="reasoning-effort-button"
+              :class="{ active: !!currentReasoningEffort }"
+              :aria-label="`${t('chat.reasoningEffort.tooltip')}: ${reasoningEffortLabel}`"
+            >
+              <template #icon>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/>
+                  <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/>
+                </svg>
+              </template>
+            </NButton>
+          </template>
+          {{ t('chat.reasoningEffort.tooltip') }}: {{ reasoningEffortLabel }}
+        </NTooltip>
+      </NPopselect>
+
       <div class="auto-play-speech-switch">
         <NTooltip trigger="hover">
           <template #trigger>
@@ -421,7 +921,25 @@ function isImage(type: string): boolean {
         />
       </div>
 
-      <span v-if="totalTokens > 0" class="context-info" :class="{ 'context-warning': usagePercent > 80 }">
+      <NTooltip trigger="hover">
+        <template #trigger>
+          <NButton
+            quaternary
+            size="tiny"
+            class="tool-trace-toggle"
+            :class="{ active: toolTraceVisible }"
+            :aria-label="toolTraceVisible ? t('chat.hideToolCalls') : t('chat.showToolCalls')"
+            @click="toggleToolTraceVisible"
+          >
+            <svg class="tool-trace-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14.7 6.3a4.5 4.5 0 0 0-5.8 5.8L3.5 17.5a2.1 2.1 0 0 0 3 3l5.4-5.4a4.5 4.5 0 0 0 5.8-5.8l-3 3-3-3 3-3z"/>
+            </svg>
+          </NButton>
+        </template>
+        {{ toolTraceVisible ? t('chat.hideToolCalls') : t('chat.showToolCalls') }}
+      </NTooltip>
+
+      <span v-if="showContextUsage" class="context-info" :class="{ 'context-warning': usagePercent > 80 }">
         {{ formatTokens(totalTokens) }} /
         <NTooltip trigger="hover">
           <template #trigger>
@@ -433,7 +951,7 @@ function isImage(type: string): boolean {
         </NTooltip>
         · {{ t('chat.contextRemaining') }} {{ formatTokens(remainingTokens) }}
       </span>
-      <div v-if="totalTokens > 0" class="context-bar">
+      <div v-if="showContextUsage" class="context-bar">
         <div
           class="context-bar-fill"
           :class="{
@@ -484,10 +1002,12 @@ function isImage(type: string): boolean {
         class="file-input-hidden"
         @change="handleFileChange"
       />
+      <div class="resize-handle" @mousedown="startResize"></div>
       <textarea
         ref="textareaRef"
         v-model="inputText"
         class="input-textarea"
+        :style="textareaHeight ? { height: textareaHeight + 'px' } : {}"
         :placeholder="t('chat.inputPlaceholder')"
         rows="1"
         @keydown="handleKeydown"
@@ -496,31 +1016,36 @@ function isImage(type: string): boolean {
         @input="handleInput"
         @paste="handlePaste"
       ></textarea>
-      <div v-if="showSlashSuggestions" class="slash-suggestions" role="listbox">
-        <div v-for="group in slashSuggestionGroups" :key="group.key" class="slash-suggestion-group">
-          <div class="slash-suggestion-group-label">{{ group.label }}</div>
-          <button
-            v-for="entry in group.entries"
-            :key="entry.command.source + ':' + entry.command.name"
-            type="button"
-            class="slash-suggestion"
-            :class="{ 'is-active': entry.index === slashActiveIndex }"
-            role="option"
-            :aria-selected="entry.index === slashActiveIndex"
-            :data-testid="slashCommandTestId(entry.command)"
-            @mouseenter="slashActiveIndex = entry.index"
-            @click="selectSlashCommand(entry.command)"
+      <Transition name="dropdown-fade">
+        <div
+          v-if="slashActive && filteredBridgeCommands.length > 0"
+          ref="commandDropdownRef"
+          class="slash-command-dropdown"
+        >
+          <div
+            v-for="(command, i) in filteredBridgeCommands"
+            :key="command.key"
+            class="slash-command-item"
+            :class="{ active: i === slashActiveIndex }"
+            @mousedown.prevent="selectBridgeCommand(command)"
+            @mouseenter="handleCommandHover(i)"
           >
-            <span class="slash-suggestion-command">{{ entry.command.slash }}</span>
-            <span class="slash-suggestion-meta">
-              <span class="slash-suggestion-title">{{ entry.command.title }}</span>
-              <span v-if="entry.command.description" class="slash-suggestion-description">{{ entry.command.description }}</span>
-            </span>
-            <span class="slash-suggestion-source">{{ entry.command.source }}</span>
-          </button>
+            <span class="slash-command-name">/{{ command.name }}</span>
+            <span v-if="command.args" class="slash-command-args">{{ command.args }}</span>
+            <span class="slash-command-desc">{{ command.description }}</span>
+          </div>
         </div>
-      </div>
+      </Transition>
       <div class="input-actions">
+        <VoiceDialogueControls
+          :status="voiceDialogue.status.value"
+          :transcript="voiceDialogueTranscript"
+          :error="voiceDialogueError"
+          :events="voiceDialogue.events.value"
+          :on-start="startVoiceCapture"
+          :on-stop="stopVoiceCapture"
+          :on-cancel="cancelVoiceCapture"
+        />
         <NButton
           v-if="chatStore.isStreaming"
           size="small"
@@ -543,6 +1068,44 @@ function isImage(type: string): boolean {
         </NButton>
       </div>
     </div>
+
+    <NModal
+      v-model:show="showSkillPicker"
+      :title="t('skills.title')"
+      :mask-closable="true"
+      preset="card"
+      style="width: min(620px, calc(100vw - 32px))"
+    >
+      <div v-if="showSkillPicker" class="skill-picker-modal">
+        <input
+          v-model="skillSearch"
+          class="skill-picker-search"
+          :placeholder="t('skills.searchPlaceholder')"
+          type="search"
+        />
+        <div class="skill-picker-list">
+          <div v-if="skillPickerLoading" class="skill-picker-empty">
+            {{ t('common.loading') }}
+          </div>
+          <template v-else>
+            <button
+              v-for="skill in filteredSkillPickerItems"
+              :key="skill.key"
+              type="button"
+              class="skill-picker-item"
+              @click="selectSkill(skill)"
+            >
+              <span class="skill-picker-command">/skill {{ skill.commandName }}</span>
+              <span class="skill-picker-name">{{ skill.name }}</span>
+              <span class="skill-picker-desc">{{ skill.description }}</span>
+            </button>
+          </template>
+          <div v-if="!skillPickerLoading && filteredSkillPickerItems.length === 0" class="skill-picker-empty">
+            {{ skillSearch ? t('skills.noMatch') : t('skills.noSkills') }}
+          </div>
+        </div>
+      </div>
+    </NModal>
 
     <!-- Context Length Edit Modal -->
     <NModal
@@ -591,8 +1154,6 @@ function isImage(type: string): boolean {
 @use '@/styles/variables' as *;
 
 .chat-input-area {
-  position: relative;
-  z-index: 30;
   padding: 12px 20px 16px;
   border-top: 1px solid $border-color;
   flex-shrink: 0;
@@ -601,123 +1162,86 @@ function isImage(type: string): boolean {
 .input-top-bar {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: 8px;
   padding: 0 0 6px;
-}
-
-.slash-suggestions {
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: calc(100% + 8px);
-  max-height: 232px;
-  overflow-y: auto;
-  padding: 6px;
-  border: 1px solid $border-color;
-  border-radius: 8px;
-  background: $bg-primary;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
-  z-index: 20;
-}
-
-.slash-suggestion {
-  width: 100%;
-  min-height: 44px;
-  display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1.6fr) auto;
-  align-items: center;
-  gap: 10px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: $text-primary;
-  text-align: left;
-  padding: 7px 8px;
-  cursor: pointer;
-
-  &:hover,
-  &:focus-visible,
-  &.is-active {
-    background: rgba(128, 128, 128, 0.12);
-    outline: none;
-  }
-}
-
-.slash-suggestion-group + .slash-suggestion-group {
-  margin-top: 6px;
-}
-
-.slash-suggestion-group-label {
-  padding: 4px 8px 5px;
-  font-size: 11px;
-  font-weight: 600;
-  color: $text-muted;
-}
-
-.slash-suggestion-command {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
-  color: $accent-primary;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.slash-suggestion-meta {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.slash-suggestion-title,
-.slash-suggestion-description {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.slash-suggestion-title {
-  font-size: 12px;
-}
-
-.slash-suggestion-description,
-.slash-suggestion-source {
-  font-size: 11px;
-  color: $text-muted;
-}
-
-.slash-suggestion-source {
-  max-width: 90px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .auto-play-speech-switch {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 8px;
+  padding: 0 0 0 8px;
   border-left: 1px solid $border-light;
   margin-left: 4px;
 
   .switch-label {
     display: flex;
     align-items: center;
-    color: $text-muted;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    color: #999999;
     font-size: 12px;
 
     svg {
-      opacity: 0.7;
+      opacity: 1;
     }
+  }
+
+  :deep(.n-switch),
+  :deep(.n-switch__rail) {
+    margin-right: 0;
+  }
+}
+
+.tool-trace-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #999999;
+  width: 24px;
+  min-width: 24px;
+  height: 22px;
+  margin-left: -4px;
+  padding: 0;
+  background: transparent !important;
+  opacity: 1;
+
+  :deep(.n-button__state-border),
+  :deep(.n-button__border),
+  :deep(.n-button__ripple) {
+    display: none;
+  }
+
+  .tool-trace-icon {
+    display: block;
+    flex: 0 0 16px;
+    width: 16px;
+    height: 16px;
+  }
+
+  &.active {
+    color: #999999;
+    opacity: 1;
+  }
+
+  &:hover {
+    color: #999999;
+    opacity: 1;
+  }
+}
+
+.reasoning-effort-button {
+  &.active {
+    color: #4caf50;
   }
 }
 
 .context-info {
   font-size: 11px;
   color: $text-muted;
+  min-width: 0;
+  white-space: nowrap;
 
   &.context-warning {
     color: #e8a735;
@@ -740,6 +1264,7 @@ function isImage(type: string): boolean {
 .context-bar {
   width: 60px;
   height: 4px;
+  margin-left: -4px;
   background: rgba(128, 128, 128, 0.2);
   border-radius: 2px;
   overflow: hidden;
@@ -757,6 +1282,25 @@ function isImage(type: string): boolean {
 
   &.context-bar-danger {
     background: linear-gradient(90deg, #c43a2a, #e85d4a);
+  }
+}
+
+@media (max-width: 768px) {
+  .input-top-bar {
+    gap: 5px;
+  }
+
+  .context-info {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 10px;
+    line-height: 14px;
+    margin-right: 10px;
+  }
+
+  .context-bar {
+    width: 42px;
+    flex-shrink: 0;
   }
 }
 
@@ -838,7 +1382,6 @@ function isImage(type: string): boolean {
 }
 
 .input-wrapper {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -846,6 +1389,7 @@ function isImage(type: string): boolean {
   border: 1px solid $border-color;
   border-radius: $radius-md;
   padding: 10px 12px;
+  position: relative;
   transition: border-color $transition-fast, background-color $transition-fast;
 
   &:focus-within {
@@ -854,6 +1398,21 @@ function isImage(type: string): boolean {
 
   .dark & {
     background-color: #333333;
+  }
+}
+
+.resize-handle {
+  position: absolute;
+  top: -4px;
+  left: 0;
+  right: 0;
+  height: 8px;
+  cursor: row-resize;
+  z-index: 2;
+
+  &:hover {
+    background: rgba($accent-primary, 0.15);
+    border-radius: 4px;
   }
 }
 
@@ -867,7 +1426,7 @@ function isImage(type: string): boolean {
   font-size: 14px;
   line-height: 1.5;
   resize: none;
-  max-height: 100px;
+  max-height: 400px;
   min-height: 20px;
   overflow-y: auto;
 
@@ -890,67 +1449,171 @@ function isImage(type: string): boolean {
   align-items: center;
 }
 
+.slash-command-dropdown {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(100% + 8px);
+  max-height: 240px;
+  overflow-y: auto;
+  background: $bg-primary;
+  border: 1px solid $border-color;
+  border-radius: $radius-sm;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+  z-index: 20;
+  padding: 4px;
+
+  .dark & {
+    background: #2a2a2a;
+  }
+}
+
+.slash-command-item {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: $radius-sm;
+  cursor: pointer;
+  min-height: 36px;
+
+  &.active,
+  &:hover {
+    background: rgba(var(--accent-primary-rgb), 0.1);
+  }
+
+}
+
+.slash-command-name {
+  font-family: $font-code;
+  font-size: 13px;
+  color: $accent-primary;
+  white-space: nowrap;
+}
+
+.slash-command-args {
+  font-family: $font-code;
+  font-size: 12px;
+  color: $text-muted;
+  white-space: nowrap;
+}
+
+.slash-command-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: $text-secondary;
+  font-size: 12px;
+}
+
+.skill-picker-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.skill-picker-search {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid $border-color;
+  border-radius: $radius-sm;
+  background: $bg-input;
+  color: $text-primary;
+  outline: none;
+  font-family: $font-ui;
+  font-size: 13px;
+
+  &:focus {
+    border-color: $accent-primary;
+  }
+}
+
+.skill-picker-list {
+  max-height: min(420px, 52vh);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.skill-picker-item {
+  display: grid;
+  grid-template-columns: minmax(160px, auto) minmax(120px, 0.6fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid $border-color;
+  border-radius: $radius-sm;
+  background: $bg-secondary;
+  color: $text-primary;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover {
+    border-color: rgba(var(--accent-primary-rgb), 0.5);
+    background: rgba(var(--accent-primary-rgb), 0.08);
+  }
+}
+
+.skill-picker-command {
+  font-family: $font-code;
+  font-size: 12px;
+  color: $accent-primary;
+  white-space: nowrap;
+}
+
+.skill-picker-name,
+.skill-picker-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-picker-name {
+  font-size: 13px;
+  color: $text-primary;
+}
+
+.skill-picker-desc {
+  font-size: 12px;
+  color: $text-secondary;
+}
+
+.skill-picker-empty {
+  padding: 18px 10px;
+  text-align: center;
+  color: $text-muted;
+  font-size: 13px;
+}
+
+@media (max-width: 768px) {
+  .skill-picker-item {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
+
+.dropdown-fade-enter-active,
+.dropdown-fade-leave-active {
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.dropdown-fade-enter-from,
+.dropdown-fade-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
 // Drag-over state
 .input-wrapper.drag-over {
   border-color: var(--accent-info);
   border-style: dashed;
   background-color: rgba(var(--accent-info-rgb), 0.04);
-}
-
-@media (max-width: $breakpoint-mobile) {
-  .chat-input-area {
-    padding: 10px 12px 14px;
-  }
-
-  .input-top-bar {
-    gap: 6px;
-  }
-
-  .auto-play-speech-switch {
-    margin-left: 0;
-    padding-left: 6px;
-    padding-right: 4px;
-  }
-
-  .context-info {
-    width: 100%;
-    line-height: 1.4;
-  }
-
-  .context-bar {
-    width: 100%;
-  }
-
-  .input-wrapper {
-    align-items: flex-end;
-    gap: 8px;
-    padding: 9px 10px;
-  }
-
-  .slash-suggestions {
-    left: 0;
-    right: 0;
-    max-height: min(260px, 50vh);
-  }
-
-  .slash-suggestion {
-    grid-template-columns: minmax(92px, 0.9fr) minmax(0, 1.4fr);
-    gap: 8px;
-  }
-
-  .slash-suggestion-source {
-    display: none;
-  }
-
-  .input-textarea {
-    min-width: 0;
-    font-size: 16px;
-  }
-
-  .input-actions {
-    :deep(.n-button__content) {
-      display: none;
-    }
-  }
 }
 </style>

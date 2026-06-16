@@ -34,12 +34,12 @@ describe('config-helpers locked file updates', () => {
     const { updateConfigYaml } = await loadHelpers()
 
     await Promise.all([
-      updateConfigYaml(async (cfg: any) => {
+      updateConfigYaml(async (cfg) => {
         await new Promise(resolve => setTimeout(resolve, 25))
         cfg.model.default = 'glm-5.1'
         return cfg
       }),
-      updateConfigYaml((cfg: any) => {
+      updateConfigYaml((cfg) => {
         cfg.platforms = cfg.platforms || {}
         cfg.platforms.api_server = { extra: { port: 8648 } }
         return cfg
@@ -78,5 +78,18 @@ describe('config-helpers locked file updates', () => {
     const env = await readFile(envPath, 'utf-8')
     expect(env).toBe('OPENROUTER_API_KEY=keep\n')
     expect(env).not.toContain('=leaked-value')
+  })
+
+  it('skips writing config.yaml when an updater returns write false', async () => {
+    const configPath = join(hermesHome, 'config.yaml')
+    await writeFile(configPath, 'model:\n  default: old\n', 'utf-8')
+    const before = await readFile(configPath, 'utf-8')
+    const { updateConfigYaml } = await loadHelpers()
+
+    const result = await updateConfigYaml((cfg) => ({ data: cfg, result: 'unchanged', write: false }))
+
+    expect(result).toBe('unchanged')
+    await expect(readFile(configPath, 'utf-8')).resolves.toBe(before)
+    await expect(readFile(`${configPath}.bak`, 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

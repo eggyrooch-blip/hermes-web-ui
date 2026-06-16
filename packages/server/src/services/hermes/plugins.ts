@@ -1,7 +1,7 @@
 import { execFile } from 'child_process'
-import { existsSync } from 'fs'
-import { dirname, join, resolve } from 'path'
 import { promisify } from 'util'
+import { getActiveProfileDir, getProfileDir } from './hermes-profile'
+import { resolveAgentBridgeCommand } from './agent-bridge/manager'
 
 const execFileAsync = promisify(execFile)
 
@@ -213,88 +213,57 @@ print(json.dumps({
 }))
 `
 
-function hasHermesPluginModule(root: string): boolean {
-  return existsSync(join(root, 'hermes_cli', 'plugins.py'))
-}
-
-function maybeRootFromHermesBin(): string[] {
-  const hermesBin = process.env.HERMES_BIN?.trim()
-  if (!hermesBin || hermesBin.includes('\n')) return []
-
-  const resolvedBin = resolve(hermesBin)
-  const candidates = [
-    dirname(dirname(dirname(resolvedBin))), // /opt/hermes/.venv/bin/hermes -> /opt/hermes
-    dirname(dirname(resolvedBin)),
-    dirname(resolvedBin),
-  ]
-  return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index)
-}
-
-function resolveHermesAgentRoot(): string {
-  const candidates = [
-    process.env.HERMES_AGENT_ROOT?.trim(),
-    ...maybeRootFromHermesBin(),
-    '/opt/hermes',
-    join(process.env.HOME || '', '.hermes', 'hermes-agent'),
-  ].filter(Boolean) as string[]
-
-  return candidates.find(hasHermesPluginModule) || ''
-}
-
-function pythonCandidates(agentRoot: string): string[] {
-  const hermesBin = process.env.HERMES_BIN?.trim()
-  const hermesBinPython = hermesBin && hermesBin.includes('/bin/') ? join(dirname(hermesBin), 'python') : undefined
-  const rootPythons = agentRoot
-    ? [join(agentRoot, '.venv', 'bin', 'python'), join(agentRoot, 'venv', 'bin', 'python')]
-    : []
-  const candidates = [
-    process.env.HERMES_PYTHON?.trim(),
-    hermesBinPython,
-    ...rootPythons,
-    'python3',
-    'python',
-  ].filter(Boolean) as string[]
-
-  return candidates.filter((candidate) => {
-    if (candidate.includes('/') || candidate.includes('\\')) return existsSync(candidate)
-    return true
-  })
-}
-
 function extractError(err: any): string {
   const stdout = typeof err?.stdout === 'string' ? err.stdout.trim() : ''
   const stderr = typeof err?.stderr === 'string' ? err.stderr.trim() : ''
   return [err?.message, stdout, stderr].filter(Boolean).join('\n')
 }
 
-export async function listHermesPlugins(): Promise<HermesPluginsResponse> {
-  const agentRoot = resolveHermesAgentRoot()
-  const env = {
+export async function listHermesPlugins(profile?: string): Promise<HermesPluginsResponse> {
+  const command = resolveAgentBridgeCommand()
+  const agentRoot = command.agentRoot || ''
+  const hermesHome = profile ? getProfileDir(profile) : getActiveProfileDir()
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     HERMES_AGENT_ROOT_RESOLVED: agentRoot,
+    HERMES_HOME: hermesHome,
   }
+  if (!agentRoot) {
+    delete env.PYTHONHOME
+    delete env.PYTHONPATH
+  }
+  const pythonArgs = [
+    ...command.argsPrefix,
+    ...(agentRoot ? ['-I'] : []),
+    '-c',
+    PYTHON_BRIDGE,
+  ]
+  const displayArgs = [
+    ...command.argsPrefix,
+    ...(agentRoot ? ['-I'] : []),
+    '-c',
+    '<plugin-discovery>',
+  ].join(' ')
 
   const errors: string[] = []
-  for (const python of pythonCandidates(agentRoot)) {
-    try {
-      const { stdout, stderr } = await execFileAsync(python, ['-I', '-c', PYTHON_BRIDGE], {
-        cwd: process.cwd(),
-        env,
-        windowsHide: true,
-        timeout: 15000,
-        maxBuffer: 10 * 1024 * 1024,
-      })
-      const parsed = JSON.parse(stdout) as HermesPluginsResponse & { error?: string; detail?: string }
-      if ((parsed as any).error) {
-        throw new Error(`${(parsed as any).error}: ${(parsed as any).detail || 'unknown error'}`)
-      }
-      if (stderr?.trim()) {
-        parsed.warnings = [...(parsed.warnings || []), stderr.trim()]
-      }
-      return parsed
-    } catch (err: any) {
-      errors.push(`${python}: ${extractError(err)}`)
+  try {
+    const { stdout, stderr } = await execFileAsync(command.command, pythonArgs, {
+      cwd: process.cwd(),
+      env,
+      windowsHide: true,
+      timeout: 15000,
+      maxBuffer: 10 * 1024 * 1024,
+    })
+    const parsed = JSON.parse(stdout) as HermesPluginsResponse & { error?: string; detail?: string }
+    if ((parsed as any).error) {
+      throw new Error(`${(parsed as any).error}: ${(parsed as any).detail || 'unknown error'}`)
     }
+    if (stderr?.trim()) {
+      parsed.warnings = [...(parsed.warnings || []), stderr.trim()]
+    }
+    return parsed
+  } catch (err: any) {
+    errors.push(`${command.command} ${displayArgs}: ${extractError(err)}`)
   }
 
   throw new Error(`Failed to discover Hermes plugins.\n${errors.join('\n')}`)

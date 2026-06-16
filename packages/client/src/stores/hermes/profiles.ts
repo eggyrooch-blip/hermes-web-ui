@@ -2,111 +2,61 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as profilesApi from '@/api/hermes/profiles'
 import type { HermesProfile, HermesProfileDetail } from '@/api/hermes/profiles'
-import type { CurrentUser } from '@/api/auth'
+import { useAppStore } from './app'
 
 const ACTIVE_PROFILE_STORAGE_KEY = 'hermes_active_profile_name'
-const CURRENT_USER_STORAGE_KEY = 'hermes_current_user'
-const PLANE_STORAGE_KEY = 'hermes_web_plane'
-
-function loadCurrentUser(): CurrentUser | null {
-  try {
-    const raw = localStorage.getItem(CURRENT_USER_STORAGE_KEY)
-    return raw ? JSON.parse(raw) as CurrentUser : null
-  } catch {
-    return null
-  }
-}
 
 export const useProfilesStore = defineStore('profiles', () => {
   const profiles = ref<HermesProfile[]>([])
   // 初始化时同步读 localStorage，确保其他 store（如 chat）在启动时能拿到 profile name
   const activeProfileName = ref<string | null>(localStorage.getItem(ACTIVE_PROFILE_STORAGE_KEY))
   const activeProfile = ref<HermesProfile | null>(null)
-  const currentUser = ref<CurrentUser | null>(loadCurrentUser())
   const detailMap = ref<Record<string, HermesProfileDetail>>({})
   const loading = ref(false)
   const switching = ref(false)
-
-  function shouldUseBoundProfileOnly(): boolean {
-    return localStorage.getItem(PLANE_STORAGE_KEY) === 'chat' || !!currentUser.value
-  }
-
-  function ensureBoundProfile() {
-    const name = activeProfileName.value || currentUser.value?.profile
-    if (!name) return
-
-    activeProfileName.value = name
-    activeProfile.value = profiles.value.find(p => p.name === name) ?? {
-      name,
-      active: true,
-      model: '',
-      gateway: '',
-      alias: '',
-    }
-    profiles.value = [activeProfile.value]
-    localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, name)
-  }
 
   async function fetchProfiles() {
     loading.value = true
     try {
       profiles.value = await profilesApi.fetchProfiles()
-      if (shouldUseBoundProfileOnly()) {
-        const fallbackName = currentUser.value?.profile || activeProfileName.value
-        let selectedName = activeProfileName.value || fallbackName
-        if (selectedName && !profiles.value.some(p => p.name === selectedName)) {
-          selectedName = fallbackName
-        }
-        if (fallbackName && !profiles.value.some(p => p.name === fallbackName)) {
-          profiles.value.unshift({ name: fallbackName, active: true, model: '', gateway: '', alias: '' })
-        }
-        if (selectedName) {
-          profiles.value = profiles.value.map(p => ({ ...p, active: p.name === selectedName }))
-          activeProfile.value = profiles.value.find(p => p.name === selectedName) ?? null
-          activeProfileName.value = selectedName
-          localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, selectedName)
-        } else {
-          activeProfile.value = profiles.value.find(p => p.active) ?? null
-        }
-      } else {
-        activeProfile.value = profiles.value.find(p => p.active) ?? null
-        // 同步缓存 profile name，供其他 store 启动时读取
-        if (activeProfile.value) {
-          activeProfileName.value = activeProfile.value.name
-          localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, activeProfile.value.name)
-        }
-        // 清理所有会话缓存（不再使用 localStorage 缓存）
-        clearAllSessionCaches()
+      const storedName = activeProfileName.value || localStorage.getItem(ACTIVE_PROFILE_STORAGE_KEY)
+      let selected = profiles.value.find(p => p.name === storedName) ?? null
+      if (!selected && profiles.value.length > 0) {
+        selected = profiles.value[0]
+        activeProfileName.value = selected.name
+        localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, selected.name)
       }
+      profiles.value = profiles.value.map(profile => ({
+        ...profile,
+        active: !!selected && profile.name === selected.name,
+      }))
+      activeProfile.value = selected
+      if (selected) {
+        activeProfileName.value = selected.name
+      } else {
+        activeProfileName.value = null
+        localStorage.removeItem(ACTIVE_PROFILE_STORAGE_KEY)
+      }
+      // 清理所有会话缓存（不再使用 localStorage 缓存）
+      clearAllSessionCaches()
     } catch (err) {
       console.error('Failed to fetch profiles:', err)
-      if (shouldUseBoundProfileOnly()) ensureBoundProfile()
     } finally {
       loading.value = false
     }
   }
 
-  function setCurrentUser(user: CurrentUser | null) {
-    currentUser.value = user
-    if (user) {
-      localStorage.setItem(CURRENT_USER_STORAGE_KEY, JSON.stringify(user))
-    } else {
-      localStorage.removeItem(CURRENT_USER_STORAGE_KEY)
+  async function fetchHermesProfiles() {
+    loading.value = true
+    try {
+      profiles.value = await profilesApi.fetchProfiles()
+      activeProfile.value = profiles.value.find(profile => profile.active) ?? null
+      clearAllSessionCaches()
+    } catch (err) {
+      console.error('Failed to fetch Hermes profiles:', err)
+    } finally {
+      loading.value = false
     }
-  }
-
-  function setBoundProfile(name: string, user?: CurrentUser) {
-    if (user) setCurrentUser(user)
-    const selectedName = activeProfileName.value || name
-    activeProfileName.value = selectedName
-    activeProfile.value = profiles.value.find(p => p.name === selectedName) ?? {
-      name: selectedName,
-      active: true,
-      model: '',
-      gateway: '',
-      alias: '',
-    }
-    localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, selectedName)
   }
 
   async function fetchProfileDetail(name: string) {
@@ -147,8 +97,8 @@ export const useProfilesStore = defineStore('profiles', () => {
     }
   }
 
-  async function createProfile(name: string, options: profilesApi.CreateProfileOptions | boolean = {}) {
-    const res = await profilesApi.createProfile(name, options)
+  async function createProfile(name: string, clone?: boolean) {
+    const res = await profilesApi.createProfile(name, clone)
     if (res.success) await fetchProfiles()
     return res
   }
@@ -180,57 +130,28 @@ export const useProfilesStore = defineStore('profiles', () => {
   async function switchProfile(name: string) {
     switching.value = true
     try {
-      if (shouldUseBoundProfileOnly()) {
-        if (profiles.value.length === 0) {
-          await fetchProfiles()
-        }
-        const selected = profiles.value.find(p => p.name === name)
-        if (!selected) return false
-        profiles.value = profiles.value.map(p => ({ ...p, active: p.name === name }))
-        activeProfileName.value = name
-        activeProfile.value = { ...selected, active: true }
-        localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, name)
-        return true
-      }
-
       const ok = await profilesApi.switchProfile(name)
       if (ok) {
-        // 保存旧值，用于可能的回滚
-        const oldName = activeProfileName.value
-
-        // 立即更新 activeProfileName，确保前端显示正确
-        // 不要完全依赖 fetchProfiles 的返回值，以防后端数据同步延迟
         activeProfileName.value = name
         localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, name)
-
-        // 尝试刷新 profiles 列表并验证
-        try {
-          await fetchProfiles()
-
-          // 验证：检查后端返回的 active profile 是否与我们期望的一致
-          // 如果不一致，说明后端实际上没有切换成功，需要回滚
-          const actualActive = profiles.value.find(p => p.active)
-          if (actualActive && actualActive.name !== name) {
-            console.warn(
-              `[switchProfile] Backend verification failed: expected active profile "${name}", ` +
-              `but backend reports "${actualActive.name}". Rolling back frontend state.`
-            )
-            // 回滚到旧值
-            activeProfileName.value = oldName
-            if (oldName) {
-              localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, oldName)
-            } else {
-              localStorage.removeItem(ACTIVE_PROFILE_STORAGE_KEY)
-            }
-            // 返回 false 以触发 UI 错误提示
-            return false
-          }
-        } catch (err) {
-          // fetchProfiles 失败，无法验证
-          // 假设切换成功（API 返回了 200），保持已设置的状态
-          console.warn('Failed to refresh profiles list after switch, assuming switch succeeded:', err)
-        }
+        profiles.value = profiles.value.map(profile => ({
+          ...profile,
+          active: profile.name === name,
+        }))
+        activeProfile.value = profiles.value.find(profile => profile.name === name) ?? null
+        await useAppStore().reloadModels()
       }
+      return ok
+    } finally {
+      switching.value = false
+    }
+  }
+
+  async function switchHermesProfile(name: string) {
+    switching.value = true
+    try {
+      const ok = await profilesApi.switchHermesProfile(name)
+      if (ok) await fetchHermesProfiles()
       return ok
     } finally {
       switching.value = false
@@ -251,22 +172,21 @@ export const useProfilesStore = defineStore('profiles', () => {
     profiles,
     activeProfile,
     activeProfileName,
-    currentUser,
     detailMap,
     loading,
     switching,
     fetchProfiles,
+    fetchHermesProfiles,
     fetchProfileDetail,
-    updateAvatar,
-    deleteAvatar,
     createProfile,
     deleteProfile,
     renameProfile,
     switchProfile,
+    switchHermesProfile,
     exportProfile,
     importProfile,
+    updateAvatar,
+    deleteAvatar,
     clearAllSessionCaches,
-    setBoundProfile,
-    setCurrentUser,
   }
 })

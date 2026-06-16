@@ -1,11 +1,37 @@
 import type { Context } from 'koa'
-import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
 import { updateUsage } from '../../db/hermes/usage-store'
-import { getRequestProfile, isChatPlaneRequest, type WebUser } from '../../services/request-context'
-import { isAllowedUpstreamHost } from '../../services/hermes/gateway-manager'
-import { logger } from '../../services/logger'
 
-function getGatewayManager() { return getGatewayManagerInstance() }
+interface GatewayProxyTarget {
+  getUpstream(profile?: string): string
+  getApiKey?(profile?: string): string | null | undefined
+}
+
+let gatewayProxyTargetForTest: GatewayProxyTarget | null = null
+
+export function setGatewayProxyTargetForTest(target: GatewayProxyTarget | null): void {
+  gatewayProxyTargetForTest = target
+}
+
+function normalizeGatewayUrl(raw: string): string {
+  return raw.replace(/\/$/, '')
+}
+
+function defaultGatewayUpstream(): string {
+  const explicit = String(process.env.HERMES_GATEWAY_URL || process.env.GATEWAY_URL || '').trim()
+  if (explicit) return normalizeGatewayUrl(explicit)
+  const host = String(process.env.GATEWAY_HOST || '127.0.0.1').trim() || '127.0.0.1'
+  const rawPort = parseInt(String(process.env.GATEWAY_PORT || '8642'), 10)
+  const port = rawPort > 0 && rawPort <= 65535 ? rawPort : 8642
+  const formattedHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+  return `http://${formattedHost}:${port}`
+}
+
+function getGatewayProxyTarget(): GatewayProxyTarget {
+  return gatewayProxyTargetForTest || {
+    getUpstream: () => defaultGatewayUpstream(),
+    getApiKey: () => null,
+  }
+}
 
 // --- run_id → session_id mapping (in-memory, ephemeral) ---
 
@@ -51,34 +77,30 @@ async function waitForGatewayReady(upstream: string, timeoutMs: number = 5000): 
 
 /** Resolve profile name from request */
 function resolveProfile(ctx: Context): string {
-  return getRequestProfile(ctx)
+  // Use header/query from request, but fall back to authoritative source if not provided
+  const requestedProfile = ctx.get('x-hermes-profile') || (ctx.query.profile as string)
+
+  if (requestedProfile) {
+    return requestedProfile
+  }
+
+  // Fallback: read from authoritative source (active_profile file)
+  try {
+    const { getActiveProfileName } = require('../../services/hermes/hermes-profile')
+    return getActiveProfileName()
+  } catch {
+    return 'default'
+  }
 }
 
-/** Resolve upstream URL for a request based on profile header/query.
- *
- * SECURITY: defence-in-depth check. The primary SSRF gate lives in
- * gateway-manager.readProfilePort() — it filters out non-allowlisted hosts
- * before the URL ever reaches us. We re-parse the URL here and reject again,
- * so a future code path that builds upstreams differently still fails closed.
- */
+/** Resolve upstream URL for a request based on profile header/query */
 function resolveUpstream(ctx: Context): string {
-  const mgr = getGatewayManager()
-  if (!mgr) {
-    throw new Error('GatewayManager not initialized')
-  }
+  const target = getGatewayProxyTarget()
   const profile = resolveProfile(ctx)
-  const raw = profile && profile !== 'default' ? mgr.getUpstream(profile) : mgr.getUpstream()
-  let host: string
-  try {
-    host = new URL(raw).hostname
-  } catch {
-    throw new Error('Invalid upstream URL')
+  if (profile && profile !== 'default') {
+    return target.getUpstream(profile)
   }
-  if (!isAllowedUpstreamHost(host)) {
-    logger.warn('Rejecting upstream %s: host not in allowlist', raw)
-    throw new Error('Upstream host is not allowed')
-  }
-  return raw
+  return target.getUpstream()
 }
 
 function buildProxyHeaders(ctx: Context, upstream: string): Record<string, string> {
@@ -88,13 +110,7 @@ function buildProxyHeaders(ctx: Context, upstream: string): Record<string, strin
     const lower = key.toLowerCase()
     if (lower === 'host') {
       headers['host'] = new URL(upstream).host
-    } else if (
-      lower === 'origin' ||
-      lower === 'referer' ||
-      lower === 'connection' ||
-      lower === 'authorization' ||
-      lower === 'x-hermes-feishu-openid'
-    ) {
+    } else if (lower === 'origin' || lower === 'referer' || lower === 'connection' || lower === 'authorization') {
       continue
     } else {
       const v = Array.isArray(value) ? value[0] : value
@@ -102,18 +118,12 @@ function buildProxyHeaders(ctx: Context, upstream: string): Record<string, strin
     }
   }
 
-  const mgr = getGatewayManager()
-  if (mgr) {
-    const apiKey = mgr.getApiKey(resolveProfile(ctx))
+  const target = getGatewayProxyTarget()
+  if (target.getApiKey) {
+    const apiKey = target.getApiKey(resolveProfile(ctx))
     if (apiKey) {
       headers['authorization'] = `Bearer ${apiKey}`
     }
-  }
-
-  if (isChatPlaneRequest(ctx)) {
-    const user = ctx.state?.user as WebUser | undefined
-    const openid = user?.openid?.trim()
-    if (openid) headers['X-Hermes-Feishu-OpenId'] = openid
   }
 
   return headers
@@ -122,32 +132,6 @@ function buildProxyHeaders(ctx: Context, upstream: string): Record<string, strin
 // --- SSE stream interception ---
 
 const SSE_EVENTS_PATH = /^\/v1\/runs\/([^/]+)\/events$/
-const EXECUTABLE_CHAT_PLANE_PROXY_PATHS = [
-  { method: 'POST', pattern: /^\/v1\/responses$/ },
-  { method: 'POST', pattern: /^\/v1\/chat\/completions$/ },
-  { method: 'POST', pattern: /^\/v1\/runs$/ },
-]
-
-function isExecutableProxyRequest(method: string, upstreamPath: string): boolean {
-  const normalizedMethod = method.toUpperCase()
-  return EXECUTABLE_CHAT_PLANE_PROXY_PATHS.some((entry) => (
-    entry.method === normalizedMethod && entry.pattern.test(upstreamPath)
-  ))
-}
-
-// RFC 7230 §6.1 — these headers are scoped to a single hop and must not be
-// forwarded between upstream and downstream connections.
-const HOP_BY_HOP_HEADERS = new Set([
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'trailers',
-  'transfer-encoding',
-  'upgrade',
-])
 
 /**
  * Parse SSE text chunks and extract run.completed events.
@@ -231,42 +215,16 @@ export async function proxy(ctx: Context) {
     upstream = resolveUpstream(ctx)
   } catch (e: any) {
     ctx.status = 503
-    ctx.body = { error: { message: e?.message || 'GatewayManager not initialized' } }
+    ctx.body = { error: { message: e?.message || 'Hermes gateway upstream is not available' } }
     return
   }
   const upstreamPath = ctx.path.replace(/^\/api\/hermes\/v1/, '/v1').replace(/^\/api\/hermes/, '/api')
-  if (isChatPlaneRequest(ctx) && isExecutableProxyRequest(ctx.method, upstreamPath)) {
-    ctx.status = 403
-    ctx.body = {
-      error: {
-        message: 'Executable Hermes runs must go through the multitenancy sandbox path',
-        code: 'sandbox_required',
-      },
-    }
-    return
-  }
   const params = new URLSearchParams(ctx.search || '')
   params.delete('token')
   const search = params.toString()
   const url = `${upstream}${upstreamPath}${search ? `?${search}` : ''}`
 
   const headers = buildProxyHeaders(ctx, upstream)
-
-  // SECURITY: cap proxy waits so a stuck or slow upstream cannot tie up BFF
-  // sockets indefinitely. SSE streams (chat events) intentionally use a much
-  // longer ceiling because a model run can legitimately take several minutes;
-  // every other endpoint has 120 s.
-  const isSSE = SSE_EVENTS_PATH.test(upstreamPath)
-  const timeoutMs = isSSE ? 30 * 60 * 1000 : 120 * 1000
-
-  // Propagate client disconnect to the upstream fetch. Without this the BFF
-  // keeps reading the upstream stream (and the upstream keeps generating —
-  // burning model tokens) after the user closes their tab.
-  const clientAbort = new AbortController()
-  const onClientClose = () => clientAbort.abort()
-  ctx.res.on('close', onClientClose)
-
-  const buildSignal = () => AbortSignal.any([clientAbort.signal, AbortSignal.timeout(timeoutMs)])
 
   try {
     let body: string | undefined
@@ -281,29 +239,23 @@ export async function proxy(ctx: Context) {
       }
     }
 
-    const requestInit: RequestInit = {
-      method: ctx.req.method,
-      headers,
-      body,
-      signal: buildSignal(),
-    }
+    const requestInit: RequestInit = { method: ctx.req.method, headers, body }
 
     let res: Response
     try {
       res = await fetch(url, requestInit)
     } catch (err: any) {
       if (isTransientGatewayError(err) && await waitForGatewayReady(upstream)) {
-        // Retry uses a fresh signal so the previous timeout doesn't carry over.
-        res = await fetch(url, { ...requestInit, signal: buildSignal() })
+        res = await fetch(url, requestInit)
       } else {
         throw err
       }
     }
 
-    // Set response headers — strip the full RFC 7230 hop-by-hop set so upstream
-    // keep-alive / proxy-auth semantics do not bleed into the client connection.
+    // Set response headers
     res.headers.forEach((value, key) => {
-      if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
+      const lower = key.toLowerCase()
+      if (lower !== 'transfer-encoding' && lower !== 'connection') {
         ctx.set(key, value)
       }
     })
@@ -353,18 +305,12 @@ export async function proxy(ctx: Context) {
       ctx.res.end()
     }
   } catch (err: any) {
-    // Log the full error server-side, but never echo upstream URLs / internal
-    // hostnames back to the client — that would help an SSRF attacker map the
-    // network behind the proxy.
-    logger.error(err, 'Proxy error')
     if (!ctx.res.headersSent) {
       ctx.status = 502
       ctx.set('Content-Type', 'application/json')
-      ctx.body = { error: { message: 'Upstream gateway unreachable' } }
+      ctx.body = { error: { message: `Proxy error: ${err.message}` } }
     } else {
       ctx.res.end()
     }
-  } finally {
-    ctx.res.removeListener('close', onClientClose)
   }
 }

@@ -2,6 +2,7 @@
 import { ref, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NInput, NButton, NSpace, NInputNumber, NCollapse, NCollapseItem } from 'naive-ui'
+import { getStoredUsername } from '@/api/client'
 
 type InputLikeInstance = {
     focus: () => void
@@ -15,14 +16,14 @@ const emit = defineEmits<{
 
 const roomName = ref('')
 const inviteCode = ref('')
-const userName = ref('')
-const description = ref('')
+const userName = ref(localStorage.getItem('gc_user_name') || getStoredUsername() || '')
+const description = ref(localStorage.getItem('gc_user_description') || '')
 const roomInput = ref<InputLikeInstance | null>(null)
 
 const compression = ref({
     triggerTokens: 100000,
     maxHistoryTokens: 32000,
-    tailMessageCount: 20,
+    tailMessageCount: 10,
 })
 
 function generateCode(): string {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { NSelect } from 'naive-ui'
+import { switchLocale } from '@/i18n'
 
 const { locale } = useI18n()
 
@@ -14,10 +15,11 @@ const options = [
   { label: 'Español', value: 'es' },
   { label: 'Deutsch', value: 'de' },
   { label: 'Português', value: 'pt' },
+  { label: 'Русский', value: 'ru' },
 ]
 
 function handleChange(val: string) {
-  locale.value = val
+  switchLocale(val)
   localStorage.setItem('hermes_locale', val)
 }
 </script>
@@ -28,7 +30,7 @@ function handleChange(val: string) {
     :options="options"
     size="tiny"
     :consistent-menu-width="false"
-    class="input-sm"
+    class="language-switch input-sm"
     @update:value="handleChange"
   />
 </template>

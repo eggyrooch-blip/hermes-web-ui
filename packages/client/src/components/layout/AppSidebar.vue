@@ -1,47 +1,42 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
+import { NButton, NModal, useMessage } from "naive-ui";
 import { useAppStore } from "@/stores/hermes/app";
-import { getAuthMode, getWebPlane, isUserMode, setRuntimeMode } from "@/api/client";
-import { fetchCurrentUser } from "@/api/auth";
-import { useProfilesStore } from "@/stores/hermes/profiles";
-import ModelSelector from "./ModelSelector.vue";
-import ProfileSelector from "./ProfileSelector.vue";
-import LanguageSwitch from "./LanguageSwitch.vue";
-import ThemeSwitch from "./ThemeSwitch.vue";
-import { useSessionSearch } from '@/composables/useSessionSearch'
 import { usePersistentRecord } from '@/composables/usePersistentRecord'
 import RouteLinkItem from '@/components/common/RouteLinkItem.vue'
+import ModelSelector from "@/components/layout/ModelSelector.vue";
+import ProfileSelector from "@/components/layout/ProfileSelector.vue";
+import LanguageSwitch from "@/components/layout/LanguageSwitch.vue";
+import ThemeSwitch from "@/components/layout/ThemeSwitch.vue";
+import VersionManagementModal from "@/components/layout/VersionManagementModal.vue";
+import { changelog } from "@/data/changelog";
+import { getStoredUsername, isStoredSuperAdmin } from "@/api/client";
 
 const { t } = useI18n();
+const message = useMessage();
 const route = useRoute();
 const router = useRouter();
 const appStore = useAppStore();
-const profilesStore = useProfilesStore();
-const { openSessionSearch } = useSessionSearch();
-const selectedKey = computed(() => route.name as string);
-const logoPath = '/logo.png';
-const currentUser = computed(() => profilesStore.currentUser);
-const displayName = computed(() => currentUser.value?.name || profilesStore.activeProfileName || '');
-const displayProfile = computed(() => profilesStore.activeProfileName || currentUser.value?.profile || '');
-// Hide the profile sub-line when it's only a raw internal id (e.g. feishu_xxx /
-// feishu_group_xxx) or duplicates the display name — those are placeholders, not
-// human-meaningful labels, so showing them reads as a bug.
-const showProfile = computed(() => {
-  const profile = displayProfile.value.trim();
-  if (!profile) return false;
-  if (/^feishu_/i.test(profile)) return false;
-  if (profile === displayName.value.trim()) return false;
-  return true;
+const selectedKey = computed(() => {
+  return route.name as string;
 });
-const displayInitial = computed(() => (displayName.value || 'H').trim().slice(0, 1).toUpperCase());
-const showUserModeChrome = computed(() => isUserMode());
-const showAdminSurfaces = computed(() => !showUserModeChrome.value);
-const gatewayStandby = computed(() => showUserModeChrome.value && !appStore.connected);
+const isSuperAdmin = computed(() => isStoredSuperAdmin());
+const currentUsername = computed(() => getStoredUsername());
+const isVersionPreview = import.meta.env.VITE_HERMES_PREVIEW === '1';
+const isDesktopShell = computed(() =>
+  (window as typeof window & { hermesDesktop?: { isDesktop?: boolean } }).hermesDesktop?.isDesktop === true,
+);
+const showChangelog = ref(false);
+const showVersionManagement = ref(false);
+
+function hasRoute(name: string): boolean {
+  return router.hasRoute(name);
+}
 const { record: collapsedGroups, persist: persistCollapsedGroups } = usePersistentRecord('hermes.sidebar.collapsedGroups');
 
-type SidebarGroupKey = "Conversation" | "Agent" | "Monitoring" | "System";
+type SidebarGroupKey = "Agent" | "Monitoring" | "Tools" | "System";
 
 function groupLabel(key: SidebarGroupKey) {
   return t(`sidebar.group${key}${appStore.sidebarCollapsed ? "Short" : ""}`);
@@ -56,96 +51,48 @@ function isGroupCollapsed(key: string) {
   return !!collapsedGroups[key];
 }
 
-function isNavActive(...names: string[]) {
-  return names.includes(selectedKey.value);
+function handleSidebarClick(event: MouseEvent) {
+  const target = event.target instanceof Element ? event.target : null;
+
+  if (!target?.closest(".route-link-item")) {
+    return;
+  }
+
+  if (typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches) {
+    appStore.closeSidebar();
+  }
 }
 
-async function handleLogout() {
-  const authMode = getAuthMode();
-  const webPlane = getWebPlane();
-  if (authMode === 'feishu-oauth-dev') {
-    try {
-      await fetch('/api/auth/feishu/logout', { method: 'POST' });
-    } catch {
-      // Local cleanup still matters if the network request fails.
-    }
+async function handleUpdate() {
+  const ok = await appStore.doUpdate();
+  if (ok) {
+    message.success(t('sidebar.updateSuccess'), { duration: 5000 });
+  } else {
+    message.error(t('sidebar.updateFailed'));
   }
-  profilesStore.setCurrentUser(null);
+}
+
+function handleReloadClient() {
+  appStore.reloadClient();
+}
+
+function handleLogout() {
   localStorage.clear();
-  if (authMode === 'feishu-oauth-dev') {
-    setRuntimeMode(authMode, webPlane);
-  }
-  router.replace({ name: 'login' });
+  window.location.reload();
 }
 
-onMounted(async () => {
-  if (getAuthMode() !== 'feishu-oauth-dev') return;
-  try {
-    const user = await fetchCurrentUser();
-    profilesStore.setBoundProfile(user.profile, user);
-  } catch {
-    // Keep the existing profile fallback for non-OAuth or expired sessions.
-  }
-});
+function openChangelog() {
+  showChangelog.value = true;
+}
+
+function openVersionManagement() {
+  showVersionManagement.value = true;
+}
 </script>
 
 <template>
-  <aside class="sidebar" :class="{ open: appStore.sidebarOpen, collapsed: appStore.sidebarCollapsed, 'user-mode': showUserModeChrome }">
-    <RouteLinkItem class="sidebar-logo" :to="{ name: 'hermes.chat' }">
-      <img :src="logoPath" alt="Hermes" class="logo-img" />
-      <span class="logo-text">Hermes</span>
-      <!-- <video class="logo-dance" :src="isDark ? danceVideoDark : danceVideoLight" autoplay loop muted playsinline /> -->
-    </RouteLinkItem>
-
-    <button class="collapse-btn" @click="appStore.toggleSidebarCollapsed()" :title="appStore.sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <polyline v-if="appStore.sidebarCollapsed" points="9 18 15 12 9 6" />
-        <polyline v-else points="15 18 9 12 15 6" />
-      </svg>
-    </button>
-
+  <aside class="sidebar" :class="{ open: appStore.sidebarOpen, collapsed: appStore.sidebarCollapsed }" @click="handleSidebarClick">
     <nav class="sidebar-nav">
-      <!-- Conversation -->
-      <div class="nav-group">
-        <div class="nav-group-label" @click="toggleGroup('conversation')">
-          <span>{{ groupLabel("Conversation") }}</span>
-          <svg class="nav-group-arrow" :class="{ collapsed: isGroupCollapsed('conversation') }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="6 9 12 15 18 9" />
-          </svg>
-        </div>
-        <div v-show="!isGroupCollapsed('conversation')" class="nav-group-items">
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.chat' }" :active="isNavActive('hermes.chat', 'hermes.session')">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-            </svg>
-            <span>{{ t("sidebar.chat") }}</span>
-          </RouteLinkItem>
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.history' }" :active="isNavActive('hermes.history', 'hermes.historySession')">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <polyline points="12 6 12 12 16 14" />
-            </svg>
-            <span>{{ t("sidebar.history") }}</span>
-          </RouteLinkItem>
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.groupChat' }" :active="isNavActive('hermes.groupChat', 'hermes.groupChatRoom')">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-              <circle cx="9" cy="7" r="4" />
-              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-            </svg>
-            <span>{{ t("sidebar.groupChat") }}<span class="beta-tag">(beta)</span></span>
-          </RouteLinkItem>
-          <button class="nav-item" @click="openSessionSearch">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="11" cy="11" r="7" />
-              <path d="m20 20-3.5-3.5" />
-            </svg>
-            <span>{{ t("sidebar.search") }}</span>
-          </button>
-        </div>
-      </div>
-
       <!-- Agent -->
       <div class="nav-group">
         <div class="nav-group-label" @click="toggleGroup('agent')">
@@ -172,8 +119,7 @@ onMounted(async () => {
             </svg>
             <span>{{ t("sidebar.kanban") }}</span>
           </RouteLinkItem>
-          <!-- sunke: hidden from sidebar (route still reachable by URL) -->
-          <RouteLinkItem v-if="false" class="nav-item" :to="{ name: 'hermes.channels' }" :active="selectedKey === 'hermes.channels'">
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.channels' }" :active="selectedKey === 'hermes.channels'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
             </svg>
@@ -187,21 +133,21 @@ onMounted(async () => {
             </svg>
             <span>{{ t("sidebar.skills") }}</span>
           </RouteLinkItem>
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.skillsUsage' }" :active="selectedKey === 'hermes.skillsUsage'">
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.plugins' }" :active="selectedKey === 'hermes.plugins'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="18" y1="20" x2="18" y2="10" />
-              <line x1="12" y1="20" x2="12" y2="4" />
-              <line x1="6" y1="20" x2="6" y2="14" />
+              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2.1-2.1a4 4 0 0 1-5.3 5.3l-7.8 7.8a2.1 2.1 0 0 1-3-3l7.8-7.8a4 4 0 0 1 5.3-5.3l-2.1 2.1z" />
+              <path d="M5 19l1-1" />
             </svg>
-            <span>{{ t("sidebar.skillsUsage") }}</span>
+            <span>{{ t("sidebar.plugins") }}</span>
           </RouteLinkItem>
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.credentials' }" :active="selectedKey === 'hermes.credentials'">
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.mcp' }" :active="selectedKey === 'hermes.mcp'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="11" width="18" height="10" rx="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-              <circle cx="12" cy="16" r="1" />
+              <path d="M4 7V4h16v3" />
+              <path d="M9 20h6" />
+              <path d="M12 7v13" />
+              <rect x="4" y="7" width="16" height="7" rx="2" />
             </svg>
-            <span>{{ t("sidebar.credentials") }}</span>
+            <span>{{ t("sidebar.mcp") }}</span>
           </RouteLinkItem>
           <RouteLinkItem class="nav-item" :to="{ name: 'hermes.memory' }" :active="selectedKey === 'hermes.memory'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -211,14 +157,7 @@ onMounted(async () => {
             </svg>
             <span>{{ t("sidebar.memory") }}</span>
           </RouteLinkItem>
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.files' }" :active="selectedKey === 'hermes.files'">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-            </svg>
-            <span>{{ t("sidebar.files") }}</span>
-          </RouteLinkItem>
-          <!-- sunke: hidden from sidebar (route still reachable by URL) -->
-          <RouteLinkItem v-if="false" class="nav-item" :to="{ name: 'hermes.models' }" :active="selectedKey === 'hermes.models'">
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.models' }" :active="selectedKey === 'hermes.models'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3" />
               <path d="M12 1v4" />
@@ -232,13 +171,6 @@ onMounted(async () => {
             </svg>
             <span>{{ t("sidebar.models") }}</span>
           </RouteLinkItem>
-          <RouteLinkItem v-if="showAdminSurfaces" class="nav-item" :to="{ name: 'hermes.codingAgents' }" :active="selectedKey === 'hermes.codingAgents'">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="16 18 22 12 16 6" />
-              <polyline points="8 6 2 12 8 18" />
-            </svg>
-            <span>{{ t("sidebar.codingAgents") }}</span>
-          </RouteLinkItem>
         </div>
       </div>
 
@@ -251,7 +183,7 @@ onMounted(async () => {
           </svg>
         </div>
         <div v-show="!isGroupCollapsed('monitoring')" class="nav-group-items">
-          <RouteLinkItem v-if="showAdminSurfaces" class="nav-item" :to="{ name: 'hermes.logs' }" :active="selectedKey === 'hermes.logs'">
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.logs' }" :active="selectedKey === 'hermes.logs'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
               <polyline points="14 2 14 8 20 8" />
@@ -269,6 +201,60 @@ onMounted(async () => {
             </svg>
             <span>{{ t("sidebar.usage") }}</span>
           </RouteLinkItem>
+          <RouteLinkItem v-if="isSuperAdmin" class="nav-item" :to="{ name: 'hermes.performance' }" :active="selectedKey === 'hermes.performance'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+            </svg>
+            <span>{{ t("sidebar.performance") }}</span>
+          </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.skillsUsage' }" :active="selectedKey === 'hermes.skillsUsage'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21.21 15.89A10 10 0 1 1 8.11 2.79" />
+              <path d="M22 12A10 10 0 0 0 12 2v10z" />
+            </svg>
+            <span>{{ t("sidebar.skillsUsage") }}</span>
+          </RouteLinkItem>
+        </div>
+      </div>
+
+      <!-- Tools -->
+      <div class="nav-group">
+        <div class="nav-group-label" @click="toggleGroup('tools')">
+          <span>{{ groupLabel("Tools") }}</span>
+          <svg class="nav-group-arrow" :class="{ collapsed: isGroupCollapsed('tools') }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </div>
+        <div v-show="!isGroupCollapsed('tools')" class="nav-group-items">
+          <RouteLinkItem v-if="hasRoute('hermes.codingAgents')" class="nav-item" :to="{ name: 'hermes.codingAgents' }" :active="selectedKey === 'hermes.codingAgents'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="16 18 22 12 16 6" />
+              <polyline points="8 6 2 12 8 18" />
+              <line x1="12" y1="20" x2="14" y2="4" />
+            </svg>
+            <span>{{ t("sidebar.codingAgents") }}</span>
+          </RouteLinkItem>
+          <RouteLinkItem v-if="hasRoute('hermes.versionPreview') && isSuperAdmin && !isVersionPreview" class="nav-item" :to="{ name: 'hermes.versionPreview' }" :active="selectedKey === 'hermes.versionPreview'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+              <polyline points="7.5 4.21 12 6.81 16.5 4.21" />
+              <polyline points="7.5 19.79 7.5 14.6 3 12" />
+              <polyline points="21 12 16.5 14.6 16.5 19.79" />
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+              <line x1="12" y1="22.08" x2="12" y2="12" />
+            </svg>
+            <span>{{ t("sidebar.versionPreview") }}</span>
+          </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.devices' }" :active="selectedKey === 'hermes.devices'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="12" rx="2" />
+              <path d="M8 20h8" />
+              <path d="M12 16v4" />
+              <path d="M6 8h.01" />
+              <path d="M10 8h.01" />
+            </svg>
+            <span>{{ t("sidebar.devices") }}</span>
+          </RouteLinkItem>
         </div>
       </div>
 
@@ -281,17 +267,7 @@ onMounted(async () => {
           </svg>
         </div>
         <div v-show="!isGroupCollapsed('system')" class="nav-group-items">
-          <!-- sunke: hidden from sidebar (route still reachable by URL) -->
-          <RouteLinkItem v-if="false" class="nav-item" :to="{ name: 'hermes.gateways' }" :active="selectedKey === 'hermes.gateways'">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="2" y="2" width="20" height="8" rx="2" ry="2" />
-              <rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
-              <line x1="6" y1="6" x2="6.01" y2="6" />
-              <line x1="6" y1="18" x2="6.01" y2="18" />
-            </svg>
-            <span>{{ t("sidebar.gateways") }}</span>
-          </RouteLinkItem>
-          <RouteLinkItem v-if="showAdminSurfaces" class="nav-item" :to="{ name: 'hermes.profiles' }" :active="selectedKey === 'hermes.profiles'">
+          <RouteLinkItem v-if="isSuperAdmin" class="nav-item" :to="{ name: 'hermes.profiles' }" :active="selectedKey === 'hermes.profiles'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
               <circle cx="12" cy="7" r="4" />
@@ -309,35 +285,10 @@ onMounted(async () => {
       </div>
     </nav>
 
-    <ProfileSelector v-if="showUserModeChrome" class="user-profile-selector" />
+    <ProfileSelector />
     <ModelSelector />
 
-    <div v-if="currentUser || showUserModeChrome" class="sidebar-user" :class="{ locked: showUserModeChrome }">
-      <div v-if="showUserModeChrome" class="user-card-actions">
-        <ThemeSwitch />
-        <button class="card-logout-button" :title="t('sidebar.logout')" :aria-label="t('sidebar.logout')" @click="handleLogout">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-            <polyline points="16 17 21 12 16 7" />
-            <line x1="21" y1="12" x2="9" y2="12" />
-          </svg>
-        </button>
-      </div>
-      <div class="user-avatar-wrap">
-        <img v-if="currentUser?.avatarUrl" :src="currentUser.avatarUrl" :alt="displayName" class="user-avatar" />
-        <div v-else class="user-avatar fallback">{{ displayInitial }}</div>
-        <span class="user-status-dot" :class="{ connected: appStore.connected, standby: gatewayStandby }"></span>
-      </div>
-      <div class="user-meta">
-        <div class="user-name-row">
-          <span class="user-name">{{ displayName }}</span>
-        </div>
-        <div v-if="showProfile" class="user-profile">{{ displayProfile }}</div>
-      </div>
-    </div>
-    <ProfileSelector v-else />
-
-    <div v-if="showAdminSurfaces" class="sidebar-footer">
+    <div class="sidebar-footer">
       <button class="nav-item logout-item" @click="handleLogout">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -345,6 +296,7 @@ onMounted(async () => {
           <line x1="21" y1="12" x2="9" y2="12" />
         </svg>
         <span>{{ t("sidebar.logout") }}</span>
+        <span v-if="currentUsername" class="logout-username" :title="currentUsername">{{ currentUsername }}</span>
       </button>
       <div class="status-row">
         <div
@@ -355,16 +307,76 @@ onMounted(async () => {
           }"
         >
           <span class="status-dot"></span>
-          <span v-if="showAdminSurfaces" class="status-text">{{
+          <span class="status-text">{{
             appStore.connected
               ? t("sidebar.connected")
               : t("sidebar.disconnected")
           }}</span>
         </div>
-        <LanguageSwitch v-if="showAdminSurfaces" />
+        <LanguageSwitch />
+      </div>
+      <div class="version-info">
+        <div class="version-links">
+          <a class="sidebar-footer-link" href="https://github.com/EKKOLearnAI/hermes-studio" target="_blank" rel="noopener noreferrer" title="GitHub">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          </a>
+          <a class="sidebar-footer-link" href="https://hermes-studio.ai/" target="_blank" rel="noopener noreferrer" title="Website">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </a>
+        </div>
+        <span
+          class="version-text"
+          role="button"
+          tabindex="0"
+          @click="openChangelog"
+          @keydown.enter="openChangelog"
+          @keydown.space.prevent="openChangelog"
+        >
+          Studio v{{ appStore.serverVersion || "0.1.0" }}
+        </span>
         <ThemeSwitch />
       </div>
+      <NButton v-if="isDesktopShell" type="primary" size="tiny" block class="update-btn" @click="openVersionManagement">
+        {{ t('sidebar.versionManagement') }}
+      </NButton>
+      <NButton v-if="appStore.clientOutdated" type="warning" size="tiny" block class="update-btn" @click="handleReloadClient">
+        {{ t('sidebar.reloadClientVersion', { version: appStore.serverVersion }) }}
+      </NButton>
+      <NButton v-if="appStore.updateAvailable" type="primary" size="tiny" block class="update-btn" :loading="appStore.updating" @click="handleUpdate">
+        {{ appStore.updating ? t('sidebar.updating') : t('sidebar.updateVersion', { version: appStore.latestVersion }) }}
+      </NButton>
     </div>
+
+    <div class="sidebar-top-actions">
+      <RouteLinkItem class="nav-item sidebar-return-tab" :to="{ name: 'hermes.chat' }" :title="t('sidebar.backToChat')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="15 18 9 12 15 6" />
+          <line x1="9" y1="12" x2="21" y2="12" />
+        </svg>
+        <span>{{ t("sidebar.backToChat") }}</span>
+      </RouteLinkItem>
+      <button class="collapse-btn" @click="appStore.toggleSidebarCollapsed()" :title="appStore.sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline v-if="appStore.sidebarCollapsed" points="9 18 15 12 9 6" />
+          <polyline v-else points="15 18 9 12 15 6" />
+        </svg>
+      </button>
+    </div>
+
+    <NModal v-model:show="showChangelog" preset="dialog" :title="t('sidebar.changelog')" style="width: 520px;">
+      <div class="changelog-list">
+        <div v-for="entry in changelog" :key="entry.version" class="changelog-version-block">
+          <div class="changelog-version-header">
+            <span class="changelog-version-tag">v{{ entry.version }}</span>
+            <span class="changelog-date">{{ entry.date }}</span>
+          </div>
+          <ul class="changelog-changes">
+            <li v-for="(change, idx) in entry.changes" :key="idx">{{ t(change) }}</li>
+          </ul>
+        </div>
+      </div>
+    </NModal>
+    <VersionManagementModal v-if="isDesktopShell" v-model:show="showVersionManagement" />
   </aside>
 </template>
 
@@ -379,140 +391,15 @@ onMounted(async () => {
   border-right: 1px solid $border-color;
   display: flex;
   flex-direction: column;
-  padding: 0 12px 20px;
+  padding: 8px 12px 20px;
   flex-shrink: 0;
   transition: width $transition-normal;
-}
-
-.sidebar.user-mode {
-  background:
-    linear-gradient(180deg, rgba(242, 247, 252, 0.96), rgba(247, 249, 251, 0.98)),
-    $bg-sidebar;
-  border-right-color: rgba(37, 99, 235, 0.14);
-
-  .dark & {
-    background:
-      linear-gradient(180deg, rgba(24, 28, 35, 0.98), rgba(20, 22, 26, 0.98)),
-      $bg-sidebar;
-    border-right-color: rgba(96, 165, 250, 0.16);
-  }
-
-  .sidebar-logo {
-    background: transparent;
-    box-shadow: none;
-    border-bottom: 1px solid rgba(var(--accent-primary-rgb), 0.08);
-
-    .dark & {
-      background: transparent;
-    }
-  }
-
-  .logo-img {
-    width: 30px;
-    height: 30px;
-    border-radius: 8px;
-    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
-  }
-
-  .logo-text {
-    font-size: 19px;
-    letter-spacing: 0;
-  }
-
-  .nav-group-label {
-    color: rgba(var(--text-muted-rgb), 0.86);
-    letter-spacing: 0.04em;
-  }
-
-  .nav-item {
-    position: relative;
-    min-height: 42px;
-    border: 1px solid transparent;
-    border-radius: 8px;
-
-    &:hover {
-      background: rgba(37, 99, 235, 0.06);
-      border-color: rgba(37, 99, 235, 0.1);
-    }
-
-    &.active {
-      color: #1d4ed8;
-      background: linear-gradient(135deg, rgba(37, 99, 235, 0.13), rgba(20, 184, 166, 0.08));
-      border-color: rgba(37, 99, 235, 0.16);
-      box-shadow: inset 3px 0 0 rgba(37, 99, 235, 0.72);
-    }
-
-    .dark &.active {
-      color: #bfdbfe;
-      background: linear-gradient(135deg, rgba(96, 165, 250, 0.18), rgba(45, 212, 191, 0.08));
-      border-color: rgba(96, 165, 250, 0.2);
-      box-shadow: inset 3px 0 0 rgba(96, 165, 250, 0.82);
-    }
-  }
-
-  .sidebar-user.locked {
-    border-color: rgba(var(--accent-primary-rgb), 0.08);
-    background: transparent;
-    box-shadow: none;
-
-    .dark & {
-      background: transparent;
-      border-color: rgba(var(--accent-primary-rgb), 0.08);
-      box-shadow: none;
-    }
-  }
-
-}
-
-.logo-img {
-  width: 28px;
-  height: 28px;
-  border-radius: 0;
-  flex-shrink: 0;
-}
-
-.sidebar-logo {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 20px 12px;
-  margin: 0 -12px;
-  color: $text-primary;
-  cursor: pointer;
-  background-color: $bg-card;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  text-decoration: none;
-
-  .dark & {
-    background-color: #393939;
-  }
-  position: relative;
-  overflow: hidden;
-
-  .logo-text {
-    font-size: 18px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-  }
-
-  .logo-dance {
-    position: absolute;
-    right: 12px;
-    top: 50%;
-    transform: translateY(-50%);
-    height: 100px;
-    border-radius: $radius-md;
-    object-fit: contain;
-    flex-shrink: 0;
-    width: auto;
-    pointer-events: none;
-  }
 }
 
 .sidebar-nav {
   flex: 1;
   display: flex;
-  padding-top: 12px;
+  padding-top: 8px;
   flex-direction: column;
   gap: 6px;
   overflow-y: auto;
@@ -522,11 +409,6 @@ onMounted(async () => {
   &::-webkit-scrollbar {
     display: none;
   }
-}
-
-:deep(.profile-selector) {
-  padding-top: 12px;
-  border-top: 1px solid $border-color;
 }
 
 .nav-group {
@@ -588,6 +470,7 @@ onMounted(async () => {
   border: none;
   background: none;
   appearance: none;
+  text-decoration: none;
   color: $text-secondary;
   font-size: 14px;
   border-radius: $radius-sm;
@@ -595,7 +478,6 @@ onMounted(async () => {
   transition: all $transition-fast;
   width: 100%;
   text-align: left;
-  text-decoration: none;
 
   &:hover {
     background-color: rgba(var(--accent-primary-rgb), 0.06);
@@ -614,171 +496,71 @@ onMounted(async () => {
   }
 }
 
-.sidebar-footer {
+.sidebar-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid $border-color;
 }
 
-.sidebar-user {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 62px 12px 12px;
-  margin: 8px -4px 0;
-  border-top: 1px solid rgba(var(--accent-primary-rgb), 0.08);
-  background: transparent;
-
-  &.locked {
-    align-items: center;
-    min-height: 58px;
-    padding-right: 110px;
-  }
+.sidebar-return-tab {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  font-size: 13px;
 }
 
-.user-card-actions {
-  position: absolute;
-  top: 50%;
-  right: 10px;
-  transform: translateY(-50%);
+.sidebar-footer {
+  padding-top: 10px;
+  border-top: 1px solid $border-color;
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 4px;
 }
 
-.card-logout-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  color: $text-muted;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: $radius-sm;
-  cursor: pointer;
-  transition: color $transition-fast, background $transition-fast, border-color $transition-fast;
+.logout-item {
+  color: $text-secondary;
 
   &:hover {
     color: $error;
-    background: rgba(var(--error-rgb, 239, 68, 68), 0.06);
-    border-color: rgba(var(--error-rgb, 239, 68, 68), 0.12);
+  }
+
+  > span:not(.logout-username) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 
-.user-avatar-wrap {
-  position: relative;
-  flex-shrink: 0;
-}
-
-.user-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  object-fit: cover;
-  flex-shrink: 0;
-  background: $bg-card;
-
-  &.fallback {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: $text-primary;
-    font-size: 14px;
-    font-weight: 600;
-    background: rgba(var(--accent-primary-rgb), 0.14);
-  }
-}
-
-.user-status-dot {
-  position: absolute;
-  right: -1px;
-  bottom: -1px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 2px solid $bg-sidebar;
-  background: $text-muted;
-
-  &.connected {
-    background: $success;
-  }
-
-  &.standby {
-    background: #d97706;
-    box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.12);
-  }
-}
-
-.user-meta {
-  min-width: 0;
-  flex: 1;
-  padding-right: 2px;
-  line-height: 1.2;
-}
-
-.user-name-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-
-  .user-name {
-    color: $text-secondary;
-    font-size: 14px;
-    line-height: 1.25;
-    font-weight: 500;
-    overflow: visible;
-    text-overflow: clip;
-    white-space: normal;
-    overflow-wrap: anywhere;
-  }
-}
-
-.user-profile {
-  margin-top: 2px;
+.logout-username {
+  margin-left: auto;
+  max-width: 96px;
   color: $text-muted;
   font-size: 12px;
-  line-height: 1.25;
-  overflow: visible;
-  text-overflow: clip;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.logout-item {
-  margin: 0 -12px;
-  padding: 10px 12px;
-  border-radius: 0;
-  font-size: 13px;
-  color: $text-muted;
-
-  &:hover {
-    color: $error;
-    background: rgba(var(--error-rgb, 239, 68, 68), 0.06);
-  }
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  gap: 8px;
+  padding: 2px 0 4px;
 }
 
 .status-indicator {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  padding-left: 12px;
   font-size: 12px;
-
-  .status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
+  color: $text-secondary;
 
   &.connected .status-dot {
     background-color: $success;
@@ -788,9 +570,125 @@ onMounted(async () => {
   &.disconnected .status-dot {
     background-color: $error;
   }
+}
 
-  .status-text {
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.version-info {
+  padding: 2px 0 8px 12px;
+  font-size: 11px;
+  color: $text-muted;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.version-links {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.sidebar-footer-link {
+  color: $text-muted;
+  display: flex;
+  align-items: center;
+  transition: color $transition-fast;
+
+  &:hover {
+    color: $text-primary;
+  }
+}
+
+.version-text {
+  flex: 0 0 auto;
+  overflow: visible;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color $transition-fast;
+
+  &:hover {
+    color: $accent-primary;
+  }
+}
+
+.version-info :deep(.theme-switch-container) {
+  flex-shrink: 0;
+}
+
+.update-btn {
+  margin: 4px 0 0;
+  border-radius: $radius-sm;
+}
+
+.changelog-list {
+  max-height: min(70vh, 640px);
+  overflow-y: auto;
+}
+
+.changelog-version-block {
+  margin-bottom: 20px;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.changelog-version-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.changelog-version-tag {
+  font-weight: 600;
+  font-size: 14px;
+  color: $text-primary;
+  font-family: $font-code;
+}
+
+.changelog-date {
+  font-size: 12px;
+  color: $text-muted;
+}
+
+.changelog-changes {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+
+  li {
+    font-size: 13px;
     color: $text-secondary;
+    padding: 4px 0 4px 16px;
+    position: relative;
+
+    &::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 12px;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: $text-muted;
+    }
   }
 }
 
@@ -798,23 +696,25 @@ onMounted(async () => {
 
 .sidebar.collapsed {
   width: $sidebar-collapsed-width;
-  padding: 0 8px 12px;
+  padding: 8px 8px 12px;
   overflow: hidden;
-
-  .sidebar-logo {
-    padding: 12px 4px 8px;
-    margin: 0 -8px;
-    justify-content: center;
-    gap: 0;
-
-    .logo-text {
-      display: none;
-    }
-  }
 
   .collapse-btn {
     display: flex;
-    margin: 0 auto 8px;
+    margin: 0;
+  }
+
+  .sidebar-top-actions {
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+  }
+
+  .sidebar-return-tab {
+    width: 100%;
+    flex: 0 0 auto;
+    padding: 10px 4px;
   }
 
   .nav-group-label {
@@ -846,45 +746,37 @@ onMounted(async () => {
     }
   }
 
-  // Hide selectors and footer text, keep theme switch
-  :deep(.profile-selector),
   :deep(.model-selector) {
     display: none;
   }
 
-  .sidebar-footer {
-    .logout-item {
-      margin: 0;
-      padding: 10px 4px;
-      border-radius: $radius-sm;
-    }
-
-    .logout-item span {
-      display: none;
-    }
-
-    .status-text {
-      display: none;
-    }
-
-    .status-row {
-      justify-content: center;
-    }
+  :deep(.profile-selector) {
+    display: flex;
+    justify-content: center;
+    padding: 8px 0;
   }
 
-  .sidebar-user {
+  :deep(.profile-selector .selector-label),
+  :deep(.profile-selector .profile-name) {
+    display: none;
+  }
+
+  :deep(.profile-selector .profile-display) {
+    width: 40px;
     justify-content: center;
-    padding: 8px 4px;
-    border-color: transparent;
-    background: transparent;
+    padding: 4px;
+  }
 
-    .user-card-actions {
-      display: none;
-    }
+  .sidebar-footer {
+    align-items: center;
+    gap: 6px;
+    padding-top: 8px;
+  }
 
-    .user-meta {
-      display: none;
-    }
+  .status-row,
+  .version-info,
+  .update-btn {
+    display: none;
   }
 
 }
@@ -899,12 +791,13 @@ onMounted(async () => {
   height: 28px;
   border: none;
   background: none;
+  appearance: none;
+  text-decoration: none;
   color: $text-muted;
   border-radius: $radius-sm;
   cursor: pointer;
   flex-shrink: 0;
-  margin-left: auto;
-  margin-right: 0;
+  margin: 0;
   transition: all $transition-fast;
 
   &:hover {
@@ -913,25 +806,7 @@ onMounted(async () => {
   }
 }
 
-// In expanded mode, overlap the top-right of the logo area
-.sidebar:not(.collapsed) .collapse-btn {
-  position: absolute;
-  top: 18px;
-  right: 16px;
-  z-index: 5;
-}
-
 @media (max-width: $breakpoint-mobile) {
-  .logo-dance {
-    display: none;
-  }
-
-  .status-row {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
-  }
-
   .sidebar {
     position: fixed;
     left: 0;
@@ -944,14 +819,14 @@ onMounted(async () => {
       transform: translateX(0);
     }
 
+    .collapse-btn {
+      display: flex;
+    }
+
     // Override global utility — sidebar is always 240px wide
     .input-sm {
       width: 90px;
     }
   }
-}
-
-.fun-link {
-  text-decoration: none;
 }
 </style>

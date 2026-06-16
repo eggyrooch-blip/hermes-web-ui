@@ -1,5 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import { canAccessProtectedRoutes, isUserMode, shouldSkipLoginPage } from '@/api/client'
+import { hasApiKey, isStoredSuperAdmin } from '@/api/client'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -31,6 +31,16 @@ const router = createRouter({
       component: () => import('@/views/hermes/HistoryView.vue'),
     },
     {
+      path: '/hermes/global-agent',
+      name: 'hermes.globalAgent',
+      component: () => import('@/views/hermes/GlobalAgentView.vue'),
+    },
+    {
+      path: '/hermes/global-agent/session/:sessionId',
+      name: 'hermes.globalAgentSession',
+      component: () => import('@/views/hermes/GlobalAgentView.vue'),
+    },
+    {
       path: '/hermes/jobs',
       name: 'hermes.jobs',
       component: () => import('@/views/hermes/JobsView.vue'),
@@ -44,19 +54,17 @@ const router = createRouter({
       path: '/hermes/models',
       name: 'hermes.models',
       component: () => import('@/views/hermes/ModelsView.vue'),
-      meta: { hiddenInChatPlane: true },
     },
     {
       path: '/hermes/profiles',
       name: 'hermes.profiles',
       component: () => import('@/views/hermes/ProfilesView.vue'),
-      meta: { hiddenInChatPlane: true },
+      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/logs',
       name: 'hermes.logs',
       component: () => import('@/views/hermes/LogsView.vue'),
-      meta: { hiddenInChatPlane: true },
     },
     {
       path: '/hermes/usage',
@@ -64,20 +72,20 @@ const router = createRouter({
       component: () => import('@/views/hermes/UsageView.vue'),
     },
     {
-      path: '/hermes/skills',
-      name: 'hermes.skills',
-      component: () => import('@/views/hermes/SkillsView.vue'),
+      path: '/hermes/performance',
+      name: 'hermes.performance',
+      component: () => import('@/views/hermes/PerformanceView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
     {
-      // Upstream Skills Usage stats — profile-scoped read-only view.
       path: '/hermes/skills-usage',
       name: 'hermes.skillsUsage',
       component: () => import('@/views/hermes/SkillsUsageView.vue'),
     },
     {
-      path: '/hermes/credentials',
-      name: 'hermes.credentials',
-      component: () => import('@/views/hermes/CredentialsView.vue'),
+      path: '/hermes/skills',
+      name: 'hermes.skills',
+      component: () => import('@/views/hermes/SkillsView.vue'),
     },
     {
       path: '/hermes/plugins',
@@ -95,22 +103,20 @@ const router = createRouter({
       component: () => import('@/views/hermes/SettingsView.vue'),
     },
     {
-      path: '/hermes/gateways',
-      name: 'hermes.gateways',
-      component: () => import('@/views/hermes/GatewaysView.vue'),
-      meta: { hiddenInChatPlane: true },
-    },
-    {
       path: '/hermes/channels',
       name: 'hermes.channels',
       component: () => import('@/views/hermes/ChannelsView.vue'),
-      meta: { hiddenInChatPlane: true },
     },
     {
       path: '/hermes/terminal',
       name: 'hermes.terminal',
       component: () => import('@/views/hermes/TerminalView.vue'),
-      meta: { hiddenInChatPlane: true },
+      meta: { requiresSuperAdmin: true },
+    },
+    {
+      path: '/hermes/devices',
+      name: 'hermes.devices',
+      component: () => import('@/views/hermes/DevicesView.vue'),
     },
     {
       path: '/hermes/group-chat',
@@ -128,21 +134,30 @@ const router = createRouter({
       component: () => import('@/views/hermes/FilesView.vue'),
     },
     {
-      // Upstream coding-agents feature: launch/manage codex & claude-code.
-      // Admin-only tool — hidden from the chat plane for normal profiles.
       path: '/hermes/coding-agents',
       name: 'hermes.codingAgents',
       component: () => import('@/views/hermes/CodingAgentsView.vue'),
-      meta: { hiddenInChatPlane: true },
+    },
+    {
+      path: '/hermes/version-preview',
+      name: 'hermes.versionPreview',
+      component: () => import('@/views/hermes/VersionPreviewView.vue'),
+      meta: { requiresSuperAdmin: true },
+    },
+    {
+      path: '/hermes/mcp',
+      name: 'hermes.mcp',
+      component: () => import('@/views/hermes/McpManagerView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
   ],
 })
 
-router.beforeEach(async (to, _from, next) => {
+router.beforeEach((to, _from, next) => {
   // Public pages don't need auth
   if (to.meta.public) {
     // Already has key, skip login
-    if (to.name === 'login' && shouldSkipLoginPage()) {
+    if (to.name === 'login' && hasApiKey()) {
       next({ path: '/hermes/chat' })
       return
     }
@@ -151,12 +166,12 @@ router.beforeEach(async (to, _from, next) => {
   }
 
   // All other pages require token
-  if (!canAccessProtectedRoutes()) {
+  if (!hasApiKey()) {
     next({ name: 'login' })
     return
   }
 
-  if (isUserMode() && to.meta.hiddenInChatPlane) {
+  if (to.meta.requiresSuperAdmin && !isStoredSuperAdmin()) {
     next({ name: 'hermes.chat' })
     return
   }

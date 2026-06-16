@@ -2,15 +2,16 @@
 import { ref, computed } from 'vue'
 import { NModal, NInput, NSelect } from 'naive-ui'
 import { useAppStore } from '@/stores/hermes/app'
+import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useI18n } from 'vue-i18n'
-import { getProviderLogo } from '@/utils/providerLogo'
+
+const emit = defineEmits<{
+  'modal-show-change': [show: boolean]
+}>()
 
 const { t } = useI18n()
 const appStore = useAppStore()
-const displayModel = computed(() => appStore.selectedModel)
-const displayProvider = computed(() => appStore.selectedProvider)
-
-const currentLogo = computed(() => getProviderLogo(displayProvider.value))
+const profilesStore = useProfilesStore()
 
 const showModal = ref(false)
 const searchQuery = ref('')
@@ -18,14 +19,20 @@ const collapsedGroups = ref<Record<string, boolean>>({})
 const customInput = ref('')
 const customProvider = ref('')
 
+const activeProfileName = computed(() => profilesStore.activeProfileName || 'default')
+const activeModelGroups = computed(() => {
+  const profileModels = appStore.profileModelGroups.find(entry => entry.profile === activeProfileName.value)
+  return profileModels?.groups || []
+})
+
 const providerOptions = computed(() => {
-  const current = displayProvider.value
+  const current = appStore.selectedProvider
   customProvider.value = current
-  return appStore.modelGroups.map(g => ({ label: g.label, value: g.provider }))
+  return activeModelGroups.value.map(g => ({ label: g.label, value: g.provider }))
 })
 
 const modelGroupsWithCustom = computed(() =>
-  appStore.modelGroups.map(g => ({
+  activeModelGroups.value.map(g => ({
     ...g,
     models: [
       ...g.models,
@@ -34,13 +41,25 @@ const modelGroupsWithCustom = computed(() =>
   }))
 )
 
-const customModelSet = computed(() => {
-  const set = new Set<string>()
-  for (const models of Object.values(appStore.customModels)) {
-    models.forEach(m => set.add(m))
-  }
-  return set
-})
+const selectedModelInActiveProfile = computed(() =>
+  modelGroupsWithCustom.value.some(group =>
+    group.provider === appStore.selectedProvider && group.models.includes(appStore.selectedModel),
+  ),
+)
+
+const selectedDisplayName = computed(() =>
+  selectedModelInActiveProfile.value
+    ? appStore.displayModelName(appStore.selectedModel, appStore.selectedProvider)
+    : '',
+)
+
+function isCustomModel(model: string, provider: string) {
+  return (appStore.customModels[provider] || []).includes(model)
+}
+
+async function removeCustomModel(model: string, provider: string) {
+  await appStore.removeCustomModel(model, provider)
+}
 
 function safeLower(value: unknown) {
   return typeof value === 'string' ? value.toLowerCase() : ''
@@ -52,7 +71,10 @@ const filteredGroups = computed(() => {
   return modelGroupsWithCustom.value
     .map(g => ({
       ...g,
-      models: g.models.filter(m => safeLower(m).includes(q)),
+      models: g.models.filter(m => {
+        const displayName = appStore.displayModelName(m, g.provider)
+        return safeLower(m).includes(q) || safeLower(displayName).includes(q)
+      }),
     }))
     .filter(g => g.models.length > 0 || safeLower(g.label).includes(q))
 })
@@ -65,56 +87,105 @@ function isGroupCollapsed(provider: string) {
   return !!collapsedGroups.value[provider]
 }
 
-async function handleSelect(model: string, provider: string) {
-  const meta = appStore.modelGroups.find(g => g.provider === provider)?.model_meta?.[model]
+function handleSelect(model: string, provider: string) {
+  const meta = activeModelGroups.value.find(g => g.provider === provider)?.model_meta?.[model]
   if (meta?.disabled) return
-  await appStore.switchModel(model, provider)
-  showModal.value = false
+  appStore.switchModel(model, provider)
+  setModalShow(false)
   searchQuery.value = ''
 }
 
-async function handleCustomSubmit() {
+function modelDisplayName(model: string, provider: string) {
+  return appStore.displayModelName(model, provider)
+}
+
+function modelAlias(model: string, provider: string) {
+  return appStore.getModelAlias(model, provider)
+}
+
+function handleCustomSubmit() {
   const model = customInput.value.trim()
   if (!model || !customProvider.value) return
   // 拦截 disabled 模型，避免 custom input 绕过列表里的灰显限制
-  const meta = appStore.modelGroups.find(g => g.provider === customProvider.value)?.model_meta?.[model]
+  const meta = activeModelGroups.value.find(g => g.provider === customProvider.value)?.model_meta?.[model]
   if (meta?.disabled) return
-  await appStore.switchModel(model, customProvider.value)
-  showModal.value = false
+  appStore.switchModel(model, customProvider.value)
+  setModalShow(false)
   searchQuery.value = ''
   customInput.value = ''
+}
+
+function setModalShow(show: boolean) {
+  showModal.value = show
+  emit('modal-show-change', show)
 }
 
 function openModal() {
   collapsedGroups.value = {}
   searchQuery.value = ''
   customInput.value = ''
-  customProvider.value = displayProvider.value
-  showModal.value = true
+  customProvider.value = appStore.selectedProvider
+  setModalShow(true)
+}
+
+function handleModalShowChange(show: boolean) {
+  setModalShow(show)
+}
+
+const refreshing = ref(false)
+
+async function handleRefresh() {
+  if (refreshing.value) return
+  refreshing.value = true
+  const startedAt = Date.now()
+  try {
+    await appStore.reloadModels({ preserveSelection: true })
+  } finally {
+    // 保证旋转动画至少可见一圈，避免请求太快图标闪一下
+    const elapsed = Date.now() - startedAt
+    const minSpin = 600
+    if (elapsed < minSpin) await new Promise(resolve => setTimeout(resolve, minSpin - elapsed))
+    refreshing.value = false
+  }
 }
 </script>
 
 <template>
   <div class="model-selector">
-    <div class="model-label">{{ t('models.title') }}</div>
-    <button class="model-trigger" :title="displayModel" @click="openModal">
-      <span
-        class="model-logo"
-        :style="{ background: currentLogo.bg, color: currentLogo.fg }"
-        aria-hidden="true"
-      >{{ currentLogo.label }}</span>
-      <span class="model-name">{{ displayModel || '—' }}</span>
+    <div class="model-label-row">
+      <div class="model-label">{{ t('models.title') }}</div>
+      <button
+        class="model-refresh"
+        type="button"
+        :disabled="refreshing"
+        :title="t('models.refresh')"
+        :aria-label="t('models.refresh')"
+        @click="handleRefresh"
+      >
+        <svg
+          :class="{ spinning: refreshing }"
+          width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+        >
+          <polyline points="23 4 23 10 17 10" />
+          <polyline points="1 20 1 14 7 14" />
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+        </svg>
+      </button>
+    </div>
+    <button class="model-trigger" @click="openModal">
+      <span class="model-name" :title="appStore.selectedModel">{{ selectedDisplayName || '—' }}</span>
       <svg class="model-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="6 9 12 15 18 9" />
       </svg>
     </button>
 
     <NModal
-      v-model:show="showModal"
+      :show="showModal"
       preset="card"
       :title="t('models.title')"
       :style="{ width: 'min(480px, calc(100vw - 32px))' }"
       :mask-closable="true"
+      @update:show="handleModalShowChange"
     >
       <NInput
         v-model:value="searchQuery"
@@ -142,17 +213,31 @@ function openModal() {
               :key="model"
               class="model-item"
               :class="{
-                active: model === displayModel && group.provider === displayProvider,
+                active: model === appStore.selectedModel && group.provider === appStore.selectedProvider,
                 disabled: !!group.model_meta?.[model]?.disabled,
               }"
               :title="group.model_meta?.[model]?.disabled ? t('models.disabledTooltip') : ''"
               @click="handleSelect(model, group.provider)"
             >
-              <span class="model-item-name">{{ model }}</span>
+              <span class="model-item-label">
+                <span class="model-item-name">{{ modelDisplayName(model, group.provider) }}</span>
+                <span v-if="modelAlias(model, group.provider)" class="model-item-id">
+                  {{ t('models.aliasCanonical', { model }) }}
+                </span>
+              </span>
               <span v-if="group.model_meta?.[model]?.preview" class="model-badge-preview">{{ t('models.previewBadge') }}</span>
               <span v-if="group.model_meta?.[model]?.disabled" class="model-badge-disabled">{{ t('models.disabledBadge') }}</span>
-              <span v-if="customModelSet.has(model)" class="model-badge-custom">{{ t('models.customBadge') }}</span>
-              <svg v-if="model === displayModel && group.provider === displayProvider" class="model-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <span v-if="isCustomModel(model, group.provider)" class="model-badge-custom">{{ t('models.customBadge') }}</span>
+              <button
+                v-if="isCustomModel(model, group.provider)"
+                class="model-custom-remove"
+                type="button"
+                :title="t('models.removeCustomModel')"
+                @click.stop="removeCustomModel(model, group.provider)"
+              >
+                ×
+              </button>
+              <svg v-if="model === appStore.selectedModel && group.provider === appStore.selectedProvider" class="model-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="20 6 9 17 4 12" />
               </svg>
             </div>
@@ -183,6 +268,7 @@ function openModal() {
         </div>
       </div>
     </NModal>
+
   </div>
 </template>
 
@@ -194,13 +280,53 @@ function openModal() {
   margin-bottom: 8px;
 }
 
+.model-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
 .model-label {
   font-size: 11px;
   font-weight: 600;
   color: $text-muted;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  margin-bottom: 6px;
+}
+
+.model-refresh {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: $radius-sm;
+  background: transparent;
+  color: $text-muted;
+  cursor: pointer;
+  transition: color $transition-fast, background-color $transition-fast;
+
+  &:hover:not(:disabled) {
+    background: $bg-secondary;
+    color: $text-primary;
+  }
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.7;
+  }
+
+  svg.spinning {
+    animation: model-refresh-spin 0.8s linear infinite;
+  }
+}
+
+@keyframes model-refresh-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .model-trigger {
@@ -220,20 +346,6 @@ function openModal() {
   &:hover {
     border-color: $accent-muted;
   }
-}
-
-.model-logo {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  user-select: none;
 }
 
 .model-name {
@@ -336,14 +448,32 @@ function openModal() {
   }
 }
 
-.model-item-name {
+.model-item-label {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.model-item-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: $font-code;
   font-size: 12px;
 }
+
+.model-item-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: $text-muted;
+  font-family: $font-code;
+  font-size: 10px;
+  font-weight: 400;
+}
+
 
 .model-check {
   flex-shrink: 0;
@@ -360,6 +490,25 @@ function openModal() {
   border-radius: 3px;
   margin-right: 4px;
   letter-spacing: 0.03em;
+}
+
+
+.model-custom-remove {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: $text-muted;
+  cursor: pointer;
+  line-height: 18px;
+  padding: 0;
+
+  &:hover {
+    background: rgba(var(--error-rgb), 0.12);
+    color: $error;
+  }
 }
 
 .model-badge-preview {

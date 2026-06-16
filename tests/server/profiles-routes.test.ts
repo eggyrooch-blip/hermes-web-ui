@@ -1,7 +1,22 @@
-import { mkdtempSync, rmSync } from 'fs'
-import { join } from 'path'
+import { existsSync, readFileSync } from 'fs'
+import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { join } from 'path'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+const agentBridgeMocks = vi.hoisted(() => ({
+  destroyAll: vi.fn(),
+  destroyProfile: vi.fn(),
+}))
+
+const skillInjectorMocks = vi.hoisted(() => ({
+  injectMissingSkills: vi.fn(),
+  resolveTargetDirForProfile: vi.fn(),
+}))
+
+const sessionDeleterMocks = vi.hoisted(() => ({
+  switchProfile: vi.fn(),
+}))
 
 // Mock hermes-cli
 vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({
@@ -19,66 +34,47 @@ vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({
   importProfile: vi.fn(),
 }))
 
-vi.mock('../../packages/server/src/services/gateway-bootstrap', () => ({
-  getGatewayManagerInstance: () => ({
-    start: vi.fn().mockResolvedValue(undefined),
-    stop: vi.fn().mockResolvedValue(undefined),
-  }),
-}))
-
-vi.mock('../../packages/server/src/services/hermes/profile-credentials', () => ({
-  smartCloneCleanup: vi.fn(() => ({
-    strippedCredentials: [],
-    disabledPlatforms: [],
-    strippedConfigCredentials: [],
+vi.mock('../../packages/server/src/services/hermes/agent-bridge', () => ({
+  AgentBridgeClient: vi.fn(() => ({
+    destroyAll: agentBridgeMocks.destroyAll,
+    destroyProfile: agentBridgeMocks.destroyProfile,
   })),
 }))
 
-vi.mock('../../packages/server/src/services/hermes/agent-ownership', () => ({
-  listOwnedProfileMetadata: vi.fn(() => new Map()),
-  ownerOwnsProfile: vi.fn(() => false),
-  registerOwnedProfile: vi.fn(() => true),
-}))
+vi.mock('../../packages/server/src/services/hermes/skill-injector', () => {
+  const HermesSkillInjector = vi.fn(() => ({
+    injectMissingSkills: skillInjectorMocks.injectMissingSkills,
+  })) as any
+  HermesSkillInjector.resolveTargetDirForProfile = skillInjectorMocks.resolveTargetDirForProfile
+  return { HermesSkillInjector }
+})
 
-vi.mock('../../packages/server/src/services/hermes/profile-provisioning', () => ({
-  provisionOwnedProfileViaBroker: vi.fn(() => Promise.resolve(false)),
+vi.mock('../../packages/server/src/services/hermes/session-deleter', () => ({
+  SessionDeleter: {
+    getInstance: vi.fn(() => sessionDeleterMocks),
+  },
 }))
 
 import * as hermesCli from '../../packages/server/src/services/hermes/hermes-cli'
-import { config } from '../../packages/server/src/config'
-import { create, deleteAvatar, list, updateAvatar } from '../../packages/server/src/controllers/hermes/profiles'
-import { listOwnedProfileMetadata, ownerOwnsProfile, registerOwnedProfile } from '../../packages/server/src/services/hermes/agent-ownership'
-import { provisionOwnedProfileViaBroker } from '../../packages/server/src/services/hermes/profile-provisioning'
 
 describe('Profile Routes', () => {
-  const roots: string[] = []
+  const originalHermesHome = process.env.HERMES_HOME
+  const originalWebUiHome = process.env.HERMES_WEB_UI_HOME
+  const tempHomes: string[] = []
 
   beforeEach(() => {
-    const webUiHome = mkdtempSync(join(tmpdir(), 'hermes-web-ui-profiles-test-'))
-    roots.push(webUiHome)
-    process.env.HERMES_WEB_UI_HOME = webUiHome
     vi.clearAllMocks()
-    config.webPlane = 'both'
-    config.runBrokerUrl = ''
-    config.runBrokerKey = ''
-    vi.mocked(provisionOwnedProfileViaBroker).mockResolvedValue(false)
-    vi.mocked(listOwnedProfileMetadata).mockReturnValue(new Map())
-    vi.mocked(ownerOwnsProfile).mockReturnValue(false)
+    agentBridgeMocks.destroyProfile.mockResolvedValue({ destroyed: 0 })
+    skillInjectorMocks.injectMissingSkills.mockResolvedValue({ targets: [] })
+    skillInjectorMocks.resolveTargetDirForProfile.mockImplementation((name: string) => join('/tmp/hermes-skills', name))
   })
 
-  afterEach(() => {
-    delete process.env.HERMES_WEB_UI_HOME
-    for (const root of roots.splice(0)) {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
-
-  describe('ensureApiServerConfig (via active profile switch)', () => {
-    it('should inject api_server config when missing', async () => {
-      // This tests the logic that profiles.ts ensures api_server config exists
-      // We test the ensureApiServerConfig behavior indirectly through the module
-      expect(true).toBe(true)
-    })
+  afterEach(async () => {
+    if (originalHermesHome === undefined) delete process.env.HERMES_HOME
+    else process.env.HERMES_HOME = originalHermesHome
+    if (originalWebUiHome === undefined) delete process.env.HERMES_WEB_UI_HOME
+    else process.env.HERMES_WEB_UI_HOME = originalWebUiHome
+    await Promise.all(tempHomes.splice(0).map(dir => rm(dir, { recursive: true, force: true })))
   })
 
   describe('hermes-cli wrapper', () => {
@@ -124,250 +120,163 @@ describe('Profile Routes', () => {
     })
   })
 
-  describe('create controller', () => {
-    it('lists chat-plane owned profiles without invoking the slow global Hermes profile list', async () => {
-      config.webPlane = 'chat'
-      vi.mocked(hermesCli.listProfiles).mockRejectedValue(new Error('profile list should not run'))
-      vi.mocked(listOwnedProfileMetadata).mockReturnValue(new Map([
-        ['user_a', { profileName: 'user_a', kind: 'user', ownerOpenId: 'ou_owner' }],
-        ['team_room', { profileName: 'team_room', kind: 'group', ownerOpenId: 'ou_owner', displayLabel: '团队群' }],
-      ]))
-
+  describe('profile rename validation', () => {
+    it('rejects reserved profile names before calling Hermes CLI', async () => {
+      vi.mocked(hermesCli.renameProfile).mockResolvedValue(true)
+      const { rename } = await import('../../packages/server/src/controllers/hermes/profiles')
       const ctx: any = {
-        state: {
-          user: { openid: 'ou_owner', profile: 'user_a', role: 'user' },
-        },
-        body: undefined,
-      }
-
-      await list(ctx)
-
-      expect(hermesCli.listProfiles).not.toHaveBeenCalled()
-      expect(ctx.body).toEqual({
-        profiles: [
-          {
-            name: 'user_a',
-            active: true,
-            model: '',
-            gateway: '',
-            alias: '',
-            kind: 'user',
-            ownerOpenId: 'ou_owner',
-          },
-          {
-            name: 'team_room',
-            active: false,
-            model: '',
-            gateway: '',
-            alias: '',
-            displayLabel: '团队群',
-            kind: 'group',
-            ownerOpenId: 'ou_owner',
-          },
-        ],
-      })
-    })
-
-    it('passes role description and no-alias to Hermes CLI for chat-plane users', async () => {
-      vi.mocked(hermesCli.createProfile).mockResolvedValue('Profile created')
-
-      const ctx: any = {
-        request: {
-          body: {
-            name: 'web_coder',
-            clone: true,
-            description: 'Software engineering agent for coding and tests.',
-          },
-        },
-        state: {
-          user: { openid: 'ou_owner', profile: 'feishu_user_a' },
-        },
+        params: { name: 'work' },
+        request: { body: { new_name: 'hermes' } },
         status: 200,
         body: undefined,
       }
-      config.webPlane = 'chat'
 
-      await create(ctx)
+      await rename(ctx)
 
-      expect(hermesCli.createProfile).toHaveBeenCalledWith('web_coder', {
-        clone: true,
-        cloneFrom: 'feishu_user_a',
-        description: 'Software engineering agent for coding and tests.',
-        noAlias: true,
-      })
-      expect(ctx.body.success).toBe(true)
-    })
-
-    it('clones from the trusted chat-plane user profile instead of server active_profile', async () => {
-      vi.mocked(hermesCli.createProfile).mockResolvedValue('Profile created')
-
-      const ctx: any = {
-        request: {
-          body: {
-            name: 'coder1',
-            clone: true,
-            description: 'Software engineering agent.',
-          },
-        },
-        state: {
-          user: { openid: 'ou_owner', profile: 'user_a' },
-        },
-        status: 200,
-        body: undefined,
-      }
-      config.webPlane = 'chat'
-
-      await create(ctx)
-
-      expect(hermesCli.createProfile).toHaveBeenCalledWith('coder1', {
-        clone: true,
-        cloneFrom: 'user_a',
-        description: 'Software engineering agent.',
-        noAlias: true,
-      })
-      expect(ctx.body.success).toBe(true)
-    })
-
-    it('rejects chat-plane clone when the authenticated user has no source profile', async () => {
-      vi.mocked(hermesCli.createProfile).mockResolvedValue('Profile created')
-
-      const ctx: any = {
-        request: {
-          body: {
-            name: 'coder1',
-            clone: true,
-          },
-        },
-        state: {
-          user: { openid: 'ou_owner' },
-        },
-        status: 200,
-        body: undefined,
-      }
-      config.webPlane = 'chat'
-
-      await create(ctx)
-
-      expect(hermesCli.createProfile).not.toHaveBeenCalled()
       expect(ctx.status).toBe(400)
-      expect(ctx.body.error).toContain('trusted source profile')
+      expect(ctx.body).toEqual({ error: "Profile name 'hermes' is reserved and cannot be used" })
+      expect(hermesCli.renameProfile).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('profile deletion fallback', () => {
+    it('removes a reserved profile directory when Hermes CLI refuses to delete it', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-delete-'))
+      tempHomes.push(hermesHome)
+      process.env.HERMES_HOME = hermesHome
+      const badProfileDir = join(hermesHome, 'profiles', 'hermes')
+      await mkdir(badProfileDir, { recursive: true })
+      await writeFile(join(badProfileDir, 'config.yaml'), 'model:\n  default: bad\n', 'utf-8')
+      await writeFile(join(hermesHome, 'active_profile'), 'hermes\n', 'utf-8')
+      vi.mocked(hermesCli.deleteProfile).mockResolvedValue(false)
+      const { remove } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = { params: { name: 'hermes' }, status: 200, body: undefined }
+
+      await remove(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body).toEqual({ success: true, fallback: 'removed_reserved_profile_from_disk' })
+      expect(existsSync(badProfileDir)).toBe(false)
+      expect(readFileSync(join(hermesHome, 'active_profile'), 'utf-8')).toBe('default\n')
     })
 
-    it('registers chat-plane profile ownership through the multitenancy broker before fallback', async () => {
-      vi.mocked(hermesCli.createProfile).mockResolvedValue('Profile created')
-      vi.mocked(provisionOwnedProfileViaBroker).mockResolvedValue(true)
+    it('does not bypass Hermes CLI failures for normal profile names', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-delete-'))
+      tempHomes.push(hermesHome)
+      process.env.HERMES_HOME = hermesHome
+      const profileDir = join(hermesHome, 'profiles', 'work')
+      await mkdir(profileDir, { recursive: true })
+      vi.mocked(hermesCli.deleteProfile).mockResolvedValue(false)
+      const { remove } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = { params: { name: 'work' }, status: 200, body: undefined }
 
+      await remove(ctx)
+
+      expect(ctx.status).toBe(500)
+      expect(ctx.body).toEqual({ error: 'Failed to delete profile' })
+      expect(existsSync(profileDir)).toBe(true)
+    })
+  })
+
+  describe('Hermes CLI active profile switch', () => {
+    it('only destroys bridge sessions for the target profile', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-switch-'))
+      tempHomes.push(hermesHome)
+      process.env.HERMES_HOME = hermesHome
+      const profileDir = join(hermesHome, 'profiles', 'work')
+      await mkdir(profileDir, { recursive: true })
+      await writeFile(join(profileDir, 'config.yaml'), 'model:\n  default: gpt-test\n', 'utf-8')
+      await writeFile(join(hermesHome, 'active_profile'), 'work\n', 'utf-8')
+      vi.mocked(hermesCli.useProfile).mockResolvedValue('Switched to work')
+      vi.mocked(hermesCli.getProfile).mockResolvedValue({
+        name: 'work',
+        path: profileDir,
+        model: 'gpt-test',
+        provider: 'test',
+        skills: 0,
+        hasEnv: false,
+        hasSoulMd: false,
+      } as any)
+      agentBridgeMocks.destroyProfile.mockResolvedValue({ destroyed: 2 })
+      const { switchProfile } = await import('../../packages/server/src/controllers/hermes/profiles')
       const ctx: any = {
-        request: {
-          body: {
-            name: 'web_operator',
-            clone: false,
-            description: 'Operations agent for recurring tasks.',
-          },
-        },
-        state: {
-          user: { openid: 'ou_owner', profile: 'feishu_user_a' },
-        },
+        request: { body: { name: 'work' } },
         status: 200,
         body: undefined,
       }
-      config.webPlane = 'chat'
 
-      await create(ctx)
+      await switchProfile(ctx)
 
-      expect(provisionOwnedProfileViaBroker).toHaveBeenCalledWith({
-        ownerOpenId: 'ou_owner',
-        profileName: 'web_operator',
-        upstreamProfile: 'feishu_user_a',
-        displayLabel: 'web_operator',
-        description: 'Operations agent for recurring tasks.',
-      })
-      expect(registerOwnedProfile).not.toHaveBeenCalled()
-      expect(ctx.body.success).toBe(true)
+      expect(ctx.status).toBe(200)
+      expect(ctx.body).toMatchObject({ success: true, active: 'work' })
+      expect(agentBridgeMocks.destroyProfile).toHaveBeenCalledWith('work')
+      expect(agentBridgeMocks.destroyAll).not.toHaveBeenCalled()
+      expect(sessionDeleterMocks.switchProfile).toHaveBeenCalledWith('work')
     })
+  })
 
-    it('keeps admin-plane profile creation compatible without no-alias', async () => {
-      vi.mocked(hermesCli.createProfile).mockResolvedValue('Profile created')
-
+  describe('profile avatars', () => {
+    it('stores generated avatar metadata under the Web UI home', async () => {
+      const webUiHome = await mkdtemp(join(tmpdir(), 'hermes-web-ui-avatar-'))
+      tempHomes.push(webUiHome)
+      process.env.HERMES_WEB_UI_HOME = webUiHome
+      const { updateAvatar } = await import('../../packages/server/src/controllers/hermes/profiles')
       const ctx: any = {
-        request: {
-          body: {
-            name: 'admin_profile',
-            clone: false,
-          },
-        },
-        state: {},
-        status: 200,
-        body: undefined,
-      }
-      config.webPlane = 'both'
-
-      await create(ctx)
-
-      expect(hermesCli.createProfile).toHaveBeenCalledWith('admin_profile', {
-        clone: false,
-        description: undefined,
-        noAlias: false,
-      })
-      expect(ctx.body.success).toBe(true)
-    })
-
-    it('stores generated profile avatars and omits avatar binary paths from the response', async () => {
-      const ctx: any = {
-        params: { name: 'user_a' },
-        request: { body: { type: 'generated', seed: 'user_a-seed' } },
-        state: {},
+        params: { name: 'work' },
+        request: { body: { type: 'generated', seed: 'custom-seed' } },
         status: 200,
         body: undefined,
       }
 
       await updateAvatar(ctx)
 
-      expect(ctx.body.avatar).toMatchObject({
+      const metaPath = join(webUiHome, 'profile-metadata', Buffer.from('work', 'utf-8').toString('base64url'), 'avatar.json')
+      expect(ctx.status).toBe(200)
+      expect(ctx.body.avatar).toMatchObject({ type: 'generated', seed: 'custom-seed' })
+      expect(JSON.parse(readFileSync(metaPath, 'utf-8'))).toMatchObject({
         type: 'generated',
-        seed: 'user_a-seed',
+        seed: 'custom-seed',
       })
-      expect(JSON.stringify(ctx.body)).not.toContain('profile-metadata')
     })
 
-    it('rejects avatar updates for another owner profile in chat-plane', async () => {
-      config.webPlane = 'chat'
-      vi.mocked(ownerOwnsProfile).mockReturnValue(false)
+    it('stores uploaded image avatars and returns a data URL', async () => {
+      const webUiHome = await mkdtemp(join(tmpdir(), 'hermes-web-ui-avatar-'))
+      tempHomes.push(webUiHome)
+      process.env.HERMES_WEB_UI_HOME = webUiHome
+      const dataUrl = `data:image/png;base64,${Buffer.from('avatar-png').toString('base64')}`
+      const { updateAvatar } = await import('../../packages/server/src/controllers/hermes/profiles')
       const ctx: any = {
-        params: { name: 'other_profile' },
-        request: { body: { type: 'generated', seed: 'other-seed' } },
-        state: { user: { openid: 'ou_owner', profile: 'user_a', role: 'user' } },
+        params: { name: 'work' },
+        request: { body: { type: 'image', dataUrl } },
         status: 200,
         body: undefined,
       }
 
       await updateAvatar(ctx)
 
-      expect(ctx.status).toBe(403)
-      expect(ctx.body.error).toContain('not available')
+      const dir = join(webUiHome, 'profile-metadata', Buffer.from('work', 'utf-8').toString('base64url'))
+      const meta = JSON.parse(readFileSync(join(dir, 'avatar.json'), 'utf-8'))
+      expect(ctx.status).toBe(200)
+      expect(ctx.body.avatar).toMatchObject({ type: 'image', dataUrl })
+      expect(meta).toMatchObject({ type: 'image', file: 'avatar.bin', mime: 'image/png' })
+      expect(readFileSync(join(dir, 'avatar.bin')).toString()).toBe('avatar-png')
     })
 
-    it('deletes profile avatar metadata for an owned chat-plane profile', async () => {
-      config.webPlane = 'chat'
-      vi.mocked(ownerOwnsProfile).mockReturnValue(true)
-      const updateCtx: any = {
-        params: { name: 'team_room' },
-        request: { body: { type: 'generated', seed: 'room-seed' } },
-        state: { user: { openid: 'ou_owner', profile: 'user_a', role: 'user' } },
-        status: 200,
-        body: undefined,
-      }
-      const deleteCtx: any = {
-        params: { name: 'team_room' },
-        state: { user: { openid: 'ou_owner', profile: 'user_a', role: 'user' } },
-        status: 200,
-        body: undefined,
-      }
+    it('deletes profile avatar metadata', async () => {
+      const webUiHome = await mkdtemp(join(tmpdir(), 'hermes-web-ui-avatar-'))
+      tempHomes.push(webUiHome)
+      process.env.HERMES_WEB_UI_HOME = webUiHome
+      const metadataDir = join(webUiHome, 'profile-metadata', Buffer.from('work', 'utf-8').toString('base64url'))
+      await mkdir(metadataDir, { recursive: true })
+      await writeFile(join(metadataDir, 'avatar.json'), '{"type":"generated"}\n', 'utf-8')
+      const { deleteAvatar } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = { params: { name: 'work' }, status: 200, body: undefined }
 
-      await updateAvatar(updateCtx)
-      await deleteAvatar(deleteCtx)
+      await deleteAvatar(ctx)
 
-      expect(deleteCtx.body).toEqual({ success: true })
+      expect(ctx.status).toBe(200)
+      expect(ctx.body).toEqual({ success: true })
+      expect(existsSync(metadataDir)).toBe(false)
     })
   })
 })

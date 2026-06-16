@@ -12,6 +12,7 @@ const pages = [
   { key: 'gettingStarted', name: 'docs.getting-started' },
   { key: 'configuration', name: 'docs.configuration' },
   { key: 'features', name: 'docs.features' },
+  { key: 'hermesStudioManual', name: 'docs.hermes-studio-manual' },
   { key: 'platforms', name: 'docs.platforms' },
   { key: 'api', name: 'docs.api' },
 ]
@@ -39,7 +40,7 @@ function navigate(name: string) {
       <router-view />
       <DocContent v-if="route.meta.page" />
       <div v-else class="docs-placeholder">
-        <p>Select a section from the sidebar to get started.</p>
+        <p>{{ t('docs.placeholder') }}</p>
       </div>
     </div>
   </div>

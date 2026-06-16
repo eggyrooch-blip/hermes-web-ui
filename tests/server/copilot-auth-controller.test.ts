@@ -60,12 +60,12 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockReadFile.mockResolvedValue('')
   mockReadConfigYaml.mockResolvedValue({})
-  mockWriteConfigYaml.mockResolvedValue(undefined)
   mockUpdateConfigYaml.mockImplementation(async (updater: any) => {
-    const current = await mockReadConfigYaml()
-    const updated = await updater({ ...current })
-    if (updated && typeof updated === 'object' && 'data' in updated) {
-      if (updated.write !== false) await mockWriteConfigYaml(updated.data)
+    const cfg = await mockReadConfigYaml()
+    const updated = await updater(cfg)
+    if (updated && typeof updated === 'object' && Object.hasOwn(updated, 'data')) {
+      if (updated.write === false) return updated.result
+      await mockWriteConfigYaml(updated.data)
       return updated.result
     }
     await mockWriteConfigYaml(updated)

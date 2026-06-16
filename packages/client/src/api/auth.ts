@@ -2,59 +2,7 @@ import { request } from './client'
 
 export interface AuthStatus {
   hasPasswordLogin: boolean
-  username: string | null
-  authMode?: string
-  plane?: string
-}
-
-export type CurrentUserRole = 'user' | 'admin' | 'super_admin'
-export type CurrentUserStatus = 'active' | 'disabled' | string
-
-export interface CurrentUser {
-  id?: string | number
-  username?: string
-  openid: string
-  profile: string
-  role: CurrentUserRole
-  status?: CurrentUserStatus
-  created_at?: number
-  updated_at?: number
-  last_login_at?: number | null
-  requiresCredentialChange?: boolean
-  name?: string
-  avatarUrl?: string
-  profiles?: string[]
-}
-
-interface CurrentUserEnvelope {
-  user: CurrentUser
-}
-
-function isCurrentUserEnvelope(value: CurrentUser | CurrentUserEnvelope): value is CurrentUserEnvelope {
-  return typeof value === 'object' && value !== null && 'user' in value
-}
-
-export interface FeishuUatStatus {
-  status: 'missing' | 'valid' | 'expired' | 'scope_missing' | string
-  profile_name?: string
-  subject_id?: string
-  missing_scopes?: string[]
-  scopes?: string[]
-  expires_at?: number | null
-  lark_cli?: {
-    available?: boolean
-    default_identity?: 'user' | 'bot' | string
-  }
-}
-
-export interface FeishuUatAuthSession {
-  status: 'pending' | 'success' | 'error' | 'expired' | string
-  session_id: string
-  verification_uri?: string
-  user_code?: string
-  expires_at?: number
-  interval?: number
-  error?: string
+  hasUsers?: boolean
 }
 
 export async function fetchAuthStatus(): Promise<AuthStatus> {
@@ -79,25 +27,54 @@ export async function loginWithPassword(username: string, password: string): Pro
   return data.token
 }
 
+export interface CurrentUser {
+  id: number
+  username: string
+  role: UserRole
+  status: UserStatus
+  created_at: number
+  updated_at: number
+  last_login_at: number | null
+  avatar?: string
+  requiresCredentialChange?: boolean
+}
+
+export interface UserAvatar {
+  type: 'image' | 'default'
+  dataUrl?: string
+  seed?: string
+}
+
 export async function fetchCurrentUser(): Promise<CurrentUser> {
-  const res = await request<CurrentUser | CurrentUserEnvelope>('/api/auth/me')
-  return isCurrentUserEnvelope(res) ? res.user : res
+  const res = await request<{ user: CurrentUser }>('/api/auth/me')
+  return res.user
 }
 
-export async function fetchFeishuUatStatus(requiredScopes?: string): Promise<FeishuUatStatus> {
-  const suffix = requiredScopes ? `?required_scopes=${encodeURIComponent(requiredScopes)}` : ''
-  return request(`/api/auth/feishu/uat/status${suffix}`)
+export async function fetchMyAvatar(): Promise<UserAvatar | null> {
+  const res = await request<{ avatar: string }>('/api/auth/avatar')
+  if (!res.avatar) return null
+  try {
+    const parsed = JSON.parse(res.avatar) as UserAvatar
+    if (parsed && (parsed.type === 'image' || parsed.type === 'default')) return parsed
+    return null
+  } catch {
+    return null
+  }
 }
 
-export async function startFeishuUatAuth(scope?: string): Promise<FeishuUatAuthSession> {
-  return request('/api/auth/feishu/uat/start', {
-    method: 'POST',
-    body: JSON.stringify(scope ? { scope } : {}),
+export async function updateMyAvatar(avatar: UserAvatar): Promise<void> {
+  const payload = JSON.stringify(avatar)
+  await request('/api/auth/avatar', {
+    method: 'PUT',
+    body: JSON.stringify({ avatar: payload }),
   })
 }
 
-export async function pollFeishuUatAuth(sessionId: string): Promise<FeishuUatAuthSession> {
-  return request(`/api/auth/feishu/uat/sessions/${encodeURIComponent(sessionId)}`)
+export async function resetMyAvatar(): Promise<void> {
+  await request('/api/auth/avatar', {
+    method: 'PUT',
+    body: JSON.stringify({ avatar: { type: 'default' } }),
+  })
 }
 
 export async function setupPassword(username: string, password: string): Promise<void> {
@@ -127,9 +104,73 @@ export async function removePassword(): Promise<void> {
   })
 }
 
+export type UserRole = 'super_admin' | 'admin'
+export type UserStatus = 'active' | 'disabled'
+
+export interface ManagedUser {
+  id: number
+  username: string
+  role: UserRole
+  status: UserStatus
+  profiles: string[]
+  default_profile: string | null
+  created_at: number
+  updated_at: number
+  last_login_at: number | null
+}
+
+export interface ManagedUsersResponse {
+  users: ManagedUser[]
+  profiles: string[]
+}
+
+export async function fetchManagedUsers(): Promise<ManagedUsersResponse> {
+  return request<ManagedUsersResponse>('/api/auth/users')
+}
+
+export async function createManagedUser(input: {
+  username: string
+  password: string
+  role: UserRole
+  status: UserStatus
+  profiles: string[]
+  defaultProfile?: string | null
+}): Promise<ManagedUsersResponse> {
+  const res = await request<{ users: ManagedUser[] }>('/api/auth/users', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+  const current = await fetchManagedUsers()
+  return { ...current, users: res.users }
+}
+
+export async function updateManagedUser(id: number, input: {
+  username?: string
+  password?: string
+  role?: UserRole
+  status?: UserStatus
+  profiles?: string[]
+  defaultProfile?: string | null
+}): Promise<ManagedUsersResponse> {
+  const res = await request<{ users: ManagedUser[] }>(`/api/auth/users/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  })
+  const current = await fetchManagedUsers()
+  return { ...current, users: res.users }
+}
+
+export async function deleteManagedUser(id: number): Promise<ManagedUsersResponse> {
+  const res = await request<{ users: ManagedUser[] }>(`/api/auth/users/${id}`, {
+    method: 'DELETE',
+  })
+  const current = await fetchManagedUsers()
+  return { ...current, users: res.users }
+}
+
 export interface LockedIp {
   ip: string
-  type: 'password' | 'token'
+  type: 'password' | 'token' | 'pairing'
   failures: number
   lockedUntil: number
 }

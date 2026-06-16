@@ -74,10 +74,9 @@ vi.mock('socket.io-client', () => {
   }
 })
 
-vi.mock('@/api/client', () => ({
+vi.mock('../../packages/client/src/api/client', () => ({
   getApiKey: () => 'test-token',
   getBaseUrlValue: () => '',
-  request: vi.fn(),
 }))
 
 describe('chat-run socket reconnect handling', () => {
@@ -87,14 +86,14 @@ describe('chat-run socket reconnect handling', () => {
   })
 
   it('keeps transient mobile disconnects alive and resumes after reconnect', async () => {
-    const { startRunViaSocket } = await import('@/api/hermes/chat')
+    const { startRunViaSocket } = await import('../../packages/client/src/api/hermes/chat')
     const onEvent = vi.fn()
     const onDone = vi.fn()
     const onError = vi.fn()
     const onReconnectResume = vi.fn()
 
     startRunViaSocket(
-      { session_id: 'session-1', input: 'hello', profile: 'default' },
+      { session_id: 'session-1', input: 'hello', profile: 'default', source: 'cli' },
       onEvent,
       onDone,
       onError,
@@ -123,12 +122,35 @@ describe('chat-run socket reconnect handling', () => {
     expect(onDone).not.toHaveBeenCalled()
   })
 
+  it('keeps concurrent resume callbacks scoped to their requested session', async () => {
+    const { resumeSession } = await import('../../packages/client/src/api/hermes/chat')
+    const onSessionA = vi.fn()
+    const onSessionB = vi.fn()
+
+    resumeSession('session-a', onSessionA, 'default')
+    resumeSession('session-b', onSessionB, 'default')
+
+    const socket = socketState.sockets[0]
+    const resumedB = { session_id: 'session-b', messages: [], isWorking: false, events: [] }
+    socket.__trigger('resumed', resumedB)
+
+    expect(onSessionA).not.toHaveBeenCalled()
+    expect(onSessionB).toHaveBeenCalledWith(resumedB)
+    expect(socket.__listenerCount('resumed')).toBe(1)
+
+    const resumedA = { session_id: 'session-a', messages: [], isWorking: false, events: [] }
+    socket.__trigger('resumed', resumedA)
+
+    expect(onSessionA).toHaveBeenCalledWith(resumedA)
+    expect(socket.__listenerCount('resumed')).toBe(0)
+  })
+
   it('keeps fatal disconnects fatal and removes per-run listeners', async () => {
-    const { startRunViaSocket } = await import('@/api/hermes/chat')
+    const { startRunViaSocket } = await import('../../packages/client/src/api/hermes/chat')
     const onError = vi.fn()
 
     startRunViaSocket(
-      { session_id: 'session-1', input: 'hello', profile: 'default' },
+      { session_id: 'session-1', input: 'hello', profile: 'default', source: 'cli' },
       vi.fn(),
       vi.fn(),
       onError,
@@ -145,8 +167,8 @@ describe('chat-run socket reconnect handling', () => {
   })
 
   it('does not attach extra reconnect listeners when the session already has handlers', async () => {
-    const { startRunViaSocket } = await import('@/api/hermes/chat')
-    const body = { session_id: 'session-1', input: 'hello', profile: 'default' }
+    const { startRunViaSocket } = await import('../../packages/client/src/api/hermes/chat')
+    const body = { session_id: 'session-1', input: 'hello', profile: 'default', source: 'cli' as const }
 
     startRunViaSocket(body, vi.fn(), vi.fn(), vi.fn())
     const socket = socketState.sockets[0]
@@ -157,5 +179,37 @@ describe('chat-run socket reconnect handling', () => {
     expect(socket.__listenerCount('connect')).toBe(1)
     expect(socket.__listenerCount('disconnect')).toBe(1)
     expect(socket.emit).toHaveBeenCalledWith('run', body)
+  })
+
+  it('fans session.command events to run-local and global handlers', async () => {
+    const { onSessionCommand, startRunViaSocket } = await import('../../packages/client/src/api/hermes/chat')
+    const onEvent = vi.fn()
+    const onGlobalCommand = vi.fn()
+    const offGlobalCommand = onSessionCommand(onGlobalCommand)
+
+    startRunViaSocket(
+      { session_id: 'session-1', input: '/goal status', profile: 'default', source: 'cli' },
+      onEvent,
+      vi.fn(),
+      vi.fn(),
+    )
+
+    const socket = socketState.sockets[0]
+    const event = {
+      event: 'session.command',
+      session_id: 'session-1',
+      command: 'goal',
+      action: 'status',
+      message: 'Goal (active, 0/20 turns): write site',
+    }
+
+    socket.__trigger('session.command', event)
+
+    expect(onEvent).toHaveBeenCalledWith(event)
+    expect(onGlobalCommand).toHaveBeenCalledWith(event)
+
+    offGlobalCommand()
+    socket.__trigger('session.command', { ...event, message: 'next status' })
+    expect(onGlobalCommand).toHaveBeenCalledTimes(1)
   })
 })

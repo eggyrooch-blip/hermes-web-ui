@@ -8,6 +8,11 @@ export interface StoredMessage {
     senderName: string
     content: string
     timestamp: number
+    role?: string
+    tool_call_id?: string | null
+    tool_calls?: Array<{ id?: string; type?: string; function?: { name?: string; arguments?: string } }> | null
+    tool_name?: string | null
+    finish_reason?: string | null
 }
 
 // ─── Compression Config ────────────────────────────────────
@@ -28,7 +33,7 @@ export interface CompressionConfig {
 export const DEFAULT_COMPRESSION_CONFIG: CompressionConfig = {
     triggerTokens: 100_000,
     maxHistoryTokens: 32_000,
-    tailMessageCount: 20,
+    tailMessageCount: 10,
     charsPerToken: 6,
     summarizationTimeoutMs: 30_000,
 }
@@ -44,6 +49,8 @@ export interface CompressedContext {
         hadSnapshot: boolean
         compressed: boolean
         summaryTokenEstimate: number
+        contextTokenEstimate?: number
+        messageTokenEstimate?: number
     }
 }
 
@@ -89,6 +96,13 @@ export interface GatewayCaller {
 
 export type SessionCleaner = (sessionId: string) => void
 
+export type ContextProgress = (event: {
+    status: 'compressing'
+    path: 'snapshot' | 'full'
+    messageCount: number
+    tokenCount: number
+}) => void
+
 // ─── Build Context Input ───────────────────────────────────
 
 export interface MemberInfo {
@@ -101,7 +115,6 @@ export interface BuildContextInput {
     roomId: string
     agentId: string
     agentName: string
-    agentProfile?: string
     agentDescription: string
     agentSocketId: string
     roomName: string
@@ -112,4 +125,9 @@ export interface BuildContextInput {
     currentMessage: StoredMessage
     compression?: Partial<CompressionConfig>
     profile?: string
+    contextTokenEstimator?: (
+        history: Array<{ role: 'user' | 'assistant'; content: string }>,
+        instructions: string,
+    ) => Promise<number | null | undefined>
+    onProgress?: ContextProgress
 }

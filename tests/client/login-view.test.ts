@@ -1,19 +1,12 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { createPinia, setActivePinia } from 'pinia'
 
 const mockReplace = vi.hoisted(() => vi.fn())
 const mockFetchAuthStatus = vi.hoisted(() => vi.fn())
-const mockFetchCurrentUser = vi.hoisted(() => vi.fn())
-const mockFetchFeishuUatStatus = vi.hoisted(() => vi.fn())
-const mockStartFeishuUatAuth = vi.hoisted(() => vi.fn())
-const mockPollFeishuUatAuth = vi.hoisted(() => vi.fn())
 const mockLoginWithPassword = vi.hoisted(() => vi.fn())
 const mockSetApiKey = vi.hoisted(() => vi.fn())
 const mockHasApiKey = vi.hoisted(() => vi.fn())
-const mockSetRuntimeMode = vi.hoisted(() => vi.fn())
-const mockLocationAssign = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-router', () => ({
   useRouter: () => ({
@@ -30,194 +23,75 @@ vi.mock('vue-i18n', () => ({
 vi.mock('@/api/client', () => ({
   setApiKey: mockSetApiKey,
   hasApiKey: mockHasApiKey,
-  setRuntimeMode: mockSetRuntimeMode,
 }))
 
 vi.mock('@/api/auth', () => ({
   fetchAuthStatus: mockFetchAuthStatus,
-  fetchCurrentUser: mockFetchCurrentUser,
-  fetchFeishuUatStatus: mockFetchFeishuUatStatus,
-  startFeishuUatAuth: mockStartFeishuUatAuth,
-  pollFeishuUatAuth: mockPollFeishuUatAuth,
   loginWithPassword: mockLoginWithPassword,
 }))
 
 import LoginView from '@/views/LoginView.vue'
 
-const mockFetch = vi.fn()
-vi.stubGlobal('fetch', mockFetch)
-
-describe('LoginView token login', () => {
+describe('LoginView password login', () => {
   beforeEach(() => {
-    setActivePinia(createPinia())
     delete (window as any).__LOGIN_TOKEN__
-    Object.defineProperty(window, 'location', {
-      value: { assign: mockLocationAssign },
-      writable: true,
-    })
     vi.clearAllMocks()
     mockHasApiKey.mockReturnValue(false)
-    mockFetchAuthStatus.mockResolvedValue({ hasPasswordLogin: false })
-    mockFetchCurrentUser.mockResolvedValue({ openid: 'ou_test', profile: 'researcher', role: 'user' })
-    mockFetchFeishuUatStatus.mockResolvedValue({ status: 'valid' })
-    mockStartFeishuUatAuth.mockResolvedValue({
-      status: 'pending',
-      session_id: 'sess-1',
-      verification_uri: 'https://accounts.feishu.cn/device',
-      user_code: 'ABCD-1234',
-      interval: 10,
-    })
-    mockPollFeishuUatAuth.mockResolvedValue({ status: 'pending' })
-    mockFetch.mockResolvedValue({ ok: true, status: 200 })
+    mockFetchAuthStatus.mockResolvedValue({ hasPasswordLogin: true, username: 'admin' })
   })
 
-  it('validates token login against the Hermes sessions endpoint', async () => {
+  it('logs in with username and password', async () => {
+    mockLoginWithPassword.mockResolvedValue('jwt-token')
     const wrapper = mount(LoginView)
-    await new Promise(resolve => setTimeout(resolve, 0))
-    await wrapper.vm.$nextTick()
 
-    await wrapper.find('input.login-input').setValue('secret-token')
+    const inputs = wrapper.findAll('input.login-input')
+    await inputs[0].setValue('admin')
+    await inputs[1].setValue('123456')
     await wrapper.find('form.login-form').trigger('submit')
 
-    expect(mockFetch).toHaveBeenCalledOnce()
-    expect(mockFetch).toHaveBeenCalledWith('/api/hermes/sessions', {
-      headers: { Authorization: 'Bearer secret-token' },
-    })
-    expect(mockSetApiKey).toHaveBeenCalledWith('secret-token')
+    expect(mockLoginWithPassword).toHaveBeenCalledWith('admin', '123456')
+    expect(mockSetApiKey).toHaveBeenCalledWith('jwt-token')
     expect(mockReplace).toHaveBeenCalledWith('/hermes/chat')
   })
 
-  it('keeps the existing invalid-token behavior on 401', async () => {
-    mockFetch.mockResolvedValue({ ok: false, status: 401 })
+  it('shows the default login hint', () => {
     const wrapper = mount(LoginView)
-    await new Promise(resolve => setTimeout(resolve, 0))
-    await wrapper.vm.$nextTick()
 
-    await wrapper.find('input.login-input').setValue('bad-token')
-    await wrapper.find('form.login-form').trigger('submit')
-
-    expect(mockFetch).toHaveBeenCalledWith('/api/hermes/sessions', {
-      headers: { Authorization: 'Bearer bad-token' },
-    })
-    expect(wrapper.find('.login-error').text()).toBe('login.invalidToken')
-    expect(mockSetApiKey).not.toHaveBeenCalled()
-    expect(mockReplace).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('login.defaultCredentialsHint')
   })
 
-  it('uses the Feishu OAuth entrypoint when configured for local OAuth', async () => {
-    mockFetchAuthStatus.mockResolvedValue({
-      hasPasswordLogin: false,
-      authMode: 'feishu-oauth-dev',
-      plane: 'chat',
-    })
-    mockFetchCurrentUser.mockRejectedValue(new Error('Unauthorized'))
-
+  it('shows an error when password login fails', async () => {
+    mockLoginWithPassword.mockRejectedValue(new Error('Invalid username or password'))
     const wrapper = mount(LoginView)
-    await new Promise(resolve => setTimeout(resolve, 0))
-    await wrapper.vm.$nextTick()
-
-    await wrapper.find('button.login-btn').trigger('click')
-
-    expect(mockLocationAssign).toHaveBeenCalledWith('/api/auth/feishu/login')
-    expect(mockSetApiKey).not.toHaveBeenCalled()
-  })
-
-  it('prevents duplicate Feishu OAuth redirects after the login button is clicked', async () => {
-    mockFetchAuthStatus.mockResolvedValue({
-      hasPasswordLogin: false,
-      authMode: 'feishu-oauth-dev',
-      plane: 'chat',
-    })
-    mockFetchCurrentUser.mockRejectedValue(new Error('Unauthorized'))
-
-    const wrapper = mount(LoginView)
-    await new Promise(resolve => setTimeout(resolve, 0))
-    await wrapper.vm.$nextTick()
-
-    const button = wrapper.find('button.login-btn')
-    await button.trigger('click')
-    await button.trigger('click')
-
-    expect(mockLocationAssign).toHaveBeenCalledOnce()
-    expect(mockLocationAssign).toHaveBeenCalledWith('/api/auth/feishu/login')
-  })
-
-  it('redirects to chat when Feishu OAuth current user is already valid', async () => {
-    mockFetchAuthStatus.mockResolvedValue({
-      hasPasswordLogin: false,
-      authMode: 'feishu-oauth-dev',
-      plane: 'chat',
-    })
-    mockFetch.mockResolvedValue({ ok: false, status: 502 })
-
-    mount(LoginView)
-    await new Promise(resolve => setTimeout(resolve, 0))
-
-    expect(mockFetch).not.toHaveBeenCalledWith('/api/hermes/sessions')
-    expect(mockFetchCurrentUser).toHaveBeenCalledOnce()
-    expect(mockFetchFeishuUatStatus).not.toHaveBeenCalled()
-    expect(window.localStorage.getItem('hermes_active_profile_name')).toBe('researcher')
-    expect(mockReplace).toHaveBeenCalledWith('/hermes/chat')
-  })
-
-  it('does not block WebUI login when an existing OAuth session lacks tool authorization', async () => {
-    mockFetchAuthStatus.mockResolvedValue({
-      hasPasswordLogin: false,
-      authMode: 'feishu-oauth-dev',
-      plane: 'chat',
-    })
-    mockFetchFeishuUatStatus.mockResolvedValue({ status: 'missing' })
-
-    const wrapper = mount(LoginView)
-    await new Promise(resolve => setTimeout(resolve, 0))
-    await new Promise(resolve => setTimeout(resolve, 0))
-    await wrapper.vm.$nextTick()
-
-    expect(mockFetchCurrentUser).toHaveBeenCalledOnce()
-    expect(mockFetchFeishuUatStatus).not.toHaveBeenCalled()
-    expect(mockStartFeishuUatAuth).not.toHaveBeenCalled()
-    expect(wrapper.text()).not.toContain('login.feishuUatTitle')
-    expect(mockReplace).toHaveBeenCalledWith('/hermes/chat')
-  })
-
-  it('shows a wake screen while validating an existing Feishu OAuth session', async () => {
-    mockFetchAuthStatus.mockResolvedValue({
-      hasPasswordLogin: false,
-      authMode: 'feishu-oauth-dev',
-      plane: 'chat',
-    })
-    mockFetchCurrentUser.mockReturnValue(new Promise(() => {}))
-
-    const wrapper = mount(LoginView)
-    await new Promise(resolve => setTimeout(resolve, 0))
-    await wrapper.vm.$nextTick()
-
-    expect(wrapper.text()).toContain('login.wakingTitle')
-    expect(wrapper.text()).toContain('login.wakingDescription')
-    expect(wrapper.find('form.login-form').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('login.feishuLogin')
-  })
-
-  it('shows recovery commands when password login is rate limited', async () => {
-    mockFetchAuthStatus.mockResolvedValue({ hasPasswordLogin: true })
-    const err: any = new Error('Too many attempts')
-    err.status = 429
-    mockLoginWithPassword.mockRejectedValue(err)
-
-    const wrapper = mount(LoginView)
-    await new Promise(resolve => setTimeout(resolve, 0))
-    await wrapper.vm.$nextTick()
 
     const inputs = wrapper.findAll('input.login-input')
     await inputs[0].setValue('admin')
     await inputs[1].setValue('bad-password')
     await wrapper.find('form.login-form').trigger('submit')
 
+    expect(wrapper.find('.login-error').text()).toBe('Invalid username or password')
+    expect(mockSetApiKey).not.toHaveBeenCalled()
+    expect(mockReplace).not.toHaveBeenCalled()
+  })
+
+  it('shows the reset command hint when the login IP is locked', async () => {
+    const err: any = new Error('Too many login attempts')
+    err.status = 429
+    mockLoginWithPassword.mockRejectedValue(err)
+    const wrapper = mount(LoginView)
+
+    const inputs = wrapper.findAll('input.login-input')
+    await inputs[0].setValue('admin')
+    await inputs[1].setValue('123456')
+    await wrapper.find('form.login-form').trigger('submit')
+
     expect(wrapper.find('.login-error').text()).toBe('login.tooManyAttempts')
-    const hint = wrapper.find('.login-lock-hint')
-    expect(hint.exists()).toBe(true)
-    expect(hint.text()).toContain('login.lockResetHint')
-    expect(hint.text()).toContain('hermes-web-ui clear-login-locks --restart')
-    expect(hint.text()).toContain('hermes-web-ui reset-default-login')
+    expect(wrapper.find('.login-lock-hint').text()).toContain('login.lockResetHint')
+    expect(wrapper.find('.login-lock-hint').text()).toContain('login.defaultLoginResetHint')
+    const commands = wrapper.findAll('.login-lock-hint code').map(command => command.text())
+    expect(commands).toEqual([
+      'hermes-web-ui clear-login-locks --restart',
+      'hermes-web-ui reset-default-login',
+    ])
   })
 })

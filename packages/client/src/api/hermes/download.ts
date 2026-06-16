@@ -1,22 +1,18 @@
-import { getApiKey, getBaseUrlValue } from '../client'
+import { getActiveProfileName, getApiKey, getBaseUrlValue } from '../client'
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
 
 /**
  * Construct a download URL with auth token as query parameter.
  * Token is passed via query param because <a> tags cannot set headers.
- *
- * DEPRECATED-FOR: v0.6.0 — token-in-query is a known leakage surface
- * (Referer headers, server access logs, browser history). This helper
- * stays for now to keep <img src> and <a href> downloads working. See
- * Plans/glimmering-drifting-eclipse.md Sprint 2 D1 for the cookie-based
- * replacement.
  */
 export function getDownloadUrl(filePath: string, fileName?: string): string {
-  // Remote http(s) media (e.g. Tencent VOD/CDN images returned by AIGC tools)
-  // is directly loadable by the browser. Wrapping it in the local download
-  // proxy makes the server treat the URL as a local file path → 404 → broken
-  // image. Return remote URLs untouched.
-  if (/^https?:\/\//i.test(filePath)) return filePath
-
   const base = getBaseUrlValue()
 
   // Guard: if filePath is already a full download URL, extract the real path
@@ -33,12 +29,14 @@ export function getDownloadUrl(filePath: string, fileName?: string): string {
 
   // Decode the path first in case it's already encoded (e.g., from AI responses)
   // URLSearchParams will encode it again, so we need to start with decoded text
-  const decodedPath = decodeURIComponent(filePath)
+  const decodedPath = safeDecodeURIComponent(filePath)
   const params = new URLSearchParams({ path: decodedPath })
   if (fileName) {
-    const decodedName = decodeURIComponent(fileName)
+    const decodedName = safeDecodeURIComponent(fileName)
     params.set('name', decodedName)
   }
+  const profileName = getActiveProfileName()
+  if (profileName) params.set('profile', profileName)
   const token = getApiKey()
   if (token) params.set('token', token)
   return `${base}/api/hermes/download?${params.toString()}`
@@ -66,6 +64,10 @@ export async function downloadFile(filePath: string, fileName?: string): Promise
   URL.revokeObjectURL(blobUrl)
 }
 
+/**
+ * Get preview file content.
+ * Throws with error message on failure.
+ */
 export async function fetchFileText(filePath: string, fileName?: string): Promise<string> {
   const url = getDownloadUrl(filePath, fileName)
   const res = await fetch(url)

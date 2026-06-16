@@ -10,6 +10,8 @@ import {
   scheduleToEditableInput,
 } from '@/api/hermes/jobs'
 import type { CreateJobRequest, Job } from '@/api/hermes/jobs'
+import { fetchSkills } from '@/api/hermes/skills'
+import type { SkillInfo } from '@/api/hermes/skills'
 import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
@@ -29,12 +31,15 @@ const message = useMessage()
 
 const showModal = ref(true)
 const loading = ref(false)
+const skillsLoading = ref(false)
+const skillOptions = ref<Array<{ label: string; value: string }>>([])
 
 const formData = ref({
   name: '',
   schedule: '',
   prompt: '',
-  deliver: 'feishu',
+  deliver: 'origin',
+  skills: [] as string[],
   repeat_times: null as number | null,
 })
 
@@ -51,8 +56,6 @@ const schedulePresets = computed(() => [
   { label: t('jobs.presetEveryMonday'), value: '0 9 * * 1' },
   { label: t('jobs.presetEveryMonth'), value: '0 9 1 * *' },
 ])
-
-const originalJob = ref<Job | null>(null)
 
 function hasText(value: unknown): boolean {
   return typeof value === 'string' && value.trim().length > 0
@@ -73,6 +76,8 @@ function isDeliverTargetConfigured(key: string): boolean {
       return hasText(config.token) && hasText(config.extra?.account_id)
     case 'wecom':
       return hasText(config.extra?.bot_id) && hasText(config.extra?.secret)
+    case 'feishu':
+      return hasText(config.extra?.app_id) && hasText(config.extra?.app_secret)
     case 'dingtalk':
       return (hasText(config.extra?.client_id) && hasText(config.extra?.client_secret))
         || (hasText(config.extra?.app_key) && hasText(config.extra?.client_secret))
@@ -85,12 +90,9 @@ function isDeliverTargetConfigured(key: string): boolean {
 
 const targetOptions = computed(() => {
   const options: Array<{ label: string; value: string; disabled?: boolean }> = [
-    { label: t('jobs.feishu'), value: 'feishu' },
+    { label: t('jobs.origin'), value: 'origin' },
     { label: t('jobs.local'), value: 'local' },
   ]
-  if (originalJob.value?.origin?.platform) {
-    options.splice(1, 0, { label: t('jobs.origin'), value: 'origin' })
-  }
   const channels = [
     { key: 'telegram', label: 'Telegram' },
     { key: 'discord', label: 'Discord' },
@@ -99,23 +101,50 @@ const targetOptions = computed(() => {
     { key: 'matrix', label: 'Matrix' },
     { key: 'weixin', label: 'WeChat' },
     { key: 'wecom', label: 'WeCom' },
+    { key: 'feishu', label: 'Feishu' },
     { key: 'dingtalk', label: 'DingTalk' },
     { key: 'qqbot', label: 'QQBot' },
   ]
-  for (const channel of channels) {
+  for (const ch of channels) {
     options.push({
-      label: channel.label,
-      value: channel.key,
-      disabled: !isDeliverTargetConfigured(channel.key),
+      label: ch.label,
+      value: ch.key,
+      disabled: !isDeliverTargetConfigured(ch.key),
     })
   }
   return options
 })
 
+const originalJob = ref<Job | null>(null)
+
+function buildSkillOptions(skills: SkillInfo[]): Array<{ label: string; value: string }> {
+  const byName = new Map<string, SkillInfo>()
+  for (const skill of skills) {
+    if (skill.enabled === false) continue
+    if (!byName.has(skill.name)) byName.set(skill.name, skill)
+  }
+  return [...byName.values()]
+    .map(skill => ({ label: skill.name, value: skill.name }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+}
+
+async function loadSkillOptions() {
+  skillsLoading.value = true
+  try {
+    const data = await fetchSkills()
+    skillOptions.value = buildSkillOptions(data.categories.flatMap(category => category.skills || []))
+  } catch {
+    skillOptions.value = []
+  } finally {
+    skillsLoading.value = false
+  }
+}
+
 onMounted(async () => {
   if (Object.keys(settingsStore.platforms || {}).length === 0) {
     await settingsStore.fetchSettings()
   }
+  await loadSkillOptions()
 
   if (props.jobId) {
     try {
@@ -125,7 +154,8 @@ onMounted(async () => {
         name: job.name,
         schedule: scheduleToEditableInput(job.schedule, job.schedule_display || ''),
         prompt: job.prompt,
-        deliver: job.deliver || 'feishu',
+        deliver: job.deliver || 'origin',
+        skills: job.skills || (job.skill ? [job.skill] : []),
         repeat_times: jobRepeatToEditValue(job.repeat),
       }
     } catch (e: any) {
@@ -165,6 +195,7 @@ async function handleSave() {
         schedule: formData.value.schedule,
         prompt: formData.value.prompt,
         deliver: formData.value.deliver,
+        skills: formData.value.skills,
         repeat: formData.value.repeat_times ?? undefined,
       }
       await jobsStore.createJob(payload)
@@ -227,6 +258,18 @@ function handleClose() {
           :rows="4"
           maxlength="5000"
           show-count
+        />
+      </NFormItem>
+
+      <NFormItem :label="t('jobs.skills')">
+        <NSelect
+          v-model:value="formData.skills"
+          multiple
+          filterable
+          clearable
+          :loading="skillsLoading"
+          :options="skillOptions"
+          :placeholder="t('jobs.skillsPlaceholder')"
         />
       </NFormItem>
 

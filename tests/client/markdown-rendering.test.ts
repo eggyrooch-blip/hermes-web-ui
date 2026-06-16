@@ -10,6 +10,12 @@ const mermaidMock = vi.hoisted(() => ({
   })),
 }))
 
+const downloadApiMock = vi.hoisted(() => ({
+  downloadFile: vi.fn(() => Promise.resolve()),
+  fetchFileText: vi.fn(() => Promise.resolve('preview content')),
+  getDownloadUrl: vi.fn((path: string) => `http://test.local/api/hermes/download?path=${encodeURIComponent(path)}`),
+}))
+
 vi.mock('mermaid', () => ({
   default: mermaidMock,
 }))
@@ -27,20 +33,22 @@ vi.mock('vue-i18n', () => ({
   }),
 }))
 
-const downloadApiMock = vi.hoisted(() => ({
-  downloadFile: vi.fn(),
-  fetchFileText: vi.fn(),
-}))
-
 vi.mock('naive-ui', () => ({
   NDrawer: {
-    props: ['show', 'width', 'placement', 'showMask', 'trapFocus'],
-    emits: ['update:show'],
-    template: '<aside v-if="show" class="n-drawer"><slot name="header" /><slot /></aside>',
+    props: ['show', 'width'],
+    template: '<div v-if="show" class="n-drawer-stub" :data-width="width"><slot /></div>',
+  },
+  NDrawerContent: {
+    props: {
+      title: { type: String, default: '' },
+      closable: { type: Boolean, default: false },
+      bodyContentStyle: { type: [Object, String], default: undefined },
+    },
+    template: '<section class="n-drawer-content-stub" :data-body-padding="bodyContentStyle && bodyContentStyle.padding"><header class="n-drawer-header-stub">{{ title }}<button v-if="closable" class="n-drawer-close-stub" @click="$emit(\'close\')">x</button></header><slot /></section>',
   },
   NSpin: {
     props: ['show'],
-    template: '<div class="n-spin"><slot /></div>',
+    template: '<div class="n-spin-stub"><slot /></div>',
   },
   useMessage: () => ({
     error: vi.fn(),
@@ -53,7 +61,7 @@ vi.mock('naive-ui', () => ({
 vi.mock('@/api/hermes/download', () => ({
   downloadFile: downloadApiMock.downloadFile,
   fetchFileText: downloadApiMock.fetchFileText,
-  getDownloadUrl: (path: string) => `http://test.local/api/hermes/download?path=${encodeURIComponent(path)}`,
+  getDownloadUrl: downloadApiMock.getDownloadUrl,
 }))
 
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
@@ -66,12 +74,15 @@ describe('MarkdownRenderer', () => {
   beforeEach(() => {
     mermaidMock.initialize.mockClear()
     mermaidMock.render.mockClear()
+    downloadApiMock.downloadFile.mockClear()
+    downloadApiMock.fetchFileText.mockClear()
+    downloadApiMock.getDownloadUrl.mockClear()
     mermaidMock.render.mockImplementation(async (id: string, source: string) => ({
       svg: `<svg id="${id}" data-testid="mermaid-svg"><text>${source}</text></svg>`,
     }))
-    downloadApiMock.downloadFile.mockReset()
-    downloadApiMock.fetchFileText.mockReset()
     downloadApiMock.downloadFile.mockResolvedValue(undefined)
+    downloadApiMock.fetchFileText.mockResolvedValue('preview content')
+    downloadApiMock.getDownloadUrl.mockImplementation((path: string) => `http://test.local/api/hermes/download?path=${encodeURIComponent(path)}`)
 
     Object.defineProperty(window, 'isSecureContext', {
       configurable: true,
@@ -140,63 +151,6 @@ describe('MarkdownRenderer', () => {
     expect(wrapper.find('.code-lang').text()).toBe('text')
     expect(wrapper.find('code.hljs').findAll('span')).toHaveLength(0)
     expect(wrapper.find('code.hljs').text()).toContain('INFO Starting server')
-  })
-
-  it('rewrites relative workspace image paths to download URLs', () => {
-    const wrapper = mount(MarkdownRenderer, {
-      props: {
-        content: '![Cherry tree](fractal_cherry_blossom.jpg)',
-      },
-    })
-
-    const src = wrapper.find('img').attributes('src')
-    expect(src).toContain('/api/hermes/download?')
-    expect(decodeURIComponent(src)).toContain('path=fractal_cherry_blossom.jpg')
-  })
-
-  it('renders local HTML artifacts emitted as image markdown as downloadable file cards', () => {
-    const wrapper = mount(MarkdownRenderer, {
-      props: {
-        content: '![Cherry animation](sakura_fractal.html)',
-      },
-    })
-
-    expect(wrapper.find('img').exists()).toBe(false)
-    const card = wrapper.find('.markdown-file-card')
-    expect(card.exists()).toBe(true)
-    expect(card.attributes('data-path')).toBe('sakura_fractal.html')
-    expect(card.text()).toContain('Cherry animation')
-  })
-
-  it('previews supported text file cards instead of immediately downloading them', async () => {
-    downloadApiMock.fetchFileText.mockResolvedValue('# Report\n\nhello')
-    const wrapper = mount(MarkdownRenderer, {
-      props: {
-        content: '![Report](report.md)',
-      },
-    })
-
-    await wrapper.find('.markdown-file-card').trigger('click')
-    await nextTick()
-    await Promise.resolve()
-    await nextTick()
-
-    expect(downloadApiMock.fetchFileText).toHaveBeenCalledWith('report.md', 'Report')
-    expect(downloadApiMock.downloadFile).not.toHaveBeenCalled()
-    expect(wrapper.find('.text-preview-body').text()).toContain('# Report')
-  })
-
-  it('still downloads supported text file cards when the download icon is clicked', async () => {
-    const wrapper = mount(MarkdownRenderer, {
-      props: {
-        content: '![Report](report.md)',
-      },
-    })
-
-    await wrapper.find('.att-download-icon').trigger('click')
-
-    expect(downloadApiMock.downloadFile).toHaveBeenCalledWith('report.md', 'Report')
-    expect(downloadApiMock.fetchFileText).not.toHaveBeenCalled()
   })
 
   it('renders outer markdown draft fences as markdown while preserving nested fenced examples', () => {
@@ -313,6 +267,24 @@ describe('MarkdownRenderer', () => {
     expect(wrapper.find('.markdown-video-footer .att-name').text()).toBe('录屏2026-05-08 15.19.46.mov')
   })
 
+  it('renders local mp3 links as inline audio players', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '[song.mp3](/tmp/song.mp3)',
+      },
+    })
+
+    const audio = wrapper.find('audio.markdown-audio')
+    expect(audio.exists()).toBe(true)
+    expect(audio.attributes('controls')).toBeDefined()
+    expect(audio.attributes('preload')).toBe('metadata')
+    expect(audio.attributes('src')).toContain('/api/hermes/download?path=')
+    const src = new URL(audio.attributes('src'))
+    expect(decodeURIComponent(src.searchParams.get('path') || '')).toBe('/tmp/song.mp3')
+    expect(wrapper.find('.markdown-audio-footer .att-name').text()).toBe('song.mp3')
+    expect(wrapper.find('.markdown-file-card').exists()).toBe(false)
+  })
+
   it('renders MSYS-style Windows image paths through the download endpoint', () => {
     const wrapper = mount(MarkdownRenderer, {
       props: {
@@ -328,45 +300,67 @@ describe('MarkdownRenderer', () => {
     expect(img.attributes('alt')).toBe('桌面截图')
   })
 
-  it('renders block LaTeX math instead of showing raw dollar delimiters', () => {
+  it('downloads local text files when the file card download icon is clicked', async () => {
     const wrapper = mount(MarkdownRenderer, {
       props: {
-        content: [
-          '### Rubric 评分公式',
-          '',
-          '$$S(x, y) = \\frac{\\sum_{k=1}^{K} w_{x,k} \\cdot Judge(r_{x,k}, y)}{\\sum_{k: w_{x,k}>0} w_{x,k}}$$',
-        ].join('\n'),
+        content: '[notes.txt](/tmp/notes.txt)',
       },
     })
 
-    expect(wrapper.find('.katex-display').exists()).toBe(true)
-    expect(wrapper.find('.markdown-body').text()).not.toContain('$$')
-    expect(wrapper.find('.markdown-body').text()).toContain('S')
-    expect(wrapper.find('.markdown-body').text()).toContain('Judge')
+    expect(wrapper.find('.markdown-file-card').exists()).toBe(true)
+    expect(wrapper.find('.att-download-btn .att-download-icon').exists()).toBe(true)
+
+    await wrapper.find('.att-download-btn').trigger('click')
+    await Promise.resolve()
+
+    expect(downloadApiMock.downloadFile).toHaveBeenCalledTimes(1)
+    expect(downloadApiMock.downloadFile).toHaveBeenCalledWith('/tmp/notes.txt', 'notes.txt')
+    expect(downloadApiMock.fetchFileText).not.toHaveBeenCalled()
+    expect(wrapper.find('.n-drawer-stub').exists()).toBe(false)
   })
 
-  it('renders inline LaTeX math inside list items', () => {
+  it('opens text previews in a responsive drawer with a close control', async () => {
     const wrapper = mount(MarkdownRenderer, {
       props: {
-        content: '- 每个 rubric item $r_{x,k}$ 相当于一个单元测试\n- 权重 \\(w_{x,k}\\) 可正可负',
+        content: '[notes.txt](/tmp/notes.txt)',
       },
     })
 
-    expect(wrapper.findAll('.katex').length).toBeGreaterThanOrEqual(2)
-    expect(wrapper.find('.markdown-body').text()).not.toContain('$r_{x,k}$')
-    expect(wrapper.find('.markdown-body').text()).not.toContain('\\(w_{x,k}\\)')
+    await wrapper.find('.markdown-file-card').trigger('click')
+    await Promise.resolve()
+    await nextTick()
+
+    const drawer = wrapper.find('.n-drawer-stub')
+    expect(drawer.exists()).toBe(true)
+    expect(drawer.attributes('data-width')).toBe('min(800px, 100vw)')
+    expect(drawer.find('.n-drawer-content-stub').attributes('data-body-padding')).toBe('0')
+    expect(drawer.text()).toContain('download.contentDisplay')
+    expect(downloadApiMock.fetchFileText).toHaveBeenCalledWith('/tmp/notes.txt', 'notes.txt')
+
+    await drawer.find('.n-drawer-close-stub').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('.n-drawer-stub').exists()).toBe(false)
   })
 
-  it('does not render dollar-delimited text inside code fences as math', () => {
+  it('renders markdown file previews as markdown content', async () => {
+    downloadApiMock.fetchFileText.mockResolvedValue('# Preview Title\n\n**bold text**')
     const wrapper = mount(MarkdownRenderer, {
       props: {
-        content: '```ts\nconst text = "Price is $5 and formula text is $r_{x,k}$."\n```',
+        content: '[notes.md](/tmp/notes.md)',
       },
     })
 
-    expect(wrapper.find('.hljs-code-block').exists()).toBe(true)
-    expect(wrapper.find('.katex').exists()).toBe(false)
-    expect(wrapper.find('code.hljs').text()).toContain('$r_{x,k}$')
+    await wrapper.find('.markdown-file-card').trigger('click')
+    await Promise.resolve()
+    await nextTick()
+
+    const drawer = wrapper.find('.n-drawer-stub')
+    expect(drawer.exists()).toBe(true)
+    expect(drawer.find('.text-preview-markdown').exists()).toBe(true)
+    expect(drawer.find('.text-preview-body').exists()).toBe(false)
+    expect(drawer.find('.text-preview-markdown h1').text()).toBe('Preview Title')
+    expect(drawer.find('.text-preview-markdown strong').text()).toBe('bold text')
   })
 
   it('keeps tilde-fenced markdown examples with nested tilde fences intact', () => {
@@ -606,6 +600,92 @@ describe('MarkdownRenderer', () => {
 
     expect(wrapper.find('[data-testid="stale-mermaid-svg"]').exists()).toBe(false)
     expect(wrapper.find('.markdown-body').text()).toContain('No diagram now.')
+  })
+
+  it('renders inline latex math with katex', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'Pythagoras: $x^2 + y^2 = z^2$.',
+      },
+    })
+
+    const body = wrapper.find('.markdown-body')
+    expect(body.find('.katex').exists()).toBe(true)
+    expect(body.html()).toContain('x')
+    expect(body.html()).toContain('z')
+    expect(body.text()).not.toContain('$x^2 + y^2 = z^2$')
+  })
+
+  it('renders display latex math with katex', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '$$\n\\int_0^1 x^2 dx = \\frac{1}{3}\n$$',
+      },
+    })
+
+    const body = wrapper.find('.markdown-body')
+    expect(body.find('.katex-display').exists()).toBe(true)
+    expect(body.find('.katex').exists()).toBe(true)
+    expect(body.text()).not.toContain('$$')
+  })
+
+  it('renders explicit latex fenced blocks with katex', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '```latex\n\\[\\text{Итог} = \\operatorname{Округление}\\!\\left(0.5\\,O_1 + 0.5\\,O_2\\right)\\]\n```',
+      },
+    })
+
+    const body = wrapper.find('.markdown-body')
+    expect(body.find('.katex-display').exists()).toBe(true)
+    expect(body.find('.katex').exists()).toBe(true)
+    expect(body.text()).not.toContain('```latex')
+    expect(body.text()).toContain('Округление')
+  })
+
+  it('does not render latex inside ordinary fenced code blocks', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '```ts\nconst formula = "$x^2 + y^2 = z^2$"\n```',
+      },
+    })
+
+    expect(wrapper.find('.markdown-body').find('.katex').exists()).toBe(false)
+    expect(wrapper.find('code.hljs').text()).toContain('$x^2 + y^2 = z^2$')
+  })
+
+  it('does not treat currency-like dollar text as latex math', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'Price is $5 and $6 today.',
+      },
+    })
+
+    const body = wrapper.find('.markdown-body')
+    expect(body.find('.katex').exists()).toBe(false)
+    expect(body.text()).toContain('Price is $5 and $6 today.')
+  })
+
+  it('does not render escaped dollar-delimited text as latex math', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'Escaped: \\$x^2$',
+      },
+    })
+
+    const body = wrapper.find('.markdown-body')
+    expect(body.find('.katex').exists()).toBe(false)
+    expect(body.text()).toContain('Escaped: $x^2$')
+  })
+
+  it('keeps rendering when latex syntax is invalid', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'Before $\\notacommand{ after',
+      },
+    })
+
+    expect(wrapper.find('.markdown-body').text()).toContain('Before')
   })
 
   it('copies code through the delegated click handler', async () => {

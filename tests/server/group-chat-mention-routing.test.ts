@@ -1,257 +1,80 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
+import {
+  isAllAgentsMentioned,
+  isAgentMentioned,
+  isReservedMentionName,
+  resolveMentionTargets,
+  stripMentionRoutingTokens,
+} from '../../packages/server/src/services/hermes/group-chat/mention-routing'
 
-vi.mock('../../packages/server/src/services/logger', () => ({
-  logger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}))
+type TestAgent = { name: string; id?: string; agentId?: string; profile?: string }
 
-import { AgentClients } from '../../packages/server/src/services/hermes/group-chat/agent-clients'
+const agents: TestAgent[] = [
+  { name: 'Alice', id: 'socket-alice', agentId: 'agent-alice' },
+  { name: 'Bob', id: 'socket-bob', agentId: 'agent-bob' },
+  { name: 'Regex.Bot', id: 'socket-regex', agentId: 'agent-regex' },
+]
 
-describe('Group chat mention routing', () => {
-  function createFakeAgent(name: string, agentId = `agent-${name.toLowerCase()}`, socketId = `socket-${name.toLowerCase()}`) {
-    return {
-      agentId,
-      id: socketId,
-      name,
-      joinRoom: vi.fn().mockResolvedValue({
-        roomId: 'room-1',
-        roomName: 'room-1',
-        members: [],
-        messages: [],
-        rooms: [],
-      }),
-      replyToMention: vi.fn().mockResolvedValue(undefined),
-      emitContextStatus: vi.fn(),
-      disconnect: vi.fn(),
-    }
-  }
-
-  async function setupRoom() {
-    const clients = new AgentClients()
-    ;(clients as any)._gatewayManager = {}
-
-    const manager = createFakeAgent('manager')
-    const koolie = createFakeAgent('koolie')
-    const bob = createFakeAgent('Bob')
-    const regexName = createFakeAgent('C++')
-    await clients.addAgentToRoom('room-1', manager as any)
-    await clients.addAgentToRoom('room-1', koolie as any)
-    await clients.addAgentToRoom('room-1', bob as any)
-    await clients.addAgentToRoom('room-1', regexName as any)
-
-    return { clients, manager, koolie, bob, regexName }
-  }
-
-  it('does not wake another agent when an agent only mentions it in quoted prose', async () => {
-    const { clients, manager, koolie } = await setupRoom()
-
-    await clients.processMentions('room-1', {
-      content: '我只是举例“@koolie”这个写法，不是在叫你。',
-      senderName: 'manager',
-      senderId: manager.agentId,
-      senderIsAgent: true,
-      timestamp: Date.now(),
-    } as any)
-
-    expect(koolie.replyToMention).not.toHaveBeenCalled()
+describe('group chat mention routing', () => {
+  it('reserves @all so it cannot be confused with a literal agent name', () => {
+    expect(isReservedMentionName('all')).toBe(true)
+    expect(isReservedMentionName(' ALL ')).toBe(true)
+    expect(isReservedMentionName('Alice')).toBe(false)
   })
 
-  it('routes an explicit leading handoff from one agent to another agent', async () => {
-    const { clients, manager, koolie } = await setupRoom()
-
-    await clients.processMentions('room-1', {
-      content: '@koolie，做个单轮测试。',
-      senderName: 'manager',
-      senderId: manager.agentId,
-      senderIsAgent: true,
-      timestamp: Date.now(),
-    } as any)
-
-    expect(koolie.replyToMention).toHaveBeenCalledTimes(1)
-    expect(manager.replyToMention).not.toHaveBeenCalled()
+  it('recognizes @all as a standalone mention with safe boundaries', () => {
+    expect(isAllAgentsMentioned('@all please compare notes')).toBe(true)
+    expect(isAllAgentsMentioned('please compare notes @ALL')).toBe(true)
+    expect(isAllAgentsMentioned('@all, compare notes')).toBe(true)
+    expect(isAllAgentsMentioned('email user@all.example')).toBe(false)
+    expect(isAllAgentsMentioned('@alligator should not notify everyone')).toBe(false)
+    expect(isAllAgentsMentioned('prefix@all should not notify everyone')).toBe(false)
   })
 
-  it('does not route an agent self-mention back to itself', async () => {
-    const { clients, manager } = await setupRoom()
-
-    await clients.processMentions('room-1', {
-      content: '@manager 我不应该再次唤醒自己。',
-      senderName: 'manager',
-      senderId: manager.agentId,
-      senderIsAgent: true,
-      timestamp: Date.now(),
-    } as any)
-
-    expect(manager.replyToMention).not.toHaveBeenCalled()
+  it('keeps exact agent mentions boundary-aware and regex-safe', () => {
+    expect(isAgentMentioned('@Regex.Bot please review', 'Regex.Bot')).toBe(true)
+    expect(isAgentMentioned('@RegexxBot should not match', 'Regex.Bot')).toBe(false)
+    expect(isAgentMentioned('@Alice, please review', 'Alice')).toBe(true)
+    expect(isAgentMentioned('mailto@Alice.example', 'Alice')).toBe(false)
   })
 
-  it('still routes normal human mentions anywhere in the message', async () => {
-    const { clients, koolie } = await setupRoom()
-
-    await clients.processMentions('room-1', {
-      content: '我觉得可以请 @koolie，看一下。',
-      senderName: 'manager',
-      senderId: 'human-user-with-agent-display-name',
-      timestamp: Date.now(),
-    })
-
-    expect(koolie.replyToMention).toHaveBeenCalledTimes(1)
+  it('routes @all to every room agent except the sender identity', () => {
+    expect(resolveMentionTargets(agents, '@all summarize the options', 'socket-alice').map(a => a.name)).toEqual(['Bob', 'Regex.Bot'])
   })
 
-  it('excludes the sender by stable agent id like upstream mention routing', async () => {
-    const { clients, manager } = await setupRoom()
+  it('keeps same-name human senders routable because sender exclusion uses identity, not display name', () => {
+    const sameNameAgents: TestAgent[] = [
+      { name: 'test', id: 'socket-agent-test', agentId: 'agent-test' },
+      { name: 'tt', id: 'socket-agent-tt', agentId: 'agent-tt' },
+    ]
 
-    await clients.processMentions('room-1', {
-      content: '@manager 我不应该再次唤醒自己。',
-      senderName: 'manager',
-      senderId: manager.agentId,
-      timestamp: Date.now(),
-    })
-
-    expect(manager.replyToMention).not.toHaveBeenCalled()
+    expect(resolveMentionTargets(sameNameAgents, '@all can you talk to me?', 'human-test-user').map(a => a.name)).toEqual(['test', 'tt'])
+    expect(resolveMentionTargets(sameNameAgents, '@test why no response?', 'human-test-user').map(a => a.name)).toEqual(['test'])
   })
 
-  it('does not treat a longer handle as a mention of a shorter agent name', async () => {
-    const { clients, bob } = await setupRoom()
+  it('still excludes an agent from routing to itself when the sender identity matches that agent', () => {
+    const sameNameAgents: TestAgent[] = [
+      { name: 'test', id: 'socket-agent-test', agentId: 'agent-test' },
+      { name: 'tt', id: 'socket-agent-tt', agentId: 'agent-tt' },
+    ]
 
-    await clients.processMentions('room-1', {
-      content: '请 @Bobcat 看一下。',
-      senderName: 'Han',
-      senderId: 'user-han',
-      timestamp: Date.now(),
-    })
-
-    expect(bob.replyToMention).not.toHaveBeenCalled()
+    expect(resolveMentionTargets(sameNameAgents, '@all compare plans', 'socket-agent-test').map(a => a.name)).toEqual(['tt'])
+    expect(resolveMentionTargets(sameNameAgents, '@all compare plans', 'agent-test').map(a => a.name)).toEqual(['tt'])
+    expect(resolveMentionTargets(sameNameAgents, '@test check yourself', 'socket-agent-test').map(a => a.name)).toEqual([])
   })
 
-  it('escapes regex metacharacters in agent names', async () => {
-    const { clients, regexName } = await setupRoom()
-
-    await clients.processMentions('room-1', {
-      content: '麻烦 @C++: 看一下。',
-      senderName: 'Han',
-      senderId: 'user-han',
-      timestamp: Date.now(),
-    })
-
-    expect(regexName.replyToMention).toHaveBeenCalledTimes(1)
+  it('routes explicit mentions without treating partial @all text as broadcast', () => {
+    expect(resolveMentionTargets(agents, '@Bob and @Regex.Bot compare plans', 'socket-alice').map(a => a.name)).toEqual(['Bob', 'Regex.Bot'])
+    expect(resolveMentionTargets(agents, '@alligator and @Bob compare plans', 'socket-alice').map(a => a.name)).toEqual(['Bob'])
   })
 
-  it('routes @all to every room agent except the agent sender', async () => {
-    const { clients, manager, koolie, bob, regexName } = await setupRoom()
-
-    await clients.processMentions('room-1', {
-      content: '@all 请分别给出建议。',
-      senderName: 'manager',
-      senderId: manager.agentId,
-      senderIsAgent: true,
-      timestamp: Date.now(),
-    } as any)
-
-    expect(manager.replyToMention).not.toHaveBeenCalled()
-    expect(koolie.replyToMention).toHaveBeenCalledTimes(1)
-    expect(bob.replyToMention).toHaveBeenCalledTimes(1)
-    expect(regexName.replyToMention).toHaveBeenCalledTimes(1)
+  it('dedupes mixed @all and explicit mentions', () => {
+    expect(resolveMentionTargets(agents, '@all @Bob compare plans', 'socket-alice').map(a => a.name)).toEqual(['Bob', 'Regex.Bot'])
   })
 
-  it('fans out @all targets without waiting for earlier agents to finish', async () => {
-    const clients = new AgentClients()
-    ;(clients as any)._gatewayManager = {}
-
-    let finishFirstReply!: () => void
-    const first = createFakeAgent('first')
-    const second = createFakeAgent('second')
-    const third = createFakeAgent('third')
-    const starts: string[] = []
-
-    first.replyToMention = vi.fn().mockImplementation(() => {
-      starts.push('first')
-      return new Promise<void>((resolve) => {
-        finishFirstReply = resolve
-      })
-    })
-    second.replyToMention = vi.fn().mockImplementation(() => {
-      starts.push('second')
-      return Promise.resolve()
-    })
-    third.replyToMention = vi.fn().mockImplementation(() => {
-      starts.push('third')
-      return Promise.resolve()
-    })
-
-    await clients.addAgentToRoom('room-1', first as any)
-    await clients.addAgentToRoom('room-1', second as any)
-    await clients.addAgentToRoom('room-1', third as any)
-
-    const processing = clients.processMentions('room-1', {
-      content: '@all 排队报道 按顺序报。',
-      senderName: 'Han',
-      senderId: 'user-han',
-      timestamp: Date.now(),
-    })
-
-    await vi.waitFor(() => {
-      expect(first.replyToMention).toHaveBeenCalledTimes(1)
-    })
-    expect(second.replyToMention).toHaveBeenCalledTimes(1)
-    expect(third.replyToMention).toHaveBeenCalledTimes(1)
-
-    finishFirstReply()
-    await processing
-
-    expect(starts).toEqual(['first', 'second', 'third'])
-  })
-
-  it('does not treat partial @all text as broadcast', async () => {
-    const { clients, koolie, bob } = await setupRoom()
-
-    await clients.processMentions('room-1', {
-      content: '@alligator 和 @koolie 看一下。',
-      senderName: 'Han',
-      senderId: 'user-han',
-      timestamp: Date.now(),
-    })
-
-    expect(koolie.replyToMention).toHaveBeenCalledTimes(1)
-    expect(bob.replyToMention).not.toHaveBeenCalled()
-  })
-
-  it('drains the last queued mention after an agent finishes replying', async () => {
-    const clients = new AgentClients()
-    ;(clients as any)._gatewayManager = {}
-
-    let finishFirstReply!: () => void
-    const slow = createFakeAgent('slow')
-    slow.replyToMention = vi.fn()
-      .mockImplementationOnce(() => new Promise<void>((resolve) => {
-        finishFirstReply = resolve
-      }))
-      .mockResolvedValue(undefined)
-    await clients.addAgentToRoom('room-1', slow as any)
-
-    await clients.processMentions('room-1', {
-      content: '@slow 第一条。',
-      senderName: 'Han',
-      senderId: 'user-han',
-      timestamp: Date.now(),
-    })
-    await clients.processMentions('room-1', {
-      content: '@all 第二条。',
-      senderName: 'Han',
-      senderId: 'user-han',
-      timestamp: Date.now(),
-    })
-
-    expect(slow.replyToMention).toHaveBeenCalledTimes(1)
-
-    finishFirstReply()
-    await vi.waitFor(() => {
-      expect(slow.replyToMention).toHaveBeenCalledTimes(2)
-    })
-    expect(slow.replyToMention.mock.calls[1][1].content).toBe('@all 第二条。')
+  it('strips the broadcast token and this agent mention before routing to the model', () => {
+    expect(stripMentionRoutingTokens('@all @Bob please review', 'Bob')).toBe('please review')
+    expect(stripMentionRoutingTokens('@ALL, @Regex.Bot: please review', 'Regex.Bot')).toBe('please review')
+    expect(stripMentionRoutingTokens('@all please review', 'all')).toBe('please review')
   })
 })

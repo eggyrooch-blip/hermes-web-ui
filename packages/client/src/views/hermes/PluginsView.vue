@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { NAlert, NButton, NEmpty, NInput, NSelect, NSpin, NTag, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { fetchPlugins, type HermesPluginInfo, type HermesPluginsMetadata } from '@/api/hermes/plugins'
-import { ensureProfileSelection } from '@/utils/hermes/profile-ready'
+import { useProfilesStore } from '@/stores/hermes/profiles'
+import { copyToClipboard } from '@/utils/clipboard'
 
 const { t, te } = useI18n()
 const message = useMessage()
+const profilesStore = useProfilesStore()
 
 const plugins = ref<HermesPluginInfo[]>([])
 const warnings = ref<string[]>([])
@@ -59,7 +61,9 @@ async function loadPlugins() {
   loading.value = true
   error.value = ''
   try {
-    await ensureProfileSelection()
+    if (!profilesStore.activeProfileName || profilesStore.profiles.length === 0) {
+      await profilesStore.fetchProfiles()
+    }
     const data = await fetchPlugins()
     plugins.value = data.plugins ?? []
     warnings.value = data.warnings ?? []
@@ -109,11 +113,20 @@ function pluginCommand(plugin: HermesPluginInfo) {
 async function copyCommand(plugin: HermesPluginInfo) {
   const command = pluginCommand(plugin)
   if (!command) return
-  await navigator.clipboard.writeText(command)
-  message.success(t('plugins.commandCopied'))
+  const copied = await copyToClipboard(command)
+  if (copied) {
+    message.success(t('plugins.commandCopied'))
+  } else {
+    message.error(t('chat.copyFailed'))
+  }
 }
 
-onMounted(loadPlugins)
+watch(() => profilesStore.activeProfileName || 'default', () => {
+  plugins.value = []
+  warnings.value = []
+  metadata.value = null
+  void loadPlugins()
+}, { immediate: true })
 </script>
 
 <template>
@@ -125,50 +138,53 @@ onMounted(loadPlugins)
       </NButton>
     </header>
 
-    <div class="plugins-content">
-      <NAlert type="info" :bordered="false" class="plugins-notice">
-        {{ t('plugins.notice') }}
-      </NAlert>
-
-      <NAlert v-if="error" type="error" class="plugins-notice">
-        {{ error }}
-      </NAlert>
-
-      <NAlert v-for="warning in warnings" :key="warning" type="warning" class="plugins-notice">
-        {{ warning }}
-      </NAlert>
-
-      <div class="summary-grid">
-        <div class="summary-card">
-          <span class="summary-label">{{ t('plugins.summary.total') }}</span>
-          <strong>{{ summary.total }}</strong>
-        </div>
-        <div class="summary-card success">
-          <span class="summary-label">{{ t('plugins.summary.active') }}</span>
-          <strong>{{ summary.active }}</strong>
-        </div>
-        <div class="summary-card warning">
-          <span class="summary-label">{{ t('plugins.summary.inactive') }}</span>
-          <strong>{{ summary.inactive }}</strong>
-        </div>
-        <div class="summary-card error">
-          <span class="summary-label">{{ t('plugins.summary.disabled') }}</span>
-          <strong>{{ summary.disabled }}</strong>
-        </div>
-        <div class="summary-card info">
-          <span class="summary-label">{{ t('plugins.summary.providerManaged') }}</span>
-          <strong>{{ summary.providerManaged }}</strong>
-        </div>
+    <div class="plugins-content" :class="{ 'is-loading': loading && plugins.length === 0 }">
+      <div v-if="loading && plugins.length === 0" class="plugins-loading-state">
+        <NSpin />
       </div>
+      <template v-else>
+        <NAlert type="info" :bordered="false" class="plugins-notice">
+          {{ t('plugins.notice') }}
+        </NAlert>
 
-      <div class="filter-row">
-        <NInput v-model:value="searchQuery" :placeholder="t('plugins.searchPlaceholder')" clearable />
-        <NSelect v-model:value="sourceFilter" :options="sourceOptions" :placeholder="t('plugins.source')" clearable />
-        <NSelect v-model:value="kindFilter" :options="kindOptions" :placeholder="t('plugins.kind')" clearable />
-        <NSelect v-model:value="statusFilter" :options="statusOptions" :placeholder="t('plugins.statusTitle')" clearable />
-      </div>
+        <NAlert v-if="error" type="error" class="plugins-notice">
+          {{ error }}
+        </NAlert>
 
-      <NSpin :show="loading && plugins.length === 0">
+        <NAlert v-for="warning in warnings" :key="warning" type="warning" class="plugins-notice">
+          {{ warning }}
+        </NAlert>
+
+        <div class="summary-grid">
+          <div class="summary-card">
+            <span class="summary-label">{{ t('plugins.summary.total') }}</span>
+            <strong>{{ summary.total }}</strong>
+          </div>
+          <div class="summary-card success">
+            <span class="summary-label">{{ t('plugins.summary.active') }}</span>
+            <strong>{{ summary.active }}</strong>
+          </div>
+          <div class="summary-card warning">
+            <span class="summary-label">{{ t('plugins.summary.inactive') }}</span>
+            <strong>{{ summary.inactive }}</strong>
+          </div>
+          <div class="summary-card error">
+            <span class="summary-label">{{ t('plugins.summary.disabled') }}</span>
+            <strong>{{ summary.disabled }}</strong>
+          </div>
+          <div class="summary-card info">
+            <span class="summary-label">{{ t('plugins.summary.providerManaged') }}</span>
+            <strong>{{ summary.providerManaged }}</strong>
+          </div>
+        </div>
+
+        <div class="filter-row">
+          <NInput v-model:value="searchQuery" :placeholder="t('plugins.searchPlaceholder')" clearable />
+          <NSelect v-model:value="sourceFilter" :options="sourceOptions" :placeholder="t('plugins.source')" clearable />
+          <NSelect v-model:value="kindFilter" :options="kindOptions" :placeholder="t('plugins.kind')" clearable />
+          <NSelect v-model:value="statusFilter" :options="statusOptions" :placeholder="t('plugins.statusTitle')" clearable />
+        </div>
+
         <div v-if="filteredPlugins.length" class="plugins-table-wrap">
           <table class="plugins-table">
             <thead>
@@ -219,15 +235,15 @@ onMounted(loadPlugins)
             </tbody>
           </table>
         </div>
-        <NEmpty v-else-if="!loading" :description="t('plugins.noMatch')" />
-      </NSpin>
+        <NEmpty v-else :description="t('plugins.noMatch')" />
 
-      <div v-if="metadata" class="metadata-panel">
-        <span>{{ t('plugins.metadata.agentRoot') }}: <code>{{ metadata.hermesAgentRoot }}</code></span>
-        <span>{{ t('plugins.metadata.python') }}: <code>{{ metadata.pythonExecutable }}</code></span>
-        <span>{{ t('plugins.metadata.scanCwd') }}: <code>{{ metadata.cwd }}</code></span>
-        <span>{{ t('plugins.metadata.projectPlugins') }}: <code>{{ metadata.projectPluginsEnabled ? t('plugins.enabled') : t('plugins.disabled') }}</code></span>
-      </div>
+        <div v-if="metadata" class="metadata-panel">
+          <span>{{ t('plugins.metadata.agentRoot') }}: <code>{{ metadata.hermesAgentRoot }}</code></span>
+          <span>{{ t('plugins.metadata.python') }}: <code>{{ metadata.pythonExecutable }}</code></span>
+          <span>{{ t('plugins.metadata.scanCwd') }}: <code>{{ metadata.cwd }}</code></span>
+          <span>{{ t('plugins.metadata.projectPlugins') }}: <code>{{ metadata.projectPluginsEnabled ? t('plugins.enabled') : t('plugins.disabled') }}</code></span>
+        </div>
+      </template>
     </div>
   </div>
 </template>
@@ -243,8 +259,19 @@ onMounted(loadPlugins)
 
 .plugins-content {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 20px;
+
+  &.is-loading {
+    display: grid;
+    place-items: center;
+  }
+}
+
+.plugins-loading-state {
+  display: grid;
+  place-items: center;
 }
 
 .plugins-notice {

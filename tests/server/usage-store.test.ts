@@ -120,7 +120,6 @@ describe('Usage Store (SQLite path)', () => {
   let getMock: ReturnType<typeof vi.fn>
   let allMock: ReturnType<typeof vi.fn>
   let deleteMock: ReturnType<typeof vi.fn>
-  let execMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     vi.resetModules()
@@ -129,15 +128,12 @@ describe('Usage Store (SQLite path)', () => {
     getMock = vi.fn()
     allMock = vi.fn()
     deleteMock = vi.fn()
-    execMock = vi.fn()
 
     vi.doMock('../../packages/server/src/db/index', () => ({
       isSqliteAvailable: () => true,
       ensureTable: vi.fn(),
       getDb: () => ({
-        exec: execMock,
         prepare: vi.fn((sql: string) => {
-          if (sql.includes("sqlite_master") && sql.includes("type='table'")) return { get: vi.fn(() => undefined) }
           if (sql.includes('INSERT') || sql.includes('UPDATE')) return { run: runMock }
           if (sql.includes('SELECT') && sql.includes('WHERE session_id = ?')) return { get: getMock }
           if (sql.includes('SELECT') && sql.includes('IN')) return { all: allMock }
@@ -165,6 +161,29 @@ describe('Usage Store (SQLite path)', () => {
       '', // model
       'default', // profile
       expect.any(Number), // created_at
+    )
+  })
+
+  it('updateUsage writes updated_at when a legacy SQLite table has the column', async () => {
+    allMock.mockReturnValueOnce([
+      { name: 'id' },
+      { name: 'session_id' },
+      { name: 'created_at' },
+      { name: 'updated_at' },
+    ])
+    const { updateUsage } = await import('../../packages/server/src/db/hermes/usage-store')
+    updateUsage('s1', { inputTokens: 500, outputTokens: 200 })
+    expect(runMock).toHaveBeenCalledWith(
+      's1',
+      500,
+      200,
+      0, // cacheReadTokens
+      0, // cacheWriteTokens
+      0, // reasoningTokens
+      '', // model
+      'default', // profile
+      expect.any(Number), // created_at
+      expect.any(Number), // updated_at
     )
   })
 

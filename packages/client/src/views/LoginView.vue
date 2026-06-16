@@ -2,28 +2,17 @@
 import { ref, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
-import { setApiKey, hasApiKey, setRuntimeMode } from "@/api/client";
-import { fetchAuthStatus, fetchCurrentUser, loginWithPassword } from "@/api/auth";
-import { useProfilesStore } from "@/stores/hermes/profiles";
+import { setApiKey, hasApiKey } from "@/api/client";
+import { fetchAuthStatus, loginWithPassword } from "@/api/auth";
 
 const { t } = useI18n();
 const router = useRouter();
-const profilesStore = useProfilesStore();
 
-// Read token saved by main.ts (before router strips URL params)
-const urlToken = (window as any).__LOGIN_TOKEN__ || "";
-
-const token = ref(urlToken);
 const username = ref("");
 const password = ref("");
 const loading = ref(false);
-const authChecking = ref(true);
 const errorMsg = ref("");
 const showLockResetHint = ref(false);
-
-// Login method: 'token', 'password', or 'feishu'
-const loginMethod = ref<"token" | "password" | "feishu">("token");
-const hasPasswordLogin = ref(false);
 
 // If already has a key, try to go to main page
 if (hasApiKey()) {
@@ -32,93 +21,14 @@ if (hasApiKey()) {
 
 onMounted(async () => {
   try {
-    const status = await fetchAuthStatus();
-    setRuntimeMode(status.authMode, status.plane);
-    if (status.authMode === "trusted-feishu") {
-      router.replace("/hermes/chat");
-      return;
-    }
-    if (status.authMode === "feishu-oauth-dev") {
-      loginMethod.value = "feishu";
-      authChecking.value = true;
-      try {
-        const user = await fetchCurrentUser();
-        profilesStore.setBoundProfile(user.profile, user);
-        router.replace("/hermes/chat");
-      } catch {
-        // No valid OAuth session cookie yet.
-      } finally {
-        authChecking.value = false;
-      }
-      return;
-    }
-    hasPasswordLogin.value = status.hasPasswordLogin;
-    if (status.hasPasswordLogin && !urlToken) {
-      loginMethod.value = "password";
-    }
+    await fetchAuthStatus();
   } catch {
-    // Fallback to token-only
-  } finally {
-    if (loginMethod.value !== "feishu") {
-      authChecking.value = false;
-    }
+    // Login remains available; the submit request will surface connection errors.
   }
 });
 
 async function handleLogin() {
-  if (loginMethod.value === "feishu") {
-    handleFeishuLogin();
-  } else if (loginMethod.value === "token") {
-    await handleTokenLogin();
-  } else {
-    await handlePasswordLogin();
-  }
-}
-
-function handleFeishuLogin() {
-  if (loading.value) return;
-  loading.value = true;
-  errorMsg.value = "";
-  showLockResetHint.value = false;
-  window.location.assign("/api/auth/feishu/login");
-}
-
-async function handleTokenLogin() {
-  const key = token.value.trim();
-  if (!key) {
-    errorMsg.value = t("login.tokenRequired");
-    return;
-  }
-
-  loading.value = true;
-  errorMsg.value = "";
-  showLockResetHint.value = false;
-
-  try {
-    const res = await fetch("/api/hermes/sessions", {
-      headers: { Authorization: `Bearer ${key}` },
-    });
-
-    if (res.status === 401) {
-      errorMsg.value = t("login.invalidToken");
-      loading.value = false;
-      return;
-    }
-
-    if (res.status === 429 || res.status === 503) {
-      errorMsg.value = t("login.tooManyAttempts");
-      showLockResetHint.value = true;
-      loading.value = false;
-      return;
-    }
-
-    setApiKey(key);
-    router.replace("/hermes/chat");
-  } catch {
-    errorMsg.value = t("login.connectionFailed");
-  } finally {
-    loading.value = false;
-  }
+  await handlePasswordLogin();
 }
 
 async function handlePasswordLogin() {
@@ -156,62 +66,23 @@ async function handlePasswordLogin() {
       </div>
       <h1 class="login-title">{{ t("login.title") }}</h1>
       <p class="login-desc">{{ t("login.description") }}</p>
+      <p class="login-default-hint">{{ t("login.defaultCredentialsHint") }}</p>
 
-      <div v-if="authChecking" class="wake-state" role="status" aria-live="polite">
-        <div class="wake-spinner" aria-hidden="true"></div>
-        <h2>{{ t("login.wakingTitle") }}</h2>
-        <p>{{ t("login.wakingDescription") }}</p>
-      </div>
-
-      <!-- Method toggle -->
-      <div v-else-if="hasPasswordLogin" class="login-method-toggle">
-        <button
-          class="toggle-btn"
-          :class="{ active: loginMethod === 'password' }"
-          @click="loginMethod = 'password'"
-        >{{ t("login.passwordLogin") }}</button>
-        <button
-          class="toggle-btn"
-          :class="{ active: loginMethod === 'token' }"
-          @click="loginMethod = 'token'"
-        >{{ t("login.tokenLogin") }}</button>
-      </div>
-
-      <form v-if="!authChecking" class="login-form" @submit.prevent="handleLogin">
-        <!-- Token login -->
-        <template v-if="loginMethod === 'token'">
-          <input
-            v-model="token"
-            type="password"
-            class="login-input"
-            :placeholder="t('login.placeholder')"
-            autofocus
-          />
-        </template>
-
-        <!-- Password login -->
-        <template v-if="loginMethod === 'password'">
-          <input
-            v-model="username"
-            type="text"
-            class="login-input"
-            :placeholder="t('login.usernamePlaceholder')"
-            autofocus
-          />
-          <input
-            v-model="password"
-            type="password"
-            class="login-input"
-            :placeholder="t('login.passwordPlaceholder')"
-            @keyup.enter="handleLogin"
-          />
-        </template>
-
-        <template v-if="loginMethod === 'feishu'">
-          <button type="button" class="login-btn" :disabled="loading" @click="handleFeishuLogin">
-            {{ t("login.feishuLogin") }}
-          </button>
-        </template>
+      <form class="login-form" @submit.prevent="handleLogin">
+        <input
+          v-model="username"
+          type="text"
+          class="login-input"
+          :placeholder="t('login.usernamePlaceholder')"
+          autofocus
+        />
+        <input
+          v-model="password"
+          type="password"
+          class="login-input"
+          :placeholder="t('login.passwordPlaceholder')"
+          @keyup.enter="handleLogin"
+        />
 
         <div v-if="errorMsg" class="login-error">{{ errorMsg }}</div>
         <div v-if="showLockResetHint" class="login-lock-hint">
@@ -220,7 +91,7 @@ async function handlePasswordLogin() {
           <span>{{ t("login.defaultLoginResetHint") }}</span>
           <code>hermes-web-ui reset-default-login</code>
         </div>
-        <button v-if="loginMethod !== 'feishu'" type="submit" class="login-btn" :disabled="loading">
+        <button type="submit" class="login-btn" :disabled="loading">
           {{ loading ? "..." : t("login.submit") }}
         </button>
       </form>
@@ -267,73 +138,15 @@ async function handlePasswordLogin() {
 .login-desc {
   font-size: 14px;
   color: $text-muted;
-  margin: 0 0 32px;
+  margin: 0 0 12px;
   line-height: 1.6;
 }
 
-.wake-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 0 2px;
-
-  h2 {
-    margin: 4px 0 0;
-    color: $text-primary;
-    font-size: 18px;
-    font-weight: 600;
-  }
-
-  p {
-    margin: 0;
-    color: $text-muted;
-    font-size: 13px;
-    line-height: 1.6;
-  }
-}
-
-.wake-spinner {
-  width: 34px;
-  height: 34px;
-  border: 3px solid rgba(var(--accent-primary-rgb), 0.18);
-  border-top-color: $accent-primary;
-  border-radius: 50%;
-  animation: wake-spin 0.9s linear infinite;
-}
-
-@keyframes wake-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.login-method-toggle {
-  display: flex;
-  margin-bottom: 24px;
-  border: 1px solid $border-color;
-  border-radius: $radius-sm;
-  overflow: hidden;
-
-  .toggle-btn {
-    flex: 1;
-    padding: 10px;
-    border: none;
-    background: transparent;
-    color: $text-muted;
-    font-size: 13px;
-    cursor: pointer;
-    transition: all $transition-fast;
-
-    &.active {
-      background: $text-primary;
-      color: var(--text-on-accent);
-    }
-
-    &:not(.active):hover {
-      background: rgba(var(--accent-primary-rgb), 0.06);
-    }
-  }
+.login-default-hint {
+  margin: 0 0 28px;
+  font-family: $font-code;
+  font-size: 13px;
+  color: $text-secondary;
 }
 
 .login-form {

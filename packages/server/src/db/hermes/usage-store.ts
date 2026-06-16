@@ -1,5 +1,5 @@
 import { isSqliteAvailable, getDb, jsonSet, jsonGet, jsonGetAll, jsonDelete } from '../index'
-import { USAGE_SCHEMA, USAGE_TABLE as TABLE, syncTable } from './schemas'
+import { USAGE_TABLE as TABLE } from './schemas'
 
 export interface UsageRecord {
   input_tokens: number
@@ -12,12 +12,15 @@ export interface UsageRecord {
   created_at: number
 }
 
-let usageTableReady = false
-
-function ensureUsageTable(): void {
-  if (!isSqliteAvailable() || usageTableReady) return
-  syncTable(TABLE, USAGE_SCHEMA, { primaryKey: 'id' })
-  usageTableReady = true
+function hasUpdatedAtColumn(): boolean {
+  const db = getDb()
+  if (!db) return false
+  try {
+    const rows = db.prepare(`PRAGMA table_info("${TABLE}")`).all() as unknown
+    return Array.isArray(rows) && rows.some((row: any) => row?.name === 'updated_at')
+  } catch {
+    return false
+  }
 }
 
 export function updateUsage(
@@ -39,12 +42,38 @@ export function updateUsage(
   const model = data.model || ''
   const profile = data.profile || 'default'
   if (isSqliteAvailable()) {
-    ensureUsageTable()
     const db = getDb()!
+    const columns = [
+      'session_id',
+      'input_tokens',
+      'output_tokens',
+      'cache_read_tokens',
+      'cache_write_tokens',
+      'reasoning_tokens',
+      'model',
+      'profile',
+      'created_at',
+    ]
+    const values = columns.map(() => '?')
+    const params = [
+      sessionId,
+      data.inputTokens,
+      data.outputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+      reasoningTokens,
+      model,
+      profile,
+      now,
+    ]
+    if (hasUpdatedAtColumn()) {
+      columns.push('updated_at')
+      values.push('?')
+      params.push(now)
+    }
     db.prepare(
-      `INSERT INTO ${TABLE} (session_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, profile, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(sessionId, data.inputTokens, data.outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, model, profile, now)
+      `INSERT INTO ${TABLE} (${columns.join(', ')}) VALUES (${values.join(', ')})`,
+    ).run(...params)
   } else {
     jsonSet(TABLE, sessionId, {
       input_tokens: data.inputTokens,
@@ -61,7 +90,6 @@ export function updateUsage(
 
 export function getUsage(sessionId: string): UsageRecord | undefined {
   if (isSqliteAvailable()) {
-    ensureUsageTable()
     return getDb()!.prepare(
       `SELECT session_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, profile, created_at FROM ${TABLE} WHERE session_id = ? ORDER BY id DESC LIMIT 1`,
     ).get(sessionId) as UsageRecord | undefined
@@ -83,7 +111,6 @@ export function getUsage(sessionId: string): UsageRecord | undefined {
 export function getUsageBatch(sessionIds: string[]): Record<string, UsageRecord> {
   if (sessionIds.length === 0) return {}
   if (isSqliteAvailable()) {
-    ensureUsageTable()
     const db = getDb()!
     const placeholders = sessionIds.map(() => '?').join(',')
     const rows = db.prepare(
@@ -128,7 +155,6 @@ export function getUsageBatch(sessionIds: string[]): Record<string, UsageRecord>
 
 export function deleteUsage(sessionId: string): void {
   if (isSqliteAvailable()) {
-    ensureUsageTable()
     getDb()!.prepare(`DELETE FROM ${TABLE} WHERE session_id = ?`).run(sessionId)
   } else {
     jsonDelete(TABLE, sessionId)
@@ -177,7 +203,6 @@ export function getLocalUsageStats(profile?: string, days = 30): LocalUsageStats
   }
   if (!isSqliteAvailable()) return empty
 
-  ensureUsageTable()
   const db = getDb()!
   const safeDays = Math.max(1, Math.floor(Number.isFinite(days) ? days : 30))
   const cutoffMs = Date.now() - safeDays * 24 * 60 * 60 * 1000

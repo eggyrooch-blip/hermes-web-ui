@@ -12,19 +12,18 @@ vi.mock('@/router', () => ({
   },
 }))
 
-import {
-  canAccessProtectedRoutes,
-  getApiKey,
-  setApiKey,
-  clearApiKey,
-  hasApiKey,
-  isUserMode,
-  shouldSkipLoginPage,
-  request,
-} from '../../packages/client/src/api/client'
-import { fetchCurrentUser } from '../../packages/client/src/api/auth'
-import { batchDeleteSessions, fetchHermesSessions, fetchSession } from '../../packages/client/src/api/hermes/sessions'
+import { getApiKey, setApiKey, clearApiKey, hasApiKey, getStoredUserRole, isStoredSuperAdmin, request } from '../../packages/client/src/api/client'
+import { getDownloadUrl } from '../../packages/client/src/api/hermes/download'
+import { uploadFiles } from '../../packages/client/src/api/hermes/files'
+import { importSkill } from '../../packages/client/src/api/hermes/skills'
+import { batchDeleteSessions, importHermesSession } from '../../packages/client/src/api/hermes/sessions'
 import router from '@/router'
+
+function fakeJwt(payload: Record<string, unknown>) {
+  const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  const body = btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  return `${header}.${body}.signature`
+}
 
 describe('API Client', () => {
   beforeEach(() => {
@@ -42,30 +41,6 @@ describe('API Client', () => {
       expect(hasApiKey()).toBe(true)
     })
 
-    it('does not treat Feishu OAuth dev mode as a local API key', () => {
-      localStorage.setItem('hermes_auth_mode', 'feishu-oauth-dev')
-
-      expect(hasApiKey()).toBe(false)
-    })
-
-    it('allows Feishu OAuth dev mode to access protected routes without skipping the login page', () => {
-      localStorage.setItem('hermes_auth_mode', 'feishu-oauth-dev')
-
-      expect(shouldSkipLoginPage()).toBe(false)
-      expect(canAccessProtectedRoutes()).toBe(true)
-    })
-
-    it('treats chat plane or cached bound users as user mode', () => {
-      expect(isUserMode()).toBe(false)
-
-      localStorage.setItem('hermes_web_plane', 'chat')
-      expect(isUserMode()).toBe(true)
-
-      localStorage.setItem('hermes_web_plane', 'both')
-      localStorage.setItem('hermes_current_user', '{"profile":"user_a"}')
-      expect(isUserMode()).toBe(true)
-    })
-
     it('getApiKey returns the stored token', () => {
       setApiKey('my-token')
       expect(getApiKey()).toBe('my-token')
@@ -76,6 +51,17 @@ describe('API Client', () => {
       clearApiKey()
       expect(hasApiKey()).toBe(false)
       expect(getApiKey()).toBe('')
+    })
+
+    it('reads the role from the stored JWT payload', () => {
+      setApiKey(fakeJwt({ sub: '1', role: 'super_admin' }))
+
+      expect(getStoredUserRole()).toBe('super_admin')
+      expect(isStoredSuperAdmin()).toBe(true)
+
+      setApiKey(fakeJwt({ sub: '2', role: 'admin' }))
+      expect(getStoredUserRole()).toBe('admin')
+      expect(isStoredSuperAdmin()).toBe(false)
     })
   })
 
@@ -89,6 +75,26 @@ describe('API Client', () => {
       expect(mockFetch).toHaveBeenCalledOnce()
       const [, options] = mockFetch.mock.calls[0]
       expect(options.headers.Authorization).toBe('Bearer secret-key')
+    })
+
+    it('adds the active profile header, including default', async () => {
+      localStorage.setItem('hermes_active_profile_name', 'default')
+      mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => ({ data: 1 }) })
+
+      await request('/api/hermes/sessions/session-1')
+
+      const [, options] = mockFetch.mock.calls[0]
+      expect(options.headers['X-Hermes-Profile']).toBe('default')
+    })
+
+    it('does not add the active profile header to profile-wide session collection requests', async () => {
+      localStorage.setItem('hermes_active_profile_name', 'research')
+      mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => ({ data: 1 }) })
+
+      await request('/api/hermes/sessions')
+
+      const [, options] = mockFetch.mock.calls[0]
+      expect(options.headers['X-Hermes-Profile']).toBeUndefined()
     })
 
     it('does not add Authorization header when no token', async () => {
@@ -109,45 +115,38 @@ describe('API Client', () => {
       expect(router.replace).toHaveBeenCalledWith({ name: 'login' })
     })
 
+    it('emits a global auth notice on local 403 responses', async () => {
+      const listener = vi.fn()
+      window.addEventListener('hermes-auth-notice', listener)
+      mockFetch.mockResolvedValue({ ok: false, status: 403, text: () => Promise.resolve('Forbidden') })
+
+      await expect(request('/api/hermes/profiles')).rejects.toThrow('API Error 403')
+
+      expect(listener).toHaveBeenCalledOnce()
+      expect(listener.mock.calls[0][0].detail).toEqual({ kind: 'forbidden' })
+      window.removeEventListener('hermes-auth-notice', listener)
+    })
+
+    it('clears token and redirects when the JWT user no longer exists', async () => {
+      setApiKey('stale-jwt')
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 403,
+        text: () => Promise.resolve('{"error":"User is disabled or does not exist"}'),
+      })
+
+      await expect(request('/api/hermes/profiles')).rejects.toThrow('API Error 403')
+
+      expect(hasApiKey()).toBe(false)
+      expect(router.replace).toHaveBeenCalledWith({ name: 'login' })
+    })
+
     it('does NOT clear token on 401 for proxied v1 endpoints', async () => {
       setApiKey('secret-key')
       mockFetch.mockResolvedValue({ ok: false, status: 401, text: () => Promise.resolve('') })
 
       await expect(request('/api/hermes/v1/runs')).rejects.toThrow('API Error 401')
       expect(hasApiKey()).toBe(true)
-    })
-
-    it('does NOT clear token on 401 for proxied jobs endpoints', async () => {
-      setApiKey('secret-key')
-      mockFetch.mockResolvedValue({ ok: false, status: 401, text: () => Promise.resolve('') })
-
-      await expect(request('/api/hermes/jobs')).rejects.toThrow('API Error 401')
-      expect(hasApiKey()).toBe(true)
-    })
-
-    it('does NOT clear token on 401 for proxied skills endpoints', async () => {
-      setApiKey('secret-key')
-      mockFetch.mockResolvedValue({ ok: false, status: 401, text: () => Promise.resolve('') })
-
-      await expect(request('/api/hermes/skills')).rejects.toThrow('API Error 401')
-      expect(hasApiKey()).toBe(true)
-    })
-
-    it('can preserve a local BFF 401 error without clearing the preview token', async () => {
-      setApiKey('preview-token')
-      mockFetch.mockResolvedValue({
-        ok: false,
-        status: 401,
-        statusText: 'Unauthorized',
-        text: () => Promise.resolve('{"error":"Feishu user session is required for Lark-cli authorization"}'),
-      })
-
-      await expect(request('/api/auth/skill-credentials/lark-cli/start', {
-        method: 'POST',
-        skipAuthRedirect: true,
-      })).rejects.toThrow('Feishu user session is required for Lark-cli authorization')
-      expect(hasApiKey()).toBe(true)
-      expect(router.replace).not.toHaveBeenCalled()
     })
 
     it('throws error on non-401 failure', async () => {
@@ -160,6 +159,21 @@ describe('API Client', () => {
       await expect(request('/api/hermes/sessions')).rejects.toThrow('API Error 500: Internal Server Error')
     })
 
+    it('extracts nested JSON error messages instead of stringifying objects', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve(JSON.stringify({
+          error: {
+            message: 'spawn claude ENOENT',
+            code: 'ENOENT',
+          },
+        })),
+      })
+
+      await expect(request('/api/coding-agents/runs/session-1/input')).rejects.toThrow('API Error 500: spawn claude ENOENT')
+    })
+
     it('returns parsed JSON on success', async () => {
       const data = { sessions: [{ id: '1' }] }
       mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve(data) })
@@ -167,82 +181,76 @@ describe('API Client', () => {
       const result = await request('/api/hermes/sessions')
       expect(result).toEqual(data)
     })
+  })
 
-    it('sends the selected owner profile header in chat-plane user mode', async () => {
-      localStorage.setItem('hermes_web_plane', 'chat')
-      localStorage.setItem('hermes_auth_mode', 'feishu-oauth-dev')
-      localStorage.setItem('hermes_active_profile_name', 'feishu_group_alpha')
-      mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({ sessions: [] }) })
+  describe('download URLs', () => {
+    it('adds the active profile selector to direct download URLs', () => {
+      setApiKey('secret-key')
+      localStorage.setItem('hermes_active_profile_name', 'research')
 
-      await request('/api/hermes/sessions')
+      const url = new URL(getDownloadUrl('/tmp/report.txt', 'report.txt'), 'http://localhost')
 
-      const [, options] = mockFetch.mock.calls[0]
-      expect(options.headers['X-Hermes-Profile']).toBe('feishu_group_alpha')
+      expect(url.pathname).toBe('/api/hermes/download')
+      expect(url.searchParams.get('path')).toBe('/tmp/report.txt')
+      expect(url.searchParams.get('name')).toBe('report.txt')
+      expect(url.searchParams.get('profile')).toBe('research')
+      expect(url.searchParams.get('token')).toBe('secret-key')
     })
 
-    it('does not send the profile header for Feishu OAuth outside chat-plane', async () => {
-      localStorage.setItem('hermes_web_plane', 'both')
-      localStorage.setItem('hermes_auth_mode', 'feishu-oauth-dev')
-      localStorage.setItem('hermes_active_profile_name', 'feishu_group_alpha')
-      mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({ sessions: [] }) })
+    it('handles raw percent signs in download paths and filenames', () => {
+      const url = new URL(getDownloadUrl('/tmp/100% ready.txt', '100% ready.txt'), 'http://localhost')
 
-      await request('/api/hermes/sessions')
-
-      const [, options] = mockFetch.mock.calls[0]
-      expect(options.headers['X-Hermes-Profile']).toBeUndefined()
+      expect(url.pathname).toBe('/api/hermes/download')
+      expect(url.searchParams.get('path')).toBe('/tmp/100% ready.txt')
+      expect(url.searchParams.get('name')).toBe('100% ready.txt')
     })
   })
 
-  describe('auth API', () => {
-    it('unwraps upstream-style current-user responses while preserving Feishu fields', async () => {
+  describe('file upload', () => {
+    it('adds auth and active profile headers to multipart uploads', async () => {
+      setApiKey('secret-key')
+      localStorage.setItem('hermes_active_profile_name', 'research')
       mockFetch.mockResolvedValue({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({
-          user: {
-            id: 'ou_test',
-            username: '张三',
-            openid: 'ou_test',
-            profile: 'researcher',
-            role: 'user',
-            status: 'active',
-            name: '张三',
-            avatarUrl: 'https://example.com/avatar.png',
-            profiles: ['researcher'],
-          },
-        }),
+        json: () => Promise.resolve({ files: [] }),
       })
 
-      const user = await fetchCurrentUser()
+      await uploadFiles('notes', [new File(['hello'], 'hello.txt', { type: 'text/plain' })])
 
-      expect(user).toMatchObject({
-        id: 'ou_test',
-        username: '张三',
-        openid: 'ou_test',
-        profile: 'researcher',
-        role: 'user',
-        status: 'active',
-        name: '张三',
-        avatarUrl: 'https://example.com/avatar.png',
-        profiles: ['researcher'],
+      expect(mockFetch).toHaveBeenCalledOnce()
+      const [url, options] = mockFetch.mock.calls[0]
+      expect(url).toBe('/api/hermes/files/upload?path=notes')
+      expect(options.method).toBe('POST')
+      expect(options.headers.Authorization).toBe('Bearer secret-key')
+      expect(options.headers['X-Hermes-Profile']).toBe('research')
+      expect(options.body).toBeInstanceOf(FormData)
+    })
+
+    it('adds auth and active profile headers when importing skills', async () => {
+      setApiKey('secret-key')
+      localStorage.setItem('hermes_active_profile_name', 'research')
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('{"name":"demo-skill"}'),
       })
+
+      await importSkill([new File(['# Demo\n'], 'demo.zip', { type: 'application/zip' })])
+
+      expect(mockFetch).toHaveBeenCalledOnce()
+      const [url, options] = mockFetch.mock.calls[0]
+      expect(url).toBe('/api/hermes/skills/import')
+      expect(options.method).toBe('POST')
+      expect(options.headers.Authorization).toBe('Bearer secret-key')
+      expect(options.headers['X-Hermes-Profile']).toBe('research')
+      expect(options.body).toBeInstanceOf(FormData)
     })
   })
 
   describe('sessions API', () => {
-    it('passes explicit profile query params for deep-linked sessions', async () => {
-      mockFetch
-        .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ sessions: [] }) })
-        .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ session: { id: 's1' } }) })
-
-      await fetchHermesSessions(undefined, undefined, 'tester')
-      await fetchSession('s1', 'tester')
-
-      expect(mockFetch.mock.calls[0][0]).toBe('/api/hermes/sessions/hermes?profile=tester')
-      expect(mockFetch.mock.calls[1][0]).toBe('/api/hermes/sessions/s1?profile=tester')
-    })
-
     it('sends profile-qualified targets for batch deletes', async () => {
+      localStorage.setItem('hermes_active_profile_name', 'research')
       mockFetch.mockResolvedValue({
         ok: true,
         status: 200,
@@ -257,6 +265,7 @@ describe('API Client', () => {
       const [url, options] = mockFetch.mock.calls[0]
       expect(url).toBe('/api/hermes/sessions/batch-delete')
       expect(options.method).toBe('POST')
+      expect(options.headers['X-Hermes-Profile']).toBeUndefined()
       expect(JSON.parse(options.body)).toEqual({
         ids: ['session-default', 'session-travel'],
         sessions: [
@@ -264,6 +273,20 @@ describe('API Client', () => {
           { id: 'session-travel', profile: 'travel' },
         ],
       })
+    })
+
+    it('sends the profile selector when importing a Hermes session', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ok: true, imported: true }),
+      })
+
+      await importHermesSession('cli-1', 'travel')
+
+      const [url, options] = mockFetch.mock.calls[0]
+      expect(url).toBe('/api/hermes/sessions/hermes/cli-1/import?profile=travel')
+      expect(options.method).toBe('POST')
     })
   })
 })

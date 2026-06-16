@@ -1,17 +1,27 @@
 import Router from '@koa/router'
-import type { Context } from 'koa'
-import { mkdir } from 'fs/promises'
-import { join } from 'path'
 import {
   createFileProvider,
   resolveHermesPath,
   isSensitivePath,
   MAX_EDIT_SIZE,
 } from '../../services/hermes/file-provider'
-import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
+import { requireSuperAdmin } from '../../middleware/user-auth'
+import { MultipartParseError, parseMultipartBoundary, parseMultipartFilename, splitMultipart } from '../../lib/multipart'
 
-function withAbsolutePath<T extends { path: string }>(entry: T): T & { absolutePath: string } {
-  return { ...entry, absolutePath: resolveHermesPath(entry.path) }
+function requestedProfile(ctx: any): string | undefined {
+  return ctx.state?.profile?.name
+}
+
+function resolveRequestPath(ctx: any, relativePath: string): string {
+  return resolveHermesPath(relativePath, requestedProfile(ctx))
+}
+
+async function createRequestFileProvider(ctx: any) {
+  return createFileProvider(requestedProfile(ctx))
+}
+
+function withAbsolutePath<T extends { path: string }>(ctx: any, entry: T): T & { absolutePath: string } {
+  return { ...entry, absolutePath: resolveRequestPath(ctx, entry.path) }
 }
 
 export const fileRoutes = new Router()
@@ -36,43 +46,18 @@ function handleError(ctx: any, err: any) {
   ctx.body = { error: err.message, code }
 }
 
-async function getFileRootDir(ctx: Context): Promise<string | undefined> {
-  if (!isChatPlaneRequest(ctx)) return undefined
-  const workspaceDir = join(getRequestProfileDir(ctx), 'workspace')
-  await mkdir(workspaceDir, { recursive: true })
-  return workspaceDir
-}
-
-function resolveFilePath(relativePath: string, rootDir?: string): string {
-  return resolveHermesPath(relativePath, rootDir)
-}
-
-async function createRequestFileProvider(rootDir?: string) {
-  return rootDir ? createFileProvider({ rootDir, forceLocal: true }) : createFileProvider()
-}
-
-function denySensitivePath(ctx: Context, relativePath: string, action = 'access'): boolean {
-  if (!isSensitivePath(relativePath)) return false
-  ctx.status = 403
-  ctx.body = { error: `Cannot ${action} sensitive file`, code: 'permission_denied' }
-  return true
-}
-
 // GET /api/hermes/files/list?path=
 fileRoutes.get('/api/hermes/files/list', async (ctx) => {
   const relativePath = (ctx.query.path as string) || ''
-  if (relativePath && denySensitivePath(ctx, relativePath)) return
   try {
-    const rootDir = await getFileRootDir(ctx)
-    const absPath = resolveFilePath(relativePath, rootDir)
-    const provider = await createRequestFileProvider(rootDir)
-    const entries = (await provider.listDir(absPath))
-      .filter(entry => !isSensitivePath(entry.path || entry.name))
+    const absPath = resolveRequestPath(ctx, relativePath)
+    const provider = await createRequestFileProvider(ctx)
+    const entries = await provider.listDir(absPath)
     entries.sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
       return a.name.localeCompare(b.name)
     })
-    ctx.body = { entries: entries.map(withAbsolutePath), path: relativePath, absolutePath: absPath }
+    ctx.body = { entries: entries.map(entry => withAbsolutePath(ctx, entry)), path: relativePath, absolutePath: absPath }
   } catch (err: any) {
     handleError(ctx, err)
   }
@@ -86,31 +71,27 @@ fileRoutes.get('/api/hermes/files/stat', async (ctx) => {
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
-  if (denySensitivePath(ctx, relativePath)) return
   try {
-    const rootDir = await getFileRootDir(ctx)
-    const absPath = resolveFilePath(relativePath, rootDir)
-    const provider = await createRequestFileProvider(rootDir)
+    const absPath = resolveRequestPath(ctx, relativePath)
+    const provider = await createRequestFileProvider(ctx)
     const info = await provider.stat(absPath)
-    ctx.body = withAbsolutePath(info)
+    ctx.body = withAbsolutePath(ctx, info)
   } catch (err: any) {
     handleError(ctx, err)
   }
 })
 
 // GET /api/hermes/files/read?path=
-fileRoutes.get('/api/hermes/files/read', async (ctx) => {
+fileRoutes.get('/api/hermes/files/read', requireSuperAdmin, async (ctx) => {
   const relativePath = ctx.query.path as string
   if (!relativePath) {
     ctx.status = 400
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
-  if (denySensitivePath(ctx, relativePath)) return
   try {
-    const rootDir = await getFileRootDir(ctx)
-    const absPath = resolveFilePath(relativePath, rootDir)
-    const provider = await createRequestFileProvider(rootDir)
+    const absPath = resolveRequestPath(ctx, relativePath)
+    const provider = await createRequestFileProvider(ctx)
     const data = await provider.readFile(absPath)
     if (data.length > MAX_EDIT_SIZE) {
       ctx.status = 413
@@ -124,14 +105,18 @@ fileRoutes.get('/api/hermes/files/read', async (ctx) => {
 })
 
 // PUT /api/hermes/files/write  body: { path, content }
-fileRoutes.put('/api/hermes/files/write', async (ctx) => {
+fileRoutes.put('/api/hermes/files/write', requireSuperAdmin, async (ctx) => {
   const { path: relativePath, content } = ctx.request.body as { path?: string; content?: string }
   if (!relativePath) {
     ctx.status = 400
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
-  if (denySensitivePath(ctx, relativePath, 'modify')) return
+  if (isSensitivePath(relativePath)) {
+    ctx.status = 403
+    ctx.body = { error: 'Cannot modify sensitive file', code: 'permission_denied' }
+    return
+  }
   try {
     const buf = Buffer.from(content || '', 'utf-8')
     if (buf.length > MAX_EDIT_SIZE) {
@@ -139,9 +124,8 @@ fileRoutes.put('/api/hermes/files/write', async (ctx) => {
       ctx.body = { error: 'Content too large', code: 'file_too_large' }
       return
     }
-    const rootDir = await getFileRootDir(ctx)
-    const absPath = resolveFilePath(relativePath, rootDir)
-    const provider = await createRequestFileProvider(rootDir)
+    const absPath = resolveRequestPath(ctx, relativePath)
+    const provider = await createRequestFileProvider(ctx)
     await provider.writeFile(absPath, buf)
     ctx.body = { ok: true, path: relativePath }
   } catch (err: any) {
@@ -150,20 +134,21 @@ fileRoutes.put('/api/hermes/files/write', async (ctx) => {
 })
 
 // DELETE /api/hermes/files/delete  body: { path, recursive? }
-fileRoutes.delete('/api/hermes/files/delete', async (ctx) => {
-  const body = (ctx.request.body || {}) as { path?: string; recursive?: boolean }
-  const relativePath = body.path || (ctx.query.path as string)
-  const recursive = body.recursive ?? ctx.query.recursive === 'true'
+fileRoutes.delete('/api/hermes/files/delete', requireSuperAdmin, async (ctx) => {
+  const { path: relativePath, recursive } = (ctx.request.body || {}) as { path?: string; recursive?: boolean }
   if (!relativePath) {
     ctx.status = 400
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
-  if (denySensitivePath(ctx, relativePath, 'delete')) return
+  if (isSensitivePath(relativePath)) {
+    ctx.status = 403
+    ctx.body = { error: 'Cannot delete sensitive file', code: 'permission_denied' }
+    return
+  }
   try {
-    const rootDir = await getFileRootDir(ctx)
-    const absPath = resolveFilePath(relativePath, rootDir)
-    const provider = await createRequestFileProvider(rootDir)
+    const absPath = resolveRequestPath(ctx, relativePath)
+    const provider = await createRequestFileProvider(ctx)
     if (recursive) {
       await provider.deleteDir(absPath)
     } else {
@@ -176,20 +161,22 @@ fileRoutes.delete('/api/hermes/files/delete', async (ctx) => {
 })
 
 // POST /api/hermes/files/rename  body: { oldPath, newPath }
-fileRoutes.post('/api/hermes/files/rename', async (ctx) => {
+fileRoutes.post('/api/hermes/files/rename', requireSuperAdmin, async (ctx) => {
   const { oldPath, newPath } = ctx.request.body as { oldPath?: string; newPath?: string }
   if (!oldPath || !newPath) {
     ctx.status = 400
     ctx.body = { error: 'Missing oldPath or newPath', code: 'missing_path' }
     return
   }
-  if (denySensitivePath(ctx, oldPath, 'rename')) return
-  if (denySensitivePath(ctx, newPath, 'rename into')) return
+  if (isSensitivePath(oldPath)) {
+    ctx.status = 403
+    ctx.body = { error: 'Cannot rename sensitive file', code: 'permission_denied' }
+    return
+  }
   try {
-    const rootDir = await getFileRootDir(ctx)
-    const absOld = resolveFilePath(oldPath, rootDir)
-    const absNew = resolveFilePath(newPath, rootDir)
-    const provider = await createRequestFileProvider(rootDir)
+    const absOld = resolveRequestPath(ctx, oldPath)
+    const absNew = resolveRequestPath(ctx, newPath)
+    const provider = await createRequestFileProvider(ctx)
     await provider.renameFile(absOld, absNew)
     ctx.body = { ok: true }
   } catch (err: any) {
@@ -198,18 +185,16 @@ fileRoutes.post('/api/hermes/files/rename', async (ctx) => {
 })
 
 // POST /api/hermes/files/mkdir  body: { path }
-fileRoutes.post('/api/hermes/files/mkdir', async (ctx) => {
+fileRoutes.post('/api/hermes/files/mkdir', requireSuperAdmin, async (ctx) => {
   const { path: relativePath } = ctx.request.body as { path?: string }
   if (!relativePath) {
     ctx.status = 400
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
-  if (denySensitivePath(ctx, relativePath, 'create')) return
   try {
-    const rootDir = await getFileRootDir(ctx)
-    const absPath = resolveFilePath(relativePath, rootDir)
-    const provider = await createRequestFileProvider(rootDir)
+    const absPath = resolveRequestPath(ctx, relativePath)
+    const provider = await createRequestFileProvider(ctx)
     await provider.mkDir(absPath)
     ctx.body = { ok: true }
   } catch (err: any) {
@@ -218,20 +203,17 @@ fileRoutes.post('/api/hermes/files/mkdir', async (ctx) => {
 })
 
 // POST /api/hermes/files/copy  body: { srcPath, destPath }
-fileRoutes.post('/api/hermes/files/copy', async (ctx) => {
+fileRoutes.post('/api/hermes/files/copy', requireSuperAdmin, async (ctx) => {
   const { srcPath, destPath } = ctx.request.body as { srcPath?: string; destPath?: string }
   if (!srcPath || !destPath) {
     ctx.status = 400
     ctx.body = { error: 'Missing srcPath or destPath', code: 'missing_path' }
     return
   }
-  if (denySensitivePath(ctx, srcPath, 'copy')) return
-  if (denySensitivePath(ctx, destPath, 'copy into')) return
   try {
-    const rootDir = await getFileRootDir(ctx)
-    const absSrc = resolveFilePath(srcPath, rootDir)
-    const absDest = resolveFilePath(destPath, rootDir)
-    const provider = await createRequestFileProvider(rootDir)
+    const absSrc = resolveRequestPath(ctx, srcPath)
+    const absDest = resolveRequestPath(ctx, destPath)
+    const provider = await createRequestFileProvider(ctx)
     await provider.copyFile(absSrc, absDest)
     ctx.body = { ok: true }
   } catch (err: any) {
@@ -240,7 +222,7 @@ fileRoutes.post('/api/hermes/files/copy', async (ctx) => {
 })
 
 // POST /api/hermes/files/upload?path=  (multipart/form-data)
-fileRoutes.post('/api/hermes/files/upload', async (ctx) => {
+fileRoutes.post('/api/hermes/files/upload', requireSuperAdmin, async (ctx) => {
   const targetDir = (ctx.query.path as string) || ''
   const contentType = ctx.get('content-type') || ''
   if (!contentType.startsWith('multipart/form-data')) {
@@ -249,8 +231,8 @@ fileRoutes.post('/api/hermes/files/upload', async (ctx) => {
     return
   }
 
-  const boundary = '--' + contentType.split('boundary=')[1]
-  if (!boundary || boundary === '--undefined') {
+  const boundaryBuf = parseMultipartBoundary(contentType)
+  if (!boundaryBuf) {
     ctx.status = 400
     ctx.body = { error: 'Missing boundary', code: 'invalid_request' }
     return
@@ -260,10 +242,8 @@ fileRoutes.post('/api/hermes/files/upload', async (ctx) => {
   for await (const chunk of ctx.req) chunks.push(chunk)
   const raw = Buffer.concat(chunks)
 
-  const boundaryBuf = Buffer.from(boundary)
   const parts = splitMultipart(raw, boundaryBuf)
-  const rootDir = await getFileRootDir(ctx)
-  const provider = await createRequestFileProvider(rootDir)
+  const provider = await createRequestFileProvider(ctx)
   const results: { name: string; path: string }[] = []
 
   for (const part of parts) {
@@ -273,15 +253,18 @@ fileRoutes.post('/api/hermes/files/upload', async (ctx) => {
     const header = headerBuf.toString('utf-8')
     const data = part.subarray(headerEnd + 4, part.length - 2)
 
-    let filename = ''
-    const filenameStarMatch = header.match(/filename\*=UTF-8''(.+)/i)
-    if (filenameStarMatch) {
-      filename = decodeURIComponent(filenameStarMatch[1])
-    } else {
-      const filenameMatch = header.match(/filename="([^"]+)"/)
-      if (!filenameMatch) continue
-      filename = filenameMatch[1]
+    let filename: string | null
+    try {
+      filename = parseMultipartFilename(header)
+    } catch (error) {
+      if (error instanceof MultipartParseError) {
+        ctx.status = 400
+        ctx.body = { error: error.message, code: 'invalid_request' }
+        return
+      }
+      throw error
     }
+    if (!filename) continue
 
     if (data.length > MAX_EDIT_SIZE) {
       ctx.status = 413
@@ -296,25 +279,10 @@ fileRoutes.post('/api/hermes/files/upload', async (ctx) => {
       return
     }
 
-    const absPath = resolveFilePath(filePath, rootDir)
+    const absPath = resolveRequestPath(ctx, filePath)
     await provider.writeFile(absPath, data)
     results.push({ name: filename, path: filePath })
   }
 
   ctx.body = { files: results }
 })
-
-function splitMultipart(raw: Buffer, boundary: Buffer): Buffer[] {
-  const parts: Buffer[] = []
-  let start = 0
-  while (true) {
-    const idx = raw.indexOf(boundary, start)
-    if (idx === -1) break
-    if (start > 0) {
-      const partStart = start + 2
-      parts.push(raw.subarray(partStart, idx))
-    }
-    start = idx + boundary.length
-  }
-  return parts
-}

@@ -1,13 +1,14 @@
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { writeFileSync } from 'fs'
 import { join } from 'path'
-import { getWebUiHome } from '../config'
+import { config } from '../config'
 
-const APP_HOME = getWebUiHome()
+const APP_HOME = config.appHome
 const LOCK_FILE = join(APP_HOME, '.login-lock.json')
 
 // Per-IP settings
 const IP_MAX_FAILURES = 10
+const IP_FAILURE_WINDOW_MS = 15 * 60_000 // 15 minutes
 const IP_LOCK_DURATION_MS = 60 * 60_000 // 1 hour
 const IP_MAP_MAX_SIZE = 10000
 
@@ -20,11 +21,13 @@ const GLOBAL_LOCK_DURATION_MS = 30 * 60_000 // 30 minutes
 interface IpEntry {
   failures: number
   lockedUntil: number
+  firstFailureAt?: number
 }
 
 interface LimiterState {
   passwordIpMap: Record<string, IpEntry>
   tokenIpMap: Record<string, IpEntry>
+  pairingIpMap: Record<string, IpEntry>
   globalMinuteCount: number
   globalMinuteWindow: number
   globalTotalFailures: number
@@ -34,6 +37,7 @@ interface LimiterState {
 let state: LimiterState = {
   passwordIpMap: {},
   tokenIpMap: {},
+  pairingIpMap: {},
   globalMinuteCount: 0,
   globalMinuteWindow: 0,
   globalTotalFailures: 0,
@@ -75,6 +79,7 @@ async function loadState(): Promise<void> {
     state = {
       passwordIpMap: parsed.passwordIpMap || {},
       tokenIpMap: parsed.tokenIpMap || {},
+      pairingIpMap: parsed.pairingIpMap || {},
       globalMinuteCount: parsed.globalMinuteCount || 0,
       globalMinuteWindow: parsed.globalMinuteWindow || 0,
       globalTotalFailures: parsed.globalTotalFailures || 0,
@@ -110,6 +115,7 @@ function schedulePersist(): void {
     persistTimer = null
     if (dirty) persistState().catch(() => {})
   }, 2000)
+  ;(persistTimer as any).unref?.()
 }
 
 export type CheckResult =
@@ -149,12 +155,71 @@ function checkIpLock(ip: string, map: Record<string, IpEntry>): CheckResult | nu
   return null
 }
 
+function cleanupIpMap(map: Record<string, IpEntry>): boolean {
+  const t = now()
+  let changed = false
+  for (const [ip, entry] of Object.entries(map)) {
+    if (entry.lockedUntil > 0) {
+      if (t >= entry.lockedUntil) {
+        delete map[ip]
+        changed = true
+      }
+      continue
+    }
+    if (entry.firstFailureAt && t - entry.firstFailureAt > IP_FAILURE_WINDOW_MS) {
+      delete map[ip]
+      changed = true
+    }
+  }
+  return changed
+}
+
+function cleanupIpMaps(): boolean {
+  const passwordChanged = cleanupIpMap(state.passwordIpMap)
+  const tokenChanged = cleanupIpMap(state.tokenIpMap)
+  const pairingChanged = cleanupIpMap(state.pairingIpMap)
+  return passwordChanged || tokenChanged || pairingChanged
+}
+
+function cleanupIpMapsAndSchedulePersist(): void {
+  if (!cleanupIpMaps()) return
+  dirty = true
+  schedulePersist()
+}
+
+function checkAnyIpLock(ip: string): CheckResult | null {
+  return checkIpLock(ip, state.passwordIpMap) ||
+    checkIpLock(ip, state.tokenIpMap) ||
+    checkIpLock(ip, state.pairingIpMap)
+}
+
+function recordIpFailure(map: Record<string, IpEntry>, ip: string): IpEntry {
+  const t = now()
+  let entry = map[ip]
+  if (!entry) {
+    entry = { failures: 0, lockedUntil: 0, firstFailureAt: t }
+    map[ip] = entry
+  }
+
+  const firstFailureAt = entry.firstFailureAt || t
+  if (entry.lockedUntil <= 0 && t - firstFailureAt > IP_FAILURE_WINDOW_MS) {
+    entry.failures = 0
+    entry.firstFailureAt = t
+  } else if (!entry.firstFailureAt) {
+    entry.firstFailureAt = firstFailureAt
+  }
+
+  entry.failures++
+  return entry
+}
+
 export function checkPassword(ip: string): CheckResult {
+  cleanupIpMapsAndSchedulePersist()
   const global = checkGlobalLimits()
   if (global) return global
 
-  // Check both maps — IP locked by either password or token = blocked
-  const ipLock = checkIpLock(ip, state.passwordIpMap) || checkIpLock(ip, state.tokenIpMap)
+  // Check all lock maps so an IP blocked for abuse cannot pivot to another public endpoint.
+  const ipLock = checkAnyIpLock(ip)
   if (ipLock) return ipLock
 
   state.globalMinuteCount++
@@ -164,11 +229,26 @@ export function checkPassword(ip: string): CheckResult {
 }
 
 export function checkToken(ip: string): CheckResult {
+  cleanupIpMapsAndSchedulePersist()
   const global = checkGlobalLimits()
   if (global) return global
 
-  // Check both maps — IP locked by either password or token = blocked
-  const ipLock = checkIpLock(ip, state.tokenIpMap) || checkIpLock(ip, state.passwordIpMap)
+  // Check all lock maps so an IP blocked for abuse cannot pivot to another public endpoint.
+  const ipLock = checkAnyIpLock(ip)
+  if (ipLock) return ipLock
+
+  state.globalMinuteCount++
+  dirty = true
+  schedulePersist()
+  return { allowed: true }
+}
+
+export function checkPairing(ip: string): CheckResult {
+  cleanupIpMapsAndSchedulePersist()
+  const global = checkGlobalLimits()
+  if (global) return global
+
+  const ipLock = checkAnyIpLock(ip)
   if (ipLock) return ipLock
 
   state.globalMinuteCount++
@@ -178,11 +258,7 @@ export function checkToken(ip: string): CheckResult {
 }
 
 export function recordPasswordFailure(ip: string): void {
-  if (!state.passwordIpMap[ip]) {
-    state.passwordIpMap[ip] = { failures: 0, lockedUntil: 0 }
-  }
-  const entry = state.passwordIpMap[ip]
-  entry.failures++
+  const entry = recordIpFailure(state.passwordIpMap, ip)
   state.globalTotalFailures++
   dirty = true
 
@@ -201,11 +277,7 @@ export function recordPasswordFailure(ip: string): void {
 }
 
 export function recordTokenFailure(ip: string): void {
-  if (!state.tokenIpMap[ip]) {
-    state.tokenIpMap[ip] = { failures: 0, lockedUntil: 0 }
-  }
-  const entry = state.tokenIpMap[ip]
-  entry.failures++
+  const entry = recordIpFailure(state.tokenIpMap, ip)
   state.globalTotalFailures++
   dirty = true
 
@@ -223,6 +295,25 @@ export function recordTokenFailure(ip: string): void {
   schedulePersist()
 }
 
+export function recordPairingFailure(ip: string): void {
+  const entry = recordIpFailure(state.pairingIpMap, ip)
+  state.globalTotalFailures++
+  dirty = true
+
+  if (entry.failures >= IP_MAX_FAILURES) {
+    entry.lockedUntil = now() + IP_LOCK_DURATION_MS
+    persistStateSync()
+    return
+  }
+  if (state.globalTotalFailures >= GLOBAL_MAX_TOTAL_FAILURES) {
+    state.globalLockedUntil = now() + GLOBAL_LOCK_DURATION_MS
+    persistStateSync()
+    return
+  }
+  pruneIpMap(state.pairingIpMap)
+  schedulePersist()
+}
+
 export function recordPasswordSuccess(ip: string): void {
   if (state.passwordIpMap[ip]) {
     delete state.passwordIpMap[ip]
@@ -234,7 +325,7 @@ export function recordPasswordSuccess(ip: string): void {
 
 export function reset(): void {
   state = {
-    passwordIpMap: {}, tokenIpMap: {},
+    passwordIpMap: {}, tokenIpMap: {}, pairingIpMap: {},
     globalMinuteCount: 0, globalMinuteWindow: 0,
     globalTotalFailures: 0, globalLockedUntil: 0,
   }
@@ -244,12 +335,13 @@ export function reset(): void {
 
 export interface LockedIpInfo {
   ip: string
-  type: 'password' | 'token'
+  type: 'password' | 'token' | 'pairing'
   failures: number
   lockedUntil: number
 }
 
 export function getLockedIps(): LockedIpInfo[] {
+  cleanupIpMapsAndSchedulePersist()
   const t = now()
   const result: LockedIpInfo[] = []
   for (const [ip, entry] of Object.entries(state.passwordIpMap)) {
@@ -260,6 +352,11 @@ export function getLockedIps(): LockedIpInfo[] {
   for (const [ip, entry] of Object.entries(state.tokenIpMap)) {
     if (entry.lockedUntil > 0 && t < entry.lockedUntil) {
       result.push({ ip, type: 'token', failures: entry.failures, lockedUntil: entry.lockedUntil })
+    }
+  }
+  for (const [ip, entry] of Object.entries(state.pairingIpMap)) {
+    if (entry.lockedUntil > 0 && t < entry.lockedUntil) {
+      result.push({ ip, type: 'pairing', failures: entry.failures, lockedUntil: entry.lockedUntil })
     }
   }
   return result
@@ -275,6 +372,10 @@ export function unlockIp(ip: string): boolean {
     delete state.tokenIpMap[ip]
     found = true
   }
+  if (state.pairingIpMap[ip]) {
+    delete state.pairingIpMap[ip]
+    found = true
+  }
   if (found) {
     dirty = true
     persistStateSync()
@@ -286,6 +387,7 @@ export function unlockAll(): number {
   const count = getLockedIps().length
   state.passwordIpMap = {}
   state.tokenIpMap = {}
+  state.pairingIpMap = {}
   state.globalTotalFailures = 0
   state.globalLockedUntil = 0
   dirty = true
@@ -298,19 +400,7 @@ export { extractIp }
 export async function initLoginLimiter(): Promise<void> {
   await loadState()
   const t = now()
-  let changed = false
-  for (const [ip, entry] of Object.entries(state.passwordIpMap)) {
-    if (entry.lockedUntil > 0 && t >= entry.lockedUntil) {
-      delete state.passwordIpMap[ip]
-      changed = true
-    }
-  }
-  for (const [ip, entry] of Object.entries(state.tokenIpMap)) {
-    if (entry.lockedUntil > 0 && t >= entry.lockedUntil) {
-      delete state.tokenIpMap[ip]
-      changed = true
-    }
-  }
+  let changed = cleanupIpMaps()
   if (state.globalLockedUntil > 0 && t >= state.globalLockedUntil) {
     state.globalLockedUntil = 0
     state.globalTotalFailures = 0

@@ -1,10 +1,6 @@
-import { execFile, spawn } from 'child_process'
 import type { ChildProcess } from 'child_process'
-import { promisify } from 'util'
 import { logger } from '../logger'
-import { config } from '../../config'
-
-const execFileAsync = promisify(execFile)
+import { execHermes, spawnHermes } from './hermes-process'
 
 const execOpts = { windowsHide: true }
 const BOARD_SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -12,14 +8,6 @@ const NO_WORKER_LOG_PATTERNS = [
   /^\(no log for [^)]+?\s+—\s+task may not have spawned yet\)$/i,
   /^no worker log(?: for [^\n]+)?$/i,
 ]
-
-function resolveHermesBin(): string {
-  const envBin = process.env.HERMES_BIN?.trim()
-  if (envBin) return envBin
-  return 'hermes'
-}
-
-const HERMES_BIN = resolveHermesBin()
 
 export function normalizeBoardSlug(board?: string | null): string {
   if (board === undefined || board === null) return 'default'
@@ -37,7 +25,7 @@ function boardArgs(board?: string | null): string[] {
 
 // ─── Types ──────────────────────────────────────────────────────
 
-export type KanbanTaskStatus = 'triage' | 'todo' | 'ready' | 'running' | 'blocked' | 'done' | 'archived'
+export type KanbanTaskStatus = 'triage' | 'todo' | 'scheduled' | 'ready' | 'running' | 'blocked' | 'review' | 'done' | 'archived'
 
 export interface KanbanTask {
   id: string
@@ -187,7 +175,7 @@ export async function listBoards(opts?: { includeArchived?: boolean }): Promise<
   if (opts?.includeArchived) args.push('--all')
 
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout } = await execHermes(args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -214,7 +202,7 @@ export async function createBoard(opts: KanbanBoardCreateOptions): Promise<Kanba
   if (opts.switchCurrent) args.push('--switch')
 
   try {
-    await execFileAsync(HERMES_BIN, args, {
+    await execHermes(args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -233,7 +221,7 @@ export async function archiveBoard(slugInput: string): Promise<void> {
   if (slug === 'default') throw new Error('Cannot archive the default kanban board')
 
   try {
-    await execFileAsync(HERMES_BIN, ['kanban', 'boards', 'rm', slug], {
+    await execHermes(['kanban', 'boards', 'rm', slug], {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -262,9 +250,7 @@ export async function getCapabilities(): Promise<KanbanCapabilities> {
     { key: 'dispatch', status: 'supported', canonicalRoute: '/dispatch', canonicalCommand: 'dispatch', requiresBoard: true },
     { key: 'links', status: 'supported', canonicalRoute: '/links', canonicalCommand: 'link/unlink', requiresBoard: true },
     { key: 'bulk', status: 'partial', reason: 'WUI applies supported bulk-equivalent CLI transitions per id and returns per-task outcomes; direct priority/status patch parity remains deferred', canonicalRoute: '/tasks/bulk', canonicalCommand: 'bulk-equivalent via complete/block/unblock/archive/assign', requiresBoard: true },
-    config.webPlane === 'chat'
-      ? { key: 'events', status: 'missing', reason: 'Disabled in chat-plane because WebSocket upgrade cannot enforce per-openid owner filtering', canonicalRoute: '/events', canonicalCommand: 'watch', requiresBoard: true }
-      : { key: 'events', status: 'partial', reason: 'WUI exposes a board-scoped WebSocket bridge backed by the canonical `kanban watch` stream; payload is currently a refresh invalidation signal, not a typed event model', canonicalRoute: '/events', canonicalCommand: 'watch', requiresBoard: true },
+    { key: 'events', status: 'partial', reason: 'WUI exposes a board-scoped WebSocket bridge backed by the canonical `kanban watch` stream; payload is currently a refresh invalidation signal, not a typed event model', canonicalRoute: '/events', canonicalCommand: 'watch', requiresBoard: true },
     { key: 'homeSubscriptions', status: 'missing', reason: 'Deferred from current WUI parity batch', canonicalRoute: '/home-channels and subscription routes', canonicalCommand: 'notify-*', requiresBoard: true },
   ]
   const supports = Object.fromEntries(capabilities.map(capability => [capability.key, capability.status === 'supported'])) as Record<string, boolean>
@@ -300,7 +286,7 @@ function textFromExecValue(value: unknown): string {
 
 async function execKanbanMutation(args: string[], logMessage: string, errorPrefix: string): Promise<string> {
   try {
-    const { stdout, stderr } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout, stderr } = await execHermes(args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -321,7 +307,7 @@ export function buildWatchArgs(opts?: KanbanWatchOptions): string[] {
 }
 
 export function watchEvents(opts?: KanbanWatchOptions): ChildProcess {
-  return spawn(HERMES_BIN, buildWatchArgs(opts), {
+  return spawnHermes(buildWatchArgs(opts), {
     stdio: ['ignore', 'pipe', 'pipe'],
     ...execOpts,
   })
@@ -349,7 +335,7 @@ export async function addComment(taskId: string, body: string, opts?: KanbanBoar
   const args = [...boardArgs(opts?.board), 'comment', taskId, body]
   pushOptional(args, '--author', opts?.author)
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout } = await execHermes(args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -365,7 +351,7 @@ export async function getTaskLog(taskId: string, opts?: KanbanBoardOptions & { t
   const args = [...boardArgs(opts?.board), 'log', taskId]
   pushOptional(args, '--tail', opts?.tail)
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout } = await execHermes(args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -402,7 +388,7 @@ export async function getDiagnostics(opts?: KanbanBoardOptions & { task?: string
   pushOptional(args, '--task', opts?.task)
   pushOptional(args, '--severity', opts?.severity)
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout } = await execHermes(args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -418,7 +404,7 @@ export async function reclaimTask(taskId: string, opts?: KanbanBoardOptions & { 
   const args = [...boardArgs(opts?.board), 'reclaim', taskId]
   pushOptional(args, '--reason', opts?.reason)
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout } = await execHermes(args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -435,7 +421,7 @@ export async function reassignTask(taskId: string, profile: string, opts?: Kanba
   if (opts?.reclaim) args.push('--reclaim')
   pushOptional(args, '--reason', opts?.reason)
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout } = await execHermes(args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -451,7 +437,7 @@ export async function specifyTask(taskId: string, opts?: KanbanBoardOptions & { 
   const args = [...boardArgs(opts?.board), 'specify', taskId, '--json']
   pushOptional(args, '--author', opts?.author)
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout } = await execHermes(args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -469,7 +455,7 @@ export async function dispatch(opts?: KanbanBoardOptions & { dryRun?: boolean; m
   pushOptional(args, '--max', opts?.max)
   pushOptional(args, '--failure-limit', opts?.failureLimit)
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout } = await execHermes(args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -495,7 +481,7 @@ export async function listTasks(opts?: {
   if (opts?.tenant) args.push('--tenant', opts.tenant)
 
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout } = await execHermes(args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -509,7 +495,7 @@ export async function listTasks(opts?: {
 
 export async function getTask(taskId: string, opts?: KanbanBoardOptions): Promise<KanbanTaskDetail | null> {
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, [...boardArgs(opts?.board), 'show', taskId, '--json'], {
+    const { stdout } = await execHermes([...boardArgs(opts?.board), 'show', taskId, '--json'], {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -530,6 +516,14 @@ export async function createTask(
     assignee?: string
     priority?: number
     tenant?: string
+    workspace?: string
+    branch?: string
+    triage?: boolean
+    skills?: string[]
+    maxRuntime?: string
+    maxRetries?: number
+    goalMode?: boolean
+    goalMaxTurns?: number
   },
 ): Promise<KanbanTask> {
   const args = [...boardArgs(opts?.board), 'create', title, '--json']
@@ -537,9 +531,19 @@ export async function createTask(
   if (opts?.assignee) args.push('--assignee', opts.assignee)
   if (opts?.priority !== undefined) args.push('--priority', String(opts.priority))
   if (opts?.tenant) args.push('--tenant', opts.tenant)
+  if (opts?.workspace) args.push('--workspace', opts.workspace)
+  if (opts?.branch) args.push('--branch', opts.branch)
+  if (opts?.triage) args.push('--triage')
+  if (opts?.maxRuntime) args.push('--max-runtime', opts.maxRuntime)
+  if (opts?.maxRetries !== undefined) args.push('--max-retries', String(opts.maxRetries))
+  if (opts?.goalMode) args.push('--goal')
+  if (opts?.goalMaxTurns !== undefined) args.push('--goal-max-turns', String(opts.goalMaxTurns))
+  for (const skill of opts?.skills || []) {
+    if (skill.trim()) args.push('--skill', skill.trim())
+  }
 
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout } = await execHermes(args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -625,7 +629,7 @@ export async function bulkUpdateTasks(opts: KanbanBulkTaskUpdateOptions): Promis
 
 export async function getStats(opts?: KanbanBoardOptions): Promise<KanbanStats> {
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, [...boardArgs(opts?.board), 'stats', '--json'], {
+    const { stdout } = await execHermes([...boardArgs(opts?.board), 'stats', '--json'], {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -645,7 +649,7 @@ export async function getStats(opts?: KanbanBoardOptions): Promise<KanbanStats> 
 
 export async function getAssignees(opts?: KanbanBoardOptions): Promise<KanbanAssignee[]> {
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, [...boardArgs(opts?.board), 'assignees', '--json'], {
+    const { stdout } = await execHermes([...boardArgs(opts?.board), 'assignees', '--json'], {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,

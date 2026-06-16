@@ -4,12 +4,19 @@ export interface HermesProfile {
   name: string
   active: boolean
   model: string
-  gateway: string
+  gatewayStatus?: string
   alias: string
-  displayLabel?: string
-  kind?: string
-  ownerOpenId?: string
-  agentId?: string
+  avatar?: ProfileAvatar | null
+}
+
+export interface HermesProfileDetail {
+  name: string
+  path: string
+  model: string
+  provider: string
+  skills: number
+  hasEnv: boolean
+  hasSoulMd: boolean
   avatar?: ProfileAvatar | null
 }
 
@@ -20,16 +27,34 @@ export interface ProfileAvatar {
   updatedAt?: number
 }
 
-export interface HermesProfileDetail {
-  name: string
-  path: string
-  model: string
-  provider: string
-  gateway: string
-  skills: number
-  hasEnv: boolean
-  hasSoulMd: boolean
-  avatar?: ProfileAvatar | null
+export interface ProfileRuntimeStatus {
+  profile: string
+  bridge: {
+    running: boolean
+    profile: string
+    mode?: string
+    reachable?: boolean
+    error?: string
+  }
+  gateway: {
+    profile: string
+    running: boolean
+    pid?: number
+    port?: number
+    host?: string
+    url?: string
+    error?: string
+    diagnostics?: {
+      health_url?: string
+      reason?: string
+      health_ok?: boolean
+    }
+  }
+}
+
+export interface ProfileRuntimeStatusesResponse {
+  profiles: ProfileRuntimeStatus[]
+  refreshing?: boolean
 }
 
 export async function fetchProfiles(): Promise<HermesProfile[]> {
@@ -40,6 +65,20 @@ export async function fetchProfiles(): Promise<HermesProfile[]> {
 export async function fetchProfileDetail(name: string): Promise<HermesProfileDetail> {
   const res = await request<{ profile: HermesProfileDetail }>(`/api/hermes/profiles/${encodeURIComponent(name)}`)
   return res.profile
+}
+
+export async function fetchProfileRuntimeStatus(name: string): Promise<ProfileRuntimeStatus> {
+  return request<ProfileRuntimeStatus>(`/api/hermes/profiles/${encodeURIComponent(name)}/runtime-status`)
+}
+
+export async function fetchProfileRuntimeStatusesWithMeta(options: { refresh?: boolean } = {}): Promise<ProfileRuntimeStatusesResponse> {
+  const query = options.refresh === false ? '?refresh=0' : ''
+  return request<ProfileRuntimeStatusesResponse>(`/api/hermes/profiles/runtime-statuses${query}`)
+}
+
+export async function fetchProfileRuntimeStatuses(): Promise<ProfileRuntimeStatus[]> {
+  const res = await fetchProfileRuntimeStatusesWithMeta()
+  return res.profiles
 }
 
 export async function updateProfileAvatar(name: string, avatar: ProfileAvatar): Promise<ProfileAvatar> {
@@ -54,6 +93,22 @@ export async function deleteProfileAvatar(name: string): Promise<void> {
   await request(`/api/hermes/profiles/${encodeURIComponent(name)}/avatar`, { method: 'DELETE' })
 }
 
+export async function restartProfileGateway(name: string): Promise<ProfileRuntimeStatus['gateway']> {
+  const res = await request<{ success: boolean; gateway: ProfileRuntimeStatus['gateway'] }>(
+    `/api/hermes/profiles/${encodeURIComponent(name)}/gateway/restart`,
+    { method: 'POST' },
+  )
+  return res.gateway
+}
+
+export async function restartProfileRuntime(name: string): Promise<ProfileRuntimeStatus> {
+  const res = await request<{ success: boolean; status: ProfileRuntimeStatus }>(
+    `/api/hermes/profiles/${encodeURIComponent(name)}/restart`,
+    { method: 'POST' },
+  )
+  return res.status
+}
+
 export interface CreateProfileResult {
   success: boolean
   /** clone=true 时被清理的独占平台凭据 KEY 名 */
@@ -64,15 +119,8 @@ export interface CreateProfileResult {
   strippedConfigCredentials?: string[]
 }
 
-export interface CreateProfileOptions {
-  clone?: boolean
-  description?: string
-}
-
-export async function createProfile(name: string, options: CreateProfileOptions | boolean = {}): Promise<CreateProfileResult & { error?: string }> {
+export async function createProfile(name: string, clone?: boolean): Promise<CreateProfileResult & { error?: string }> {
   try {
-    const resolved = typeof options === 'boolean' ? { clone: options } : options
-    const description = resolved.description?.trim() || undefined
     const res = await request<{
       success: boolean
       strippedCredentials?: string[]
@@ -81,7 +129,7 @@ export async function createProfile(name: string, options: CreateProfileOptions 
       error?: string
     }>('/api/hermes/profiles', {
       method: 'POST',
-      body: JSON.stringify({ name, clone: !!resolved.clone, description }),
+      body: JSON.stringify({ name, clone }),
     })
     return {
       success: !!res.success,
@@ -117,6 +165,10 @@ export async function renameProfile(name: string, newName: string): Promise<bool
 }
 
 export async function switchProfile(name: string): Promise<boolean> {
+  return !!name
+}
+
+export async function switchHermesProfile(name: string): Promise<boolean> {
   try {
     await request('/api/hermes/profiles/active', {
       method: 'PUT',

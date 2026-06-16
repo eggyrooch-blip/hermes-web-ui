@@ -19,7 +19,7 @@ export const USAGE_SCHEMA: Record<string, string> = {
   reasoning_tokens: 'INTEGER NOT NULL DEFAULT 0',
   model: "TEXT NOT NULL DEFAULT ''",
   profile: "TEXT NOT NULL DEFAULT 'default'",
-  created_at: 'INTEGER NOT NULL',
+  created_at: 'INTEGER NOT NULL DEFAULT 0',
 }
 
 // ============================================================================
@@ -32,6 +32,10 @@ export const SESSIONS_SCHEMA: Record<string, string> = {
   id: 'TEXT PRIMARY KEY',
   profile: 'TEXT NOT NULL DEFAULT \'default\'',
   source: 'TEXT NOT NULL DEFAULT \'api_server\'',
+  agent: 'TEXT NOT NULL DEFAULT \'\'',
+  agent_mode: 'TEXT NOT NULL DEFAULT \'\'',
+  agent_session_id: 'TEXT NOT NULL DEFAULT \'\'',
+  agent_native_session_id: 'TEXT NOT NULL DEFAULT \'\'',
   user_id: 'TEXT',
   model: 'TEXT NOT NULL DEFAULT \'\'',
   provider: 'TEXT NOT NULL DEFAULT \'\'',
@@ -62,6 +66,8 @@ export const MESSAGES_SCHEMA: Record<string, string> = {
   session_id: 'TEXT NOT NULL',
   role: 'TEXT NOT NULL',
   content: 'TEXT NOT NULL DEFAULT \'\'',
+  display_role: 'TEXT',
+  display_content: 'TEXT',
   tool_call_id: 'TEXT',
   tool_calls: 'TEXT',
   tool_name: 'TEXT',
@@ -105,6 +111,117 @@ export const MODEL_CONTEXT_SCHEMA: Record<string, string> = {
 export const MODEL_CONTEXT_INDEX = 'CREATE UNIQUE INDEX IF NOT EXISTS idx_model_context_provider_model ON model_context(provider, model)'
 
 // ============================================================================
+// Users and Profile Access
+// ============================================================================
+
+export const USERS_TABLE = 'users'
+
+export const USERS_SCHEMA: Record<string, string> = {
+  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  username: 'TEXT NOT NULL UNIQUE',
+  password_hash: 'TEXT NOT NULL',
+  role: "TEXT NOT NULL DEFAULT 'admin'",
+  status: "TEXT NOT NULL DEFAULT 'active'",
+  created_at: 'INTEGER NOT NULL',
+  updated_at: 'INTEGER NOT NULL',
+  last_login_at: 'INTEGER',
+  avatar: "TEXT NOT NULL DEFAULT ''",
+}
+
+export const USER_PROFILES_TABLE = 'user_profiles'
+
+export const USER_PROFILES_SCHEMA: Record<string, string> = {
+  user_id: 'INTEGER NOT NULL',
+  profile_name: "TEXT NOT NULL DEFAULT 'default'",
+  is_default: 'INTEGER NOT NULL DEFAULT 0',
+  created_at: 'INTEGER NOT NULL',
+}
+
+export const USER_PROFILES_INDEXES = {
+  idx_user_profiles_user: 'CREATE INDEX IF NOT EXISTS idx_user_profiles_user ON user_profiles(user_id)',
+  idx_user_profiles_profile: 'CREATE INDEX IF NOT EXISTS idx_user_profiles_profile ON user_profiles(profile_name)',
+  idx_user_profiles_default: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_user_profiles_default ON user_profiles(user_id) WHERE is_default = 1',
+}
+
+// ============================================================================
+// LAN Devices
+// ============================================================================
+
+export const DEVICES_TABLE = 'devices'
+
+export const DEVICES_SCHEMA: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY',
+  status: "TEXT NOT NULL DEFAULT 'none'",
+  inbound_status: "TEXT NOT NULL DEFAULT 'none'",
+  outbound_status: "TEXT NOT NULL DEFAULT 'none'",
+  device_public_key: "TEXT NOT NULL DEFAULT ''",
+  computer_name: "TEXT NOT NULL DEFAULT ''",
+  endpoint_kind: "TEXT NOT NULL DEFAULT 'custom'",
+  ip: "TEXT NOT NULL DEFAULT ''",
+  http_port: 'INTEGER NOT NULL DEFAULT 0',
+  url: "TEXT NOT NULL DEFAULT ''",
+  os_json: "TEXT NOT NULL DEFAULT '{}'",
+  hermes_agent_version: "TEXT NOT NULL DEFAULT ''",
+  hermes_web_ui_version: "TEXT NOT NULL DEFAULT ''",
+  response_ms: 'INTEGER NOT NULL DEFAULT 0',
+  requested_at: 'INTEGER NOT NULL DEFAULT 0',
+  decided_at: 'INTEGER',
+  outbound_requested_at: 'INTEGER NOT NULL DEFAULT 0',
+  outbound_decided_at: 'INTEGER',
+  inbound_history_deleted_at: 'INTEGER',
+  last_seen_at: 'INTEGER NOT NULL DEFAULT 0',
+  updated_at: 'INTEGER NOT NULL',
+}
+
+export const DEVICES_INDEXES = {
+  idx_devices_status: 'CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(status)',
+  idx_devices_last_seen: 'CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen_at)',
+}
+
+export const STT_PROVIDER_SETTINGS_TABLE = 'stt_provider_settings'
+
+export const STT_PROVIDER_SETTINGS_SCHEMA: Record<string, string> = {
+  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  user_id: 'INTEGER NOT NULL',
+  provider: 'TEXT NOT NULL',
+  settings_json: `TEXT NOT NULL DEFAULT '{}'`,
+  secrets_json: `TEXT NOT NULL DEFAULT '{}'`,
+  created_at: `INTEGER NOT NULL DEFAULT (strftime('%s','now'))`,
+  updated_at: `INTEGER NOT NULL DEFAULT (strftime('%s','now'))`,
+}
+
+export const STT_PROVIDER_SETTINGS_INDEXES = {
+  idx_stt_provider_settings_user: 'CREATE INDEX IF NOT EXISTS idx_stt_provider_settings_user ON stt_provider_settings(user_id)',
+  idx_stt_provider_settings_user_provider: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_stt_provider_settings_user_provider ON stt_provider_settings(user_id, provider)',
+}
+
+export const STT_USER_SETTINGS_TABLE = 'stt_user_settings'
+
+export const STT_USER_SETTINGS_SCHEMA: Record<string, string> = {
+  user_id: 'INTEGER PRIMARY KEY',
+  active_provider: "TEXT NOT NULL DEFAULT 'browser'",
+  created_at: `INTEGER NOT NULL DEFAULT (strftime('%s','now'))`,
+  updated_at: `INTEGER NOT NULL DEFAULT (strftime('%s','now'))`,
+}
+
+export const TTS_PROVIDER_SETTINGS_TABLE = 'tts_provider_settings'
+
+export const TTS_PROVIDER_SETTINGS_SCHEMA: Record<string, string> = {
+  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  user_id: 'INTEGER NOT NULL',
+  provider: 'TEXT NOT NULL',
+  settings_json: `TEXT NOT NULL DEFAULT '{}'`,
+  secrets_json: `TEXT NOT NULL DEFAULT '{}'`,
+  created_at: `INTEGER NOT NULL DEFAULT (strftime('%s','now'))`,
+  updated_at: `INTEGER NOT NULL DEFAULT (strftime('%s','now'))`,
+}
+
+export const TTS_PROVIDER_SETTINGS_INDEXES = {
+  idx_tts_provider_settings_user: 'CREATE INDEX IF NOT EXISTS idx_tts_provider_settings_user ON tts_provider_settings(user_id)',
+  idx_tts_provider_settings_user_provider: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_tts_provider_settings_user_provider ON tts_provider_settings(user_id, provider)',
+}
+
+// ============================================================================
 // Group Chat (services/hermes/group-chat/index.ts)
 // ============================================================================
 
@@ -116,9 +233,9 @@ export const GC_ROOMS_SCHEMA: Record<string, string> = {
   inviteCode: 'TEXT UNIQUE',
   triggerTokens: 'INTEGER NOT NULL DEFAULT 100000',
   maxHistoryTokens: 'INTEGER NOT NULL DEFAULT 32000',
-  tailMessageCount: 'INTEGER NOT NULL DEFAULT 20',
+  tailMessageCount: 'INTEGER NOT NULL DEFAULT 10',
   totalTokens: 'INTEGER NOT NULL DEFAULT 0',
-  owner_open_id: 'TEXT',
+  sessionSeed: "TEXT NOT NULL DEFAULT '0'",
 }
 
 export const GC_MESSAGES_TABLE = 'gc_messages'
@@ -130,6 +247,14 @@ export const GC_MESSAGES_SCHEMA: Record<string, string> = {
   senderName: 'TEXT NOT NULL',
   content: 'TEXT NOT NULL',
   timestamp: 'INTEGER NOT NULL',
+  role: "TEXT NOT NULL DEFAULT 'user'",
+  tool_call_id: 'TEXT',
+  tool_calls: 'TEXT',
+  tool_name: 'TEXT',
+  finish_reason: 'TEXT',
+  reasoning: 'TEXT',
+  reasoning_details: 'TEXT',
+  reasoning_content: 'TEXT',
 }
 
 export const GC_ROOM_AGENTS_TABLE = 'gc_room_agents'
@@ -164,6 +289,8 @@ export const GC_ROOM_MEMBERS_SCHEMA: Record<string, string> = {
   description: "TEXT NOT NULL DEFAULT ''",
   joinedAt: 'INTEGER NOT NULL',
   updatedAt: 'INTEGER NOT NULL',
+  avatar: "TEXT NOT NULL DEFAULT ''",
+  authUserId: 'INTEGER',
 }
 
 export const GC_PENDING_SESSION_DELETES_TABLE = 'gc_pending_session_deletes'
@@ -210,90 +337,6 @@ function tableExists(db: NonNullable<ReturnType<typeof getDb>>, tableName: strin
 }
 
 /**
- * 获取表的实际结构（包括主键）
- */
-function getTableStructure(db: NonNullable<ReturnType<typeof getDb>>, tableName: string): {
-  columns: Map<string, string>
-  primaryKey: string | null
-} {
-  // 获取列信息
-  const columns = db.prepare(`PRAGMA table_info("${tableName}")`).all() as Array<{ name: string; type: string; pk: number }>
-  const columnMap = new Map<string, string>()
-
-  for (const col of columns) {
-    columnMap.set(col.name, col.type)
-  }
-
-  // 获取主键信息
-  const tableInfo = db.prepare(
-    `SELECT sql FROM sqlite_master WHERE type='table' AND name=?`
-  ).get(tableName) as { sql: string } | undefined
-
-  // 从 CREATE TABLE 语句中提取主键定义
-  const sql = tableInfo?.sql || ''
-  const pkMatch = sql.match(/PRIMARY KEY\s*\(([^)]+)\)/i)
-  const primaryKey = pkMatch ? pkMatch[1].replace(/\s+/g, '') : null
-
-  return { columns: columnMap, primaryKey }
-}
-
-/**
- * 提取列类型（从 schema 定义中）
- */
-function extractType(schemaDef: string): string {
-  const types = ['TEXT', 'INTEGER', 'REAL', 'BLOB', 'NUMERIC']
-  for (const type of types) {
-    if (schemaDef.toUpperCase().includes(type)) {
-      return type
-    }
-  }
-  return 'TEXT'
-}
-
-/**
- * 检查表结构是否完全匹配 schema（包括主键和列类型）
- */
-function structureMatches(
-  actual: { columns: Map<string, string>; primaryKey: string | null },
-  schema: Record<string, string>,
-  expectedPrimaryKey?: string
-): boolean {
-  // 1. 检查主键
-  if (expectedPrimaryKey) {
-    const expectedPKClean = expectedPrimaryKey.replace(/\s+/g, '')
-    if (actual.primaryKey !== expectedPKClean) {
-      return false  // 主键不匹配
-    }
-  } else {
-    if (actual.primaryKey) {
-      return false  // 期望没有主键，但实际有
-    }
-  }
-
-  // 2. 检查列数量
-  const columnMap = actual.columns as Map<string, string>
-  if (columnMap.size !== Object.keys(schema).length) {
-    return false
-  }
-
-  // 3. 检查列名和类型
-  for (const [colName, colDef] of Object.entries(schema)) {
-    if (!columnMap.has(colName)) {
-      return false  // 列不存在
-    }
-
-    const actualType = columnMap.get(colName)!
-    const expectedType = extractType(colDef)
-
-    if (actualType !== expectedType) {
-      return false  // 类型不匹配
-    }
-  }
-
-  return true
-}
-
-/**
  * 创建表（带完整 schema）
  */
 function createTable(
@@ -316,102 +359,83 @@ function createTable(
   db.exec(`CREATE TABLE ${quoteIdentifier(tableName)} (${colDefs.join(', ')})`)
 }
 
-/**
- * 重建表（保留数据）
- */
-function rebuildTable(
+function canAddColumnToExistingTable(schemaDef: string): boolean {
+  const normalized = schemaDef.toUpperCase()
+  if (normalized.includes('PRIMARY KEY')) return false
+  if (normalized.includes('NOT NULL') && !normalized.includes('DEFAULT')) return false
+  return true
+}
+
+function addMissingSafeColumns(
   db: NonNullable<ReturnType<typeof getDb>>,
   tableName: string,
   schema: Record<string, string>,
-  primaryKey?: string
 ): void {
-  const tempTable = `${tableName}_rebuild_${Date.now()}`
+  const columns = db.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all() as Array<{ name: string }>
+  const existingColumns = new Set(columns.map(col => col.name))
 
-  // 1. 创建新表
-  createTable(db, tempTable, schema, primaryKey)
-
-  // 2. 找出两表共有的列（只复制这些列）
-  const actual = getTableStructure(db, tableName)
-  const commonCols = Array.from(actual.columns.keys()).filter((col) => schema[col])
-
-  // 3. 复制数据
-  if (commonCols.length > 0) {
-    const colList = commonCols.map(c => quoteIdentifier(c)).join(', ')
-    db.exec(`
-      INSERT INTO ${quoteIdentifier(tempTable)} (${colList})
-      SELECT ${colList} FROM ${quoteIdentifier(tableName)}
-    `)
-  }
-
-  // 4. 删除旧表
-  db.exec(`DROP TABLE ${quoteIdentifier(tableName)}`)
-
-  // 5. 重命名新表
-  db.exec(`ALTER TABLE ${quoteIdentifier(tempTable)} RENAME TO ${quoteIdentifier(tableName)}`)
-}
-
-/**
- * 同步表的列（不重建表）
- */
-function syncColumns(
-  db: NonNullable<ReturnType<typeof getDb>>,
-  tableName: string,
-  schema: Record<string, string>
-): void {
-  const actual = getTableStructure(db, tableName)
-  const expectedCols = new Set(Object.keys(schema))
-
-  // 添加缺失的列
-  for (const colName of expectedCols) {
-    if (!actual.columns.has(colName)) {
-      db.exec(`ALTER TABLE ${quoteIdentifier(tableName)} ADD COLUMN ${quoteIdentifier(colName)} ${schema[colName]}`)
+  for (const [columnName, columnDef] of Object.entries(schema)) {
+    if (existingColumns.has(columnName)) continue
+    if (!canAddColumnToExistingTable(columnDef)) {
+      console.warn(`[Schema] ${tableName}.${columnName} cannot be added safely to existing table; skipping`)
+      continue
     }
-  }
-
-  // 删除多余的列
-  for (const colName of actual.columns.keys()) {
-    if (!expectedCols.has(colName)) {
-      db.exec(`ALTER TABLE ${quoteIdentifier(tableName)} DROP COLUMN ${quoteIdentifier(colName)}`)
-    }
+    db.exec(`ALTER TABLE ${quoteIdentifier(tableName)} ADD COLUMN ${quoteIdentifier(columnName)} ${columnDef}`)
   }
 }
 
-/**
- * 同步索引
- */
-function syncIndexes(
+function createIndexes(
   db: NonNullable<ReturnType<typeof getDb>>,
-  tableName: string,
-  indexes: Record<string, string>
+  indexes?: Record<string, string>,
 ): void {
-  const existingIndexes = db.prepare(
-    `SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=?`
-  ).all(tableName) as Array<{ name: string }>
+  if (!indexes) return
 
-  const existingNames = new Set(existingIndexes.map(i => i.name))
-  const expectedNames = new Set(Object.keys(indexes))
+  for (const indexSQL of Object.values(indexes)) {
+    db.exec(indexSQL)
+  }
+}
 
-  // 删除多余索引
-  for (const name of existingNames) {
-    if (expectedNames.has(name)) {
-      try { db.exec(`DROP INDEX ${quoteIdentifier(name)}`) } catch { }
-    }
+function migrateLegacySttProviderSettingsUserIdDefault(
+  db: NonNullable<ReturnType<typeof getDb>>,
+): void {
+  if (!tableExists(db, STT_PROVIDER_SETTINGS_TABLE)) return
+
+  const columns = db.prepare(`PRAGMA table_info(${quoteIdentifier(STT_PROVIDER_SETTINGS_TABLE)})`).all() as Array<{
+    name: string
+    dflt_value: string | null
+  }>
+  const userIdColumn = columns.find((column) => column.name === 'user_id')
+
+  if (!userIdColumn || userIdColumn.dflt_value === null) {
+    return
   }
 
-  // 创建新索引
-  for (const [name, sql] of Object.entries(indexes)) {
-    if (!existingNames.has(name)) {
-      try { db.exec(sql) } catch { }
-    }
+  const replacementTableName = `${STT_PROVIDER_SETTINGS_TABLE}__rebuilt`
+  const preservedColumns = ['id', 'user_id', 'provider', 'settings_json', 'secrets_json', 'created_at', 'updated_at']
+  const quotedPreservedColumns = preservedColumns.map((column) => quoteIdentifier(column)).join(', ')
+
+  db.exec('BEGIN')
+  try {
+    db.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(replacementTableName)}`)
+    createTable(db, replacementTableName, STT_PROVIDER_SETTINGS_SCHEMA)
+    db.exec(
+      `INSERT INTO ${quoteIdentifier(replacementTableName)} (${quotedPreservedColumns}) ` +
+      `SELECT ${quotedPreservedColumns} FROM ${quoteIdentifier(STT_PROVIDER_SETTINGS_TABLE)}`
+    )
+    db.exec(`DROP TABLE ${quoteIdentifier(STT_PROVIDER_SETTINGS_TABLE)}`)
+    db.exec(`ALTER TABLE ${quoteIdentifier(replacementTableName)} RENAME TO ${quoteIdentifier(STT_PROVIDER_SETTINGS_TABLE)}`)
+    createIndexes(db, STT_PROVIDER_SETTINGS_INDEXES)
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
   }
 }
 
 /**
  * 主同步函数
  * - 表不存在：创建
- * - 表存在但结构不匹配（主键/类型）：重建
- * - 表存在且结构匹配：同步列（增删）
- * - 同步索引
+ * - 表存在：只追加安全的新列，不删除、不重建、不修改主键/类型
  */
 export function syncTable(
   tableName: string,
@@ -429,30 +453,11 @@ export function syncTable(
     createTable(db, tableName, schema, options?.primaryKey)
 
     // 创建索引
-    if (options?.indexes) {
-      for (const indexSQL of Object.values(options.indexes)) {
-        db.exec(indexSQL)
-      }
-    }
+    createIndexes(db, options?.indexes)
     return
   }
 
-  // 2. 表存在 → 检查结构
-  const actual = getTableStructure(db, tableName)
-  const matches = structureMatches(actual, schema, options?.primaryKey)
-
-  if (matches) {
-    // 结构完全匹配 → 同步列（理论上不会做任何事，但确保一致性）
-    syncColumns(db, tableName, schema)
-  } else {
-    // 结构不匹配 → 重建表
-    rebuildTable(db, tableName, schema, options?.primaryKey)
-  }
-
-  // 3. 同步索引（不管是否重建）
-  if (options?.indexes) {
-    syncIndexes(db, tableName, options.indexes)
-  }
+  addMissingSafeColumns(db, tableName, schema)
 }
 
 // ============================================================================
@@ -460,16 +465,11 @@ export function syncTable(
 // ============================================================================
 
 /**
- * Initialize all Hermes SQLite tables with proper schemas.
- * This function automatically syncs all tables to match their schema definitions.
+ * Initialize missing Hermes SQLite tables with proper schemas.
+ * Existing tables only receive safe additive columns.
  * Call this once at application bootstrap.
  */
-export function initAllHermesTables(retryCount = 0): void {
-  // 防止无限重试（最多重试 1 次）
-  if (retryCount > 1) {
-    throw new Error('[Schema] ❌ Database initialization failed after multiple retry attempts. Please delete the database file manually and restart.')
-  }
-
+export function initAllHermesTables(): void {
   const db = getDb()
   if (!db) return
 
@@ -490,6 +490,26 @@ export function initAllHermesTables(retryCount = 0): void {
       indexes: {
         idx_model_context_provider_model: MODEL_CONTEXT_INDEX,
       }
+    })
+
+    // Users and profile access
+    syncTable(USERS_TABLE, USERS_SCHEMA)
+    syncTable(USER_PROFILES_TABLE, USER_PROFILES_SCHEMA, {
+      primaryKey: 'user_id, profile_name',
+      indexes: USER_PROFILES_INDEXES,
+    })
+
+    // LAN devices and link request status
+    syncTable(DEVICES_TABLE, DEVICES_SCHEMA, {
+      indexes: DEVICES_INDEXES,
+    })
+    syncTable(STT_PROVIDER_SETTINGS_TABLE, STT_PROVIDER_SETTINGS_SCHEMA, {
+      indexes: STT_PROVIDER_SETTINGS_INDEXES,
+    })
+    syncTable(STT_USER_SETTINGS_TABLE, STT_USER_SETTINGS_SCHEMA)
+    migrateLegacySttProviderSettingsUserIdDefault(db)
+    syncTable(TTS_PROVIDER_SETTINGS_TABLE, TTS_PROVIDER_SETTINGS_SCHEMA, {
+      indexes: TTS_PROVIDER_SETTINGS_INDEXES,
     })
 
     // Group chat - basic tables
@@ -513,73 +533,7 @@ export function initAllHermesTables(retryCount = 0): void {
     })
   } catch (e) {
     console.error('Error initializing Hermes SQLite tables:', e)
-
-    // 自动恢复：备份数据库 → 删除损坏的数据库 → 重新初始化
-    console.warn('[Schema] Database initialization failed. Attempting automatic recovery...')
-
-    try {
-      const dbPath = getStoragePath()
-      const { unlinkSync, copyFileSync, existsSync } = require('fs')
-
-      if (!existsSync(dbPath)) {
-        console.log('[Schema] Database file does not exist. Creating new database...')
-        initAllHermesTables()
-        console.log('[Schema] Database created successfully!')
-        return
-      }
-
-      // 检查是否已经存在备份（避免重复失败时创建多个备份）
-      const existingBackup = dbPath + '.corrupted.last'
-      let finalBackupPath: string | undefined
-
-      if (existsSync(existingBackup)) {
-        console.log(`[Schema] Backup already exists: ${existingBackup}`)
-        console.log('[Schema] Deleting corrupted database without re-backup...')
-        try {
-          unlinkSync(dbPath)
-        } catch (deleteError) {
-          console.warn('[Schema] Failed to delete corrupted database:', deleteError)
-        }
-      } else {
-        // 没有备份，创建新备份
-        const timestamp = Date.now()
-        const backupPath = dbPath + '.corrupted.' + timestamp
-        let backupSuccess = false
-
-        try {
-          copyFileSync(dbPath, backupPath)
-          backupSuccess = true
-          finalBackupPath = backupPath
-          console.log(`[Schema] Backed up corrupted database to: ${backupPath}`)
-        } catch (backupError) {
-          console.warn('[Schema] Failed to backup database:', backupError)
-        }
-
-        // 只有备份成功后才删除原文件
-        if (backupSuccess) {
-          try {
-            unlinkSync(dbPath)
-          } catch (deleteError) {
-            console.warn('[Schema] Failed to delete corrupted database:', deleteError)
-          }
-        }
-      }
-
-      // 3. 删除 WAL 和 SHM 文件
-      try { unlinkSync(dbPath + '-wal') } catch { }
-      try { unlinkSync(dbPath + '-shm') } catch { }
-
-      // 4. 重新初始化（增加重试计数）
-      console.log('[Schema] Reinitializing database...')
-      initAllHermesTables(retryCount + 1)
-      console.log('[Schema] Database recovered successfully! System is ready to use.')
-      const backupLocation = finalBackupPath || existingBackup
-      if (backupLocation) {
-        console.log(`[Schema] If you need to recover old data, restore from: ${backupLocation}`)
-      }
-    } catch (recoveryError) {
-      console.error('[Schema] Failed to recover database:', recoveryError)
-      throw recoveryError
-    }
+    console.error(`[Schema] Database initialization failed. Existing database was left untouched: ${getStoragePath()}`)
+    throw e
   }
 }

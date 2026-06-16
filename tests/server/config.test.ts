@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import {
-  getFeishuCallbackRedirect,
-  getJobsBrokerEnabled,
-  getListenHost,
-  getRunBrokerKey,
-  getRunBrokerUrl,
-} from '../../packages/server/src/config'
+import { homedir } from 'os'
+import { join, resolve } from 'path'
+import { getCorsOrigins, getListenHost, getWebUiHome, shouldCreateWebUiDataDir } from '../../packages/server/src/config'
 
 describe('server config', () => {
   it('defaults to an IPv4 bind host', () => {
@@ -20,35 +16,28 @@ describe('server config', () => {
     expect(getListenHost({ BIND_HOST: ' ' })).toBe('0.0.0.0')
   })
 
-  it('defaults Feishu OAuth callbacks to the chat route', () => {
-    expect(getFeishuCallbackRedirect({})).toBe('/#/hermes/chat')
+  it('defaults web-ui home to ~/.hermes-web-ui', () => {
+    expect(getWebUiHome({})).toBe(join(homedir(), '.hermes-web-ui'))
   })
 
-  it('uses FEISHU_CALLBACK_REDIRECT when provided', () => {
-    expect(getFeishuCallbackRedirect({ FEISHU_CALLBACK_REDIRECT: '/#/custom' })).toBe('/#/custom')
+  it('uses HERMES_WEB_UI_HOME when provided', () => {
+    expect(getWebUiHome({ HERMES_WEB_UI_HOME: ' ./tmp/hermes-ui ' })).toBe(resolve('./tmp/hermes-ui'))
   })
 
-  it('normalizes Run Broker URL values', () => {
-    expect(getRunBrokerUrl({ HERMES_RUN_BROKER_URL: ' http://127.0.0.1:8766/// ' })).toBe('http://127.0.0.1:8766')
+  it('uses HERMES_WEBUI_STATE_DIR as a compatibility alias', () => {
+    expect(getWebUiHome({ HERMES_WEBUI_STATE_DIR: ' ./tmp/hermes-state ' })).toBe(resolve('./tmp/hermes-state'))
   })
 
-  it('reads Run Broker shared secret values', () => {
-    expect(getRunBrokerKey({ HERMES_RUN_BROKER_KEY: ' broker-secret ' })).toBe('broker-secret')
+  it('only creates the development data directory outside production', () => {
+    expect(shouldCreateWebUiDataDir({ NODE_ENV: 'development' })).toBe(true)
+    expect(shouldCreateWebUiDataDir({ NODE_ENV: 'production' })).toBe(false)
   })
 
-  it('defaults jobs broker mode to the WebUI Run Broker switch', () => {
-    expect(getJobsBrokerEnabled({ HERMES_WEBUI_RUN_BROKER: '1' })).toBe(true)
-    expect(getJobsBrokerEnabled({ HERMES_WEBUI_RUN_BROKER: '0' })).toBe(false)
+  it('does not enable cross-origin requests by default', () => {
+    expect(getCorsOrigins({})).toBe('')
   })
 
-  it('allows jobs broker mode to be controlled independently', () => {
-    expect(getJobsBrokerEnabled({
-      HERMES_WEBUI_RUN_BROKER: '1',
-      HERMES_WEBUI_JOBS_BROKER: '0',
-    })).toBe(false)
-    expect(getJobsBrokerEnabled({
-      HERMES_WEBUI_RUN_BROKER: '0',
-      HERMES_WEBUI_JOBS_BROKER: 'true',
-    })).toBe(true)
+  it('uses CORS_ORIGINS when provided', () => {
+    expect(getCorsOrigins({ CORS_ORIGINS: ' https://app.example, http://localhost:3000 ' })).toBe('https://app.example, http://localhost:3000')
   })
 })

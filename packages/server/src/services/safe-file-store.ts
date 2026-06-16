@@ -3,11 +3,9 @@ import { dirname, resolve } from 'path'
 import { randomUUID } from 'crypto'
 import YAML, { type DumpOptions } from 'js-yaml'
 
-type TextUpdateResult<T> = { content: string; result: T }
-type TextUpdater<T = void> = (current: string) => string | TextUpdateResult<T> | Promise<string | TextUpdateResult<T>>
+type TextUpdater<T = void> = (current: string) => string | { content: string; result: T } | Promise<string | { content: string; result: T }>
 type YamlUpdateResult<T> = { data: Record<string, any>; result: T; write?: boolean }
-type YamlUpdater<T = void> =
-  (current: Record<string, any>) => Record<string, any> | YamlUpdateResult<T> | Promise<Record<string, any> | YamlUpdateResult<T>>
+type YamlUpdater<T = void> = (current: Record<string, any>) => Record<string, any> | YamlUpdateResult<T> | Promise<Record<string, any> | YamlUpdateResult<T>>
 
 export interface SafeWriteOptions {
   backup?: boolean
@@ -18,7 +16,7 @@ export interface SafeYamlOptions extends SafeWriteOptions {
   dumpOptions?: DumpOptions
 }
 
-function isTextUpdateResult<T>(value: unknown): value is TextUpdateResult<T> {
+function isTextUpdateResult<T>(value: unknown): value is { content: string; result: T } {
   return !!value && typeof value === 'object' && Object.hasOwn(value as Record<string, unknown>, 'content')
 }
 
@@ -121,9 +119,10 @@ export class SafeFileStore {
 
   private async writeTextUnlocked(filePath: string, content: string, options: SafeWriteOptions): Promise<void> {
     const target = this.normalizePath(filePath)
+    const dir = dirname(target)
     const temp = `${target}.tmp.${process.pid}.${Date.now()}.${randomUUID()}`
 
-    await mkdir(dirname(target), { recursive: true })
+    await mkdir(dir, { recursive: true })
     if (options.backup) {
       try {
         await copyFile(target, options.backupPath || `${target}.bak`)

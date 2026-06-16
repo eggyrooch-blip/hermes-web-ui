@@ -2,9 +2,9 @@ import { readFile, writeFile, mkdir, unlink } from 'fs/promises'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { scryptSync, randomBytes } from 'node:crypto'
-import { getWebUiHome } from '../config'
+import { config } from '../config'
 
-const APP_HOME = getWebUiHome()
+const APP_HOME = config.appHome
 const CREDENTIALS_FILE = join(APP_HOME, '.credentials')
 
 export interface Credentials {

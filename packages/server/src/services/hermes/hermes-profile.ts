@@ -1,8 +1,10 @@
-import { resolve, join } from 'path'
-import { homedir } from 'os'
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
+import { join } from 'path'
+import { readFileSync, existsSync, readdirSync } from 'fs'
+import { detectHermesRootHome } from './hermes-path'
 
-const HERMES_BASE = process.env.HERMES_HOME || resolve(homedir(), '.hermes')
+export function getHermesBaseDir(): string {
+  return detectHermesRootHome()
+}
 
 /**
  * Get the active profile's home directory.
@@ -10,15 +12,16 @@ const HERMES_BASE = process.env.HERMES_HOME || resolve(homedir(), '.hermes')
  * other   → ~/.hermes/profiles/{name}/
  */
 export function getActiveProfileDir(): string {
-  const activeFile = join(HERMES_BASE, 'active_profile')
+  const hermesBase = getHermesBaseDir()
+  const activeFile = join(hermesBase, 'active_profile')
   try {
     const name = readFileSync(activeFile, 'utf-8').trim()
     if (name && name !== 'default') {
-      const dir = join(HERMES_BASE, 'profiles', name)
+      const dir = join(hermesBase, 'profiles', name)
       if (existsSync(dir)) return dir
     }
   } catch { }
-  return HERMES_BASE
+  return hermesBase
 }
 
 /**
@@ -46,7 +49,7 @@ export function getActiveEnvPath(): string {
  * Get the active profile name.
  */
 export function getActiveProfileName(): string {
-  const activeFile = join(HERMES_BASE, 'active_profile')
+  const activeFile = join(getHermesBaseDir(), 'active_profile')
   try {
     const name = readFileSync(activeFile, 'utf-8').trim()
     return name || 'default'
@@ -61,29 +64,26 @@ export function getActiveProfileName(): string {
  * other   → ~/.hermes/profiles/{name}/
  */
 export function getProfileDir(name: string): string {
-  if (!name || name === 'default') return HERMES_BASE
-  const dir = join(HERMES_BASE, 'profiles', name)
-  return existsSync(dir) ? dir : HERMES_BASE
+  const hermesBase = getHermesBaseDir()
+  if (!name || name === 'default') return hermesBase
+  const dir = join(hermesBase, 'profiles', name)
+  return existsSync(dir) ? dir : hermesBase
 }
 
 export function listProfileNamesFromDisk(): string[] {
+  const hermesBase = getHermesBaseDir()
   const names = new Set<string>(['default'])
-  const profilesDir = join(HERMES_BASE, 'profiles')
+  const profilesDir = join(hermesBase, 'profiles')
   try {
     for (const entry of readdirSync(profilesDir, { withFileTypes: true })) {
-      if (entry.name.startsWith('.')) continue
-      if (entry.isDirectory()) {
+      if (entry.isDirectory() && entry.name.trim()) {
         names.add(entry.name)
-      } else if (entry.isSymbolicLink()) {
-        try {
-          if (statSync(join(profilesDir, entry.name)).isDirectory()) names.add(entry.name)
-        } catch {
-          // Ignore broken symlinks.
-        }
       }
     }
-  } catch {
-    // A fresh single-profile Hermes install may not have profiles/.
-  }
-  return [...names].sort((a, b) => a.localeCompare(b))
+  } catch {}
+  return [...names].sort((a, b) => {
+    if (a === 'default') return -1
+    if (b === 'default') return 1
+    return a.localeCompare(b)
+  })
 }

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NDrawer, NSpin, useMessage } from 'naive-ui'
+import { NDrawer, NDrawerContent, NSpin, useMessage } from 'naive-ui'
 import type MarkdownIt from 'markdown-it'
 import MarkdownItConstructor from 'markdown-it'
 import katex from 'katex'
-import 'katex/dist/katex.min.css'
+import markdownItKatex from '@vscode/markdown-it-katex'
 import { handleCodeBlockCopyClick, renderHighlightedCodeBlock } from './highlight'
 import { repairNestedMarkdownFences } from './markdownFenceRepair'
 import {
@@ -15,9 +15,48 @@ import {
   decodeMermaidSource,
   isMermaidFence,
   renderMermaidPlaceholder,
+  SUPPORT_PREVIEW_FILE_TYPES,
 } from './mermaidRenderer'
-import { downloadFile, fetchFileText, getDownloadUrl } from '@/api/hermes/download'
-import { sanitizeHtml } from '@/utils/sanitizeHtml'
+import { downloadFile, getDownloadUrl, fetchFileText } from '@/api/hermes/download'
+
+const LATEX_FENCE_LANGS = new Set(['latex', 'tex', 'math', 'katex'])
+const PREVIEW_AREA_WIDTH = 'min(800px, 100vw)'
+
+function getFenceLanguage(info: string): string {
+  return info.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
+}
+
+function isLatexFence(info: string): boolean {
+  return LATEX_FENCE_LANGS.has(getFenceLanguage(info))
+}
+
+function normalizeLatexFenceContent(content: string): string {
+  const trimmed = content.trim()
+
+  if (trimmed.startsWith('\\[') && trimmed.endsWith('\\]')) {
+    return trimmed.slice(2, -2).trim()
+  }
+
+  if (trimmed.startsWith('$$') && trimmed.endsWith('$$')) {
+    return trimmed.slice(2, -2).trim()
+  }
+
+  if (trimmed.startsWith('\\(') && trimmed.endsWith('\\)')) {
+    return trimmed.slice(2, -2).trim()
+  }
+
+  return trimmed
+}
+
+function renderLatexFence(content: string): string {
+  const latex = normalizeLatexFenceContent(content)
+  return `<div class="latex-block">${katex.renderToString(latex, {
+    displayMode: true,
+    output: 'htmlAndMathml',
+    throwOnError: false,
+    strict: 'ignore',
+  })}</div>`
+}
 
 const props = withDefaults(defineProps<{
     content: string
@@ -30,12 +69,10 @@ const props = withDefaults(defineProps<{
 
 const { t } = useI18n()
 const message = useMessage()
-const TEXT_PREVIEW_WIDTH = 560
-const TEXT_PREVIEW_EXTENSIONS = new Set([
-  'txt', 'md', 'markdown', 'json', 'csv', 'log', 'yaml', 'yml', 'toml',
-  'sh', 'bash', 'zsh', 'fish', 'xml', 'html', 'css', 'scss', 'js', 'ts',
-  'tsx', 'jsx', 'vue', 'py', 'rs', 'go', 'java', 'c', 'cpp', 'h', 'hpp',
-])
+
+function diffFoldLabel(hiddenCount: number): string {
+  return t('chat.unchangedLines', { count: hiddenCount })
+}
 
 const md: MarkdownIt = new MarkdownItConstructor({
   html: false,
@@ -43,137 +80,26 @@ const md: MarkdownIt = new MarkdownItConstructor({
   linkify: true,
   typographer: true,
   highlight(str: string, lang: string): string {
-    return renderHighlightedCodeBlock(str, lang, t('common.copy'))
+    return renderHighlightedCodeBlock(str, lang, t('common.copy'), {
+      formatDiffFoldLabel: diffFoldLabel,
+    })
   },
 })
 
-function renderMathToHtml(source: string, displayMode: boolean): string {
-  return katex.renderToString(source, {
-    displayMode,
-    strict: 'ignore',
-    throwOnError: false,
-    trust: false,
-  })
-}
-
-function findUnescaped(source: string, marker: string, from: number, limit?: number): number {
-  const max = limit ?? source.length
-  let pos = from
-  while (pos < max) {
-    const found = source.indexOf(marker, pos)
-    if (found < 0 || found >= max) return -1
-
-    let backslashes = 0
-    for (let i = found - 1; i >= 0 && source[i] === '\\'; i -= 1) {
-      backslashes += 1
-    }
-    if (backslashes % 2 === 0) return found
-    pos = found + marker.length
-  }
-  return -1
-}
-
-function installMathRenderer(markdown: MarkdownIt): void {
-  markdown.inline.ruler.before('escape', 'math_paren_inline', (state, silent) => {
-    const start = state.pos
-    if (state.src[start] !== '\\' || state.src[start + 1] !== '(') return false
-
-    const end = findUnescaped(state.src, '\\)', start + 2)
-    if (end < 0) return false
-    const content = state.src.slice(start + 2, end).trim()
-    if (!content) return false
-
-    if (!silent) {
-      const token = state.push('math_inline', 'math', 0)
-      token.content = content
-      token.markup = '\\('
-    }
-    state.pos = end + 2
-    return true
-  })
-
-  markdown.inline.ruler.before('emphasis', 'math_dollar_inline', (state, silent) => {
-    const start = state.pos
-    if (state.src[start] !== '$' || state.src[start + 1] === '$') return false
-    const next = state.src[start + 1]
-    if (!next || /[\s\d]/.test(next)) return false
-
-    const end = findUnescaped(state.src, '$', start + 1)
-    if (end < 0 || state.src[end + 1] === '$') return false
-    const content = state.src.slice(start + 1, end).trim()
-    if (!content) return false
-
-    if (!silent) {
-      const token = state.push('math_inline', 'math', 0)
-      token.content = content
-      token.markup = '$'
-    }
-    state.pos = end + 1
-    return true
-  })
-
-  markdown.block.ruler.before('paragraph', 'math_block', (state, startLine, endLine, silent) => {
-    const start = state.bMarks[startLine] + state.tShift[startLine]
-    const max = state.eMarks[startLine]
-    const line = state.src.slice(start, max)
-
-    const marker = line.startsWith('$$') ? '$$' : line.startsWith('\\[') ? '\\[' : ''
-    if (!marker) return false
-
-    const closer = marker === '$$' ? '$$' : '\\]'
-    const sameLineEnd = findUnescaped(state.src, closer, start + marker.length, max)
-    if (sameLineEnd >= 0) {
-      const tail = state.src.slice(sameLineEnd + closer.length, max)
-      if (tail.trim()) return false
-      if (!silent) {
-        const token = state.push('math_block', 'math', 0)
-        token.block = true
-        token.content = state.src.slice(start + marker.length, sameLineEnd).trim()
-        token.markup = marker
-        token.map = [startLine, startLine + 1]
-      }
-      state.line = startLine + 1
-      return true
-    }
-
-    let nextLine = startLine + 1
-    const lines = [line.slice(marker.length)]
-    for (; nextLine < endLine; nextLine += 1) {
-      const lineStart = state.bMarks[nextLine] + state.tShift[nextLine]
-      const lineEnd = state.eMarks[nextLine]
-      const current = state.src.slice(lineStart, lineEnd)
-      const closeIndex = findUnescaped(current, closer, 0)
-      if (closeIndex >= 0) {
-        if (current.slice(closeIndex + closer.length).trim()) return false
-        lines.push(current.slice(0, closeIndex))
-        if (!silent) {
-          const token = state.push('math_block', 'math', 0)
-          token.block = true
-          token.content = lines.join('\n').trim()
-          token.markup = marker
-          token.map = [startLine, nextLine + 1]
-        }
-        state.line = nextLine + 1
-        return true
-      }
-      lines.push(current)
-    }
-
-    return false
-  }, {
-    alt: ['paragraph', 'reference', 'blockquote', 'list'],
-  })
-
-  markdown.renderer.rules.math_inline = (tokens, idx) => renderMathToHtml(tokens[idx].content, false)
-  markdown.renderer.rules.math_block = (tokens, idx) => `${renderMathToHtml(tokens[idx].content, true)}\n`
-}
-
-installMathRenderer(md)
+md.use(markdownItKatex, {
+  katex,
+  throwOnError: false,
+  strict: 'ignore',
+})
 
 const defaultFenceRenderer = md.renderer.rules.fence?.bind(md.renderer.rules)
 
 md.renderer.rules.fence = (tokens, idx, options, env, self) => {
   const token = tokens[idx]
+  if (isLatexFence(token.info)) {
+    return renderLatexFence(token.content)
+  }
+
   if (isMermaidFence(token.info)) {
     return renderMermaidPlaceholder(token.content)
   }
@@ -188,95 +114,76 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
 const markdownBody = ref<HTMLElement | null>(null)
 const componentId = `hermes-mermaid-${Math.random().toString(36).slice(2)}`
 const previewUrl = ref<string | null>(null)
+
+// Preview config variable
 const textPreviewContent = ref<string | null>(null)
-const textPreviewVisible = ref(false)
+const textPreviewFileName = ref('')
 const textPreviewLoading = ref(false)
+const textPreviewVisible = ref(false)
+
+const textPreviewIsMarkdown = computed(() => /\.(md|markdown)$/i.test(textPreviewFileName.value))
+
 let renderGeneration = 0
 let unmounted = false
 
 function isLocalFilePath(path: string): boolean {
-  return path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path) || !/^[a-z][a-z0-9+.-]*:/i.test(path)
+  return path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path)
 }
 
 function normalizeLocalFilePath(path: string): string {
   return /^[a-zA-Z]:\\/.test(path) ? path.replace(/\\/g, '/') : path
 }
 
-function isDownloadableLocalPath(path: string): boolean {
-  if (!path || path.startsWith('#') || path.startsWith('//')) return false
-  return isLocalFilePath(path)
-}
+const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov'])
+const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'])
 
-function getPathExtension(path: string): string {
-  return normalizeLocalFilePath(path).split('?')[0].split('#')[0].split('.').pop()?.toLowerCase() || ''
-}
-
-function isImageArtifactPath(path: string): boolean {
-  return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif'].includes(getPathExtension(path))
-}
-
-function canPreviewTextFile(path: string, fileName?: string | null): boolean {
-  return TEXT_PREVIEW_EXTENSIONS.has(getPathExtension(fileName || ''))
-    || TEXT_PREVIEW_EXTENSIONS.has(getPathExtension(path))
+function hasExtension(path: string, extensions: Set<string>): boolean {
+  const clean = path.split('?')[0].split('#')[0]
+  const ext = clean.split('.').pop()?.toLowerCase()
+  return !!ext && extensions.has(ext)
 }
 
 const renderedHtml = computed(() => {
   let html = md.render(repairNestedMarkdownFences(props.content))
 
+  // Add IDs to headings for anchor links
   const prefix = props.headingIdPrefix ? `${props.headingIdPrefix}-` : ''
   let headingCounter = 0
+  // Match any h1-h6 tags, with or without attributes
   html = html.replace(/<(h[1-6])([^>]*)>/g, (match, tag, attrs) => {
     headingCounter++
     const id = `${prefix}heading-${headingCounter}`
+    
+    // Check if id attribute already exists
     if (attrs.includes('id=')) {
+      // Replace existing id
       return match.replace(/id="[^"]*"/, `id="${id}"`).replace(/id='[^']*'/, `id="${id}"`)
     }
+    
+    // Add new id
     if (attrs.trim() === '') {
       return `<${tag} id="${id}">`
     }
     return `<${tag} ${attrs.trim()} id="${id}">`
   })
 
-  const renderFileCard = (path: string, fileName: string) => `<div class="markdown-file-card" data-path="${path}" data-filename="${fileName}" title="${t('download.downloadFile')}">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-        <polyline points="14 2 14 8 20 8" />
-      </svg>
-      <span class="att-name">${fileName}</span>
-      <svg class="att-download-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-        <polyline points="7 10 12 15 17 10" />
-        <line x1="12" y1="15" x2="12" y2="3" />
-      </svg>
-    </div>`
-
-  html = html.replace(/<img src="([^"]+)" alt="([^"]*)">/g, (match, path, alt) => {
-    if (!isDownloadableLocalPath(path) || isImageArtifactPath(path)) return match
-    const normalizedPath = normalizeLocalFilePath(path)
-    const fileName = (alt || normalizedPath.split('/').pop() || normalizedPath).trim()
-    return renderFileCard(normalizedPath, fileName)
-  })
-
-  // Replace local image src paths with download URLs. Supports both legacy
-  // absolute paths (`/tmp/a.png`), Windows paths (`C:/tmp/a.png`), and
-  // workspace-relative artifact paths (`a.png`).
+  // Replace image src paths with download URLs
   html = html.replace(/\bsrc=(["'])([^"']+)\1/g, (match, quote, path) => {
-    if (!isDownloadableLocalPath(path)) return match
-    return `src=${quote}${getDownloadUrl(normalizeLocalFilePath(path))}${quote}`
+    if (!isLocalFilePath(path)) return match
+    const downloadUrl = getDownloadUrl(normalizeLocalFilePath(path))
+    return `src=${quote}${downloadUrl}${quote}`
   })
 
   // Replace local file links with file card UI or video player
-  // Match <a href="/tmp/file.pdf">filename</a>, <a href="file.pdf">filename</a>,
-  // Windows paths (`C:/tmp/file.pdf`), or video equivalents.
+  // Match <a href="/tmp/file.pdf">filename</a> or <a href="C:/tmp/file.pdf">filename</a>
   html = html.replace(/<a href="([^"]+)">([^<]+)<\/a>/g, (match, rawPath, filename) => {
-    if (!isDownloadableLocalPath(rawPath)) return match
+    if (!isLocalFilePath(rawPath)) return match
 
     const path = normalizeLocalFilePath(rawPath)
     const fileName = filename.trim()
-    const ext = path.split('.').pop()?.toLowerCase()
 
     // Video files: render as video player
-    if (ext === 'mp4' || ext === 'webm' || ext === 'mov') {
+    if (hasExtension(path, VIDEO_EXTENSIONS)) {
       const downloadUrl = getDownloadUrl(path)
       return `<div class="markdown-video-container">
         <video class="markdown-video" controls preload="metadata" src="${downloadUrl}"></video>
@@ -289,8 +196,37 @@ const renderedHtml = computed(() => {
       </div>`
     }
 
+    // Audio files: render as inline audio player
+    if (hasExtension(path, AUDIO_EXTENSIONS)) {
+      const downloadUrl = getDownloadUrl(path)
+      return `<div class="markdown-audio-container">
+        <audio class="markdown-audio" controls preload="metadata" src="${downloadUrl}"></audio>
+        <div class="markdown-audio-footer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M9 18V5l12-2v13" />
+            <circle cx="6" cy="18" r="3" />
+            <circle cx="18" cy="16" r="3" />
+          </svg>
+          <span class="att-name">${fileName}</span>
+        </div>
+      </div>`
+    }
+
     // Other files: render as file card
-    return renderFileCard(path, fileName)
+    return `<div class="markdown-file-card" data-path="${path}" data-filename="${fileName}" title="${t('download.downloadFile')}">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <polyline points="14 2 14 8 20 8" />
+      </svg>
+      <span class="att-name">${fileName}</span>
+      <button class="att-download-btn" type="button" title="${t('download.downloadFile')}" aria-label="${t('download.downloadFile')}">
+        <svg class="att-download-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+      </button>
+    </div>`
   })
 
   if (props.mentionNames && props.mentionNames.length > 0) {
@@ -300,12 +236,7 @@ const renderedHtml = computed(() => {
     const re = new RegExp(`(?<=[\\s>({\\[<]|^)@(${escaped.join('|')})(?=[\\s.,!?;:，。！？；：)\\]}>]|<|$)`, 'gi')
     html = html.replace(re, '<span class="mention-highlight">@$1</span>')
   }
-  // SECURITY: sanitize after all string-level rewrites. The earlier replacements
-  // splice user-controlled text (filenames, mention names) directly into HTML,
-  // so we cannot rely on markdown-it's html: false alone — DOMPurify is the
-  // last-line defence against attribute-breakout payloads like
-  //   [name" onmouseover="alert(1) x="](/path).
-  return sanitizeHtml(html)
+  return html
 })
 
 function renderMermaidFallback(element: HTMLElement, source: string): void {
@@ -338,6 +269,10 @@ function getScrollParent(el: HTMLElement | null): HTMLElement | null {
     current = current.parentElement
   }
   return null
+}
+
+function isNearScrollBottom(el: HTMLElement, threshold = 200): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < threshold
 }
 
 function cleanupMermaidRenderArtifacts(id: string): void {
@@ -411,16 +346,16 @@ async function renderMermaidDiagrams(): Promise<void> {
       cleanupMermaidRenderArtifacts(id)
       if (unmounted || generation !== renderGeneration || !root.contains(element)) return
 
+      const scrollParent = getScrollParent(markdownBody.value)
+      const shouldKeepBottom = scrollParent ? isNearScrollBottom(scrollParent) : false
       element.removeAttribute('data-mermaid-pending')
       element.removeAttribute('data-mermaid-source')
       element.innerHTML = result.svg
-      // After mermaid renders, scroll the nearest scrollable ancestor to bottom
-      nextTick(() => {
-        const scrollParent = getScrollParent(markdownBody.value)
-        if (scrollParent) {
+      if (scrollParent && shouldKeepBottom) {
+        nextTick(() => {
           scrollParent.scrollTop = scrollParent.scrollHeight
-        }
-      })
+        })
+      }
     } catch {
       cleanupMermaidRenderArtifacts(`${componentId}-${generation}-${index}`)
       if (unmounted || generation !== renderGeneration || !root.contains(element)) return
@@ -469,15 +404,26 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
     event.preventDefault()
     event.stopPropagation()
     const path = fileCard.getAttribute('data-path')
-    const fileName = fileCard.getAttribute('data-filename')
+    const fileName = fileCard.getAttribute('data-filename') || undefined
+
+    const isDownloadBtn = target.closest('.att-download-btn')
+
+    if (isDownloadBtn && path) { // Only download file with download icon clicked.
+      message.info(t('download.downloading'))
+      downloadFile(path, fileName).catch((err: Error) => {
+        message.error(err.message || t('download.downloadFailed'))
+      })
+      return
+    }
+
     if (path) {
-      if (target.closest('.att-download-icon') || !canPreviewTextFile(path, fileName)) {
-        message.info(t('download.downloading'))
-        downloadFile(path, fileName || undefined).catch((err: Error) => {
+      const ext = fileName?.split('.').pop()?.toLowerCase()
+      if (SUPPORT_PREVIEW_FILE_TYPES.includes(ext || '')) {
+        previewTextFile(path, fileName || '')
+      } else { // Download file immediately
+        downloadFile(path, fileName).catch((err: Error) => {
           message.error(err.message || t('download.downloadFailed'))
         })
-      } else {
-        previewTextFile(path, fileName || undefined)
       }
     }
     return
@@ -527,35 +473,50 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
   }
 }
 
-async function previewTextFile(path: string, fileName?: string): Promise<void> {
-  textPreviewVisible.value = true
+// Get file content and show preview area.
+async function previewTextFile(path: string, fileName: string): Promise<void> {
   textPreviewLoading.value = true
+  textPreviewVisible.value = true
+  textPreviewFileName.value = fileName
   textPreviewContent.value = null
   try {
     textPreviewContent.value = await fetchFileText(path, fileName)
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : t('download.downloadFailed'))
+  } catch (err: any) {
+    message.error(err.message || t('download.downloadFailed'))
   } finally {
     textPreviewLoading.value = false
   }
+}
+
+function closeTextPreview(): void {
+  textPreviewVisible.value = false
 }
 </script>
 
 <template>
   <div ref="markdownBody" class="markdown-body" v-html="renderedHtml" @click="handleMarkdownClick"></div>
+  <!-- File preview area -->
   <NDrawer
     v-model:show="textPreviewVisible"
-    :width="TEXT_PREVIEW_WIDTH"
+    :width="PREVIEW_AREA_WIDTH"
     placement="right"
     :show-mask="false"
     :trap-focus="false"
+    class="markdown-text-preview-drawer"
   >
-    <template #header>
-      {{ t('download.preview') }}
-    </template>
-    <NSpin :show="textPreviewLoading">
-      <pre v-if="textPreviewContent !== null" class="text-preview-body">{{ textPreviewContent }}</pre>
-    </NSpin>
+    <NDrawerContent
+      :title="t('download.contentDisplay')"
+      closable
+      :body-content-style="{ padding: 0 }"
+      @close="closeTextPreview"
+    >
+      <NSpin :show="textPreviewLoading">
+        <div v-if="textPreviewContent !== null && textPreviewIsMarkdown" class="text-preview-markdown">
+          <MarkdownRenderer :content="textPreviewContent" />
+        </div>
+        <pre v-else-if="textPreviewContent !== null" class="text-preview-body">{{ textPreviewContent }}</pre>
+      </NSpin>
+    </NDrawerContent>
   </NDrawer>
   <Teleport to="body">
     <div v-if="previewUrl" class="image-preview-overlay" @click.self="previewUrl = null">
@@ -570,13 +531,19 @@ async function previewTextFile(path: string, fileName?: string): Promise<void> {
 .markdown-body {
   font-size: 14px;
   line-height: 1.65;
+  width: 100%;
   min-width: 0;
   max-width: 100%;
   box-sizing: border-box;
   overflow-x: auto;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 
   p {
     margin: 0 0 8px;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
 
     &:last-child {
       margin-bottom: 0;
@@ -590,6 +557,9 @@ async function previewTextFile(path: string, fileName?: string): Promise<void> {
 
   li {
     margin: 2px 0;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
 
   strong {
@@ -605,6 +575,8 @@ async function previewTextFile(path: string, fileName?: string): Promise<void> {
     color: $accent-primary;
     text-decoration: underline;
     text-underline-offset: 2px;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 
     &:hover {
       color: $accent-hover;
@@ -654,6 +626,36 @@ async function previewTextFile(path: string, fileName?: string): Promise<void> {
     }
   }
 
+  .markdown-audio-container {
+    margin: 12px 0;
+    padding: 10px 12px;
+    border: 1px solid $border-light;
+    border-radius: $radius-sm;
+    background-color: rgba(0, 0, 0, 0.04);
+  }
+
+  .markdown-audio {
+    display: block;
+    width: 100%;
+    max-width: 420px;
+  }
+
+  .markdown-audio-footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+    color: $text-secondary;
+    font-size: 12px;
+
+    .att-name {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  }
+
   .markdown-file-card {
     display: inline-flex;
     align-items: center;
@@ -686,7 +688,22 @@ async function previewTextFile(path: string, fileName?: string): Promise<void> {
       transition: opacity 0.15s ease;
     }
 
-    &:hover .att-download-icon {
+    .att-download-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      color: inherit;
+      background: transparent;
+      border: 0;
+      cursor: pointer;
+    }
+
+    &:hover .att-download-icon,
+    .att-download-btn:hover .att-download-icon {
       opacity: 1;
     }
   }
@@ -705,10 +722,14 @@ async function previewTextFile(path: string, fileName?: string): Promise<void> {
     font-family: $font-code;
     font-size: 13px;
     color: $accent-primary;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   table {
     width: 100%;
+    max-width: 100%;
     border-collapse: collapse;
     margin: 8px 0;
     display: block;
@@ -765,20 +786,6 @@ async function previewTextFile(path: string, fileName?: string): Promise<void> {
   }
 }
 
-.text-preview-body {
-  min-height: 100%;
-  overflow: auto;
-  padding: 16px;
-  margin: 0;
-  font-family: $font-code;
-  font-size: 13px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: $text-primary;
-  background: $code-bg;
-}
-
 .image-preview-overlay {
   position: fixed;
   inset: 0;
@@ -796,5 +803,53 @@ async function previewTextFile(path: string, fileName?: string): Promise<void> {
   object-fit: contain;
   border-radius: 4px;
   cursor: pointer;
+}
+
+.text-preview-body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+  margin: 0;
+  font-family: $font-code;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: $text-primary;
+}
+
+.text-preview-markdown {
+  padding: 16px;
+  overflow: auto;
+}
+
+.markdown-text-preview-drawer {
+  max-width: 100vw;
+
+  .n-drawer-content,
+  .n-drawer-body-content-wrapper {
+    max-width: 100vw;
+  }
+}
+
+@media (max-width: $breakpoint-mobile) {
+  .markdown-text-preview-drawer {
+    max-width: 100vw;
+
+    .n-drawer-content,
+    .n-drawer-body-content-wrapper {
+      max-width: 100vw;
+    }
+  }
+
+  .text-preview-body {
+    padding: 12px;
+    max-width: 100vw;
+  }
+
+  .text-preview-markdown {
+    padding: 12px;
+    max-width: 100vw;
+  }
 }
 </style>

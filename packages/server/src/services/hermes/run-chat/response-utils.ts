@@ -1,3 +1,7 @@
+/**
+ * Response utility functions for processing upstream API responses.
+ */
+
 export function responseFunctionCallToToolCall(item: any): any {
   const callId = item.call_id || item.id || ''
   const name = item.name || item.function?.name || ''

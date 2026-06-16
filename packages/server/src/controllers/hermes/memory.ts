@@ -1,10 +1,18 @@
 import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { safeReadFile, safeStat } from '../../services/config-helpers'
-import { getRequestProfileDir } from '../../services/request-context'
+import { getActiveProfileName, getProfileDir } from '../../services/hermes/hermes-profile'
+
+function requestedProfile(ctx: any): string {
+  return ctx.state?.profile?.name || getActiveProfileName() || 'default'
+}
+
+function requestProfileDir(ctx: any): string {
+  return getProfileDir(requestedProfile(ctx))
+}
 
 export async function get(ctx: any) {
-  const hd = getRequestProfileDir(ctx)
+  const hd = requestProfileDir(ctx)
   const memoryPath = join(hd, 'memories', 'MEMORY.md')
   const userPath = join(hd, 'memories', 'USER.md')
   const soulPath = join(hd, 'SOUL.md')
@@ -20,7 +28,7 @@ export async function get(ctx: any) {
 
 export async function save(ctx: any) {
   const { section, content } = ctx.request.body as { section: string; content: string }
-  if (!section || !content) {
+  if (!section || content === undefined || content === null) {
     ctx.status = 400
     ctx.body = { error: 'Missing section or content' }
     return
@@ -30,15 +38,14 @@ export async function save(ctx: any) {
     ctx.body = { error: 'Section must be "memory", "user", or "soul"' }
     return
   }
-  const hd = getRequestProfileDir(ctx)
   let filePath: string
+  const hd = requestProfileDir(ctx)
   if (section === 'soul') {
     filePath = join(hd, 'SOUL.md')
   } else {
     const fileName = section === 'memory' ? 'MEMORY.md' : 'USER.md'
-    const memoryDir = join(hd, 'memories')
-    await mkdir(memoryDir, { recursive: true })
-    filePath = join(memoryDir, fileName)
+    await mkdir(join(hd, 'memories'), { recursive: true })
+    filePath = join(hd, 'memories', fileName)
   }
   try {
     await writeFile(filePath, content, 'utf-8')

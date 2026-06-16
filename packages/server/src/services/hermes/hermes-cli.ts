@@ -1,89 +1,170 @@
 import { execFile, spawn } from 'child_process'
-import { existsSync, readFileSync } from 'fs'
+import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { promisify } from 'util'
 import YAML from 'js-yaml'
 import { logger } from '../logger'
-import { getActiveProfileName, getProfileDir, listProfileNamesFromDisk } from './hermes-profile'
-import { parseProfileListRuntimeInfo } from './profile-list-parser'
+import { getActiveProfileDir, getActiveProfileName, getProfileDir, listProfileNamesFromDisk } from './hermes-profile'
+import { startGatewayRunManaged } from './gateway-runner'
+import { isGatewayRunningForProfile } from './gateway-autostart'
+import { parseProfileListRuntimeInfo, type ProfileListRuntimeInfo } from './profile-list-parser'
+import { execHermesWithBin, spawnHermesWithBin } from './hermes-process'
 
 const execFileAsync = promisify(execFile)
 
 const execOpts = { windowsHide: true }
 const isDocker = existsSync('/.dockerenv')
+const isTermux = !!process.env.TERMUX_VERSION ||
+  (process.env.PREFIX || '').includes('/com.termux/') ||
+  existsSync('/data/data/com.termux/files/usr')
 
+/**
+ * 解析 Hermes CLI 二进制路径
+ * 优先使用环境变量 HERMES_BIN，否则使用 PATH 中的 'hermes' 命令
+ */
 function resolveHermesBin(): string {
-  const envBin = process.env.HERMES_BIN?.trim()
-  if (envBin) return envBin
-  return 'hermes'
+  return process.env.HERMES_BIN?.trim() || 'hermes'
 }
 
 const HERMES_BIN = resolveHermesBin()
 
-// ─── Argument validators ───────────────────────────────────────
-//
-// SECURITY: even though we use execFile (no shell), the Hermes CLI itself
-// parses argv. A user-supplied value starting with '-' would be picked up as
-// a flag (e.g. `--source --exec=…`), letting an attacker reach hidden
-// subcommands or change behaviour. Validate every user-controlled string
-// before it reaches argv, and use POSIX `--` as a positional terminator
-// where the CLI accepts it.
+async function waitForGatewayRunning(profileDir: string, timeoutMs = 15000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await isGatewayRunningForProfile(HERMES_BIN, profileDir)) return true
+    await new Promise(resolve => setTimeout(resolve, 500))
+  }
+  return false
+}
 
-function rejectControlChars(value: string, label: string): void {
-  // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1f\x7f]/.test(value)) {
-    throw Object.assign(new Error(`${label} contains control characters`), { code: 'invalid_argument' })
+async function stopGatewayForActiveProfile(): Promise<void> {
+  try {
+    await execHermesWithBin(HERMES_BIN, ['gateway', 'stop'], {
+      timeout: 30000,
+      ...activeGatewayExecOpts(),
+    })
+  } catch (err) {
+    logger.warn(err, 'hermes gateway stop before restart failed; continuing with run --replace')
   }
 }
 
-function rejectFlagPrefix(value: string, label: string): void {
-  if (value.startsWith('-')) {
-    throw Object.assign(new Error(`${label} must not start with '-'`), { code: 'invalid_argument' })
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err: any) {
+    return err?.code === 'EPERM'
   }
 }
 
-/** Session id: stored as UUID-like or hex string, reasonable to lock down hard. */
-export function validateSessionId(id: string): string {
-  if (!id || typeof id !== 'string') throw Object.assign(new Error('session id is required'), { code: 'invalid_argument' })
-  rejectFlagPrefix(id, 'session id')
-  rejectControlChars(id, 'session id')
-  if (!/^[A-Za-z0-9_.-]{1,128}$/.test(id)) {
-    throw Object.assign(new Error('session id contains disallowed characters'), { code: 'invalid_argument' })
+function readJsonPid(path: string): number | null {
+  if (!existsSync(path)) return null
+  try {
+    const data = JSON.parse(readFileSync(path, 'utf-8'))
+    const pid = typeof data?.pid === 'number' ? data.pid : parseInt(String(data?.pid || ''), 10)
+    return Number.isFinite(pid) && pid > 0 ? pid : null
+  } catch {
+    return null
   }
-  return id
 }
 
-/** Profile name: filesystem-friendly, no path separators, no leading dash. */
-export function validateProfileName(name: string): string {
-  if (!name || typeof name !== 'string') throw Object.assign(new Error('profile name is required'), { code: 'invalid_argument' })
-  rejectFlagPrefix(name, 'profile name')
-  rejectControlChars(name, 'profile name')
-  if (name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
-    throw Object.assign(new Error('profile name contains disallowed characters'), { code: 'invalid_argument' })
-  }
-  if (name.length > 128) {
-    throw Object.assign(new Error('profile name too long'), { code: 'invalid_argument' })
-  }
-  return name
+function readGatewayLockPid(profileDir: string): number | null {
+  return readJsonPid(join(profileDir, 'gateway.lock'))
 }
 
-/** Skill name: alphanumeric + underscore + dash. */
-export function validateSkillName(name: string): string {
-  if (!name || typeof name !== 'string') throw Object.assign(new Error('skill name is required'), { code: 'invalid_argument' })
-  rejectFlagPrefix(name, 'skill name')
-  rejectControlChars(name, 'skill name')
-  if (!/^[A-Za-z0-9_.:/-]{1,128}$/.test(name)) {
-    throw Object.assign(new Error('skill name contains disallowed characters'), { code: 'invalid_argument' })
+function readGatewayStatePid(profileDir: string): number | null {
+  const pid = readJsonPid(join(profileDir, 'gateway.pid'))
+  if (pid) return pid
+  const statePath = join(profileDir, 'gateway_state.json')
+  if (!existsSync(statePath)) return null
+  try {
+    const data = JSON.parse(readFileSync(statePath, 'utf-8'))
+    const state = data?.gateway_state
+    const statePid = typeof data?.pid === 'number' ? data.pid : parseInt(String(data?.pid || ''), 10)
+    return statePid && Number.isFinite(statePid) && statePid > 0 && (state === 'running' || state === 'starting')
+      ? statePid
+      : null
+  } catch {
+    return null
   }
-  return name
 }
 
-/** Free-form text (e.g. session title). Reject control chars + size cap. */
-export function validateText(value: string, label: string, max = 512): string {
-  if (typeof value !== 'string') throw Object.assign(new Error(`${label} must be a string`), { code: 'invalid_argument' })
-  rejectControlChars(value, label)
-  if (value.length > max) throw Object.assign(new Error(`${label} too long`), { code: 'invalid_argument' })
-  return value
+async function killWindowsPid(pid: number): Promise<void> {
+  if (!pid || process.platform !== 'win32') return
+  try {
+    await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+      timeout: 5000,
+      windowsHide: true,
+    })
+  } catch (err) {
+    logger.warn(err, 'Failed to taskkill gateway PID %d; falling back to process.kill', pid)
+    try { process.kill(pid) } catch {}
+  }
+}
+
+function cleanupStaleGatewayLock(profileDir: string, allowMalformedDelete = false): boolean {
+  const lockPath = join(profileDir, 'gateway.lock')
+  if (!existsSync(lockPath)) return true
+  try {
+    const lockData = JSON.parse(readFileSync(lockPath, 'utf-8'))
+    const pid = Number(lockData?.pid)
+    if (Number.isFinite(pid) && pid > 0 && isProcessAlive(pid)) return false
+    unlinkSync(lockPath)
+    return true
+  } catch {
+    if (!allowMalformedDelete) return false
+    try {
+      unlinkSync(lockPath)
+      return true
+    } catch {
+      return false
+    }
+  }
+}
+
+async function waitForGatewayLockReleased(profileDir: string, timeoutMs = 15000, allowMalformedDelete = false): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (cleanupStaleGatewayLock(profileDir, allowMalformedDelete)) return true
+    await sleep(500)
+  }
+  return cleanupStaleGatewayLock(profileDir, allowMalformedDelete)
+}
+
+async function forceReleaseWindowsGatewayLock(profileDir: string): Promise<void> {
+  if (process.platform !== 'win32') return
+  const pids = new Set<number>()
+  const lockPid = readGatewayLockPid(profileDir)
+  const statePid = readGatewayStatePid(profileDir)
+  if (lockPid) pids.add(lockPid)
+  if (statePid) pids.add(statePid)
+
+  for (const pid of pids) {
+    if (isProcessAlive(pid)) {
+      logger.warn('Gateway lock is still held by PID %d; force killing Windows process tree', pid)
+      await killWindowsPid(pid)
+    }
+  }
+}
+
+async function waitForGatewayLockReleasedAfterStop(profileDir: string, timeoutMs = 15000): Promise<boolean> {
+  if (await waitForGatewayLockReleased(profileDir, timeoutMs)) return true
+  await forceReleaseWindowsGatewayLock(profileDir)
+  return waitForGatewayLockReleased(profileDir, 5000, true)
+}
+
+function activeGatewayExecOpts() {
+  return {
+    ...execOpts,
+    env: {
+      ...process.env,
+      HERMES_HOME: getActiveProfileDir(),
+    },
+  }
 }
 
 export interface HermesSession {
@@ -153,14 +234,10 @@ function parseSessionExport(stdout: string): HermesSessionFull[] {
 
 export async function exportSessionsRaw(source?: string): Promise<HermesSessionFull[]> {
   const args = ['sessions', 'export', '-']
-  if (source) {
-    rejectFlagPrefix(source, 'source')
-    rejectControlChars(source, 'source')
-    args.push('--source', source)
-  }
+  if (source) args.push('--source', source)
 
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout } = await execHermesWithBin(HERMES_BIN, args, {
       maxBuffer: 50 * 1024 * 1024, // 50MB
       timeout: 30000,
       ...execOpts,
@@ -224,11 +301,10 @@ export async function listSessions(source?: string, limit?: number): Promise<Her
  * Get a single session with messages from Hermes CLI
  */
 export async function getSession(id: string): Promise<HermesSession | null> {
-  validateSessionId(id)
   const args = ['sessions', 'export', '-', '--session-id', id]
 
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout } = await execHermesWithBin(HERMES_BIN, args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
@@ -272,8 +348,7 @@ export async function getSession(id: string): Promise<HermesSession | null> {
  */
 export async function deleteSession(id: string): Promise<boolean> {
   try {
-    validateSessionId(id)
-    await execFileAsync(HERMES_BIN, ['sessions', 'delete', '--yes', '--', id], {
+    await execHermesWithBin(HERMES_BIN, ['sessions', 'delete', id, '--yes'], {
       timeout: 10000,
       ...execOpts,
     })
@@ -285,13 +360,31 @@ export async function deleteSession(id: string): Promise<boolean> {
 }
 
 /**
+ * Delete a session from a specific Hermes profile.
+ */
+export async function deleteSessionForProfile(id: string, profile: string): Promise<boolean> {
+  try {
+    await execHermesWithBin(HERMES_BIN, ['sessions', 'delete', id, '--yes'], {
+      timeout: 10000,
+      ...execOpts,
+      env: {
+        ...process.env,
+        HERMES_HOME: getProfileDir(profile),
+      },
+    })
+    return true
+  } catch (err: any) {
+    logger.error({ err, sessionId: id, profile }, 'Hermes CLI: profile session delete failed')
+    return false
+  }
+}
+
+/**
  * Rename a session title via Hermes CLI
  */
 export async function renameSession(id: string, title: string): Promise<boolean> {
   try {
-    validateSessionId(id)
-    validateText(title, 'session title', 256)
-    await execFileAsync(HERMES_BIN, ['sessions', 'rename', '--', id, title], {
+    await execHermesWithBin(HERMES_BIN, ['sessions', 'rename', id, title], {
       timeout: 10000,
       ...execOpts,
     })
@@ -313,7 +406,7 @@ export interface LogFileInfo {
  */
 export async function getVersion(): Promise<string> {
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, ['--version'], { timeout: 5000, ...execOpts })
+    const { stdout } = await execHermesWithBin(HERMES_BIN, ['--version'], { timeout: 5000, ...execOpts })
     return stdout.trim()
   } catch {
     return ''
@@ -329,9 +422,9 @@ export async function startGateway(): Promise<string> {
     return pid ? `Gateway started (PID: ${pid})` : 'Gateway start triggered'
   }
 
-  const { stdout, stderr } = await execFileAsync(HERMES_BIN, ['gateway', 'start'], {
+  const { stdout, stderr } = await execHermesWithBin(HERMES_BIN, ['gateway', 'start'], {
     timeout: 30000,
-    ...execOpts,
+    ...activeGatewayExecOpts(),
   })
   return stdout || stderr
 }
@@ -341,39 +434,61 @@ export async function startGateway(): Promise<string> {
  * Uses "hermes gateway run" as a detached background process
  */
 export async function startGatewayBackground(): Promise<number | null> {
-  const child = spawn(HERMES_BIN, ['gateway', 'run'], {
+  const child = spawnHermesWithBin(HERMES_BIN, ['gateway', 'run'], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
+    env: {
+      ...process.env,
+      HERMES_HOME: getActiveProfileDir(),
+    },
   })
   child.unref()
   return child.pid ?? null
 }
 
 /**
- * Restart Hermes gateway
+ * Restart Hermes gateway through Hermes CLI, falling back to detached
+ * `gateway run` when the environment does not support `gateway restart`.
  */
 export async function restartGateway(): Promise<string> {
-  if (isDocker) {
-    try { await stopGateway() } catch { }
-    const pid = await startGatewayBackground()
-    return pid ? `Gateway restarted (PID: ${pid})` : 'Gateway restart triggered'
+  const profileDir = getActiveProfileDir()
+  if (isDocker || isTermux || process.platform === 'win32') {
+    await stopGatewayForActiveProfile()
+    const lockReleased = await waitForGatewayLockReleasedAfterStop(profileDir)
+    if (!lockReleased) throw new Error('Gateway stopped but runtime lock is still held by another process')
+    const result = startGatewayRunManaged(HERMES_BIN, { profileDir })
+    const ready = await waitForGatewayRunning(profileDir)
+    if (!ready) throw new Error(`Gateway run replace triggered but gateway did not report running within timeout${result.pid ? ` (PID: ${result.pid})` : ''}`)
+    return result.pid ? `Gateway run replaced (PID: ${result.pid})` : 'Gateway run replaced'
   }
-
-  const { stdout, stderr } = await execFileAsync(HERMES_BIN, ['gateway', 'restart'], {
-    timeout: 30000,
-    ...execOpts,
-  })
-  return stdout || stderr
+  try {
+    const { stdout, stderr } = await execHermesWithBin(HERMES_BIN, ['gateway', 'restart'], {
+      timeout: 30000,
+      ...activeGatewayExecOpts(),
+    })
+    const ready = await waitForGatewayRunning(profileDir)
+    if (!ready) throw new Error('Hermes gateway restart completed but gateway did not report running within timeout')
+    return stdout || stderr
+  } catch (err: any) {
+    logger.warn(err, 'hermes gateway restart failed; falling back to gateway run')
+    await stopGatewayForActiveProfile()
+    const lockReleased = await waitForGatewayLockReleasedAfterStop(profileDir)
+    if (!lockReleased) throw new Error('Gateway restart failed and runtime lock is still held by another process')
+    const result = startGatewayRunManaged(HERMES_BIN, { profileDir })
+    const ready = await waitForGatewayRunning(profileDir)
+    if (!ready) throw new Error(`Gateway run fallback triggered but gateway did not report running within timeout${result.pid ? ` (PID: ${result.pid})` : ''}`)
+    return result.pid ? `Gateway run started (PID: ${result.pid})` : 'Gateway run started'
+  }
 }
 
 /**
  * Stop Hermes gateway
  */
 export async function stopGateway(): Promise<string> {
-  const { stdout, stderr } = await execFileAsync(HERMES_BIN, ['gateway', 'stop'], {
+  const { stdout, stderr } = await execHermesWithBin(HERMES_BIN, ['gateway', 'stop'], {
     timeout: 30000,
-    ...execOpts,
+    ...activeGatewayExecOpts(),
   })
   return stdout || stderr
 }
@@ -383,18 +498,21 @@ export async function stopGateway(): Promise<string> {
  */
 export async function listLogFiles(): Promise<LogFileInfo[]> {
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, ['logs', 'list'], {
+    const { stdout } = await execHermesWithBin(HERMES_BIN, ['logs', 'list'], {
       timeout: 10000,
       ...execOpts,
     })
     const files: LogFileInfo[] = []
-    const lines = stdout.trim().split('\n').filter(l => l.includes('.log'))
+    // Windows 可能使用 \r\n 换行符，统一处理
+    const normalized = stdout.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    const lines = normalized.trim().split('\n').filter(l => l.includes('.log'))
     for (const line of lines) {
       const match = line.match(/^\s+(\S+)\s+([\d.]+\w+)\s+(.+)$/)
       if (match) {
         const rawName = match[1]
         const name = rawName.replace(/\.log$/, '')
-        if (['agent', 'errors', 'gateway'].includes(name)) {
+        // 支持更多日志类型：agent, errors, gateway, 以及其他可能的日志文件
+        if (['agent', 'errors', 'gateway', 'error'].includes(name)) {
           files.push({ name, size: match[2], modified: match[3].trim() })
         }
       }
@@ -416,32 +534,13 @@ export async function readLogs(
   session?: string,
   since?: string,
 ): Promise<string> {
-  // SECURITY: every user-controlled argv slot must be validated before it
-  // reaches the Hermes CLI parser, otherwise a value starting with '-' is
-  // interpreted as a flag and lets an attacker reach unintended sub-commands.
-  rejectFlagPrefix(logName, 'log name')
-  rejectControlChars(logName, 'log name')
-  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(logName)) {
-    throw Object.assign(new Error('log name contains disallowed characters'), { code: 'invalid_argument' })
-  }
-  const safeLines = Number.isInteger(lines) && lines > 0 && lines <= 100000 ? lines : 100
-  if (level) {
-    rejectFlagPrefix(level, 'log level')
-    rejectControlChars(level, 'log level')
-  }
-  if (session) validateSessionId(session)
-  if (since) {
-    rejectFlagPrefix(since, 'since')
-    rejectControlChars(since, 'since')
-  }
-  const args = ['logs', '-n', String(safeLines)]
+  const args = ['logs', logName, '-n', String(lines)]
   if (level) args.push('--level', level)
   if (session) args.push('--session', session)
   if (since) args.push('--since', since)
-  args.push('--', logName)
 
   try {
-    const { stdout } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout } = await execHermesWithBin(HERMES_BIN, args, {
       maxBuffer: 10 * 1024 * 1024,
       timeout: 15000,
       ...execOpts,
@@ -459,7 +558,7 @@ export interface HermesProfile {
   name: string
   active: boolean
   model: string
-  gateway: string
+  gatewayStatus?: string
   alias: string
 }
 
@@ -468,40 +567,9 @@ export interface HermesProfileDetail {
   path: string
   model: string
   provider: string
-  gateway: string
   skills: number
   hasEnv: boolean
   hasSoulMd: boolean
-}
-
-/**
- * List all profiles
- */
-export async function listProfiles(): Promise<HermesProfile[]> {
-  const profileNames = listProfileNamesFromDisk()
-  const activeProfileName = getActiveProfileName()
-  let runtimeInfo = new Map<string, { active: boolean; gateway?: string; alias?: string }>()
-  try {
-    const { stdout } = await execFileAsync(HERMES_BIN, ['profile', 'list'], {
-      timeout: 10000,
-      ...execOpts,
-    })
-    runtimeInfo = parseProfileListRuntimeInfo(stdout, profileNames)
-  } catch (err: any) {
-    logger.warn(err, 'Hermes CLI: profile list failed; falling back to disk profile list')
-  }
-
-  return profileNames.map(name => {
-    const runtime = runtimeInfo.get(name)
-    const gateway = runtime?.gateway
-    return {
-      name,
-      active: runtime?.active ?? name === activeProfileName,
-      model: readProfileDefaultModel(name),
-      gateway: gateway && gateway !== '—' && gateway !== '-' ? gateway : '—',
-      alias: runtime?.alias || '',
-    }
-  })
 }
 
 function readProfileDefaultModel(name: string): string {
@@ -521,19 +589,48 @@ function readProfileDefaultModel(name: string): string {
 }
 
 /**
+ * List all profiles
+ */
+export async function listProfiles(): Promise<HermesProfile[]> {
+  const profileNames = listProfileNamesFromDisk()
+  const activeProfileName = getActiveProfileName()
+  let runtimeInfo = new Map<string, ProfileListRuntimeInfo>()
+  try {
+    const { stdout } = await execHermesWithBin(HERMES_BIN, ['profile', 'list'], {
+      timeout: 10000,
+      ...execOpts,
+    })
+    runtimeInfo = parseProfileListRuntimeInfo(stdout, profileNames)
+  } catch (err: any) {
+    logger.warn(err, 'Hermes CLI: profile list failed; falling back to disk profile list')
+  }
+
+  return profileNames.map(name => {
+    const runtime = runtimeInfo.get(name)
+    const gatewayStatus = runtime?.gatewayStatus
+    return {
+      name,
+      active: runtime?.active ?? name === activeProfileName,
+      model: readProfileDefaultModel(name),
+      gatewayStatus: gatewayStatus && gatewayStatus !== '—' && gatewayStatus !== '-' ? gatewayStatus : undefined,
+      alias: runtime?.alias || '',
+    }
+  })
+}
+
+/**
  * Get profile details
  */
 export async function getProfile(name: string): Promise<HermesProfileDetail> {
   try {
-    validateProfileName(name)
-    const { stdout } = await execFileAsync(HERMES_BIN, ['profile', 'show', '--', name], {
+    const { stdout } = await execHermesWithBin(HERMES_BIN, ['profile', 'show', name], {
       timeout: 10000,
       ...execOpts,
     })
 
     const result: Record<string, string> = {}
     for (const line of stdout.trim().split('\n')) {
-      const match = line.match(/^(\w[\w\s]*?):\s+(.+)$/)
+      const match = line.match(/^([^\s:]+):\s+(.+)$/)
       if (match) {
         result[match[1].trim().toLowerCase().replace(/\s+/g, '_')] = match[2].trim()
       }
@@ -548,10 +645,9 @@ export async function getProfile(name: string): Promise<HermesProfileDetail> {
       path: result.path || '',
       model,
       provider: providerMatch ? providerMatch[1] : '',
-      gateway: result.gateway || '',
       skills: parseInt(result.skills || '0', 10),
       hasEnv: result['.env'] === 'exists',
-      hasSoulMd: result.soul_md === 'exists',
+      hasSoulMd: result['soul.md'] === 'exists',
     }
   } catch (err: any) {
     if (err.code === 1 || err.status === 1) {
@@ -565,28 +661,12 @@ export async function getProfile(name: string): Promise<HermesProfileDetail> {
 /**
  * Create a new profile
  */
-export interface CreateHermesProfileOptions {
-  clone?: boolean
-  cloneFrom?: string
-  description?: string
-  noAlias?: boolean
-}
-
-export async function createProfile(name: string, options: CreateHermesProfileOptions | boolean = {}): Promise<string> {
-  validateProfileName(name)
-  const resolved = typeof options === 'boolean' ? { clone: options } : options
-  const args = ['profile', 'create']
-  if (resolved.clone) args.push('--clone')
-  if (resolved.clone && resolved.cloneFrom) {
-    args.push('--clone-from', validateProfileName(resolved.cloneFrom))
-  }
-  if (resolved.noAlias) args.push('--no-alias')
-  const description = resolved.description?.trim()
-  if (description) args.push('--description', description)
-  args.push('--', name)
+export async function createProfile(name: string, clone?: boolean): Promise<string> {
+  const args = ['profile', 'create', name]
+  if (clone) args.push('--clone')
 
   try {
-    const { stdout, stderr } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout, stderr } = await execHermesWithBin(HERMES_BIN, args, {
       timeout: 15000,
       ...execOpts,
     })
@@ -602,8 +682,7 @@ export async function createProfile(name: string, options: CreateHermesProfileOp
  */
 export async function deleteProfile(name: string): Promise<boolean> {
   try {
-    validateProfileName(name)
-    await execFileAsync(HERMES_BIN, ['profile', 'delete', '--yes', '--', name], {
+    await execHermesWithBin(HERMES_BIN, ['profile', 'delete', name, '--yes'], {
       timeout: 10000,
       ...execOpts,
     })
@@ -619,9 +698,7 @@ export async function deleteProfile(name: string): Promise<boolean> {
  */
 export async function renameProfile(oldName: string, newName: string): Promise<boolean> {
   try {
-    validateProfileName(oldName)
-    validateProfileName(newName)
-    await execFileAsync(HERMES_BIN, ['profile', 'rename', '--', oldName, newName], {
+    await execHermesWithBin(HERMES_BIN, ['profile', 'rename', oldName, newName], {
       timeout: 10000,
       ...execOpts,
     })
@@ -637,8 +714,7 @@ export async function renameProfile(oldName: string, newName: string): Promise<b
  */
 export async function useProfile(name: string): Promise<string> {
   try {
-    validateProfileName(name)
-    const { stdout, stderr } = await execFileAsync(HERMES_BIN, ['profile', 'use', '--', name], {
+    const { stdout, stderr } = await execHermesWithBin(HERMES_BIN, ['profile', 'use', name], {
       timeout: 10000,
       ...execOpts,
     })
@@ -653,13 +729,11 @@ export async function useProfile(name: string): Promise<string> {
  * Export profile to archive
  */
 export async function exportProfile(name: string, outputPath?: string): Promise<string> {
-  validateProfileName(name)
-  const args = ['profile', 'export']
+  const args = ['profile', 'export', name]
   if (outputPath) args.push('--output', outputPath)
-  args.push('--', name)
 
   try {
-    const { stdout, stderr } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout, stderr } = await execHermesWithBin(HERMES_BIN, args, {
       timeout: 60000,
       ...execOpts,
     })
@@ -675,7 +749,7 @@ export async function exportProfile(name: string, outputPath?: string): Promise<
  */
 export async function setupReset(): Promise<string> {
   try {
-    const { stdout, stderr } = await execFileAsync(HERMES_BIN, ['setup', '--non-interactive', '--reset'], {
+    const { stdout, stderr } = await execHermesWithBin(HERMES_BIN, ['setup', '--non-interactive', '--reset'], {
       timeout: 30000,
       ...execOpts,
     })
@@ -690,15 +764,11 @@ export async function setupReset(): Promise<string> {
  * Import profile from archive
  */
 export async function importProfile(archivePath: string, name?: string): Promise<string> {
-  // archivePath is generated server-side (random hex name in tmpdir, see
-  // controllers/hermes/profiles.ts importProfile), so it is trusted here.
-  if (name) validateProfileName(name)
-  const args = ['profile', 'import']
+  const args = ['profile', 'import', archivePath]
   if (name) args.push('--name', name)
-  args.push('--', archivePath)
 
   try {
-    const { stdout, stderr } = await execFileAsync(HERMES_BIN, args, {
+    const { stdout, stderr } = await execHermesWithBin(HERMES_BIN, args, {
       timeout: 60000,
       ...execOpts,
     })
@@ -713,10 +783,9 @@ export async function importProfile(archivePath: string, name?: string): Promise
  * Pin or unpin a skill via hermes curator
  */
 export async function pinSkill(name: string, pinned: boolean): Promise<string> {
-  validateSkillName(name)
   const subcmd = pinned ? 'pin' : 'unpin'
   try {
-    const { stdout, stderr } = await execFileAsync(HERMES_BIN, ['curator', subcmd, '--', name], {
+    const { stdout, stderr } = await execHermesWithBin(HERMES_BIN, ['curator', subcmd, name], {
       timeout: 15000,
       ...execOpts,
     })

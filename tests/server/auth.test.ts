@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { join } from 'path'
 
 type FsMocks = {
   readFile: ReturnType<typeof vi.fn>
@@ -20,8 +21,8 @@ async function loadAuth(overrides: Partial<FsMocks> & { home?: string } = {}) {
   return {
     ...mod,
     mocks: { readFile, writeFile, mkdir },
-    appHome: `${home}/.hermes-web-ui`,
-    tokenFile: `${home}/.hermes-web-ui/.token`,
+    appHome: join(home, '.hermes-web-ui'),
+    tokenFile: join(home, '.hermes-web-ui', '.token'),
   }
 }
 
@@ -49,29 +50,17 @@ describe('Auth Service', () => {
   })
 
   describe('getToken', () => {
-    it('returns null when AUTH_DISABLED=1', async () => {
+    it('ignores legacy AUTH_DISABLED=1 and still creates an auth token', async () => {
       process.env.AUTH_DISABLED = '1'
-      const { getToken, mocks } = await loadAuth()
+      const readFile = vi.fn().mockRejectedValue(new Error('ENOENT'))
+      const writeFile = vi.fn()
+      const mkdir = vi.fn()
+      const { getToken } = await loadAuth({ readFile, writeFile, mkdir })
 
       const token = await getToken()
 
-      expect(token).toBeNull()
-      expect(mocks.readFile).not.toHaveBeenCalled()
-    })
-
-    it('returns null when AUTH_DISABLED=true', async () => {
-      process.env.AUTH_DISABLED = 'true'
-      const { getToken } = await loadAuth()
-
-      await expect(getToken()).resolves.toBeNull()
-    })
-
-    it('returns null in Feishu OAuth mode so password/token auth cannot become the production identity source', async () => {
-      process.env.HERMES_AUTH_MODE = 'feishu-oauth-dev'
-      const { getToken, mocks } = await loadAuth()
-
-      await expect(getToken()).resolves.toBeNull()
-      expect(mocks.readFile).not.toHaveBeenCalled()
+      expect(token).toMatch(/^[a-f0-9]{64}$/)
+      expect(writeFile).toHaveBeenCalled()
     })
 
     it('returns AUTH_TOKEN env var if set', async () => {
@@ -102,28 +91,19 @@ describe('Auth Service', () => {
 
       const token = await getToken()
 
+      const expectedWriteOptions = process.platform === 'win32' ? {} : { mode: 0o600 }
+
       expect(token).toMatch(/^[a-f0-9]{64}$/)
       expect(mkdir).toHaveBeenCalledWith(appHome, { recursive: true })
       expect(writeFile).toHaveBeenCalledWith(
         tokenFile,
         expect.stringMatching(/^[a-f0-9]{64}\n$/),
-        { mode: 0o600 },
+        expectedWriteOptions,
       )
     })
   })
 
   describe('requireAuth', () => {
-    it('allows all requests when auth is disabled (null token)', async () => {
-      const { requireAuth } = await loadAuth()
-      const middleware = requireAuth(null)
-      const ctx = createMockCtx('/api/hermes/sessions')
-      const next = vi.fn(async () => {})
-
-      await middleware(ctx, next)
-
-      expect(next).toHaveBeenCalledOnce()
-    })
-
     it('skips /health', async () => {
       const { requireAuth } = await loadAuth()
       const middleware = requireAuth('secret')
@@ -217,24 +197,6 @@ describe('Auth Service', () => {
       await middleware(ctx, next)
 
       expect(next).toHaveBeenCalledOnce()
-    })
-
-    it('does not accept a bearer token as user identity in Feishu OAuth mode', async () => {
-      process.env.HERMES_AUTH_MODE = 'feishu-oauth-dev'
-      process.env.FEISHU_SESSION_SECRET = 'session-secret'
-      const { requireAuth } = await loadAuth()
-      const middleware = requireAuth('secret')
-      const ctx = {
-        ...createMockCtx('/api/hermes/sessions', { authorization: 'Bearer secret' }),
-        cookies: { get: vi.fn().mockReturnValue('') },
-      }
-      const next = vi.fn(async () => {})
-
-      await middleware(ctx, next)
-
-      expect(ctx.status).toBe(401)
-      expect(ctx.body).toEqual({ error: 'Unauthorized' })
-      expect(next).not.toHaveBeenCalled()
     })
 
     it('returns 401 JSON on auth failure', async () => {

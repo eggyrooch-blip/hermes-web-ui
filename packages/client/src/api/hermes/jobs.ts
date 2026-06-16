@@ -62,20 +62,6 @@ export interface Job {
   last_delivery_error: string | null
 }
 
-export interface JobListResult {
-  jobs: Job[]
-  gatewayUnavailable?: boolean
-  errorMessage?: string
-}
-
-export interface JobWakeResult {
-  profile: string
-  running: boolean
-  status: 'ready' | 'starting' | 'stopped' | 'not_api_only' | 'failed' | 'unavailable'
-  url?: string
-  error?: { message?: string }
-}
-
 export interface CreateJobRequest {
   name: string
   schedule: string
@@ -103,6 +89,7 @@ export interface JobFormValues {
   schedule: string
   prompt: string
   deliver: string
+  skills: string[]
   repeat_times: number | null
 }
 
@@ -149,35 +136,24 @@ export function buildJobUpdateRequest(original: Job, form: JobFormValues): Updat
   const payload: UpdateJobRequest = {}
   const originalSchedule = scheduleToEditableInput(original.schedule, original.schedule_display || '')
   const originalRepeat = jobRepeatToEditValue(original.repeat)
-  const originalDeliver = original.deliver || 'feishu'
+  const originalDeliver = original.deliver || 'origin'
+  const originalSkills = original.skills || (original.skill ? [original.skill] : [])
 
   if (form.name !== original.name) payload.name = form.name
   if (form.schedule !== originalSchedule) payload.schedule = form.schedule
   if (form.prompt !== (original.prompt || '')) payload.prompt = form.prompt
   if (form.deliver !== originalDeliver) payload.deliver = form.deliver
+  if (form.skills.length !== originalSkills.length || form.skills.some((skill, index) => skill !== originalSkills[index])) {
+    payload.skills = form.skills
+  }
   if (form.repeat_times !== originalRepeat) payload.repeat = form.repeat_times
 
   return payload
 }
 
-export async function listJobs(): Promise<JobListResult> {
-  const res = await request<{
-    jobs: Job[]
-    gateway_unavailable?: boolean
-    error?: { message?: string }
-  }>('/api/hermes/jobs?include_disabled=true')
-  return {
-    jobs: res.jobs,
-    gatewayUnavailable: !!res.gateway_unavailable,
-    errorMessage: res.error?.message,
-  }
-}
-
-export async function wakeJobs(): Promise<JobWakeResult> {
-  return request<JobWakeResult>('/api/hermes/jobs/wake', {
-    method: 'POST',
-    body: JSON.stringify({}),
-  })
+export async function listJobs(): Promise<Job[]> {
+  const res = await request<{ jobs: Job[] }>('/api/hermes/jobs?include_disabled=true')
+  return res.jobs
 }
 
 export async function getJob(jobId: string): Promise<Job> {

@@ -1,10 +1,13 @@
 import axios from 'axios'
-import { readFile, writeFile, chmod } from 'fs/promises'
-import { getActiveEnvPath } from '../../services/hermes/hermes-profile'
-import { restartGateway } from '../../services/hermes/hermes-cli'
+import { getActiveProfileName } from '../../services/hermes/hermes-profile'
+import { restartGatewayForProfile } from '../../services/hermes/gateway-autostart'
+import { saveEnvValueForProfile } from '../../services/config-helpers'
 
 const ILINK_BASE = 'https://ilinkai.weixin.qq.com'
-const envPath = () => getActiveEnvPath()
+
+function requestedProfile(ctx: any): string {
+  return ctx.state?.profile?.name || getActiveProfileName() || 'default'
+}
 
 export async function getQrcode(ctx: any) {
   try {
@@ -38,29 +41,13 @@ export async function save(ctx: any) {
   const { account_id, token, base_url } = ctx.request.body as { account_id: string; token: string; base_url?: string }
   if (!account_id || !token) { ctx.status = 400; ctx.body = { error: 'Missing account_id or token' }; return }
   try {
-    let raw: string
-    try { raw = await readFile(envPath(), 'utf-8') } catch { raw = '' }
+    const profile = requestedProfile(ctx)
     const entries: Record<string, string> = { WEIXIN_ACCOUNT_ID: account_id, WEIXIN_TOKEN: token }
     if (base_url) entries.WEIXIN_BASE_URL = base_url
-    const lines = raw.split('\n')
-    const existingKeys = new Set<string>()
-    const result: string[] = []
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (trimmed.startsWith('#')) { result.push(line); continue }
-      const eqIdx = trimmed.indexOf('=')
-      if (eqIdx !== -1) {
-        const key = trimmed.slice(0, eqIdx).trim()
-        if (key in entries) { result.push(`${key}=${entries[key]}`); existingKeys.add(key); continue }
-      }
-      result.push(line)
+    for (const [key, val] of Object.entries(entries)) {
+      await saveEnvValueForProfile(profile, key, val)
     }
-    for (const [key, val] of Object.entries(entries)) { if (!existingKeys.has(key)) { result.push(`${key}=${val}`) } }
-    let output = result.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/, '') + '\n'
-    const ep = envPath()
-    await writeFile(ep, output, 'utf-8')
-    try { await chmod(ep, 0o600) } catch { }
-    await restartGateway()
+    await restartGatewayForProfile(profile)
     ctx.body = { success: true }
   } catch (err: any) {
     ctx.status = 500; ctx.body = { error: err.message }

@@ -2,17 +2,21 @@ import type { Context } from 'koa'
 import { readdir, stat, readFile } from 'fs/promises'
 import { join } from 'path'
 import { existsSync } from 'fs'
-import { getRequestProfileDir } from '../../services/request-context'
+import { getActiveProfileName, getProfileDir } from '../../services/hermes/hermes-profile'
 
 const SYNTHETIC_RUN_FILE = '__scheduler_metadata__.md'
 
-function getCronOutputDir(ctx: Context): string {
-  const profileDir = getRequestProfileDir(ctx)
+function requestedProfile(ctx: Context): string {
+  return ctx.state?.profile?.name || getActiveProfileName() || 'default'
+}
+
+function getCronOutputDir(profile: string): string {
+  const profileDir = getProfileDir(profile)
   return join(profileDir, 'cron', 'output')
 }
 
-function getCronJobsFile(ctx: Context): string {
-  const profileDir = getRequestProfileDir(ctx)
+function getCronJobsFile(profile: string): string {
+  const profileDir = getProfileDir(profile)
   return join(profileDir, 'cron', 'jobs.json')
 }
 
@@ -68,8 +72,8 @@ function normaliseJobsPayload(payload: unknown): CronJobMetadata[] {
   return []
 }
 
-async function readCronJobs(ctx: Context): Promise<CronJobMetadata[]> {
-  const jobsFile = getCronJobsFile(ctx)
+async function readCronJobs(profile: string): Promise<CronJobMetadata[]> {
+  const jobsFile = getCronJobsFile(profile)
   if (!existsSync(jobsFile)) return []
 
   try {
@@ -181,7 +185,8 @@ function buildSyntheticContent(job: CronJobMetadata, runTime: string): string {
 /** List all run output files, optionally filtered by job ID */
 export async function listRuns(ctx: Context) {
   const jobId = ctx.query.jobId as string | undefined
-  const cronOutput = getCronOutputDir(ctx)
+  const profile = requestedProfile(ctx)
+  const cronOutput = getCronOutputDir(profile)
 
   try {
     const runs: RunEntry[] = []
@@ -219,7 +224,7 @@ export async function listRuns(ctx: Context) {
       }
     }
 
-    const jobs = await readCronJobs(ctx)
+    const jobs = await readCronJobs(profile)
     const targetJobs = jobId ? jobs.filter(job => getJobId(job) === jobId) : jobs
     for (const job of targetJobs) {
       const id = getJobId(job)
@@ -241,6 +246,7 @@ export async function listRuns(ctx: Context) {
 /** Read a specific run output file */
 export async function readRun(ctx: Context) {
   const { jobId, fileName } = ctx.params
+  const profile = requestedProfile(ctx)
 
   if (!jobId || !fileName) {
     ctx.status = 400
@@ -249,14 +255,21 @@ export async function readRun(ctx: Context) {
   }
 
   // Prevent path traversal
-  if (jobId.includes('..') || fileName.includes('..') || jobId.includes('/') || fileName.includes('/')) {
+  if (
+    jobId.includes('..')
+    || fileName.includes('..')
+    || jobId.includes('/')
+    || fileName.includes('/')
+    || jobId.includes('\\')
+    || fileName.includes('\\')
+  ) {
     ctx.status = 400
     ctx.body = { error: 'Invalid path' }
     return
   }
 
   if (fileName === SYNTHETIC_RUN_FILE) {
-    const jobs = await readCronJobs(ctx)
+    const jobs = await readCronJobs(profile)
     const job = jobs.find(candidate => getJobId(candidate) === jobId)
     const synthetic = job ? syntheticRunEntry(job) : null
     if (!job || !synthetic) {
@@ -274,7 +287,7 @@ export async function readRun(ctx: Context) {
     return
   }
 
-  const cronOutput = getCronOutputDir(ctx)
+  const cronOutput = getCronOutputDir(profile)
   const filePath = join(cronOutput, jobId, fileName)
 
   if (!existsSync(filePath)) {

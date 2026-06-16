@@ -1,27 +1,20 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { NSwitch, NSelect, useMessage } from 'naive-ui'
+import { NButton, NSwitch, NSelect, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { isUserMode } from '@/api/client'
 import { useSettingsStore } from '@/stores/hermes/settings'
-import { useTheme, type BrightnessMode, type ThemeStyle } from '@/composables/useTheme'
+import { useTheme, type BrightnessMode } from '@/composables/useTheme'
+import { requestCompletionNotificationPermission, showCompletionNotification, type CompletionNotificationPermissionResult } from '@/utils/completion-notification'
 import SettingRow from './SettingRow.vue'
 
 const settingsStore = useSettingsStore()
 const message = useMessage()
 const { t } = useI18n()
-const { brightness, style, setBrightness, setStyle } = useTheme()
-const showCostLabel = computed(() => isUserMode() ? 'settings.display.showTokenUsage' : 'settings.display.showCost')
-const showCostHint = computed(() => isUserMode() ? 'settings.display.showTokenUsageHint' : 'settings.display.showCostHint')
+const { brightness, setBrightness } = useTheme()
 
 const themeOptions = [
   { label: t('settings.display.themeLight'), value: 'light' },
   { label: t('settings.display.themeDark'), value: 'dark' },
   { label: t('settings.display.themeSystem'), value: 'system' },
-]
-const styleOptions = [
-  { label: t('settings.display.styleInk'), value: 'ink' },
-  { label: t('settings.display.styleComic'), value: 'comic' },
 ]
 
 async function save(values: Record<string, any>) {
@@ -39,8 +32,48 @@ function handleThemeChange(val: string) {
   save({ skin: m })
 }
 
-function handleStyleChange(val: string) {
-  setStyle(val as ThemeStyle)
+function notificationPermissionErrorKey(result: CompletionNotificationPermissionResult): string {
+  if (result.reason === 'insecure') return 'settings.display.notifyOnCompleteInsecure'
+  if (result.reason === 'unsupported') return 'settings.display.notifyOnCompleteUnsupported'
+  return 'settings.display.notifyOnCompleteDenied'
+}
+
+async function handleNotifyOnCompleteChange(value: boolean) {
+  if (value) {
+    const result = await requestCompletionNotificationPermission()
+    if (!result.granted) {
+      message.error(t(notificationPermissionErrorKey(result)))
+      return
+    }
+  }
+  await save({ notify_on_complete: value })
+  if (value) {
+    void showCompletionNotification({
+      title: 'Hermes',
+      body: t('settings.display.notifyOnCompleteTest'),
+      icon: '/coding-agents/hermes.png',
+      tag: `hermes-complete-test-${Date.now()}`,
+    })
+  }
+}
+
+async function testCompletionNotification() {
+  const result = await requestCompletionNotificationPermission()
+  if (!result.granted) {
+    message.error(t(notificationPermissionErrorKey(result)))
+    return
+  }
+  const shown = await showCompletionNotification({
+    title: 'Hermes',
+    body: t('settings.display.notifyOnCompleteTest'),
+    icon: '/coding-agents/hermes.png',
+    tag: `hermes-complete-test-${Date.now()}`,
+  })
+  if (!shown) {
+    message.error(t('settings.display.notifyOnCompleteTestFailed'))
+    return
+  }
+  message.success(t('settings.display.notifyOnCompleteTestSent'))
 }
 </script>
 
@@ -48,9 +81,6 @@ function handleStyleChange(val: string) {
   <section class="settings-section">
     <SettingRow :label="t('settings.display.theme')" :hint="t('settings.display.themeHint')">
       <NSelect :value="brightness" :options="themeOptions" size="small" :consistent-menu-width="false" class="input-sm" @update:value="handleThemeChange" />
-    </SettingRow>
-    <SettingRow :label="t('settings.display.style')" :hint="t('settings.display.styleHint')">
-      <NSelect :value="style" :options="styleOptions" size="small" :consistent-menu-width="false" class="input-sm" @update:value="handleStyleChange" />
     </SettingRow>
     <SettingRow :label="t('settings.display.streaming')" :hint="t('settings.display.streamingHint')">
       <NSwitch :value="settingsStore.display.streaming" @update:value="v => save({ streaming: v })" />
@@ -61,7 +91,7 @@ function handleStyleChange(val: string) {
     <SettingRow :label="t('settings.display.showReasoning')" :hint="t('settings.display.showReasoningHint')">
       <NSwitch :value="settingsStore.display.show_reasoning" @update:value="v => save({ show_reasoning: v })" />
     </SettingRow>
-    <SettingRow :label="t(showCostLabel)" :hint="t(showCostHint)">
+    <SettingRow :label="t('settings.display.showCost')" :hint="t('settings.display.showCostHint')">
       <NSwitch :value="settingsStore.display.show_cost" @update:value="v => save({ show_cost: v })" />
     </SettingRow>
     <SettingRow :label="t('settings.display.inlineDiffs')" :hint="t('settings.display.inlineDiffsHint')">
@@ -70,8 +100,13 @@ function handleStyleChange(val: string) {
     <SettingRow :label="t('settings.display.bellOnComplete')" :hint="t('settings.display.bellOnCompleteHint')">
       <NSwitch :value="settingsStore.display.bell_on_complete" @update:value="v => save({ bell_on_complete: v })" />
     </SettingRow>
-    <SettingRow :label="t('settings.display.busyInputMode')" :hint="t('settings.display.busyInputModeHint')">
-      <NSwitch :value="settingsStore.display.busy_input_mode === 'interrupt'" @update:value="v => save({ busy_input_mode: v ? 'interrupt' : 'off' })" />
+    <SettingRow :label="t('settings.display.notifyOnComplete')" :hint="`${t('settings.display.notifyOnCompleteHint')} ${t('settings.display.notifyOnCompleteMacHint')}`">
+      <div class="notify-controls">
+        <NSwitch :value="settingsStore.display.notify_on_complete" @update:value="handleNotifyOnCompleteChange" />
+        <NButton size="tiny" secondary @click="testCompletionNotification">
+          {{ t('settings.display.notifyOnCompleteTestButton') }}
+        </NButton>
+      </div>
     </SettingRow>
   </section>
 </template>
@@ -81,5 +116,11 @@ function handleStyleChange(val: string) {
 
 .settings-section {
   margin-top: 16px;
+}
+
+.notify-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }
 </style>

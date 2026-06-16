@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
-import { fetchSkillContent, fetchSkillFiles, pinSkillApi, updateSkillContent, type SkillFileEntry } from '@/api/hermes/skills'
-import { isUserMode } from '@/api/client'
+import { fetchSkillContent, fetchSkillFiles, pinSkillApi, type SkillFileEntry } from '@/api/hermes/skills'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 
@@ -17,7 +16,6 @@ const props = defineProps<{
   useCount?: number
   viewCount?: number
   pinned?: boolean
-  editable?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -30,13 +28,6 @@ const loading = ref(false)
 const fileContent = ref('')
 const viewingFile = ref<string | null>(null)
 const fileLoading = ref(false)
-const editing = ref(false)
-const editContent = ref('')
-const saving = ref(false)
-const readonlyMode = computed(() => isUserMode())
-const currentEditPath = computed(() => viewingFile.value || 'SKILL.md')
-const currentContent = computed(() => viewingFile.value ? fileContent.value : content.value)
-const canEdit = computed(() => !!props.editable && !loading.value && !fileLoading.value)
 
 async function loadSkill() {
   loading.value = true
@@ -44,8 +35,6 @@ async function loadSkill() {
   fileContent.value = ''
   files.value = []
   content.value = ''
-  editing.value = false
-  editContent.value = ''
   try {
     const skillPath = `${props.category}/${props.skill}/SKILL.md`
     const [skillContent, skillFiles] = await Promise.all([
@@ -64,15 +53,14 @@ async function loadSkill() {
 async function viewFile(filePath: string) {
   fileLoading.value = true
   viewingFile.value = filePath
-  editing.value = false
-  editContent.value = ''
   try {
     // filePath might be absolute or relative; normalize to relative under category/skill/
     const base = `${props.category}/${props.skill}/`
     let relPath = filePath
-    if (filePath.startsWith('/')) {
+    if (filePath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(filePath)) {
       // Strip absolute prefix to get relative path
-      const segments = filePath.split('/.hermes/skills/')[1]
+      const normalizedPath = filePath.replace(/\\/g, '/')
+      const segments = normalizedPath.split(/(?:^|\/)(?:\.hermes|hermes)\/skills\//)[1]
       if (segments) {
         const afterSkillDir = segments.split('/').slice(2).join('/')
         relPath = afterSkillDir
@@ -89,39 +77,6 @@ async function viewFile(filePath: string) {
 function backToSkill() {
   viewingFile.value = null
   fileContent.value = ''
-  editing.value = false
-  editContent.value = ''
-}
-
-function startEdit() {
-  if (!canEdit.value || saving.value) return
-  editContent.value = currentContent.value
-  editing.value = true
-}
-
-function cancelEdit() {
-  editing.value = false
-  editContent.value = ''
-}
-
-async function saveEdit() {
-  if (!editing.value || saving.value) return
-  saving.value = true
-  try {
-    const saved = await updateSkillContent(props.category, props.skill, currentEditPath.value, editContent.value)
-    if (viewingFile.value) {
-      fileContent.value = saved
-    } else {
-      content.value = saved
-    }
-    editing.value = false
-    editContent.value = ''
-    message.success(t('common.saved'))
-  } catch (err: any) {
-    message.error(t('common.saveFailed') + `: ${err.message || err}`)
-  } finally {
-    saving.value = false
-  }
 }
 
 const pinLoading = ref(false)
@@ -151,11 +106,8 @@ watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
       <span class="detail-separator">/</span>
       <span class="detail-name">{{ skill }}</span>
       <div class="usage-stats">
-        <button v-if="!readonlyMode" class="pin-toggle" :class="{ active: pinned }" :disabled="pinLoading" :title="pinned ? t('skills.unpin') : t('skills.pin')" @click="handlePinToggle">
+        <button class="pin-toggle" :class="{ active: pinned }" :disabled="pinLoading" :title="pinned ? t('skills.unpin') : t('skills.pin')" @click="handlePinToggle">
           <svg width="16" height="16" viewBox="0 0 24 24" :fill="pinned ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
-        </button>
-        <button v-if="canEdit && !editing" class="skill-edit-toggle" :disabled="saving" :title="t('common.edit')" @click="startEdit">
-          {{ t('common.edit') }}
         </button>
         <span v-if="viewCount != null" class="usage-stat" title="Views">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -187,24 +139,13 @@ watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
       </div>
 
       <!-- Skill content -->
-      <div v-if="editing" class="skill-editor">
-        <textarea
-          v-model="editContent"
-          class="skill-editor-textarea"
-          spellcheck="false"
-        ></textarea>
-        <div class="skill-editor-actions">
-          <button class="skill-cancel" :disabled="saving" @click="cancelEdit">{{ t('common.cancel') }}</button>
-          <button class="skill-save" :disabled="saving" @click="saveEdit">{{ t('common.save') }}</button>
-        </div>
-      </div>
-      <div v-else class="detail-content">
+      <div class="detail-content">
         <MarkdownRenderer v-if="viewingFile" :content="fileContent" />
         <MarkdownRenderer v-else :content="content" />
       </div>
 
       <!-- Attached files -->
-      <div v-if="!editing && !viewingFile && files.length > 0" class="detail-files">
+      <div v-if="!viewingFile && files.length > 0" class="detail-files">
         <div class="files-header">{{ t('skills.attachedFiles') }}</div>
         <div class="files-list">
           <button
@@ -281,10 +222,7 @@ watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
   }
 }
 
-.pin-toggle,
-.skill-edit-toggle,
-.skill-cancel,
-.skill-save {
+.pin-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -292,11 +230,13 @@ watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
   background: none;
   color: $text-muted;
   cursor: pointer;
-  padding: 4px 8px;
+  padding: 4px;
   border-radius: 6px;
+  opacity: 0.5;
   transition: all $transition-fast;
 
   &:hover {
+    opacity: 1;
     color: $accent-primary;
     background: rgba(var(--accent-primary-rgb), 0.08);
     border-color: rgba(var(--accent-primary-rgb), 0.15);
@@ -311,22 +251,6 @@ watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
     cursor: wait;
     opacity: 0.3;
   }
-}
-
-.pin-toggle {
-  padding: 4px;
-  opacity: 0.5;
-
-  &:hover {
-    opacity: 1;
-  }
-}
-
-.skill-edit-toggle {
-  font-size: 12px;
-  color: $text-secondary;
-  border-color: $border-color;
-  background: $bg-secondary;
 }
 
 .detail-loading {
@@ -380,48 +304,6 @@ watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
     border: none;
     margin: 12px 0;
   }
-}
-
-.skill-editor {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.skill-editor-textarea {
-  flex: 1;
-  min-height: 260px;
-  width: 100%;
-  resize: none;
-  border: 1px solid $border-color;
-  border-radius: $radius-sm;
-  background: $bg-primary;
-  color: $text-primary;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
-  font-size: 13px;
-  line-height: 1.5;
-  padding: 12px;
-  outline: none;
-
-  &:focus {
-    border-color: $accent-primary;
-    box-shadow: 0 0 0 2px rgba(var(--accent-primary-rgb), 0.12);
-  }
-}
-
-.skill-editor-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.skill-save {
-  color: $accent-primary;
-  border-color: rgba(var(--accent-primary-rgb), 0.25);
-  background: rgba(var(--accent-primary-rgb), 0.08);
 }
 
 .detail-files {

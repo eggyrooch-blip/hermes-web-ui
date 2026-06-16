@@ -37,9 +37,19 @@ async function toggleDetail() {
 }
 
 async function handleSwitch() {
+  dialog.warning({
+    title: t('profiles.switchTo'),
+    content: t('profiles.switchConfirm', { name: props.profile.name }),
+    positiveText: t('profiles.switchTo'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: performHermesSwitch,
+  })
+}
+
+async function performHermesSwitch() {
   switching.value = true
   try {
-    const ok = await profilesStore.switchProfile(props.profile.name)
+    const ok = await profilesStore.switchHermesProfile(props.profile.name)
     if (ok) {
       message.success(t('profiles.switchSuccess', { name: props.profile.name }))
       // Reload to refresh all profile-dependent data
@@ -100,10 +110,6 @@ async function handleExport() {
       <div class="info-row">
         <span class="info-label">{{ t('profiles.model') }}</span>
         <code class="info-value mono">{{ profile.model }}</code>
-      </div>
-      <div class="info-row">
-        <span class="info-label">{{ t('profiles.gateway') }}</span>
-        <code class="info-value mono">{{ profile.gateway }}</code>
       </div>
     </div>
 

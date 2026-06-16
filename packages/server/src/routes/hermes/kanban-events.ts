@@ -1,13 +1,16 @@
 import { WebSocketServer } from 'ws'
 import type { WebSocket } from 'ws'
 import type { Server as HttpServer, IncomingMessage } from 'http'
-import { getToken } from '../../services/auth'
+import { authenticateUserToken, isAuthEnabled } from '../../middleware/user-auth'
+import { userCanAccessProfile } from '../../db/hermes/users-store'
 import { logger } from '../../services/logger'
-import * as kanbanCli from '../../services/hermes/hermes-kanban'
 import { config } from '../../config'
+import { shouldRejectUpgradeOrigin, writeForbiddenOrigin } from '../../security'
+import * as kanbanCli from '../../services/hermes/hermes-kanban'
 
 interface KanbanEventsRequest extends IncomingMessage {
   kanbanBoard?: string
+  kanbanProfile?: string
 }
 
 function sendJson(ws: WebSocket, payload: Record<string, unknown>) {
@@ -28,10 +31,6 @@ function streamLines(onLine: (line: string) => void) {
 }
 
 export function setupKanbanEventsWebSocket(httpServers: HttpServer | HttpServer[]) {
-  if (config.webPlane === 'chat') {
-    logger.info('Kanban event websocket disabled in chat plane to preserve owner isolation')
-    return
-  }
   const wss = new WebSocketServer({ noServer: true })
   const servers = Array.isArray(httpServers) ? httpServers : [httpServers]
 
@@ -40,14 +39,26 @@ export function setupKanbanEventsWebSocket(httpServers: HttpServer | HttpServer[
       const url = new URL(req.url || '', `http://${req.headers.host}`)
       if (url.pathname !== '/api/hermes/kanban/events') return
 
-      const authToken = await getToken()
-      if (authToken) {
+      if (shouldRejectUpgradeOrigin(req, config.corsOrigins)) {
+        writeForbiddenOrigin(socket)
+        return
+      }
+
+      if (await isAuthEnabled()) {
         const token = url.searchParams.get('token') || ''
-        if (token !== authToken) {
+        const user = await authenticateUserToken(token)
+        if (!user) {
           socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
           socket.destroy()
           return
         }
+        const profile = (url.searchParams.get('profile') || '').trim()
+        if (profile && user.role !== 'super_admin' && !userCanAccessProfile(user.id, profile)) {
+          socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+          socket.destroy()
+          return
+        }
+        req.kanbanProfile = profile || undefined
       }
 
       try {
@@ -79,7 +90,7 @@ export function setupKanbanEventsWebSocket(httpServers: HttpServer | HttpServer[
 
     child.stdout?.on('data', streamLines((line) => {
       if (line.toLowerCase().startsWith('watching kanban events')) return
-      sendJson(ws, { type: 'event', board, line })
+      sendJson(ws, { type: 'event', board })
     }))
 
     child.stderr?.on('data', streamLines((line) => {

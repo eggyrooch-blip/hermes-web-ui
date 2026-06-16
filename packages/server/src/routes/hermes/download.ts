@@ -1,27 +1,13 @@
 import Router from '@koa/router'
-import type { Context } from 'koa'
-import { mkdir } from 'fs/promises'
-import { basename, extname, join } from 'path'
+import { basename, extname, isAbsolute } from 'path'
 import {
   createFileProvider,
   localProvider,
   isInUploadDir,
-  isSensitivePath,
   validatePath,
   resolveHermesPath,
 } from '../../services/hermes/file-provider'
-import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
-import { getActiveProfileDir } from '../../services/hermes/hermes-profile'
-import { config } from '../../config'
-
-/**
- * Roots that are legal targets for absolute-path downloads.
- * Without this whitelist, `validatePath` only checks absoluteness, which
- * historically allowed any reachable file (e.g. /etc/passwd) to be served.
- */
-function downloadAllowedRoots(ctx: Context): string[] {
-  return [config.uploadDir, getRequestProfileDir(ctx), getActiveProfileDir()]
-}
+import { getActiveProfileName } from '../../services/hermes/hermes-profile'
 
 export const downloadRoutes = new Router()
 
@@ -77,34 +63,8 @@ function getMimeType(fileName: string): string {
   return MIME_MAP[ext] || 'application/octet-stream'
 }
 
-async function getDownloadTarget(ctx: Context, filePath: string): Promise<{
-  validPath: string
-  forceLocalRoot?: string
-  useLocalUploadProvider: boolean
-}> {
-  if (!isChatPlaneRequest(ctx)) {
-    const validPath = filePath.startsWith('/')
-      ? validatePath(filePath, downloadAllowedRoots(ctx))
-      : resolveHermesPath(filePath)
-    return { validPath, useLocalUploadProvider: isInUploadDir(validPath) }
-  }
-
-  if (filePath.startsWith('/')) {
-    // Chat plane only allows absolute paths inside the upload dir.
-    const validPath = validatePath(filePath, [config.uploadDir])
-    if (!isInUploadDir(validPath)) {
-      throw Object.assign(new Error('Absolute downloads are not available in chat plane'), { code: 'invalid_path' })
-    }
-    return { validPath, useLocalUploadProvider: true }
-  }
-
-  const workspaceDir = join(getRequestProfileDir(ctx), 'workspace')
-  await mkdir(workspaceDir, { recursive: true })
-  return {
-    validPath: resolveHermesPath(filePath, workspaceDir),
-    forceLocalRoot: workspaceDir,
-    useLocalUploadProvider: false,
-  }
+function requestedProfile(ctx: any): string {
+  return ctx.state?.profile?.name || getActiveProfileName() || 'default'
 }
 
 downloadRoutes.get('/api/hermes/download', async (ctx) => {
@@ -116,28 +76,24 @@ downloadRoutes.get('/api/hermes/download', async (ctx) => {
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
-  if (!filePath.startsWith('/') && isSensitivePath(filePath)) {
-    ctx.status = 403
-    ctx.body = { error: 'Cannot download sensitive file', code: 'permission_denied' }
-    return
-  }
 
   try {
-    const target = await getDownloadTarget(ctx, filePath)
+    const profile = requestedProfile(ctx)
+    // Validate the path first
+    // Support both absolute and relative paths
+    const validPath = isAbsolute(filePath) ? validatePath(filePath) : resolveHermesPath(filePath, profile)
 
     // Choose provider: always use local for upload directory files
     let data: Buffer
-    if (target.useLocalUploadProvider) {
-      data = await localProvider.readFile(target.validPath)
+    if (isInUploadDir(validPath)) {
+      data = await localProvider.readFile(validPath)
     } else {
-      const provider = target.forceLocalRoot
-        ? await createFileProvider({ rootDir: target.forceLocalRoot, forceLocal: true })
-        : await createFileProvider()
-      data = await provider.readFile(target.validPath)
+      const provider = await createFileProvider(profile)
+      data = await provider.readFile(validPath)
     }
 
     // Determine filename and MIME type
-    const name = fileName || basename(target.validPath)
+    const name = fileName || basename(validPath)
     const mime = getMimeType(name)
 
     // Set response headers
@@ -153,7 +109,6 @@ downloadRoutes.get('/api/hermes/download', async (ctx) => {
       invalid_path: 400,
       not_found: 404,
       ENOENT: 404,
-      permission_denied: 403,
       file_too_large: 413,
       unsupported_backend: 501,
       backend_error: 502,

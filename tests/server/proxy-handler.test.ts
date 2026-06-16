@@ -1,17 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('../../packages/server/src/services/gateway-bootstrap', () => ({
-  getGatewayManagerInstance: () => ({
-    getUpstream: () => 'http://127.0.0.1:8642',
-    getApiKey: () => null,
-  }),
-}))
-
-vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
-  getActiveProfileName: () => 'default',
-  getProfileDir: (name: string) => `/tmp/hermes/${name}`,
-}))
-
 // Mock updateUsage so we can assert calls without real DB
 const { mockUpdateUsage } = vi.hoisted(() => ({
   mockUpdateUsage: vi.fn(),
@@ -23,9 +11,7 @@ vi.mock('../../packages/server/src/db/hermes/usage-store', () => ({
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
-import { config } from '../../packages/server/src/config'
-import { proxy, setRunSession } from '../../packages/server/src/routes/hermes/proxy-handler'
-import { config } from '../../packages/server/src/config'
+import { proxy, setGatewayProxyTargetForTest, setRunSession } from '../../packages/server/src/routes/hermes/proxy-handler'
 
 function createMockCtx(overrides: Record<string, any> = {}) {
   const ctx: any = {
@@ -38,9 +24,6 @@ function createMockCtx(overrides: Record<string, any> = {}) {
     res: {
       write: vi.fn(),
       end: vi.fn(),
-      // EventEmitter surface used by proxy() to react to client disconnect.
-      on: vi.fn(),
-      removeListener: vi.fn(),
       headersSent: false,
       writableEnded: false,
     },
@@ -80,7 +63,10 @@ function createSSEBody(events: string[]): ReadableStream<Uint8Array> {
 describe('Proxy Handler', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    config.webPlane = 'both'
+    setGatewayProxyTargetForTest({
+      getUpstream: () => 'http://127.0.0.1:8642',
+      getApiKey: () => null,
+    })
   })
 
   it('rewrites /api/hermes/v1/* to /v1/*', async () => {
@@ -148,30 +134,6 @@ describe('Proxy Handler', () => {
     expect(options.headers.host).toBe('127.0.0.1:8642')
   })
 
-  it('injects Feishu openid from chat-plane session and ignores client spoofing', async () => {
-    config.webPlane = 'chat'
-    mockFetch.mockResolvedValue({
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      body: null,
-      json: () => Promise.resolve({}),
-    })
-
-    const ctx = createMockCtx({
-      headers: {
-        host: 'localhost:8648',
-        'x-hermes-feishu-openid': 'spoofed',
-        'content-type': 'application/json',
-      },
-      state: { user: { openid: 'ou_test_owner_a', profile: 'user_a', role: 'user' } },
-    })
-    await proxy(ctx)
-
-    const [, options] = mockFetch.mock.calls[0]
-    expect(options.headers['X-Hermes-Feishu-OpenId']).toBe('ou_test_owner_a')
-    expect(options.headers['x-hermes-feishu-openid']).toBeUndefined()
-  })
-
   it('forwards query string while stripping the web-ui token parameter', async () => {
     mockFetch.mockResolvedValue({
       status: 200,
@@ -201,8 +163,7 @@ describe('Proxy Handler', () => {
     await proxy(ctx)
 
     expect(ctx.status).toBe(502)
-    // WIP intentionally redacts upstream error detail to avoid SSRF reconnaissance.
-    expect(ctx.body).toEqual({ error: { message: 'Upstream gateway unreachable' } })
+    expect(ctx.body).toEqual({ error: { message: 'Proxy error: ECONNREFUSED' } })
   })
 
   it('passes through non-200 status codes', async () => {
