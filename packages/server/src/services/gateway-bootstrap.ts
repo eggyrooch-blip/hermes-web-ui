@@ -13,22 +13,10 @@ export function resolveGatewayAutostartMode(): GatewayAutostartMode {
 }
 
 export async function initGatewayManager(): Promise<void> {
-  const { GatewayManager } = await import('./hermes/gateway-manager')
-  const { getActiveProfileName } = await import('./hermes/hermes-profile')
-  const activeProfile = getActiveProfileName()
-  gatewayManager = new GatewayManager(activeProfile)
-
-  await gatewayManager.detectAllOnStartup()
-  const autostartMode = resolveGatewayAutostartMode()
-  if (autostartMode === 'none') {
-    console.log('[bootstrap] gateway autostart disabled')
-    return
-  }
-  if (autostartMode === 'active') {
-    await gatewayManager.start(activeProfile)
-    console.log('[bootstrap] active gateway started')
-    return
-  }
-  await gatewayManager.startAll()
-  console.log('[bootstrap] all gateways started')
+  // The local GatewayManager was removed: this fork routes all gateway/run
+  // traffic through the external run broker and never spawns a local Hermes
+  // gateway process. Initialization is therefore a no-op; getGatewayManagerInstance()
+  // stays null and the /api/hermes/gateways controller returns its existing
+  // 503 "GatewayManager not initialized" response.
+  console.log('[bootstrap] local gateway manager disabled (external run broker)')
 }

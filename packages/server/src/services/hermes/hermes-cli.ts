@@ -28,6 +28,16 @@ function resolveHermesBin(): string {
 
 const HERMES_BIN = resolveHermesBin()
 
+export function validateSkillName(name: string): string {
+  if (!name || typeof name !== 'string') throw Object.assign(new Error('skill name is required'), { code: 'invalid_argument' })
+  if (name.startsWith('-')) throw Object.assign(new Error('skill name must not start with "-"'), { code: 'invalid_argument' })
+  if (/[\x00-\x1f\x7f]/.test(name)) throw Object.assign(new Error('skill name contains control characters'), { code: 'invalid_argument' })
+  if (!/^[A-Za-z0-9_.:/-]{1,128}$/.test(name)) {
+    throw Object.assign(new Error('skill name contains disallowed characters'), { code: 'invalid_argument' })
+  }
+  return name
+}
+
 async function waitForGatewayRunning(profileDir: string, timeoutMs = 15000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {

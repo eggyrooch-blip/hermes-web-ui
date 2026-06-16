@@ -123,7 +123,12 @@ export async function trustedFeishuAuth(ctx: Context, next: Next): Promise<void>
     return
   }
 
-  ctx.state.user = { openid: verified.openid, profile, role: 'user' } satisfies WebUser
+  // Fork: the Feishu auth paths store a WebUser in ctx.state.user, while
+  // upstream's koa DefaultState types user as AuthenticatedUser. The fork's own
+  // readers cast back to WebUser, so bridge the assignment locally rather than
+  // widening the shared koa declaration (which would break upstream consumers
+  // that read user.id / user.profiles).
+  ctx.state.user = ({ openid: verified.openid, profile, role: 'user' } satisfies WebUser) as unknown as typeof ctx.state.user
   await next()
 }
 

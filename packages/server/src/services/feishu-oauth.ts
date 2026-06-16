@@ -291,7 +291,10 @@ export async function feishuOAuthAuth(ctx: Context, next: Next): Promise<void> {
     return
   }
 
-  ctx.state.user = user
+  // Fork: store the Feishu WebUser in ctx.state.user. Upstream types the koa
+  // DefaultState user as AuthenticatedUser; the fork's readers cast back to
+  // WebUser, so bridge locally instead of widening the shared declaration.
+  ctx.state.user = user as unknown as typeof ctx.state.user
   await next()
 }
 

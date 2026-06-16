@@ -1,4 +1,4 @@
-import type { ContentBlock } from './types'
+import type { ContentBlock, SessionMessage } from './types'
 
 type ResponseContentPart = { type: string; text?: string; image_url?: string }
 type AgentContentPart = { type: string; text?: string; image_url?: { url: string } }
@@ -94,4 +94,38 @@ async function imageBlockToDataUri(block: Extract<ContentBlock, { type: 'image' 
   } catch {
     return null
   }
+}
+
+/**
+ * Flatten a stored session's message history into the OpenAI-style message array
+ * the run-broker (:8766 multitenancy gateway) expects. Fork-only: the broker run
+ * path (handle-broker-run.ts) replays history to the external broker rather than
+ * the local agent-bridge. Ported from origin/main during the upstream re-baseline.
+ */
+export function buildBrokerMessagesForSession(messages: SessionMessage[]): Array<Record<string, any>> {
+  const brokerMessages: Array<Record<string, any>> = []
+  for (const message of messages) {
+    const role = message.role
+    const content = typeof message.content === 'string' ? message.content : String(message.content || '')
+    if (role === 'user') {
+      if (content.trim()) brokerMessages.push({ role: 'user', content })
+      continue
+    }
+    if (role === 'assistant') {
+      const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : []
+      if (content.trim()) {
+        brokerMessages.push({ role: 'assistant', content })
+      } else if (toolCalls.length) {
+        brokerMessages.push({ role: 'assistant', content: '', tool_calls: toolCalls })
+      }
+      continue
+    }
+    if (role === 'tool' && content.trim()) {
+      brokerMessages.push({
+        role: 'user',
+        content: `[Tool result: ${content}]`,
+      })
+    }
+  }
+  return brokerMessages
 }
