@@ -17,11 +17,9 @@ import { getSystemPrompt } from '../../lib/llm-prompt'
 import {
   getSession,
   getSessionDetail,
-  getSessionDetailPaginated,
   createSession,
   addMessage,
   updateSessionStats,
-  useLocalSessionStore,
 } from '../../db/hermes/session-store'
 import { getSessionDetailFromDb } from '../../db/hermes/sessions-db'
 import { getModelContextLength } from './model-context'
@@ -607,24 +605,25 @@ export function mapRunBrokerFrameForChat(parsed: any, frameEvent?: string): RunB
   return { type: 'ignore' }
 }
 
-// --- ChatRunSocket ---
+// --- BrokerRunController ---
+// Fork-only: the broker dispatcher for the external multitenancy run-broker (:8766).
+// Not a namespace owner — the upstream ChatRunSocket owns /chat-run and, when
+// config.webuiRunBroker is set, hands this controller the namespace via init(nsp).
+// This keeps R1 intact: every run/resume/abort/clarify path here is broker-native
+// (no upstream AgentBridgeClient), and our Feishu auth (authMiddleware) stays in force.
 
-export class ChatRunSocket {
-  private nsp: ReturnType<Server['of']>
-  private gatewayManager: any
+export class BrokerRunController {
+  private nsp!: ReturnType<Server['of']>
   /** sessionId → session state (messages, working status, events, run tracking) */
   private sessionMap = new Map<string, SessionState>()
   private hermesSessionIds = new Map<string, string>()
 
-  constructor(io: Server, gatewayManager: any) {
-    this.nsp = io.of('/chat-run')
-    this.gatewayManager = gatewayManager
-  }
-
-  init() {
+  /** Parent ChatRunSocket hands us its /chat-run namespace when webuiRunBroker. */
+  init(nsp: ReturnType<Server['of']>) {
+    this.nsp = nsp
     this.nsp.use(this.authMiddleware.bind(this))
     this.nsp.on('connection', this.onConnection.bind(this))
-    logger.info('[chat-run-socket] Socket.IO ready at /chat-run')
+    logger.info('[broker-controller] broker dispatcher attached to /chat-run')
   }
 
   // --- Auth middleware ---
@@ -920,9 +919,7 @@ export class ChatRunSocket {
 
   private async loadSessionStateFromDb(sid: string): Promise<SessionState> {
     try {
-      const detail = useLocalSessionStore()
-        ? getSessionDetailPaginated(sid)
-        : await getSessionDetailFromDb(sid)
+      const detail = await getSessionDetailFromDb(sid)
       const messages = detail?.messages ? this.handleMessage(detail.messages, sid) : []
 
       let inputTokens: number
@@ -1040,637 +1037,8 @@ export class ChatRunSocket {
       return
     }
 
-    await this.ensureGatewayReady(profile)
-    const upstream = this.gatewayManager.getUpstream(profile).replace(/\/$/, '')
-    const apiKey = this.gatewayManager.getApiKey(profile) || undefined
-
-    try {
-      // Build upstream request body
-      const body: Record<string, any> = { input: await buildResponsesInput(input, profile) }
-      if (model) body.model = model
-      if (provider) body.provider = provider
-      if (session_id) body.conversation = `webui:${session_id}`
-      if (instructions) {
-        body.instructions = `${getSystemPrompt()}\n${instructions}`
-      } else {
-        body.instructions = getSystemPrompt()
-      }
-      // Inject workspace context if set for this session
-      if (session_id) {
-        const sessionRow = getSession(session_id)
-        if (sessionRow?.workspace) {
-          const workspaceCtx = `[Current working directory: ${sessionRow.workspace}]`
-          body.instructions = body.instructions
-            ? `\n${workspaceCtx}\n${body.instructions}`
-            : `\n${workspaceCtx}`
-        }
-      }
-      // Legacy opt-in path for stateless upstreams. Default is Hermes-native
-      // response chaining via conversation/previous_response_id so the profile
-      // gateway owns transcript continuity.
-      if (USE_CLIENT_SUPPLIED_HISTORY && session_id) {
-        try {
-          const detail = useLocalSessionStore()
-            ? getSessionDetail(session_id)
-            : await getSessionDetailFromDb(session_id, profile)
-          if (detail?.messages?.length) {
-            // Filter valid messages
-            const validMessages = detail.messages.filter(m =>
-              (m.role === 'user' || m.role === 'assistant' || m.role === 'tool') && m.content !== undefined
-            )
-
-            // Exclude the last user message (just added in handleRun)
-            const lastUserMsgIndex = [...validMessages].reverse().findIndex(m => m.role === 'user')
-            let history: Array<{
-              role: string
-              content: string
-              tool_calls?: any[]
-              tool_call_id?: string
-              name?: string
-              reasoning_content?: string | null
-            }> = (lastUserMsgIndex >= 0
-              ? validMessages.slice(0, validMessages.length - lastUserMsgIndex - 1)
-              : validMessages
-            ).map((m, idx, arr) => {
-              const msg: any = { role: m.role, content: m.content || '' }
-              if (m.reasoning_content) msg.reasoning_content = m.reasoning_content
-              if (m.tool_calls?.length) {
-                // Filter out tool_calls with empty/invalid id and remove internal fields
-                const cleanedToolCalls = m.tool_calls
-                  .filter((tc: any) => tc.id && tc.id.length > 0)
-                  .map((tc: any) => ({
-                    id: tc.id,
-                    type: tc.type,
-                    function: tc.function
-                  }))
-                if (cleanedToolCalls.length > 0) {
-                  msg.tool_calls = cleanedToolCalls
-                }
-              }
-
-              // For tool messages, ensure tool_call_id exists
-              if (m.role === 'tool') {
-                let callId = m.tool_call_id
-                if (!callId || callId.length === 0) {
-                  // Try to reconstruct tool_call_id from previous assistant message
-                  const prevMsg = arr[idx - 1]
-                  if (prevMsg?.role === 'assistant' && prevMsg.tool_calls?.length) {
-                    const tc = prevMsg.tool_calls.find((t: any) => t.function?.name === m.tool_name)
-                    if (tc?.id) {
-                      callId = tc.id
-                    }
-                  }
-                }
-                // Skip tool message if no valid tool_call_id
-                if (!callId || callId.length === 0) {
-                  return null
-                }
-                msg.tool_call_id = callId
-              }
-
-              if (m.tool_name) msg.name = m.tool_name
-              return msg
-            })
-              .filter(m => m !== null)
-            // Context compression with snapshot awareness
-            const contextLength = getModelContextLength(profile)
-            const triggerTokens = Math.floor(contextLength / 2)
-            const cState = this.getOrCreateSession(session_id)
-
-            // Calculate inputTokens + outputTokens from DB (unified method)
-            const assembledTokens = await this.calcAndUpdateUsage(session_id, cState, emit)
-            const totalTokens = assembledTokens.inputTokens + assembledTokens.outputTokens
-            // Step 1: Check existing snapshot — if present, assemble summary + new messages
-            const snapshot = session_id ? getCompressionSnapshot(session_id) : null
-            if (snapshot) {
-              const newMessages = history.slice(snapshot.lastMessageIndex + 1)
-              logger.info('[context-compress] session=%s: snapshot at %d, %d new messages, assembled ~%d tokens (threshold %d)',
-                session_id, snapshot.lastMessageIndex, newMessages.length, totalTokens, triggerTokens)
-              // triggerTokens
-              if (totalTokens <= triggerTokens && newMessages.length <= 150) {
-                // Under threshold — use assembled context directly, no LLM call needed
-                history = [
-                  { role: 'user', content: SUMMARY_PREFIX + '\n\n' + snapshot.summary },
-                  ...newMessages,
-                ]
-              } else {
-                this.pushState(session_id, 'compression.started', {
-                  event: 'compression.started',
-                  message_count: newMessages.length,
-                  token_count: totalTokens,
-                })
-                emit('compression.started', {
-                  event: 'compression.started',
-                  message_count: newMessages.length,
-                  token_count: totalTokens,
-                })
-
-                try {
-                  const result = await compressor.compress(
-                    history, upstream, apiKey, session_id,
-                  )
-                  const afterTokens = await this.calcAndUpdateUsage(session_id, cState, emit)
-                  this.replaceState(session_id, 'compression.completed', {
-                    event: 'compression.completed',
-                    compressed: result.meta.compressed,
-                    llmCompressed: result.meta.llmCompressed,
-                    totalMessages: result.meta.totalMessages,
-                    resultMessages: result.messages.length,
-                    beforeTokens: totalTokens,
-                    afterTokens: afterTokens.inputTokens + afterTokens.outputTokens,
-                    summaryTokens: result.meta.summaryTokenEstimate,
-                    verbatimCount: result.meta.verbatimCount,
-                    compressedStartIndex: result.meta.compressedStartIndex,
-                  })
-                  logger.info('[context-compress] AFTER  session=%s: %d messages, ~%d tokens (was %d)', session_id, result.messages.length, afterTokens.inputTokens + afterTokens.outputTokens, totalTokens)
-
-                  emit('compression.completed', {
-                    event: 'compression.completed',
-                    compressed: result.meta.compressed,
-                    llmCompressed: result.meta.llmCompressed,
-                    totalMessages: result.meta.totalMessages,
-                    resultMessages: result.messages.length,
-                    beforeTokens: totalTokens,
-                    afterTokens: afterTokens.inputTokens + afterTokens.outputTokens,
-                    summaryTokens: result.meta.summaryTokenEstimate,
-                    verbatimCount: result.meta.verbatimCount,
-                    compressedStartIndex: result.meta.compressedStartIndex,
-                  })
-
-                  history = result.messages.map(m => {
-                    const msg: any = {
-                      role: m.role,
-                      content: m.content,
-                      tool_call_id: m.tool_call_id,
-                      name: m.name,
-                    }
-                    if (m.reasoning_content) msg.reasoning_content = m.reasoning_content
-                    // Filter tool_calls if present, remove internal fields
-                    if (m.tool_calls?.length) {
-                      const cleanedToolCalls = m.tool_calls
-                        .filter((tc: any) => tc.id && tc.id.length > 0)
-                        .map((tc: any) => ({
-                          id: tc.id,
-                          type: tc.type,
-                          function: tc.function
-                        }))
-                      if (cleanedToolCalls.length > 0) {
-                        msg.tool_calls = cleanedToolCalls
-                      }
-                    }
-                    return msg
-                  })
-                  // Update usage from DB (snapshot now updated by compressor)
-                  await this.calcAndUpdateUsage(session_id, cState, emit)
-                } catch (err: any) {
-                  this.replaceState(session_id, 'compression.completed', {
-                    event: 'compression.completed',
-                    compressed: false,
-                    totalMessages: newMessages.length,
-                    resultMessages: newMessages.length,
-                    beforeTokens: totalTokens,
-                    afterTokens: totalTokens,
-                    summaryTokens: 0,
-                    verbatimCount: newMessages.length,
-                    compressedStartIndex: -1,
-                    error: err.message,
-                  })
-                  logger.warn(err, '[chat-run-socket] compression failed for session %s, using assembled context', session_id)
-                  emit('compression.completed', {
-                    event: 'compression.completed',
-                    compressed: false,
-                    totalMessages: newMessages.length,
-                    resultMessages: newMessages.length,
-                    beforeTokens: totalTokens,
-                    afterTokens: totalTokens,
-                    summaryTokens: 0,
-                    verbatimCount: newMessages.length,
-                    compressedStartIndex: -1,
-                    error: err.message,
-                  })
-                }
-              }
-            } else if (history.length > 4) {
-              // No snapshot — check if raw history exceeds threshold
-
-              if (totalTokens <= triggerTokens && history.length <= 150) {
-                // Under threshold — use raw history as-is
-                logger.info('[context-compress] session=%s: %d messages, ~%d tokens — under threshold, skip', session_id, history.length, totalTokens)
-              } else {
-                // Over threshold — full LLM compression
-                logger.info('[context-compress] BEFORE session=%s: %d messages, ~%d tokens (threshold %d)', session_id, history.length, totalTokens, triggerTokens)
-
-                this.pushState(session_id, 'compression.started', {
-                  event: 'compression.started',
-                  message_count: history.length,
-                  token_count: totalTokens,
-                })
-                emit('compression.started', {
-                  event: 'compression.started',
-                  message_count: history.length,
-                  token_count: totalTokens,
-                })
-
-                try {
-                  const result = await compressor.compress(
-                    history, upstream, apiKey, session_id,
-                  )
-                  const cState = this.getOrCreateSession(session_id)
-                  const afterTokens = await this.calcAndUpdateUsage(session_id, cState, emit)
-                  this.replaceState(session_id, 'compression.completed', {
-                    event: 'compression.completed',
-                    compressed: result.meta.compressed,
-                    llmCompressed: result.meta.llmCompressed,
-                    totalMessages: result.meta.totalMessages,
-                    resultMessages: result.messages.length,
-                    beforeTokens: totalTokens,
-                    afterTokens: afterTokens.inputTokens + afterTokens.outputTokens,
-                    summaryTokens: result.meta.summaryTokenEstimate,
-                    verbatimCount: result.meta.verbatimCount,
-                    compressedStartIndex: result.meta.compressedStartIndex,
-                  })
-                  logger.info('[context-compress] AFTER  session=%s: %d messages, ~%d tokens (was %d)', session_id, result.messages.length, afterTokens.inputTokens + afterTokens.outputTokens, totalTokens)
-
-                  emit('compression.completed', {
-                    event: 'compression.completed',
-                    compressed: result.meta.compressed,
-                    llmCompressed: result.meta.llmCompressed,
-                    totalMessages: result.meta.totalMessages,
-                    resultMessages: result.messages.length,
-                    beforeTokens: totalTokens,
-                    afterTokens: afterTokens.inputTokens + afterTokens.outputTokens,
-                    summaryTokens: result.meta.summaryTokenEstimate,
-                    verbatimCount: result.meta.verbatimCount,
-                    compressedStartIndex: result.meta.compressedStartIndex,
-                  })
-
-                  history = result.messages.map(m => {
-                    const msg: any = {
-                      role: m.role,
-                      content: m.content,
-                      tool_call_id: m.tool_call_id,
-                      name: m.name,
-                    }
-                    if (m.reasoning_content) msg.reasoning_content = m.reasoning_content
-                    // Filter tool_calls if present, remove internal fields
-                    if (m.tool_calls?.length) {
-                      const cleanedToolCalls = m.tool_calls
-                        .filter((tc: any) => tc.id && tc.id.length > 0)
-                        .map((tc: any) => ({
-                          id: tc.id,
-                          type: tc.type,
-                          function: tc.function
-                        }))
-                      if (cleanedToolCalls.length > 0) {
-                        msg.tool_calls = cleanedToolCalls
-                      }
-                    }
-                    return msg
-                  })
-                  await this.calcAndUpdateUsage(session_id, cState, emit)
-                } catch (err: any) {
-                  this.replaceState(session_id, 'compression.completed', {
-                    event: 'compression.completed',
-                    compressed: false,
-                    totalMessages: history.length,
-                    resultMessages: history.length,
-                    beforeTokens: totalTokens,
-                    afterTokens: totalTokens,
-                    summaryTokens: 0,
-                    verbatimCount: history.length,
-                    compressedStartIndex: -1,
-                    error: err.message,
-                  })
-                  logger.warn(err, '[chat-run-socket] compression failed for session %s, using raw history', session_id)
-                  emit('compression.completed', {
-                    event: 'compression.completed',
-                    compressed: false,
-                    totalMessages: history.length,
-                    resultMessages: history.length,
-                    beforeTokens: totalTokens,
-                    afterTokens: totalTokens,
-                    summaryTokens: 0,
-                    verbatimCount: history.length,
-                    compressedStartIndex: -1,
-                    error: err.message,
-                  })
-                }
-              }
-            }
-
-            body.conversation_history = history
-          }
-        } catch (err) {
-          logger.warn(err, '[chat-run-socket] failed to load conversation history for session %s', session_id)
-        }
-      }
-
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
-      const userOpenId = (socket.data?.user?.openid as string | undefined)?.trim()
-      if (userOpenId) headers['X-Hermes-Feishu-OpenId'] = userOpenId
-      // Convert conversation_history from OpenAI format to Anthropic format
-      if (body.conversation_history && Array.isArray(body.conversation_history)) {
-        body.conversation_history = convertHistoryFormat(body.conversation_history)
-      }
-      body.stream = true
-      body.store = true
-
-      const abortController = new AbortController()
-      if (session_id) {
-        const state = this.getOrCreateSession(session_id)
-        state.isWorking = true
-        state.runId = undefined
-        state.abortController = abortController
-      }
-
-      const res = await fetch(`${upstream}/v1/responses`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: abortController.signal,
-      })
-      if (!res.ok) {
-        const text = await res.text().catch(() => '')
-        const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
-        if (session_id) await this.markCompleted(socket, session_id, { event: 'run.failed' })
-        emit('run.failed', { event: 'run.failed', error: `Upstream ${res.status}: ${text}`, queue_remaining: queueLen })
-        if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
-        return
-      }
-      if (!res.body) {
-        const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
-        if (session_id) await this.markCompleted(socket, session_id, { event: 'run.failed' })
-        emit('run.failed', { event: 'run.failed', error: 'Upstream response stream missing', queue_remaining: queueLen })
-        if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
-        return
-      }
-      const hermesSessionId = res.headers.get('X-Hermes-Session-Id') || res.headers.get('x-hermes-session-id')
-      if (session_id && hermesSessionId) this.hermesSessionIds.set(session_id, hermesSessionId)
-
-      let responseId: string | undefined
-      for await (const frame of readSseFrames(res.body)) {
-        let parsed: any
-        try {
-          parsed = JSON.parse(frame.data)
-        } catch {
-          continue
-        }
-        const upstreamEvent = parsed.type || frame.event || parsed.event
-        logger.info('[chat-run-socket] upstream response event: %s', upstreamEvent)
-
-        if (session_id) {
-          const state = this.sessionMap.get(session_id)
-          if (state) {
-            const mapped = this.applyResponseStreamEvent(state, session_id, runMarker, upstreamEvent, parsed)
-            if (mapped) {
-              if (mapped.runId) {
-                responseId = mapped.runId
-                state.runId = responseId
-              }
-              emit(mapped.event, mapped.payload)
-            }
-          }
-        }
-
-        if (upstreamEvent === 'response.completed' || upstreamEvent === 'response.failed') {
-          if (session_id && this.sessionMap.get(session_id)?.isAborting) {
-            logger.info({
-              sessionId: session_id,
-              runId: responseId,
-              event: upstreamEvent,
-            }, '[chat-run-socket][abort] suppressing upstream terminal event during abort')
-            return
-          }
-          const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
-          if (session_id) await this.markCompleted(socket, session_id, {
-            event: upstreamEvent === 'response.completed' ? 'run.completed' : 'run.failed',
-            run_id: responseId,
-          })
-          const finalOutput = parsed.response || parsed
-          const completedHermesSessionId = finalOutput.session_id || finalOutput.sessionId || hermesSessionId
-          if (session_id && completedHermesSessionId) this.hermesSessionIds.set(session_id, String(completedHermesSessionId))
-          const rawFinalText = extractResponseText(finalOutput)
-          let finalText = rawFinalText
-          let parsedContent: string | undefined
-          if (upstreamEvent === 'response.completed' && session_id) {
-            const rewritten = this.rewriteRunAssistantMedia(session_id, runMarker, profile, rawFinalText)
-            if (rewritten && rewritten !== rawFinalText) {
-              finalText = rewritten
-              parsedContent = rewritten
-            }
-          }
-          if (upstreamEvent === 'response.completed' && session_id) {
-            const usage = finalOutput.usage || {}
-            updateUsage(session_id, {
-              inputTokens: usage.input_tokens ?? usage.inputTokens ?? 0,
-              outputTokens: usage.output_tokens ?? usage.outputTokens ?? 0,
-              cacheReadTokens: usage.cache_read_tokens ?? usage.cacheReadTokens ?? 0,
-              cacheWriteTokens: usage.cache_write_tokens ?? usage.cacheWriteTokens ?? 0,
-              reasoningTokens: usage.reasoning_tokens ?? usage.reasoningTokens ?? 0,
-              model: finalOutput.model || '',
-              profile: this.sessionMap.get(session_id)?.profile,
-            })
-          }
-          const eventName = upstreamEvent === 'response.completed' ? 'run.completed' : 'run.failed'
-          emit(eventName, {
-            event: eventName,
-            run_id: responseId || finalOutput.id,
-            response_id: responseId || finalOutput.id,
-            output: finalText,
-            ...(parsedContent !== undefined ? { parsed_content: parsedContent } : {}),
-            usage: finalOutput.usage,
-            error: finalOutput.error || parsed.error,
-            queue_remaining: queueLen,
-          })
-          if (session_id && queueLen > 0) {
-            this.dequeueNextQueuedRun(socket, session_id)
-          }
-          return
-        }
-      }
-      const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
-      if (session_id) await this.markCompleted(socket, session_id, { event: 'run.failed', run_id: responseId })
-      emit('run.failed', {
-        event: 'run.failed',
-        run_id: responseId,
-        response_id: responseId,
-        error: 'Response stream ended without a terminal event',
-        queue_remaining: queueLen,
-      })
-      if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
-    } catch (err: any) {
-      const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
-      if (session_id) {
-        void this.markCompleted(socket, session_id, { event: 'run.failed' }).then(() => {
-          emit('run.failed', { event: 'run.failed', error: err.message, queue_remaining: queueLen })
-          if (queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
-        })
-      } else {
-        emit('run.failed', { event: 'run.failed', error: err.message })
-      }
-    }
   }
 
-  private applyResponseStreamEvent(
-    state: SessionState,
-    sessionId: string,
-    runMarker: string | undefined,
-    eventType: string,
-    parsed: any,
-  ): { event: string; payload: any; runId?: string } | null {
-    const run = this.getResponseRunState(state, runMarker)
-    const now = () => Math.floor(Date.now() / 1000)
-
-    if (eventType === 'response.created') {
-      const response = parsed.response || parsed
-      run.responseId = response.id || run.responseId
-      return {
-        event: 'run.started',
-        runId: run.responseId,
-        payload: {
-          event: 'run.started',
-          run_id: run.responseId,
-          response_id: run.responseId,
-          status: response.status || 'in_progress',
-          queue_length: state.queue.length || 0,
-        },
-      }
-    }
-
-    if (eventType === 'response.output_text.delta') {
-      const deltaText = parsed.delta || parsed.text || ''
-      if (!deltaText) return null
-
-      const last = [...state.messages].reverse().find(m => m.runMarker === runMarker)
-      if (last?.role === 'assistant' && last.finish_reason == null && !last.tool_calls?.length) {
-        last.content += deltaText
-      } else {
-        state.messages.push({
-          id: state.messages.length + 1,
-          session_id: sessionId,
-          runMarker,
-          role: 'assistant',
-          content: deltaText,
-          timestamp: now(),
-        })
-      }
-      return {
-        event: 'message.delta',
-        payload: {
-          event: 'message.delta',
-          run_id: run.responseId,
-          response_id: run.responseId,
-          delta: deltaText,
-        },
-      }
-    }
-
-    if (eventType === 'response.output_text.done') {
-      // Just mark the last assistant message as complete.
-      // Content is already accumulated correctly via deltas.
-      const last = [...state.messages].reverse().find(m => m.runMarker === runMarker)
-      if (last?.role === 'assistant' && last.finish_reason == null) {
-        last.finish_reason = 'stop'
-      }
-      return null
-    }
-
-    if (eventType === 'response.output_item.added') {
-      const item = parsed.item || parsed.output_item || parsed
-      if (item.type !== 'function_call') return null
-      const callId = item.call_id || item.id
-      if (!callId) return null
-      run.toolCalls.set(callId, responseFunctionCallToToolCall(item))
-      return null
-    }
-
-    if (eventType === 'response.output_item.done') {
-      const item = parsed.item || parsed.output_item || parsed
-      if (item.type === 'function_call') {
-        const callId = item.call_id || item.id
-        if (!callId) return null
-        const toolCall = responseFunctionCallToToolCall(item)
-        run.toolCalls.set(callId, toolCall)
-
-        const key = `assistant:${callId}`
-        if (!run.insertedKeys.has(key)) {
-          run.insertedKeys.add(key)
-          state.messages.push({
-            id: state.messages.length + 1,
-            session_id: sessionId,
-            runMarker,
-            role: 'assistant',
-            content: '',
-            tool_calls: [toolCall],
-            finish_reason: 'tool_calls',
-            timestamp: now(),
-          })
-        }
-        return {
-          event: 'tool.started',
-          payload: {
-            event: 'tool.started',
-            run_id: run.responseId,
-            response_id: run.responseId,
-            tool_call_id: callId,
-            tool: toolCall.function.name,
-            name: toolCall.function.name,
-            arguments: toolCall.function.arguments,
-            preview: summarizeToolArguments(toolCall.function.arguments),
-          },
-        }
-      }
-
-      if (item.type === 'function_call_output') {
-        const callId = item.call_id || item.id
-        if (!callId) return null
-        const key = `tool:${callId}`
-        const output = typeof item.output === 'string' ? item.output : JSON.stringify(item.output ?? '')
-        const toolName = run.toolCalls.get(callId)?.function?.name || null
-        if (!run.insertedKeys.has(key)) {
-          run.insertedKeys.add(key)
-          state.messages.push({
-            id: state.messages.length + 1,
-            session_id: sessionId,
-            runMarker,
-            role: 'tool',
-            content: output,
-            tool_call_id: callId,
-            tool_name: toolName,
-            timestamp: now(),
-          })
-        }
-        return {
-          event: 'tool.completed',
-          payload: {
-            event: 'tool.completed',
-            run_id: run.responseId,
-            response_id: run.responseId,
-            tool_call_id: callId,
-            tool: toolName,
-            name: toolName,
-            output,
-          },
-        }
-      }
-    }
-
-    if (eventType === 'response.completed') {
-      const response = parsed.response || parsed
-      run.responseId = response.id || run.responseId
-      const output = Array.isArray(response.output) ? response.output : []
-      for (const item of output) {
-        if (item.type === 'function_call') {
-          this.applyResponseStreamEvent(state, sessionId, runMarker, 'response.output_item.done', { item })
-        } else if (item.type === 'function_call_output') {
-          this.applyResponseStreamEvent(state, sessionId, runMarker, 'response.output_item.done', { item })
-        }
-      }
-    }
-
-    return null
-  }
 
   private getResponseRunState(state: SessionState, runMarker?: string): ResponseRunState {
     if (!state.responseRun || state.responseRun.runMarker !== runMarker) {
@@ -2095,9 +1463,7 @@ export class ChatRunSocket {
     sid: string, state: SessionState, emit: (event: string, payload: any) => void,
   ): Promise<{ inputTokens: number; outputTokens: number }> {
     try {
-      const detail = useLocalSessionStore()
-        ? getSessionDetail(sid)
-        : await getSessionDetailFromDb(sid, state.profile)
+      const detail = await getSessionDetailFromDb(sid)
       const msgs = detail?.messages
         ?.filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool') || []
 
@@ -2149,14 +1515,6 @@ export class ChatRunSocket {
     })
   }
 
-  private async ensureGatewayReady(profile: string): Promise<void> {
-    if (typeof this.gatewayManager.detectStatus !== 'function') return
-    const current = await this.gatewayManager.detectStatus(profile)
-    if (current?.running) return
-    if (typeof this.gatewayManager.startApiOnly === 'function') {
-      await this.gatewayManager.startApiOnly(profile)
-    }
-  }
 
   private async syncFromHermes(
     _socket: Socket,
@@ -2170,7 +1528,7 @@ export class ChatRunSocket {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const { getSessionMessagesFromDb } = await import('../../db/hermes/sessions-db')
-        const detail = await getSessionMessagesFromDb(hermesSessionId, profile)
+        const detail = await getSessionMessagesFromDb(hermesSessionId)
         if (detail?.messages?.length) {
           const state = this.sessionMap.get(localSessionId)
           if (state) {

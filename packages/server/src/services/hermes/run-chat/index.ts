@@ -26,6 +26,8 @@ import { contentBlocksToString } from './content-blocks'
 import type { ContentBlock, QueuedRun, SessionState } from './types'
 import { authenticateUserToken, isAuthEnabled, type AuthenticatedUser } from '../../../middleware/user-auth'
 import { userCanAccessProfile } from '../../../db/hermes/users-store'
+import { config } from '../../../config'
+import { BrokerRunController } from '../broker-controller'
 
 export type { ContentBlock } from './types'
 
@@ -84,12 +86,20 @@ export class ChatRunSocket {
   /** sessionId → session state (messages, working status, events, run tracking) */
   private sessionMap = new Map<string, SessionState>()
   private bridgeResumePolls = new Set<string>()
+  /** Fork: broker dispatcher; owns /chat-run instead of the upstream bridge path
+   *  when config.webuiRunBroker is set (prod multitenancy). */
+  private brokerController = new BrokerRunController()
 
   constructor(io: Server) {
     this.nsp = io.of('/chat-run')
   }
 
   init() {
+    if (config.webuiRunBroker) {
+      this.brokerController.init(this.nsp)
+      logger.info('[chat-run-socket] /chat-run delegated to broker controller (webuiRunBroker)')
+      return
+    }
     this.nsp.use(this.authMiddleware.bind(this))
     this.nsp.on('connection', this.onConnection.bind(this))
     logger.info('[chat-run-socket] Socket.IO ready at /chat-run')
