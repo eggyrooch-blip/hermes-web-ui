@@ -57,6 +57,8 @@ export async function authStatus(ctx: Context) {
   ctx.body = {
     hasPasswordLogin: true,
     hasUsers: countUsers() > 0,
+    authMode: config.authMode,
+    plane: config.webPlane,
   }
 }
 

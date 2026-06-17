@@ -2,7 +2,7 @@
 import { ref, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
-import { setApiKey, hasApiKey } from "@/api/client";
+import { setApiKey, hasApiKey, setRuntimeMode } from "@/api/client";
 import { fetchAuthStatus, loginWithPassword } from "@/api/auth";
 
 const { t } = useI18n();
@@ -14,16 +14,38 @@ const loading = ref(false);
 const errorMsg = ref("");
 const showLockResetHint = ref(false);
 
+// Auth mode: 'password' (upstream default) or 'feishu' (sunke: 飞书唯一登录).
+// While checking, the password form stays hidden so it never flashes before a
+// Feishu redirect.
+const loginMethod = ref<"password" | "feishu">("password");
+const authChecking = ref(true);
+
 // If already has a key, try to go to main page
 if (hasApiKey()) {
   router.replace("/hermes/chat");
 }
 
+function redirectToFeishu() {
+  // Feishu OAuth is the only login entry. The server round-trips to Feishu
+  // (instant auto-consent when the SSO session is live) and its callback sets
+  // the hermes_feishu_session cookie + redirects to chat.
+  window.location.assign("/api/auth/feishu/login");
+}
+
 onMounted(async () => {
   try {
-    await fetchAuthStatus();
+    const status = await fetchAuthStatus();
+    setRuntimeMode(status.authMode, status.plane);
+    if (status.authMode === "feishu-oauth-dev" || status.authMode === "trusted-feishu") {
+      // Wake Feishu immediately; never render the password form.
+      loginMethod.value = "feishu";
+      redirectToFeishu();
+      return;
+    }
   } catch {
     // Login remains available; the submit request will surface connection errors.
+  } finally {
+    authChecking.value = false;
   }
 });
 
@@ -66,6 +88,13 @@ async function handlePasswordLogin() {
       </div>
       <h1 class="login-title">{{ t("login.title") }}</h1>
       <p class="login-desc">{{ t("login.description") }}</p>
+
+      <!-- Feishu-only mode: show a waking state instead of the password form -->
+      <div v-if="authChecking || loginMethod === 'feishu'" class="wake-state" role="status" aria-live="polite">
+        <div class="wake-spinner" aria-hidden="true"></div>
+      </div>
+
+      <template v-else>
       <p class="login-default-hint">{{ t("login.defaultCredentialsHint") }}</p>
 
       <form class="login-form" @submit.prevent="handleLogin">
@@ -95,6 +124,7 @@ async function handlePasswordLogin() {
           {{ loading ? "..." : t("login.submit") }}
         </button>
       </form>
+      </template>
     </div>
   </div>
 </template>
@@ -147,6 +177,29 @@ async function handlePasswordLogin() {
   font-family: $font-code;
   font-size: 13px;
   color: $text-secondary;
+}
+
+.wake-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 0 8px;
+}
+
+.wake-spinner {
+  width: 34px;
+  height: 34px;
+  border: 3px solid rgba(var(--accent-primary-rgb), 0.18);
+  border-top-color: $accent-primary;
+  border-radius: 50%;
+  animation: wake-spin 0.9s linear infinite;
+}
+
+@keyframes wake-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .login-form {
