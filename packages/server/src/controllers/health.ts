@@ -3,6 +3,7 @@ import { resolve } from 'path'
 import * as hermesCli from '../services/hermes/hermes-cli'
 import { getAgentBridgeManager } from '../services/hermes/agent-bridge/manager'
 import { redactAgentBridgeError } from '../services/hermes/agent-bridge/redact'
+import { config } from '../config'
 
 declare const __APP_VERSION__: string
 
@@ -79,7 +80,8 @@ let pendingAgentBridgeHealthRefresh: Promise<AgentBridgeHealthPayload> | null = 
  */
 function isUpdateCheckDisabled(): boolean {
   const raw = (process.env.HERMES_WEB_UI_DISABLE_UPDATE_CHECK || '').trim().toLowerCase()
-  return raw === 'true' || raw === '1' || raw === 'on' || raw === 'yes'
+  if (raw === 'true' || raw === '1' || raw === 'on' || raw === 'yes') return true
+  return config.webPlane === 'chat' || config.authMode === 'feishu-oauth-dev' || config.authMode === 'trusted-feishu'
 }
 
 export async function checkLatestVersion(): Promise<void> {

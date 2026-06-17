@@ -17,6 +17,24 @@ type LoadHealthControllerOptions = {
   runtimeStateError?: Error
 }
 
+const ENV_KEYS = [
+  'HERMES_AUTH_MODE',
+  'HERMES_WEB_PLANE',
+  'HERMES_WEB_UI_DISABLE_UPDATE_CHECK',
+] as const
+const ORIGINAL_ENV = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]))
+
+function restoreEnv() {
+  for (const key of ENV_KEYS) {
+    const value = ORIGINAL_ENV[key]
+    if (value === undefined) {
+      delete process.env[key]
+    } else {
+      process.env[key] = value
+    }
+  }
+}
+
 const defaultBridgeReadiness = {
   endpoint: 'tcp://127.0.0.1:8123',
   endpointKind: 'tcp',
@@ -89,6 +107,7 @@ describe('health controller version metadata', () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.resetModules()
+    restoreEnv()
     ;(globalThis as any).__APP_VERSION__ = 'test'
   })
 
@@ -139,6 +158,29 @@ describe('health controller version metadata', () => {
 
     expect(ctx.body.webui_latest).toBe('99.99.99')
     expect(ctx.body.webui_update_available).toBe(true)
+  })
+
+  it('disables update lookup metadata in Feishu chat-plane deployments', async () => {
+    process.env.HERMES_AUTH_MODE = 'feishu-oauth-dev'
+    delete process.env.HERMES_WEB_PLANE
+    delete process.env.HERMES_WEB_UI_DISABLE_UPDATE_CHECK
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ version: '99.99.99' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { checkLatestVersion, healthCheck } = await loadHealthControllerWithoutInjectedVersion()
+
+    await checkLatestVersion()
+
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    const ctx = createMockCtx()
+    await healthCheck(ctx)
+
+    expect(ctx.body.webui_latest).toBe('')
+    expect(ctx.body.webui_update_available).toBe(false)
   })
 
   it('does not throw when latest-version lookup fails', async () => {
