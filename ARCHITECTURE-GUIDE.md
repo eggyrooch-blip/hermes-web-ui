@@ -26,7 +26,7 @@ related:
 >
 > App startup 不能再把 `app.mount('#app')` 阻塞在 `router.isReady()` 后，否则 fresh Feishu cookie 首屏会被 ChatView/Monaco 大 chunk 卡在空白 `.boot-fallback`。当前边界是：先 mount shell；router 用 `authNavigationReady` 表示可显示安全企业 chrome，用 `routeContentReady` 表示可显示 route content。普通用户 direct 到 super-admin route 时可以先看到安全 chrome，但 router-view 必须隐藏到安全 chat redirect 完成；未登录 direct 到受保护 route 时不能在跳 Feishu 登录前渲染受保护 chrome/content。
 >
-> 连接器页沿用旧 Credentials 能力并更名为「连接器」：路由为 `/hermes/connectors`，保留 `/hermes/credentials` alias；底层 API 仍是 `/api/auth/skill-credentials*`。`lark-cli` 授权通过 multitenancy Run Broker UAT/session endpoint，`bind-token` 只转发给 Run Broker 按 profile 存储，WebUI 不落 token。Skills 页面和 profile-local skill editor 不能在跨版本时丢掉；普通员工不能加载 upstream skill recommendation Markdown 或外部推荐链接面板，避免把外部 skill 市场/推广面带进企业员工态。Plugins 和 Coding Agents 暂不聚合进 Connectors，它们展示/操作的是主机插件 inventory、`~/.claude`/`~/.codex` 配置和本机安装/启动能力，必须和 MCP 一样保持 super-admin-only。
+> 连接器页沿用旧 Credentials 能力并更名为「连接器」：路由为 `/hermes/connectors`，保留 `/hermes/credentials` alias；底层 API 仍是 `/api/auth/skill-credentials*`。`lark-cli` 授权通过 multitenancy Run Broker UAT/session endpoint，`bind-token` 只转发给 Run Broker 按 profile 存储，WebUI 不落 token。Skills 页面和 profile-local skill editor 不能在跨版本时丢掉：`PUT /api/hermes/skills/file` 只允许当前 request profile 下真实本地 skill 文件写入，external dirs、hub/builtin、托管 symlink 和 symlink 子目录逃逸都只读；普通员工不能加载 upstream skill recommendation Markdown 或外部推荐链接面板，避免把外部 skill 市场/推广面带进企业员工态。Plugins 和 Coding Agents 暂不聚合进 Connectors，它们展示/操作的是主机插件 inventory、`~/.claude`/`~/.codex` 配置和本机安装/启动能力，必须和 MCP 一样保持 super-admin-only。
 >
 > 下次跨版本更新前先对照 `docs/plans/2026-06-17-enterprise-upstream-rebaseline-checklist.md`，再吸收 upstream UI/route 变更。
 
@@ -466,7 +466,7 @@ hermes-web-ui/                       (单 package，不是 workspaces)
 | `/hermes/profiles` | `hermes.profiles` | ✅ | ❌ |
 | `/hermes/logs` | `hermes.logs` | ✅ | ❌ |
 | `/hermes/usage` | `hermes.usage` | ❌ | ✅ |
-| `/hermes/skills` | `hermes.skills` | ❌ | ✅ (只读) |
+| `/hermes/skills` | `hermes.skills` | ❌ | ✅ (profile-local 可编辑) |
 | `/hermes/plugins` | `hermes.plugins` | ❌ | ✅ |
 | `/hermes/memory` | `hermes.memory` | ❌ | ✅ (隐藏 SOUL) |
 | `/hermes/settings` | `hermes.settings` | ❌ | ✅ (只显示安全段) |
