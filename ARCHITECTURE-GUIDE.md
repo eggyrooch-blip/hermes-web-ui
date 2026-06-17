@@ -24,6 +24,8 @@ related:
 >
 > Feishu OAuth 用户身份由服务器 `/api/auth/me` 保留 `openid/profile/name/avatarUrl/profiles`，客户端 `profiles` store 缓存 `currentUser`，侧栏渲染 Feishu 昵称、头像和绑定 profile；侧栏每次 mount 仍要刷新 `/api/auth/me`，不能因为 localStorage 里有旧 `currentUser` 就跳过服务端 envelope。`feishu-oauth-dev` 用 httpOnly `hermes_feishu_session` cookie，不存在 JS-readable token；`trusted-feishu` 可通过已签名的 `X-Feishu-Name` / `X-Feishu-Avatar-Url` 补齐展示元数据。路由和模型加载必须用 `canAccessProtectedRoutes()`，不能再用 `hasApiKey()` 判断；Feishu/trusted 模式也不能解码旧 `localStorage.hermes_api_key` 作为 username/role/admin gate。保护路由在新页面加载时还要先用 `/api/auth/me` 证明服务端 session/header 有效，失败时同时清 runtime mode 和旧 JWT，避免登录回跳或旧 super-admin JWT 泄露管理入口。Feishu OAuth callback 会在设置 httpOnly cookie 后直接落到 `/#/hermes/chat`，此时本地可能还没有 `hermes_auth_mode`；router 必须先用 `/api/auth/status` 发现服务端 auth mode，再判断是否可进入受保护路由。侧栏退出登录必须先 `POST /api/auth/feishu/logout` 清 httpOnly cookie，再清本地状态并 reload。
 >
+> App startup 不能再把 `app.mount('#app')` 阻塞在 `router.isReady()` 后，否则 fresh Feishu cookie 首屏会被 ChatView/Monaco 大 chunk 卡在空白 `.boot-fallback`。当前边界是：先 mount shell；router 用 `authNavigationReady` 表示可显示安全企业 chrome，用 `routeContentReady` 表示可显示 route content。普通用户 direct 到 super-admin route 时可以先看到安全 chrome，但 router-view 必须隐藏到安全 chat redirect 完成；未登录 direct 到受保护 route 时不能在跳 Feishu 登录前渲染受保护 chrome/content。
+>
 > 连接器页沿用旧 Credentials 能力并更名为「连接器」：路由为 `/hermes/connectors`，保留 `/hermes/credentials` alias；底层 API 仍是 `/api/auth/skill-credentials*`。`lark-cli` 授权通过 multitenancy Run Broker UAT/session endpoint，`bind-token` 只转发给 Run Broker 按 profile 存储，WebUI 不落 token。Skills 页面和 profile-local skill editor 不能在跨版本时丢掉；MCP 管理仍保持 super-admin-only。
 >
 > 下次跨版本更新前先对照 `docs/plans/2026-06-17-enterprise-upstream-rebaseline-checklist.md`，再吸收 upstream UI/route 变更。
