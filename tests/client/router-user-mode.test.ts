@@ -48,6 +48,8 @@ describe('router route metadata + auth gating', () => {
     'hermes.logs',
     'hermes.devices',
     'hermes.models',
+    'hermes.plugins',
+    'hermes.codingAgents',
   ])('gates %s behind super-admin', async (routeName) => {
     const router = (await import('@/router')).default
 
@@ -167,6 +169,8 @@ describe('router route metadata + auth gating', () => {
     '/hermes/logs',
     '/hermes/devices',
     '/hermes/models',
+    '/hermes/plugins',
+    '/hermes/coding-agents',
   ])('keeps a non-admin user off %s', async (path) => {
     localStorage.setItem('hermes_api_key', USER_TOKEN)
     const router = (await import('@/router')).default

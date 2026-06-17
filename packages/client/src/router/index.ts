@@ -103,6 +103,7 @@ const router = createRouter({
       path: '/hermes/plugins',
       name: 'hermes.plugins',
       component: () => import('@/views/hermes/PluginsView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/memory',
@@ -151,6 +152,7 @@ const router = createRouter({
       path: '/hermes/coding-agents',
       name: 'hermes.codingAgents',
       component: () => import('@/views/hermes/CodingAgentsView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/version-preview',

@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
+const isStoredSuperAdminMock = vi.hoisted(() => vi.fn(() => false))
 
 const chatStoreMock = vi.hoisted(() => ({
   sessions: [] as Array<Record<string, any>>,
@@ -58,7 +59,7 @@ const prefsStoreMock = vi.hoisted(() => ({
 vi.mock('@/api/client', () => ({
   isUserMode: isUserModeMock,
   // Upstream-rebaseline drift: ChatPanel gates admin-only UI on this.
-  isStoredSuperAdmin: vi.fn(() => false),
+  isStoredSuperAdmin: isStoredSuperAdminMock,
 }))
 
 vi.mock('@/stores/hermes/chat', () => ({
@@ -138,7 +139,7 @@ vi.mock('naive-ui', () => ({
   NSelect: {
     props: ['value', 'options'],
     emits: ['update:value'],
-    template: '<select class="n-select-stub" />',
+    template: '<select class="n-select-stub"><option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option></select>',
   },
   NRadioGroup: {
     props: ['value'],
@@ -197,7 +198,11 @@ vi.mock('@/components/hermes/chat/TerminalPanel.vue', () => ({
 }))
 
 vi.mock('@/components/layout/PageSidebarNav.vue', () => ({
-  default: { template: '<div class="page-sidebar-nav-stub" />' },
+  default: {
+    props: ['primaryLabel'],
+    emits: ['primary'],
+    template: '<button class="page-sidebar-nav-stub" @click="$emit(\'primary\')">{{ primaryLabel }}</button>',
+  },
 }))
 
 import ChatPanel from '@/components/hermes/chat/ChatPanel.vue'
@@ -205,6 +210,7 @@ import ChatPanel from '@/components/hermes/chat/ChatPanel.vue'
 describe('ChatPanel user-mode gateway state', () => {
   beforeEach(() => {
     isUserModeMock.mockReturnValue(false)
+    isStoredSuperAdminMock.mockReturnValue(false)
     appStoreMock.connected = true
     chatStoreMock.sessions = []
     chatStoreMock.activeSession = null
@@ -293,6 +299,32 @@ describe('ChatPanel user-mode gateway state', () => {
     expect(wrapper.find('.session-scope-note').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('chat.sessionScopeHint')
     expect(wrapper.text()).not.toContain('chat.openHistory')
+  })
+
+  it('does not offer coding-agent sessions to non-admin users', async () => {
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    appStoreMock.profileModelGroups = [{
+      profile: 'user_a',
+      groups: [{ provider: 'openai', label: 'OpenAI', models: ['gpt-4.1'] }],
+      default_provider: 'openai',
+      default: 'gpt-4.1',
+    }]
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    await wrapper.get('.page-sidebar-nav-stub').trigger('click')
+
+    expect(wrapper.text()).toContain('Hermes')
+    expect(wrapper.text()).not.toContain('Claude Code')
+    expect(wrapper.text()).not.toContain('Codex')
+    expect(wrapper.text()).not.toContain('codingAgents.launchModeScope')
+    expect(wrapper.text()).not.toContain('codingAgents.protocolScope')
   })
 
   it('does not override MessageItem bubble colors in user mode', () => {

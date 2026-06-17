@@ -258,8 +258,12 @@ const CODING_AGENT_AUTH_PROVIDER_KEYS = new Set(["openai-codex", "copilot", "xai
 
 const newChatAgentOptions = computed(() => [
   { label: "Hermes", value: "hermes" },
-  { label: "Claude Code", value: "claude-code" },
-  { label: "Codex", value: "codex" },
+  ...(isSuperAdmin.value
+    ? [
+        { label: "Claude Code", value: "claude-code" },
+        { label: "Codex", value: "codex" },
+      ]
+    : []),
 ]);
 
 const newChatApiModeOptions = computed(() => [
@@ -417,6 +421,12 @@ watch(
   () => [newChatAgent.value, newChatAgentMode.value, newChatProfile.value],
   () => ensureNewChatProviderSelection(),
 );
+
+watch(isSuperAdmin, (canUseHostAgents) => {
+  if (!canUseHostAgents && newChatAgent.value !== "hermes") {
+    newChatAgent.value = "hermes";
+  }
+}, { immediate: true });
 
 async function openNewChatModal() {
   isBatchMode.value = false;

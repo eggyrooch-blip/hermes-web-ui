@@ -174,6 +174,8 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.text()).not.toContain('sidebar.devices')
     expect(wrapper.text()).not.toContain('sidebar.models')
     expect(wrapper.text()).not.toContain('sidebar.mcp')
+    expect(wrapper.text()).not.toContain('sidebar.plugins')
+    expect(wrapper.text()).not.toContain('sidebar.codingAgents')
     expect(wrapper.text()).toContain('sidebar.connectors')
     expect(wrapper.find('.version-info').exists()).toBe(false)
     expect(wrapper.find('.update-btn').exists()).toBe(false)
@@ -204,6 +206,8 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.text()).not.toContain('sidebar.devices')
     expect(wrapper.text()).not.toContain('sidebar.models')
     expect(wrapper.text()).not.toContain('sidebar.mcp')
+    expect(wrapper.text()).not.toContain('sidebar.plugins')
+    expect(wrapper.text()).not.toContain('sidebar.codingAgents')
     expect(wrapper.text()).toContain('sidebar.connectors')
   })
 
