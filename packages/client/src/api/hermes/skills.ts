@@ -12,6 +12,7 @@ export interface SkillInfo {
   useCount?: number
   viewCount?: number
   pinned?: boolean
+  editable?: boolean
   /** External skills only — raw form of the configured external dir (e.g. `~/my_skills/...`),
    *  used by the UI to group external skills by their source path. */
   sourcePath?: string
@@ -121,6 +122,14 @@ export async function fetchSkillContent(skillPath: string): Promise<string> {
 export async function fetchSkillFiles(category: string, skill: string): Promise<SkillFileEntry[]> {
   const res = await request<{ files: SkillFileEntry[] }>(`/api/hermes/skills/${category}/${skill}/files`)
   return res.files
+}
+
+export async function updateSkillContent(category: string, skill: string, path: string, content: string): Promise<string> {
+  const res = await request<{ success: boolean; content: string }>('/api/hermes/skills/file', {
+    method: 'PUT',
+    body: JSON.stringify({ category, skill, path, content }),
+  })
+  return res.content
 }
 
 export async function fetchMemory(): Promise<MemoryData> {

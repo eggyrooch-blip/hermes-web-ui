@@ -299,6 +299,7 @@ function handlePinToggled(name: string, pinned: boolean) {
               :use-count="selectedSkillData?.useCount"
               :view-count="selectedSkillData?.viewCount"
               :pinned="selectedSkillData?.pinned"
+              :editable="selectedSkillData?.editable"
               @pin-toggled="handlePinToggled"
             />
             <div v-else class="recommendations-panel">

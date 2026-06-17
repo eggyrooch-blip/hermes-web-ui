@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, stat, writeFile, cp } from 'fs/promises'
+import { lstat, mkdir, readdir, readFile, rm, stat, writeFile, cp } from 'fs/promises'
 import { homedir, tmpdir } from 'os'
 import { dirname, join, resolve } from 'path'
 import { createHash, randomBytes } from 'crypto'
@@ -12,6 +12,7 @@ import { isPathWithin } from '../../services/hermes/hermes-path'
 import { getActiveProfileName, getProfileDir } from '../../services/hermes/hermes-profile'
 import { getRequestProfile, getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 import { getSkillUsageStatsFromDb } from '../../db/hermes/sessions-db'
+import { safeFileStore } from '../../services/safe-file-store'
 
 // Chat-plane isolation (fork): when a request arrives on the chat plane it is
 // bound to the caller's own profile (resolved from ctx.state.user.profile via
@@ -317,6 +318,7 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
             description: extractDescription(skillMd),
             enabled: !disabledList.includes(entry.name),
             source,
+            editable: source === 'local',
             modified: modified || undefined,
             patchCount: usage?.patch_count,
             useCount: usage?.use_count,
@@ -347,6 +349,7 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
         description: extractDescription(fs.skillMd),
         enabled: !disabledList.includes(fs.name),
         source: fs.source,
+        editable: fs.source === 'local',
         modified: undefined,
         patchCount: usage?.patch_count,
         useCount: usage?.use_count,
@@ -379,6 +382,7 @@ async function scanExternalSkillsDir(
       skills: category.skills.map((skill: any) => ({
         ...skill,
         source: 'external' as SkillSource,
+        editable: false,
         modified: undefined,
         sourcePath,
       })),
@@ -656,6 +660,176 @@ export async function readFile_(ctx: any) {
     return
   }
   ctx.body = { content }
+}
+
+const MAX_SKILL_EDIT_BYTES = 256 * 1024
+
+async function lstatOrNull(filePath: string) {
+  try {
+    return await lstat(filePath)
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return null
+    throw err
+  }
+}
+
+function normalizeEditableSkillPath(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const normalized = value.replace(/\\/g, '/')
+  if (!normalized || normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) return null
+  const parts = normalized.split('/')
+  if (parts.some(part => !part || part === '.' || part === '..' || part.includes('\0'))) return null
+  return parts.join('/')
+}
+
+async function hasSymlinkSkillDirByName(rootDir: string, skillName: string): Promise<boolean> {
+  let entries: import('fs').Dirent[]
+  try {
+    entries = await readdir(rootDir, { withFileTypes: true })
+  } catch {
+    return false
+  }
+
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue
+    const entryPath = join(rootDir, entry.name)
+    if (entry.isSymbolicLink()) {
+      if (entry.name === skillName) return true
+      continue
+    }
+    if (!entry.isDirectory()) continue
+
+    const skillMd = await safeReadFile(join(entryPath, 'SKILL.md'))
+    if (skillMd !== null) continue
+    if (await hasSymlinkSkillDirByName(entryPath, skillName)) return true
+  }
+
+  return false
+}
+
+async function resolveLocalEditableSkillDir(
+  profileSkillsDir: string,
+  category: string,
+  skillName: string,
+): Promise<{ dir: string | null; readOnly: boolean }> {
+  const directPath = category === 'misc'
+    ? join(profileSkillsDir, skillName)
+    : join(profileSkillsDir, category, skillName)
+  const directInfo = await lstatOrNull(directPath)
+  if (directInfo?.isSymbolicLink()) return { dir: null, readOnly: true }
+
+  const localSkillDir = await findSkillDirInRoot(profileSkillsDir, category, skillName)
+  if (localSkillDir) {
+    const localInfo = await lstatOrNull(localSkillDir)
+    if (localInfo?.isSymbolicLink()) return { dir: null, readOnly: true }
+    return { dir: localSkillDir, readOnly: false }
+  }
+
+  if (category !== 'misc' && await hasSymlinkSkillDirByName(join(profileSkillsDir, category), skillName)) {
+    return { dir: null, readOnly: true }
+  }
+
+  return { dir: null, readOnly: false }
+}
+
+async function assertEditablePathHasNoSymlinks(rootDir: string, relativePath: string): Promise<'ok' | 'missing' | 'symlink'> {
+  let current = rootDir
+  for (const part of relativePath.split('/')) {
+    current = join(current, part)
+    const info = await lstatOrNull(current)
+    if (!info) return 'missing'
+    if (info.isSymbolicLink()) return 'symlink'
+  }
+  return 'ok'
+}
+
+export async function updateFile_(ctx: any) {
+  const body = (ctx.request.body || {}) as {
+    category?: unknown
+    skill?: unknown
+    path?: unknown
+    content?: unknown
+  }
+  const category = typeof body.category === 'string' ? body.category : ''
+  const skill = typeof body.skill === 'string' ? body.skill : ''
+  const relativePath = normalizeEditableSkillPath(body.path)
+  const content = body.content
+
+  if (!isValidSkillName(category) || !isValidSkillName(skill) || !relativePath || typeof content !== 'string') {
+    ctx.status = 400
+    ctx.body = { error: 'Invalid category, skill, path or content' }
+    return
+  }
+  if (Buffer.byteLength(content, 'utf-8') > MAX_SKILL_EDIT_BYTES) {
+    ctx.status = 413
+    ctx.body = { error: `File too large (max ${MAX_SKILL_EDIT_BYTES} bytes)` }
+    return
+  }
+
+  const profileSkillsDir = requestSkillsDir(ctx)
+  try {
+    const config = await readConfigYamlForProfile(requestedProfile(ctx))
+    const localResolution = await resolveLocalEditableSkillDir(profileSkillsDir, category, skill)
+    if (localResolution.readOnly) {
+      ctx.status = 403
+      ctx.body = { error: 'Skill is read-only' }
+      return
+    }
+
+    if (!localResolution.dir) {
+      const resolvedAnySkillDir = await resolveSkillDirFromConfig(config, profileSkillsDir, category, skill)
+      ctx.status = resolvedAnySkillDir ? 403 : 404
+      ctx.body = { error: resolvedAnySkillDir ? 'Skill is read-only' : 'Skill not found' }
+      return
+    }
+
+    const bundledManifest = readBundledManifest(await safeReadFile(join(profileSkillsDir, '.bundled_manifest')))
+    const hubNames = readHubInstalledNames(await safeReadFile(join(profileSkillsDir, '.hub', 'lock.json')))
+    const source = getSkillSource(skill, bundledManifest, hubNames)
+    if (source !== 'local') {
+      ctx.status = 403
+      ctx.body = { error: 'Skill is read-only' }
+      return
+    }
+
+    const skillDir = resolve(localResolution.dir)
+    const fullPath = resolve(join(skillDir, relativePath))
+    if (!isPathWithin(skillDir, profileSkillsDir) || !isPathWithin(fullPath, skillDir)) {
+      ctx.status = 403
+      ctx.body = { error: 'Access denied' }
+      return
+    }
+
+    const symlinkCheck = await assertEditablePathHasNoSymlinks(skillDir, relativePath)
+    if (symlinkCheck === 'symlink') {
+      ctx.status = 403
+      ctx.body = { error: 'Access denied' }
+      return
+    }
+    if (symlinkCheck === 'missing') {
+      ctx.status = 404
+      ctx.body = { error: 'File not found' }
+      return
+    }
+
+    const targetInfo = await lstatOrNull(fullPath)
+    if (!targetInfo || !targetInfo.isFile()) {
+      ctx.status = targetInfo ? 400 : 404
+      ctx.body = { error: targetInfo ? 'Path is not a file' : 'File not found' }
+      return
+    }
+    if (targetInfo.size > MAX_SKILL_EDIT_BYTES) {
+      ctx.status = 413
+      ctx.body = { error: `File too large (max ${MAX_SKILL_EDIT_BYTES} bytes)` }
+      return
+    }
+
+    await safeFileStore.writeText(fullPath, content, { backup: true })
+    ctx.body = { success: true, content }
+  } catch (err: any) {
+    ctx.status = 500
+    ctx.body = { error: err.message }
+  }
 }
 
 async function updatePinnedSkill(skillsDir: string, name: string, pinned: boolean): Promise<void> {

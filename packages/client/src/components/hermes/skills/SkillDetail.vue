@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
-import { fetchSkillContent, fetchSkillFiles, pinSkillApi, type SkillFileEntry } from '@/api/hermes/skills'
+import { fetchSkillContent, fetchSkillFiles, pinSkillApi, updateSkillContent, type SkillFileEntry } from '@/api/hermes/skills'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 
@@ -16,6 +16,7 @@ const props = defineProps<{
   useCount?: number
   viewCount?: number
   pinned?: boolean
+  editable?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -28,6 +29,13 @@ const loading = ref(false)
 const fileContent = ref('')
 const viewingFile = ref<string | null>(null)
 const fileLoading = ref(false)
+const editing = ref(false)
+const editContent = ref('')
+const saving = ref(false)
+
+const currentEditPath = computed(() => viewingFile.value || 'SKILL.md')
+const currentContent = computed(() => viewingFile.value ? fileContent.value : content.value)
+const canEdit = computed(() => props.editable === true && !loading.value && !fileLoading.value)
 
 async function loadSkill() {
   loading.value = true
@@ -35,6 +43,8 @@ async function loadSkill() {
   fileContent.value = ''
   files.value = []
   content.value = ''
+  editing.value = false
+  editContent.value = ''
   try {
     const skillPath = `${props.category}/${props.skill}/SKILL.md`
     const [skillContent, skillFiles] = await Promise.all([
@@ -50,22 +60,26 @@ async function loadSkill() {
   }
 }
 
+function normalizeFilePath(filePath: string): string {
+  let relPath = filePath
+  if (filePath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(filePath)) {
+    const normalizedPath = filePath.replace(/\\/g, '/')
+    const segments = normalizedPath.split(/(?:^|\/)(?:\.hermes|hermes)\/skills\//)[1]
+    if (segments) {
+      relPath = segments.split('/').slice(2).join('/')
+    }
+  }
+  return relPath
+}
+
 async function viewFile(filePath: string) {
   fileLoading.value = true
-  viewingFile.value = filePath
+  const relPath = normalizeFilePath(filePath)
+  viewingFile.value = relPath
+  editing.value = false
+  editContent.value = ''
   try {
-    // filePath might be absolute or relative; normalize to relative under category/skill/
     const base = `${props.category}/${props.skill}/`
-    let relPath = filePath
-    if (filePath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(filePath)) {
-      // Strip absolute prefix to get relative path
-      const normalizedPath = filePath.replace(/\\/g, '/')
-      const segments = normalizedPath.split(/(?:^|\/)(?:\.hermes|hermes)\/skills\//)[1]
-      if (segments) {
-        const afterSkillDir = segments.split('/').slice(2).join('/')
-        relPath = afterSkillDir
-      }
-    }
     fileContent.value = await fetchSkillContent(`${base}${relPath}`)
   } catch (err: any) {
     fileContent.value = t('skills.fileLoadFailed') + `: ${err.message}`
@@ -77,6 +91,39 @@ async function viewFile(filePath: string) {
 function backToSkill() {
   viewingFile.value = null
   fileContent.value = ''
+  editing.value = false
+  editContent.value = ''
+}
+
+function startEditing() {
+  if (!canEdit.value) return
+  editContent.value = currentContent.value
+  editing.value = true
+}
+
+function cancelEditing() {
+  editing.value = false
+  editContent.value = ''
+}
+
+async function saveEditing() {
+  if (!canEdit.value || saving.value) return
+  saving.value = true
+  try {
+    const updated = await updateSkillContent(props.category, props.skill, currentEditPath.value, editContent.value)
+    if (viewingFile.value) {
+      fileContent.value = updated
+    } else {
+      content.value = updated
+    }
+    editing.value = false
+    editContent.value = ''
+    message.success(t('common.saved'))
+  } catch (err: any) {
+    message.error(t('common.saveFailed') + `: ${err.message}`)
+  } finally {
+    saving.value = false
+  }
 }
 
 const pinLoading = ref(false)
@@ -106,6 +153,19 @@ watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
       <span class="detail-separator">/</span>
       <span class="detail-name">{{ skill }}</span>
       <div class="usage-stats">
+        <button
+          v-if="canEdit"
+          class="skill-edit-toggle"
+          :class="{ active: editing }"
+          :disabled="saving"
+          :title="t('common.edit')"
+          @click="editing ? cancelEditing() : startEditing()"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+          </svg>
+        </button>
         <button class="pin-toggle" :class="{ active: pinned }" :disabled="pinLoading" :title="pinned ? t('skills.unpin') : t('skills.pin')" @click="handlePinToggle">
           <svg width="16" height="16" viewBox="0 0 24 24" :fill="pinned ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
         </button>
@@ -139,13 +199,28 @@ watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
       </div>
 
       <!-- Skill content -->
-      <div class="detail-content">
+      <div v-if="editing" class="skill-editor">
+        <textarea
+          v-model="editContent"
+          class="skill-editor-textarea"
+          spellcheck="false"
+        />
+        <div class="skill-editor-actions">
+          <button class="skill-cancel" type="button" :disabled="saving" @click="cancelEditing">
+            {{ t('common.cancel') }}
+          </button>
+          <button class="skill-save" type="button" :disabled="saving" @click="saveEditing">
+            {{ t('common.save') }}
+          </button>
+        </div>
+      </div>
+      <div v-else class="detail-content">
         <MarkdownRenderer v-if="viewingFile" :content="fileContent" />
         <MarkdownRenderer v-else :content="content" />
       </div>
 
       <!-- Attached files -->
-      <div v-if="!viewingFile && files.length > 0" class="detail-files">
+      <div v-if="!editing && !viewingFile && files.length > 0" class="detail-files">
         <div class="files-header">{{ t('skills.attachedFiles') }}</div>
         <div class="files-list">
           <button
@@ -222,7 +297,8 @@ watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
   }
 }
 
-.pin-toggle {
+.pin-toggle,
+.skill-edit-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -251,6 +327,13 @@ watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
     cursor: wait;
     opacity: 0.3;
   }
+}
+
+.skill-edit-toggle.active {
+  opacity: 1;
+  color: $accent-primary;
+  background: rgba(var(--accent-primary-rgb), 0.08);
+  border-color: rgba(var(--accent-primary-rgb), 0.15);
 }
 
 .detail-loading {
@@ -303,6 +386,75 @@ watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
   :deep(hr) {
     border: none;
     margin: 12px 0;
+  }
+}
+
+.skill-editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 8px;
+}
+
+.skill-editor-textarea {
+  flex: 1;
+  width: 100%;
+  min-height: 280px;
+  resize: vertical;
+  border: 1px solid $border-color;
+  border-radius: $radius-sm;
+  background: $bg-secondary;
+  color: $text-primary;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 12px;
+  outline: none;
+
+  &:focus {
+    border-color: $accent-primary;
+    box-shadow: 0 0 0 2px rgba(var(--accent-primary-rgb), 0.12);
+  }
+}
+
+.skill-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.skill-cancel,
+.skill-save {
+  border: 1px solid $border-color;
+  border-radius: $radius-sm;
+  background: $bg-card;
+  color: $text-secondary;
+  font-size: 13px;
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: all $transition-fast;
+
+  &:hover:not(:disabled) {
+    border-color: $accent-primary;
+    color: $accent-primary;
+  }
+
+  &:disabled {
+    cursor: wait;
+    opacity: 0.5;
+  }
+}
+
+.skill-save {
+  background: $accent-primary;
+  border-color: $accent-primary;
+  color: white;
+
+  &:hover:not(:disabled) {
+    color: white;
+    filter: brightness(0.95);
   }
 }
 

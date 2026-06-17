@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'fs/promises'
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { Readable } from 'stream'
@@ -156,8 +156,8 @@ describe('skills controller', () => {
 
       const tools = ctx.body.categories.find((category: any) => category.name === 'tools')
       expect(tools.skills).toEqual([
-        expect.objectContaining({ name: 'dupe-skill', source: 'local', description: 'local copy' }),
-        expect.objectContaining({ name: 'external-skill', source: 'external', description: 'external copy' }),
+        expect.objectContaining({ name: 'dupe-skill', source: 'local', editable: true, description: 'local copy' }),
+        expect.objectContaining({ name: 'external-skill', source: 'external', editable: false, description: 'external copy' }),
       ])
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -288,6 +288,158 @@ describe('skills controller', () => {
       await expect(readFile(join(defaultSkillDir, 'SKILL.md'), 'utf-8')).resolves.toBe('# Default Copy\n')
       await expect(readFile(join(researchSkillDir, 'SKILL.md'), 'utf-8')).rejects.toThrow()
       expect(ctx.body).toEqual({ success: true })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('updates an editable request-scoped profile-local skill file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-edit-local-skill-'))
+    const profileDir = join(root, 'research')
+    const skillDir = join(profileDir, 'skills', 'daily-writing')
+    const skillPath = join(skillDir, 'SKILL.md')
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(skillPath, '# Daily Writing\nold instructions\n', 'utf-8')
+    mockGetProfileDir.mockReturnValue(profileDir)
+
+    const ctx: any = {
+      request: {
+        body: {
+          category: 'misc',
+          skill: 'daily-writing',
+          path: 'SKILL.md',
+          content: '# Daily Writing\nnew instructions\n',
+        },
+      },
+      state: { profile: { name: 'research' } },
+      body: null,
+    }
+
+    try {
+      const { updateFile_ } = await loadController()
+
+      await updateFile_(ctx)
+
+      await expect(readFile(skillPath, 'utf-8')).resolves.toBe('# Daily Writing\nnew instructions\n')
+      expect(ctx.body).toEqual({ success: true, content: '# Daily Writing\nnew instructions\n' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects editing configured external skills so shared directories remain read-only', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-edit-external-skill-'))
+    const profileDir = join(root, 'research')
+    const externalDir = join(root, 'external-skills')
+    const externalSkillDir = join(externalDir, 'tools', 'external-skill')
+    const skillPath = join(externalSkillDir, 'SKILL.md')
+    await mkdir(join(profileDir, 'skills'), { recursive: true })
+    await mkdir(externalSkillDir, { recursive: true })
+    await writeFile(skillPath, '# External Skill\nexternal instructions\n', 'utf-8')
+    mockGetProfileDir.mockReturnValue(profileDir)
+    mockReadConfigYamlForProfile.mockResolvedValue({
+      skills: { external_dirs: [externalDir] },
+    })
+
+    const ctx: any = {
+      request: {
+        body: {
+          category: 'tools',
+          skill: 'external-skill',
+          path: 'SKILL.md',
+          content: '# External Skill\nchanged externally\n',
+        },
+      },
+      state: { profile: { name: 'research' } },
+      body: null,
+    }
+
+    try {
+      const { updateFile_ } = await loadController()
+
+      await updateFile_(ctx)
+
+      await expect(readFile(skillPath, 'utf-8')).resolves.toBe('# External Skill\nexternal instructions\n')
+      expect(ctx.status).toBe(403)
+      expect(ctx.body).toEqual({ error: 'Skill is read-only' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects editing profile-local skill directories that are symlinks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-edit-symlink-skill-'))
+    const profileDir = join(root, 'research')
+    const sharedSkillDir = join(root, 'shared', 'daily-writing')
+    const localSkillsDir = join(profileDir, 'skills')
+    const localSkillLink = join(localSkillsDir, 'daily-writing')
+    const skillPath = join(sharedSkillDir, 'SKILL.md')
+    await mkdir(sharedSkillDir, { recursive: true })
+    await mkdir(localSkillsDir, { recursive: true })
+    await writeFile(skillPath, '# Shared Skill\nshared instructions\n', 'utf-8')
+    await symlink(sharedSkillDir, localSkillLink, 'dir')
+    mockGetProfileDir.mockReturnValue(profileDir)
+
+    const ctx: any = {
+      request: {
+        body: {
+          category: 'misc',
+          skill: 'daily-writing',
+          path: 'SKILL.md',
+          content: '# Shared Skill\nchanged through link\n',
+        },
+      },
+      state: { profile: { name: 'research' } },
+      body: null,
+    }
+
+    try {
+      const { updateFile_ } = await loadController()
+
+      await updateFile_(ctx)
+
+      await expect(readFile(skillPath, 'utf-8')).resolves.toBe('# Shared Skill\nshared instructions\n')
+      expect(ctx.status).toBe(403)
+      expect(ctx.body).toEqual({ error: 'Skill is read-only' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects editing files reached through symlinked subdirectories', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-edit-symlink-subdir-'))
+    const profileDir = join(root, 'research')
+    const skillDir = join(profileDir, 'skills', 'daily-writing')
+    const outsideDir = join(root, 'outside')
+    const outsideFile = join(outsideDir, 'note.md')
+    await mkdir(skillDir, { recursive: true })
+    await mkdir(outsideDir, { recursive: true })
+    await writeFile(join(skillDir, 'SKILL.md'), '# Daily Writing\nlocal instructions\n', 'utf-8')
+    await writeFile(outsideFile, 'outside original\n', 'utf-8')
+    await symlink(outsideDir, join(skillDir, 'references'), 'dir')
+    mockGetProfileDir.mockReturnValue(profileDir)
+
+    const ctx: any = {
+      request: {
+        body: {
+          category: 'misc',
+          skill: 'daily-writing',
+          path: 'references/note.md',
+          content: 'outside changed\n',
+        },
+      },
+      state: { profile: { name: 'research' } },
+      body: null,
+    }
+
+    try {
+      const { updateFile_ } = await loadController()
+
+      await updateFile_(ctx)
+
+      await expect(readFile(outsideFile, 'utf-8')).resolves.toBe('outside original\n')
+      expect(ctx.status).toBe(403)
+      expect(ctx.body).toEqual({ error: 'Access denied' })
     } finally {
       await rm(root, { recursive: true, force: true })
     }
