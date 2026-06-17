@@ -55,7 +55,7 @@ async function loadCredentials() {
   try {
     await refreshCredentials()
   } catch (err: any) {
-    error.value = err?.message || '凭证状态加载失败'
+    error.value = err?.message || '连接器状态加载失败'
   } finally {
     loading.value = false
   }
@@ -148,7 +148,7 @@ onMounted(loadCredentials)
 <template>
   <div class="credentials-view">
     <header class="page-header">
-      <h2 class="header-title">凭证</h2>
+      <h2 class="header-title">{{ t('sidebar.connectors') }}</h2>
       <NButton size="small" quaternary :loading="loading" @click="loadCredentials">刷新</NButton>
     </header>
 

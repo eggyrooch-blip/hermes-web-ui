@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
 
 const mockReplace = vi.hoisted(() => vi.fn())
 const mockFetchAuthStatus = vi.hoisted(() => vi.fn())
 const mockLoginWithPassword = vi.hoisted(() => vi.fn())
 const mockSetApiKey = vi.hoisted(() => vi.fn())
 const mockHasApiKey = vi.hoisted(() => vi.fn())
+const mockSetRuntimeMode = vi.hoisted(() => vi.fn())
+const mockAssign = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-router', () => ({
   useRouter: () => ({
@@ -23,6 +25,7 @@ vi.mock('vue-i18n', () => ({
 vi.mock('@/api/client', () => ({
   setApiKey: mockSetApiKey,
   hasApiKey: mockHasApiKey,
+  setRuntimeMode: mockSetRuntimeMode,
 }))
 
 vi.mock('@/api/auth', () => ({
@@ -36,13 +39,19 @@ describe('LoginView password login', () => {
   beforeEach(() => {
     delete (window as any).__LOGIN_TOKEN__
     vi.clearAllMocks()
+    vi.stubGlobal('location', { ...window.location, assign: mockAssign })
     mockHasApiKey.mockReturnValue(false)
     mockFetchAuthStatus.mockResolvedValue({ hasPasswordLogin: true, username: 'admin' })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   it('logs in with username and password', async () => {
     mockLoginWithPassword.mockResolvedValue('jwt-token')
     const wrapper = mount(LoginView)
+    await flushPromises()
 
     const inputs = wrapper.findAll('input.login-input')
     await inputs[0].setValue('admin')
@@ -54,8 +63,9 @@ describe('LoginView password login', () => {
     expect(mockReplace).toHaveBeenCalledWith('/hermes/chat')
   })
 
-  it('shows the default login hint', () => {
+  it('shows the default login hint', async () => {
     const wrapper = mount(LoginView)
+    await flushPromises()
 
     expect(wrapper.text()).toContain('login.defaultCredentialsHint')
   })
@@ -63,6 +73,7 @@ describe('LoginView password login', () => {
   it('shows an error when password login fails', async () => {
     mockLoginWithPassword.mockRejectedValue(new Error('Invalid username or password'))
     const wrapper = mount(LoginView)
+    await flushPromises()
 
     const inputs = wrapper.findAll('input.login-input')
     await inputs[0].setValue('admin')
@@ -79,6 +90,7 @@ describe('LoginView password login', () => {
     err.status = 429
     mockLoginWithPassword.mockRejectedValue(err)
     const wrapper = mount(LoginView)
+    await flushPromises()
 
     const inputs = wrapper.findAll('input.login-input')
     await inputs[0].setValue('admin')
@@ -93,5 +105,20 @@ describe('LoginView password login', () => {
       'hermes-web-ui clear-login-locks --restart',
       'hermes-web-ui reset-default-login',
     ])
+  })
+
+  it('enters chat directly in trusted Feishu mode instead of waking OAuth', async () => {
+    mockFetchAuthStatus.mockResolvedValue({
+      hasPasswordLogin: false,
+      authMode: 'trusted-feishu',
+      plane: 'chat',
+    })
+
+    mount(LoginView)
+    await flushPromises()
+
+    expect(mockSetRuntimeMode).toHaveBeenCalledWith('trusted-feishu', 'chat')
+    expect(mockReplace).toHaveBeenCalledWith('/hermes/chat')
+    expect(mockAssign).not.toHaveBeenCalled()
   })
 })

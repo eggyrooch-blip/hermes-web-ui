@@ -2,14 +2,29 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as profilesApi from '@/api/hermes/profiles'
 import type { HermesProfile, HermesProfileDetail } from '@/api/hermes/profiles'
+import type { CurrentUser } from '@/api/auth'
 import { useAppStore } from './app'
 
 const ACTIVE_PROFILE_STORAGE_KEY = 'hermes_active_profile_name'
+const CURRENT_USER_STORAGE_KEY = 'hermes_current_user'
+
+function readStoredCurrentUser(): CurrentUser | null {
+  const raw = localStorage.getItem(CURRENT_USER_STORAGE_KEY)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as CurrentUser
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    localStorage.removeItem(CURRENT_USER_STORAGE_KEY)
+    return null
+  }
+}
 
 export const useProfilesStore = defineStore('profiles', () => {
   const profiles = ref<HermesProfile[]>([])
   // 初始化时同步读 localStorage，确保其他 store（如 chat）在启动时能拿到 profile name
   const activeProfileName = ref<string | null>(localStorage.getItem(ACTIVE_PROFILE_STORAGE_KEY))
+  const currentUser = ref<CurrentUser | null>(readStoredCurrentUser())
   const activeProfile = ref<HermesProfile | null>(null)
   const detailMap = ref<Record<string, HermesProfileDetail>>({})
   const loading = ref(false)
@@ -168,10 +183,28 @@ export const useProfilesStore = defineStore('profiles', () => {
     return ok
   }
 
+  function setCurrentUser(user: CurrentUser | null) {
+    currentUser.value = user
+    if (user) {
+      localStorage.setItem(CURRENT_USER_STORAGE_KEY, JSON.stringify(user))
+    } else {
+      localStorage.removeItem(CURRENT_USER_STORAGE_KEY)
+    }
+  }
+
+  function setBoundProfile(name: string, user?: CurrentUser | null) {
+    activeProfileName.value = name
+    localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, name)
+    if (user !== undefined) {
+      setCurrentUser(user)
+    }
+  }
+
   return {
     profiles,
     activeProfile,
     activeProfileName,
+    currentUser,
     detailMap,
     loading,
     switching,
@@ -188,5 +221,7 @@ export const useProfilesStore = defineStore('profiles', () => {
     updateAvatar,
     deleteAvatar,
     clearAllSessionCaches,
+    setCurrentUser,
+    setBoundProfile,
   }
 })

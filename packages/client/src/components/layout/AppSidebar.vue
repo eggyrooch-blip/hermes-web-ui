@@ -1,35 +1,49 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
-import { NButton, NModal, useMessage } from "naive-ui";
 import { useAppStore } from "@/stores/hermes/app";
+import { useProfilesStore } from "@/stores/hermes/profiles";
 import { usePersistentRecord } from '@/composables/usePersistentRecord'
 import RouteLinkItem from '@/components/common/RouteLinkItem.vue'
 import ModelSelector from "@/components/layout/ModelSelector.vue";
 import ProfileSelector from "@/components/layout/ProfileSelector.vue";
 import LanguageSwitch from "@/components/layout/LanguageSwitch.vue";
 import ThemeSwitch from "@/components/layout/ThemeSwitch.vue";
-import VersionManagementModal from "@/components/layout/VersionManagementModal.vue";
-import { changelog } from "@/data/changelog";
+import { fetchCurrentUser } from "@/api/auth";
 import { getStoredUsername, isStoredSuperAdmin } from "@/api/client";
 
 const { t } = useI18n();
-const message = useMessage();
 const route = useRoute();
 const router = useRouter();
 const appStore = useAppStore();
+const profilesStore = useProfilesStore();
 const selectedKey = computed(() => {
   return route.name as string;
 });
 const isSuperAdmin = computed(() => isStoredSuperAdmin());
 const currentUsername = computed(() => getStoredUsername());
-const isVersionPreview = import.meta.env.VITE_HERMES_PREVIEW === '1';
-const isDesktopShell = computed(() =>
-  (window as typeof window & { hermesDesktop?: { isDesktop?: boolean } }).hermesDesktop?.isDesktop === true,
+const currentUser = computed(() => profilesStore.currentUser);
+const displayName = computed(() =>
+  currentUser.value?.name ||
+  currentUser.value?.username ||
+  currentUsername.value ||
+  ''
 );
-const showChangelog = ref(false);
-const showVersionManagement = ref(false);
+const displayProfile = computed(() =>
+  currentUser.value?.profile ||
+  profilesStore.activeProfileName ||
+  ''
+);
+const showProfile = computed(() => {
+  const profile = displayProfile.value.trim();
+  return profile.length > 0 && profile !== displayName.value.trim();
+});
+const displayInitial = computed(() => {
+  const source = displayName.value.trim() || 'H';
+  return source.slice(0, 1).toLocaleUpperCase();
+});
+const isVersionPreview = import.meta.env.VITE_HERMES_PREVIEW === '1';
 
 function hasRoute(name: string): boolean {
   return router.hasRoute(name);
@@ -63,31 +77,36 @@ function handleSidebarClick(event: MouseEvent) {
   }
 }
 
-async function handleUpdate() {
-  const ok = await appStore.doUpdate();
-  if (ok) {
-    message.success(t('sidebar.updateSuccess'), { duration: 5000 });
-  } else {
-    message.error(t('sidebar.updateFailed'));
+async function handleLogout() {
+  try {
+    await fetch("/api/auth/feishu/logout", {
+      method: "POST",
+      credentials: "same-origin",
+    });
+  } catch {
+    // Local logout should still clear stale browser state if the server call fails.
+  } finally {
+    localStorage.clear();
+    window.location.reload();
   }
 }
 
-function handleReloadClient() {
-  appStore.reloadClient();
+async function refreshCurrentUser() {
+  try {
+    const user = await fetchCurrentUser();
+    if (user.profile) {
+      profilesStore.setBoundProfile(user.profile, user);
+    } else {
+      profilesStore.setCurrentUser(user);
+    }
+  } catch {
+    // Sidebar user chrome is optional; auth guards own redirect behavior.
+  }
 }
 
-function handleLogout() {
-  localStorage.clear();
-  window.location.reload();
-}
-
-function openChangelog() {
-  showChangelog.value = true;
-}
-
-function openVersionManagement() {
-  showVersionManagement.value = true;
-}
+onMounted(() => {
+  void refreshCurrentUser();
+});
 </script>
 
 <template>
@@ -119,7 +138,7 @@ function openVersionManagement() {
             </svg>
             <span>{{ t("sidebar.kanban") }}</span>
           </RouteLinkItem>
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.channels' }" :active="selectedKey === 'hermes.channels'">
+          <RouteLinkItem v-if="isSuperAdmin" class="nav-item" :to="{ name: 'hermes.channels' }" :active="selectedKey === 'hermes.channels'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
             </svg>
@@ -133,6 +152,13 @@ function openVersionManagement() {
             </svg>
             <span>{{ t("sidebar.skills") }}</span>
           </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.connectors' }" :active="selectedKey === 'hermes.connectors'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10 13a5 5 0 0 0 7.07 0l2.12-2.12a5 5 0 0 0-7.07-7.07L10.9 5.03" />
+              <path d="M14 11a5 5 0 0 0-7.07 0L4.81 13.12a5 5 0 0 0 7.07 7.07l1.22-1.22" />
+            </svg>
+            <span>{{ t("sidebar.connectors") }}</span>
+          </RouteLinkItem>
           <RouteLinkItem class="nav-item" :to="{ name: 'hermes.plugins' }" :active="selectedKey === 'hermes.plugins'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2.1-2.1a4 4 0 0 1-5.3 5.3l-7.8 7.8a2.1 2.1 0 0 1-3-3l7.8-7.8a4 4 0 0 1 5.3-5.3l-2.1 2.1z" />
@@ -140,7 +166,7 @@ function openVersionManagement() {
             </svg>
             <span>{{ t("sidebar.plugins") }}</span>
           </RouteLinkItem>
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.mcp' }" :active="selectedKey === 'hermes.mcp'">
+          <RouteLinkItem v-if="isSuperAdmin" class="nav-item" :to="{ name: 'hermes.mcp' }" :active="selectedKey === 'hermes.mcp'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M4 7V4h16v3" />
               <path d="M9 20h6" />
@@ -157,7 +183,7 @@ function openVersionManagement() {
             </svg>
             <span>{{ t("sidebar.memory") }}</span>
           </RouteLinkItem>
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.models' }" :active="selectedKey === 'hermes.models'">
+          <RouteLinkItem v-if="isSuperAdmin" class="nav-item" :to="{ name: 'hermes.models' }" :active="selectedKey === 'hermes.models'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3" />
               <path d="M12 1v4" />
@@ -183,7 +209,7 @@ function openVersionManagement() {
           </svg>
         </div>
         <div v-show="!isGroupCollapsed('monitoring')" class="nav-group-items">
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.logs' }" :active="selectedKey === 'hermes.logs'">
+          <RouteLinkItem v-if="isSuperAdmin" class="nav-item" :to="{ name: 'hermes.logs' }" :active="selectedKey === 'hermes.logs'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
               <polyline points="14 2 14 8 20 8" />
@@ -245,7 +271,7 @@ function openVersionManagement() {
             </svg>
             <span>{{ t("sidebar.versionPreview") }}</span>
           </RouteLinkItem>
-          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.devices' }" :active="selectedKey === 'hermes.devices'">
+          <RouteLinkItem v-if="isSuperAdmin" class="nav-item" :to="{ name: 'hermes.devices' }" :active="selectedKey === 'hermes.devices'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="4" width="18" height="12" rx="2" />
               <path d="M8 20h8" />
@@ -289,7 +315,30 @@ function openVersionManagement() {
     <ModelSelector />
 
     <div class="sidebar-footer">
-      <button class="nav-item logout-item" @click="handleLogout">
+      <div v-if="currentUser" class="sidebar-user">
+        <div class="user-avatar-wrap">
+          <img
+            v-if="currentUser.avatarUrl"
+            class="user-avatar"
+            :src="currentUser.avatarUrl"
+            :alt="displayName"
+          />
+          <div v-else class="user-avatar user-avatar-fallback">{{ displayInitial }}</div>
+          <span class="user-status-dot" :class="{ connected: appStore.connected }"></span>
+        </div>
+        <div class="user-meta">
+          <span class="user-name" :title="displayName">{{ displayName }}</span>
+          <span v-if="showProfile" class="user-profile" :title="displayProfile">{{ displayProfile }}</span>
+        </div>
+        <button class="card-logout-button" :title="t('sidebar.logout')" @click="handleLogout">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+            <polyline points="16 17 21 12 16 7" />
+            <line x1="21" y1="12" x2="9" y2="12" />
+          </svg>
+        </button>
+      </div>
+      <button v-else class="nav-item logout-item" @click="handleLogout">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
           <polyline points="16 17 21 12 16 7" />
@@ -314,37 +363,8 @@ function openVersionManagement() {
           }}</span>
         </div>
         <LanguageSwitch />
-      </div>
-      <div class="version-info">
-        <div class="version-links">
-          <a class="sidebar-footer-link" href="https://github.com/EKKOLearnAI/hermes-studio" target="_blank" rel="noopener noreferrer" title="GitHub">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-          </a>
-          <a class="sidebar-footer-link" href="https://hermes-studio.ai/" target="_blank" rel="noopener noreferrer" title="Website">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-          </a>
-        </div>
-        <span
-          class="version-text"
-          role="button"
-          tabindex="0"
-          @click="openChangelog"
-          @keydown.enter="openChangelog"
-          @keydown.space.prevent="openChangelog"
-        >
-          Studio v{{ appStore.serverVersion || "0.1.0" }}
-        </span>
         <ThemeSwitch />
       </div>
-      <NButton v-if="isDesktopShell" type="primary" size="tiny" block class="update-btn" @click="openVersionManagement">
-        {{ t('sidebar.versionManagement') }}
-      </NButton>
-      <NButton v-if="appStore.clientOutdated" type="warning" size="tiny" block class="update-btn" @click="handleReloadClient">
-        {{ t('sidebar.reloadClientVersion', { version: appStore.serverVersion }) }}
-      </NButton>
-      <NButton v-if="appStore.updateAvailable" type="primary" size="tiny" block class="update-btn" :loading="appStore.updating" @click="handleUpdate">
-        {{ appStore.updating ? t('sidebar.updating') : t('sidebar.updateVersion', { version: appStore.latestVersion }) }}
-      </NButton>
     </div>
 
     <div class="sidebar-top-actions">
@@ -362,21 +382,6 @@ function openVersionManagement() {
         </svg>
       </button>
     </div>
-
-    <NModal v-model:show="showChangelog" preset="dialog" :title="t('sidebar.changelog')" style="width: 520px;">
-      <div class="changelog-list">
-        <div v-for="entry in changelog" :key="entry.version" class="changelog-version-block">
-          <div class="changelog-version-header">
-            <span class="changelog-version-tag">v{{ entry.version }}</span>
-            <span class="changelog-date">{{ entry.date }}</span>
-          </div>
-          <ul class="changelog-changes">
-            <li v-for="(change, idx) in entry.changes" :key="idx">{{ t(change) }}</li>
-          </ul>
-        </div>
-      </div>
-    </NModal>
-    <VersionManagementModal v-if="isDesktopShell" v-model:show="showVersionManagement" />
   </aside>
 </template>
 
@@ -520,6 +525,99 @@ function openVersionManagement() {
   gap: 4px;
 }
 
+.sidebar-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: $radius-sm;
+  background: rgba(var(--accent-primary-rgb), 0.06);
+}
+
+.user-avatar-wrap {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+}
+
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(var(--accent-primary-rgb), 0.12);
+  color: $accent-primary;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.user-status-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid $bg-sidebar;
+  border-radius: 50%;
+  background: $error;
+
+  &.connected {
+    background: $success;
+  }
+}
+
+.user-meta {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.user-name,
+.user-profile {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-name {
+  color: $text-primary;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.user-profile {
+  color: $text-muted;
+  font-size: 11px;
+}
+
+.card-logout-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: $radius-sm;
+  color: $text-muted;
+  background: transparent;
+  cursor: pointer;
+  flex: 0 0 28px;
+  transition: all $transition-fast;
+
+  &:hover {
+    color: $error;
+    background: rgba(var(--error-rgb), 0.08);
+  }
+}
+
 .logout-item {
   color: $text-secondary;
 
@@ -584,112 +682,6 @@ function openVersionManagement() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.version-info {
-  padding: 2px 0 8px 12px;
-  font-size: 11px;
-  color: $text-muted;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  overflow: hidden;
-}
-
-.version-links {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  gap: 6px;
-}
-
-.sidebar-footer-link {
-  color: $text-muted;
-  display: flex;
-  align-items: center;
-  transition: color $transition-fast;
-
-  &:hover {
-    color: $text-primary;
-  }
-}
-
-.version-text {
-  flex: 0 0 auto;
-  overflow: visible;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: color $transition-fast;
-
-  &:hover {
-    color: $accent-primary;
-  }
-}
-
-.version-info :deep(.theme-switch-container) {
-  flex-shrink: 0;
-}
-
-.update-btn {
-  margin: 4px 0 0;
-  border-radius: $radius-sm;
-}
-
-.changelog-list {
-  max-height: min(70vh, 640px);
-  overflow-y: auto;
-}
-
-.changelog-version-block {
-  margin-bottom: 20px;
-
-  &:last-child {
-    margin-bottom: 0;
-  }
-}
-
-.changelog-version-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-
-.changelog-version-tag {
-  font-weight: 600;
-  font-size: 14px;
-  color: $text-primary;
-  font-family: $font-code;
-}
-
-.changelog-date {
-  font-size: 12px;
-  color: $text-muted;
-}
-
-.changelog-changes {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-
-  li {
-    font-size: 13px;
-    color: $text-secondary;
-    padding: 4px 0 4px 16px;
-    position: relative;
-
-    &::before {
-      content: '';
-      position: absolute;
-      left: 0;
-      top: 12px;
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: $text-muted;
-    }
-  }
 }
 
 // ─── Collapsed sidebar (icon-rail mode) ─────────────────────────
@@ -773,12 +765,18 @@ function openVersionManagement() {
     padding-top: 8px;
   }
 
-  .status-row,
-  .version-info,
-  .update-btn {
-    display: none;
+  .sidebar-user {
+    width: 100%;
+    justify-content: center;
+    padding: 6px 0;
+    background: transparent;
   }
 
+  .user-meta,
+  .card-logout-button,
+  .status-row {
+    display: none;
+  }
 }
 
 // ─── Collapse button ────────────────────────────────────────────

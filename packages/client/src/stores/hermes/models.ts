@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import * as systemApi from '@/api/hermes/system'
 import type { AvailableModelGroup, CustomProvider } from '@/api/hermes/system'
-import { hasApiKey } from '@/api/client'
+import { canAccessProtectedRoutes } from '@/api/client'
 import { useAppStore } from './app'
 import { useProfilesStore } from './profiles'
 
@@ -35,7 +35,7 @@ export const useModelsStore = defineStore('models', () => {
   )
 
   async function fetchProviders() {
-    if (!hasApiKey()) return
+    if (!canAccessProtectedRoutes()) return
     loading.value = true
     try {
       const profile = useProfilesStore().activeProfileName || 'default'
@@ -52,7 +52,7 @@ export const useModelsStore = defineStore('models', () => {
   }
 
   async function refreshModelCache() {
-    if (!hasApiKey()) return
+    if (!canAccessProtectedRoutes()) return
     refreshingModelCache.value = true
     try {
       await systemApi.refreshProviderModelCache()

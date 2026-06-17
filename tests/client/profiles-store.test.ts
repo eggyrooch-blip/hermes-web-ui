@@ -22,6 +22,7 @@ import { useProfilesStore } from '@/stores/hermes/profiles'
 describe('Profiles Store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.clear()
     vi.clearAllMocks()
   })
 
@@ -224,5 +225,25 @@ describe('Profiles Store', () => {
     expect(result).toBe(true)
     expect(store.activeProfileName).toBe('dev')
     expect(localStorage.getItem('hermes_active_profile_name')).toBe('dev')
+  })
+
+  it('stores the Feishu bound user and selected profile for user-mode chrome', () => {
+    const store = useProfilesStore()
+    const user = {
+      id: 7,
+      username: 'feishu:ou_test',
+      role: 'user',
+      status: 'active',
+      profile: 'sunke',
+      name: '孙可',
+      avatarUrl: 'https://example.com/feishu-avatar.png',
+    }
+
+    store.setBoundProfile('sunke', user)
+
+    expect(store.currentUser).toEqual(user)
+    expect(store.activeProfileName).toBe('sunke')
+    expect(localStorage.getItem('hermes_active_profile_name')).toBe('sunke')
+    expect(localStorage.getItem('hermes_current_user')).toContain('feishu-avatar.png')
   })
 })

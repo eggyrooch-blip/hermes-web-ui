@@ -1,8 +1,8 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-06-09
+updated: 2026-06-17
 status: living
-scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.5.16)
+scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
 related:
   - "[[ARCHITECTURE-GUIDE]] (Obsidian master)"
@@ -14,6 +14,19 @@ related:
 ---
 
 # hermes-web-ui 架构速查 — EKKO fork
+
+> [!info] 2026-06-17 worktree — upstream rebaseline 后企业入口收口
+> `sidebar-enterprise-chrome` 是 upstream rebaseline 验收期的本机修正，生产尚未发布。边界是 WebUI 适配层，不改 Hermes Agent，不把员工运维/升级入口暴露到普通用户。
+>
+> 员工侧栏必须隐藏 upstream 自助升级/版本推广 UI：`升级版本 v...`、`Studio v...`、版本管理、更新日志、GitHub/Website 外链都不能从 `AppSidebar` 渲染。普通用户也不能看到或直达日志、频道、设备、模型 provider 管理；这些路由都要 `requiresSuperAdmin`，侧栏用同一角色判断隐藏。聊天里的模型选择器是使用面，保留；`ModelsView` 是 provider/cache 管理面，收回。
+>
+> Settings 的普通用户面只保留 `display`、`session`、`privacy`。`account`、`users`、`agent`、`memory`、`compression`、`models`、`voice` 都属于运维/全局配置面，必须 super-admin-only；尤其不能让 Feishu 员工改 WebUI username/password、锁定 IP、gateway 自动启动、agent/provider/voice 配置。
+>
+> Feishu OAuth 用户身份由服务器 `/api/auth/me` 保留 `openid/profile/name/avatarUrl/profiles`，客户端 `profiles` store 缓存 `currentUser`，侧栏渲染 Feishu 昵称、头像和绑定 profile；侧栏每次 mount 仍要刷新 `/api/auth/me`，不能因为 localStorage 里有旧 `currentUser` 就跳过服务端 envelope。`feishu-oauth-dev` 用 httpOnly `hermes_feishu_session` cookie，不存在 JS-readable token；`trusted-feishu` 可通过已签名的 `X-Feishu-Name` / `X-Feishu-Avatar-Url` 补齐展示元数据。路由和模型加载必须用 `canAccessProtectedRoutes()`，不能再用 `hasApiKey()` 判断；Feishu/trusted 模式也不能解码旧 `localStorage.hermes_api_key` 作为 username/role/admin gate。保护路由在新页面加载时还要先用 `/api/auth/me` 证明服务端 session/header 有效，失败时同时清 runtime mode 和旧 JWT，避免登录回跳或旧 super-admin JWT 泄露管理入口。Feishu OAuth callback 会在设置 httpOnly cookie 后直接落到 `/#/hermes/chat`，此时本地可能还没有 `hermes_auth_mode`；router 必须先用 `/api/auth/status` 发现服务端 auth mode，再判断是否可进入受保护路由。侧栏退出登录必须先 `POST /api/auth/feishu/logout` 清 httpOnly cookie，再清本地状态并 reload。
+>
+> 连接器页沿用旧 Credentials 能力并更名为「连接器」：路由为 `/hermes/connectors`，保留 `/hermes/credentials` alias；底层 API 仍是 `/api/auth/skill-credentials*`。`lark-cli` 授权通过 multitenancy Run Broker UAT/session endpoint，`bind-token` 只转发给 Run Broker 按 profile 存储，WebUI 不落 token。Skills 页面和 profile-local skill editor 不能在跨版本时丢掉；MCP 管理仍保持 super-admin-only。
+>
+> 下次跨版本更新前先对照 `docs/plans/2026-06-17-enterprise-upstream-rebaseline-checklist.md`，再吸收 upstream UI/route 变更。
 
 > [!info] 2026-06-09 worktree — chat-plane 群 profile 模型选择
 > `group-agent-model-switch` 修复 user-mode/chat-plane 下切到 owner-owned group/agent profile 后模型弹窗显示 `No models` 且无法保存默认模型的问题；当前仅本机 worktree 通过验证，尚未发布生产。
@@ -1011,10 +1024,12 @@ CLAUDE.md 写过：dev 模式下"`hermes` CLI 必须在 `$PATH`"——确实，s
 | `HERMES_WEB_PLANE` | `both` | `chat` (用户模式) / `ops` / `both` | `config.ts:53` |
 | `HERMES_AUTH_MODE` | `token` | `token` / `trusted-feishu` / `feishu-oauth-dev` | `config.ts:54` |
 | `HERMES_TRUSTED_HEADER_OPENID` | `X-Feishu-OpenID` | trusted 模式 openid header 名 | `config.ts:55` |
-| `HERMES_TRUSTED_HEADER_TIMESTAMP` | `X-Hermes-Auth-Timestamp` | trusted 模式时间戳 header 名 | `config.ts:56` |
-| `HERMES_TRUSTED_HEADER_SIG` | `X-Hermes-Auth-Signature` | trusted 模式 HMAC header 名 | `config.ts:57` |
-| `HERMES_TRUSTED_HEADER_SECRET` | `''` | trusted 模式 HMAC secret | `config.ts:58` |
-| `HERMES_TRUSTED_HEADER_MAX_AGE_SECONDS` | `300` | trusted timestamp 允许偏差 | `config.ts:59` |
+| `HERMES_TRUSTED_HEADER_NAME` | `X-Feishu-Name` | trusted 模式 Feishu 展示名 header 名；存在时纳入 HMAC payload | `config.ts` |
+| `HERMES_TRUSTED_HEADER_AVATAR_URL` | `X-Feishu-Avatar-Url` | trusted 模式 Feishu 头像 URL header 名；存在时纳入 HMAC payload | `config.ts` |
+| `HERMES_TRUSTED_HEADER_TIMESTAMP` | `X-Hermes-Auth-Timestamp` | trusted 模式时间戳 header 名 | `config.ts` |
+| `HERMES_TRUSTED_HEADER_SIG` | `X-Hermes-Auth-Signature` | trusted 模式 HMAC header 名 | `config.ts` |
+| `HERMES_TRUSTED_HEADER_SECRET` | `''` | trusted 模式 HMAC secret | `config.ts` |
+| `HERMES_TRUSTED_HEADER_MAX_AGE_SECONDS` | `300` | trusted timestamp 允许偏差 | `config.ts` |
 | `HERMES_MULTITENANCY_DB` | `~/.hermes/multitenancy.db` | 路由表位置 | `config.ts:60` |
 | `FEISHU_APP_ID` | `''` | 飞书 app_id | `config.ts:61` |
 | `FEISHU_APP_SECRET` | `''` ***REDACTED 必填*** | 飞书 app_secret | `config.ts:62` |

@@ -27,6 +27,7 @@ describe('chat plane access control', () => {
 
   afterEach(() => {
     process.env = originalEnv
+    vi.doUnmock('../../packages/server/src/services/compat-user')
   })
 
   it('allows model list endpoints in chat plane', async () => {
@@ -426,6 +427,59 @@ describe('multitenancy profile resolution', () => {
     })
 
     expect(resolveProfileForOpenId('ou_user_a')).toBeNull()
+  })
+
+  it('preserves trusted Feishu display metadata on the authenticated user', async () => {
+    const dbPath = makeRoutingDb([{ user_id: 'user_a', profile_name: 'feishu_user_a', open_id: 'ou_user_a' }])
+    const ensureWebUserForFeishu = vi.fn(() => ({
+      id: 42,
+      username: 'feishu:ou_user_a',
+      role: 'user',
+      profiles: ['feishu_user_a'],
+    }))
+    vi.doMock('../../packages/server/src/services/compat-user', () => ({
+      ensureWebUserForFeishu,
+    }))
+    const {
+      signTrustedFeishuHeader,
+      trustedFeishuAuth,
+    } = await loadRequestContext({
+      HERMES_MULTITENANCY_DB: dbPath,
+      HERMES_TRUSTED_HEADER_SECRET: 'trusted-secret',
+    })
+    const timestamp = String(Math.floor(Date.now() / 1000))
+    const headers: Record<string, string> = {
+      'x-feishu-openid': 'ou_user_a',
+      'x-feishu-name': '孙可',
+      'x-feishu-avatar-url': 'https://example.com/feishu-avatar.png',
+      'x-hermes-auth-timestamp': timestamp,
+      'x-hermes-auth-signature': signTrustedFeishuHeader('ou_user_a', timestamp, 'trusted-secret', {
+        name: '孙可',
+        avatarUrl: 'https://example.com/feishu-avatar.png',
+      }),
+    }
+    const ctx = {
+      state: {},
+      get: (name: string) => headers[name.toLowerCase()] || '',
+    } as any
+    const next = vi.fn(async () => {})
+
+    await trustedFeishuAuth(ctx, next)
+
+    expect(next).toHaveBeenCalledOnce()
+    expect(ensureWebUserForFeishu).toHaveBeenCalledWith('ou_user_a', {
+      name: '孙可',
+      avatarUrl: 'https://example.com/feishu-avatar.png',
+    })
+    expect(ctx.state.user).toMatchObject({
+      id: 42,
+      username: 'feishu:ou_user_a',
+      openid: 'ou_user_a',
+      profile: 'feishu_user_a',
+      name: '孙可',
+      avatarUrl: 'https://example.com/feishu-avatar.png',
+      profiles: ['feishu_user_a'],
+    })
   })
 
   it('uses an owner-scoped selected profile header in chat plane', async () => {

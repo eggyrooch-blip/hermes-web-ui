@@ -35,16 +35,41 @@ function safeEqual(a: string, b: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right)
 }
 
-export function signTrustedFeishuHeader(openid: string, timestamp: string, secret = config.trustedHeaderSecret): string {
-  return createHmac('sha256', secret).update(`${openid}.${timestamp}`).digest('hex')
+function trustedSignaturePayload(
+  openid: string,
+  timestamp: string,
+  metadata?: Partial<Pick<WebUser, 'name' | 'avatarUrl'>>,
+): string {
+  const name = metadata?.name?.trim() || ''
+  const avatarUrl = metadata?.avatarUrl?.trim() || ''
+  if (!name && !avatarUrl) return `${openid}.${timestamp}`
+  return [
+    openid,
+    timestamp,
+    Buffer.from(name, 'utf8').toString('base64url'),
+    Buffer.from(avatarUrl, 'utf8').toString('base64url'),
+  ].join('.')
 }
 
-export function verifyTrustedFeishuHeaders(ctx: Context): { ok: true; openid: string } | { ok: false; status: number; error: string } {
+export function signTrustedFeishuHeader(
+  openid: string,
+  timestamp: string,
+  secret = config.trustedHeaderSecret,
+  metadata?: Partial<Pick<WebUser, 'name' | 'avatarUrl'>>,
+): string {
+  return createHmac('sha256', secret).update(trustedSignaturePayload(openid, timestamp, metadata)).digest('hex')
+}
+
+type TrustedFeishuIdentity = Pick<WebUser, 'openid'> & Partial<Pick<WebUser, 'name' | 'avatarUrl'>>
+
+export function verifyTrustedFeishuHeaders(ctx: Context): ({ ok: true } & TrustedFeishuIdentity) | { ok: false; status: number; error: string } {
   if (!config.trustedHeaderSecret) {
     return { ok: false, status: 500, error: 'Trusted Feishu auth is not configured' }
   }
 
   const openid = headerValue(ctx, config.trustedHeaderOpenId).trim()
+  const name = headerValue(ctx, config.trustedHeaderName).trim()
+  const avatarUrl = headerValue(ctx, config.trustedHeaderAvatarUrl).trim()
   const timestamp = headerValue(ctx, config.trustedHeaderTimestamp).trim()
   const signature = headerValue(ctx, config.trustedHeaderSignature).trim()
   if (!openid || !timestamp || !signature) {
@@ -61,12 +86,21 @@ export function verifyTrustedFeishuHeaders(ctx: Context): { ok: true; openid: st
     return { ok: false, status: 401, error: 'Trusted Feishu auth timestamp expired' }
   }
 
-  const expected = signTrustedFeishuHeader(openid, timestamp, config.trustedHeaderSecret)
+  const metadata = {
+    ...(name ? { name } : {}),
+    ...(avatarUrl ? { avatarUrl } : {}),
+  }
+  const expected = signTrustedFeishuHeader(openid, timestamp, config.trustedHeaderSecret, metadata)
   if (!safeEqual(signature, expected)) {
     return { ok: false, status: 401, error: 'Invalid trusted Feishu auth signature' }
   }
 
-  return { ok: true, openid }
+  return {
+    ok: true,
+    openid,
+    ...(name ? { name } : {}),
+    ...(avatarUrl ? { avatarUrl } : {}),
+  }
 }
 
 function candidateMultitenancyDbs(): string[] {
@@ -130,8 +164,12 @@ export async function trustedFeishuAuth(ctx: Context, next: Next): Promise<void>
   // `id`/`profiles` win. Imported lazily to avoid a request-context ↔ compat-user
   // import cycle at module-load time.
   const { ensureWebUserForFeishu } = await import('./compat-user')
-  const webUser = { openid: verified.openid, profile, role: 'user' } satisfies WebUser
-  const authUser = ensureWebUserForFeishu(verified.openid)
+  const metadata = {
+    ...(verified.name ? { name: verified.name } : {}),
+    ...(verified.avatarUrl ? { avatarUrl: verified.avatarUrl } : {}),
+  }
+  const webUser = { openid: verified.openid, profile, role: 'user', ...metadata } satisfies WebUser
+  const authUser = ensureWebUserForFeishu(verified.openid, Object.keys(metadata).length > 0 ? metadata : undefined)
   ctx.state.user = { ...webUser, ...authUser } as unknown as typeof ctx.state.user
   await next()
 }

@@ -17,6 +17,7 @@ vi.mock('vue-i18n', () => ({
     t: (key: string) => ({
       'skillCredentials.groups.internalSystems': 'Internal systems',
       'skillCredentials.groups.otherCredentials': 'Other credentials',
+      'sidebar.connectors': 'Connectors',
     } as Record<string, string>)[key] || key,
   }),
 }))
@@ -126,6 +127,7 @@ describe('CredentialsView', () => {
     await wrapper.vm.$nextTick()
 
     expect(fetchSkillCredentialsMock).toHaveBeenCalledOnce()
+    expect(wrapper.find('.header-title').text()).toBe('Connectors')
     expect(wrapper.findAll('.credential-card')).toHaveLength(5)
     expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('Internal systems')
     expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('Lark-cli')

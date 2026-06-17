@@ -190,6 +190,7 @@ export default {
     plugins: '플러그인',
     mcp: 'MCP',
     skills: '스킬',
+    connectors: 'Connectors',
     memory: '메모리',
     logs: '로그',
     usage: '사용량',

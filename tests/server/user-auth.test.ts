@@ -411,6 +411,46 @@ describe('user auth tables and middleware', () => {
     expect(usernameChangedCtx.body.user.requiresCredentialChange).toBe(false)
   })
 
+  it('preserves Feishu identity fields in the current-user response', async () => {
+    const { users } = await initUsers()
+    const user = users.createUser({
+      username: 'feishu:ou_test',
+      password: 'secret',
+      role: 'user' as any,
+      status: 'active',
+    })!
+    const ctrl = await import('../../packages/server/src/controllers/auth')
+    const ctx = {
+      state: {
+        user: {
+          id: user.id,
+          username: user.username,
+          role: 'user',
+          openid: 'ou_test',
+          profile: 'sunke',
+          name: '孙可',
+          avatarUrl: 'https://example.com/feishu-avatar.png',
+          profiles: ['sunke'],
+        },
+      },
+      status: 200,
+      body: null,
+    } as any
+
+    await ctrl.currentUser(ctx)
+
+    expect(ctx.body.user).toMatchObject({
+      id: user.id,
+      username: 'feishu:ou_test',
+      role: 'user',
+      openid: 'ou_test',
+      profile: 'sunke',
+      name: '孙可',
+      avatarUrl: 'https://example.com/feishu-avatar.png',
+      profiles: ['sunke'],
+    })
+  })
+
   it('lets super admins create regular admins with profile bindings', async () => {
     const { users } = await initUsers()
     vi.doMock('../../packages/server/src/services/hermes/hermes-profile', () => ({

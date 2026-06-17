@@ -191,6 +191,7 @@ export default {
     plugins: '插件',
     mcp: 'MCP',
     skills: '技能',
+    connectors: '连接器',
     memory: '记忆',
     logs: '日志',
     usage: '用量',

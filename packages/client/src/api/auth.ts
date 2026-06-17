@@ -3,6 +3,8 @@ import { request } from './client'
 export interface AuthStatus {
   hasPasswordLogin: boolean
   hasUsers?: boolean
+  authMode?: string
+  plane?: string
 }
 
 export async function fetchAuthStatus(): Promise<AuthStatus> {
@@ -30,12 +32,17 @@ export async function loginWithPassword(username: string, password: string): Pro
 export interface CurrentUser {
   id: number
   username: string
-  role: UserRole
+  role: AuthenticatedUserRole
   status: UserStatus
   created_at: number
   updated_at: number
   last_login_at: number | null
   avatar?: string
+  openid?: string
+  profile?: string
+  name?: string
+  avatarUrl?: string
+  profiles?: string[]
   requiresCredentialChange?: boolean
 }
 
@@ -105,6 +112,7 @@ export async function removePassword(): Promise<void> {
 }
 
 export type UserRole = 'super_admin' | 'admin'
+export type AuthenticatedUserRole = UserRole | 'user'
 export type UserStatus = 'active' | 'disabled'
 
 export interface ManagedUser {

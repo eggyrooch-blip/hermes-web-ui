@@ -12,7 +12,7 @@ vi.mock('@/router', () => ({
   },
 }))
 
-import { getApiKey, setApiKey, clearApiKey, hasApiKey, getStoredUserRole, isStoredSuperAdmin, request } from '../../packages/client/src/api/client'
+import { getApiKey, setApiKey, clearApiKey, hasApiKey, canAccessProtectedRoutes, getStoredUserRole, isStoredSuperAdmin, getStoredUsername, request } from '../../packages/client/src/api/client'
 import { getDownloadUrl } from '../../packages/client/src/api/hermes/download'
 import { uploadFiles } from '../../packages/client/src/api/hermes/files'
 import { importSkill } from '../../packages/client/src/api/hermes/skills'
@@ -53,6 +53,20 @@ describe('API Client', () => {
       expect(getApiKey()).toBe('')
     })
 
+    it('lets Feishu OAuth cookie mode access protected routes without a JS token', () => {
+      localStorage.setItem('hermes_auth_mode', 'feishu-oauth-dev')
+
+      expect(hasApiKey()).toBe(false)
+      expect(canAccessProtectedRoutes()).toBe(true)
+    })
+
+    it('lets trusted Feishu mode access protected routes without pretending to have a JS token', () => {
+      localStorage.setItem('hermes_auth_mode', 'trusted-feishu')
+
+      expect(hasApiKey()).toBe(false)
+      expect(canAccessProtectedRoutes()).toBe(true)
+    })
+
     it('reads the role from the stored JWT payload', () => {
       setApiKey(fakeJwt({ sub: '1', role: 'super_admin' }))
 
@@ -62,6 +76,20 @@ describe('API Client', () => {
       setApiKey(fakeJwt({ sub: '2', role: 'admin' }))
       expect(getStoredUserRole()).toBe('admin')
       expect(isStoredSuperAdmin()).toBe(false)
+    })
+
+    it.each([
+      'feishu-oauth-dev',
+      'trusted-feishu',
+    ])('does not trust stale localStorage JWT claims in %s mode', (authMode) => {
+      localStorage.setItem('hermes_auth_mode', authMode)
+      setApiKey(fakeJwt({ sub: '1', username: 'sunke', role: 'super_admin' }))
+
+      expect(hasApiKey()).toBe(false)
+      expect(canAccessProtectedRoutes()).toBe(true)
+      expect(getStoredUserRole()).toBeNull()
+      expect(isStoredSuperAdmin()).toBe(false)
+      expect(getStoredUsername()).toBeNull()
     })
   })
 
@@ -108,10 +136,14 @@ describe('API Client', () => {
 
     it('clears token and redirects on 401 for local BFF endpoints', async () => {
       setApiKey('secret-key')
+      localStorage.setItem('hermes_auth_mode', 'feishu-oauth-dev')
+      localStorage.setItem('hermes_web_plane', 'chat')
       mockFetch.mockResolvedValue({ ok: false, status: 401 })
 
       await expect(request('/api/hermes/sessions')).rejects.toThrow('Unauthorized')
       expect(hasApiKey()).toBe(false)
+      expect(localStorage.getItem('hermes_auth_mode')).toBeNull()
+      expect(localStorage.getItem('hermes_web_plane')).toBeNull()
       expect(router.replace).toHaveBeenCalledWith({ name: 'login' })
     })
 

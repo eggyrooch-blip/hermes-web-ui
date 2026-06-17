@@ -1,6 +1,8 @@
 import router from '@/router'
 
 const DEFAULT_BASE_URL = ''
+const AUTH_MODE_STORAGE_KEY = 'hermes_auth_mode'
+const WEB_PLANE_STORAGE_KEY = 'hermes_web_plane'
 
 function isDesktopShell(): boolean {
   return typeof window !== 'undefined' &&
@@ -14,6 +16,7 @@ function getBaseUrl(): string {
 }
 
 export function getApiKey(): string {
+  if (!usesLocalJwtAuth()) return ''
   return localStorage.getItem('hermes_api_key') || ''
 }
 
@@ -33,9 +36,56 @@ export function hasApiKey(): boolean {
   return !!getApiKey()
 }
 
+/**
+ * Feishu OAuth authenticates browser users with the httpOnly
+ * `hermes_feishu_session` cookie, so there is no JS-readable token.
+ */
+export function canAccessProtectedRoutes(): boolean {
+  if (getAuthMode() === 'feishu-oauth-dev' || getAuthMode() === 'trusted-feishu') return true
+  return hasApiKey()
+}
+
+export function setRuntimeMode(authMode?: string, plane?: string) {
+  if (authMode) {
+    localStorage.setItem(AUTH_MODE_STORAGE_KEY, authMode)
+  }
+  if (plane) {
+    localStorage.setItem(WEB_PLANE_STORAGE_KEY, plane)
+  }
+}
+
+export function clearRuntimeMode() {
+  localStorage.removeItem(AUTH_MODE_STORAGE_KEY)
+  localStorage.removeItem(WEB_PLANE_STORAGE_KEY)
+}
+
+export function getAuthMode(): string {
+  return localStorage.getItem(AUTH_MODE_STORAGE_KEY) || 'token'
+}
+
+function usesLocalJwtAuth(): boolean {
+  return !isServerSessionAuthMode()
+}
+
+export function getWebPlane(): string {
+  return localStorage.getItem(WEB_PLANE_STORAGE_KEY) || 'both'
+}
+
+export function isUserMode(): boolean {
+  return getWebPlane() === 'chat' ||
+    getAuthMode() === 'feishu-oauth-dev' ||
+    getAuthMode() === 'trusted-feishu'
+}
+
+export function isServerSessionAuthMode(): boolean {
+  const authMode = getAuthMode()
+  return authMode === 'feishu-oauth-dev' || authMode === 'trusted-feishu'
+}
+
 export type StoredUserRole = 'super_admin' | 'admin'
 
 export function getStoredUserRole(): StoredUserRole | null {
+  if (!usesLocalJwtAuth()) return null
   const token = getApiKey()
   const payload = token.split('.')[1]
   if (!payload) return null
@@ -54,6 +104,7 @@ export function isStoredSuperAdmin(): boolean {
 }
 
 export function getStoredUsername(): string | null {
+  if (!usesLocalJwtAuth()) return null
   const token = getApiKey()
   const payload = token.split('.')[1]
   if (!payload) return null
@@ -175,6 +226,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 
   if (res.status === 401 && isLocalBff && !skipAuthRedirect) {
     clearApiKey()
+    clearRuntimeMode()
     emitAuthNotice('expired')
     if (router.currentRoute.value.name !== 'login') {
       router.replace({ name: 'login' })
@@ -187,6 +239,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     if (res.status === 403 && isLocalBff) {
       if (text.includes('User is disabled or does not exist')) {
         clearApiKey()
+        clearRuntimeMode()
         emitAuthNotice('expired')
         if (router.currentRoute.value.name !== 'login') {
           router.replace({ name: 'login' })

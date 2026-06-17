@@ -126,6 +126,8 @@ export const config = {
   webPlane: getEffectiveWebPlane(),
   authMode: parseAuthMode(process.env.HERMES_AUTH_MODE),
   trustedHeaderOpenId: process.env.HERMES_TRUSTED_HEADER_OPENID || 'X-Feishu-OpenID',
+  trustedHeaderName: process.env.HERMES_TRUSTED_HEADER_NAME || 'X-Feishu-Name',
+  trustedHeaderAvatarUrl: process.env.HERMES_TRUSTED_HEADER_AVATAR_URL || 'X-Feishu-Avatar-Url',
   trustedHeaderTimestamp: process.env.HERMES_TRUSTED_HEADER_TIMESTAMP || 'X-Hermes-Auth-Timestamp',
   trustedHeaderSignature: process.env.HERMES_TRUSTED_HEADER_SIG || 'X-Hermes-Auth-Signature',
   trustedHeaderSecret: process.env.HERMES_TRUSTED_HEADER_SECRET || '',

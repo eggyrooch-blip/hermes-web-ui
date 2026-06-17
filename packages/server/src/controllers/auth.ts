@@ -68,11 +68,28 @@ export async function authStatus(ctx: Context) {
  */
 export async function currentUser(ctx: Context) {
   const userId = ctx.state.user?.id
+  const stateUser = ctx.state.user as (Partial<WebUser> & { profiles?: string[] }) | undefined
   const user = userId ? findUserById(userId) : null
   if (!user) {
     ctx.status = 404
     ctx.body = { error: 'User not found' }
     return
+  }
+  const feishuIdentity: Record<string, unknown> = {}
+  if (typeof stateUser?.openid === 'string' && stateUser.openid) {
+    feishuIdentity.openid = stateUser.openid
+  }
+  if (typeof stateUser?.profile === 'string' && stateUser.profile) {
+    feishuIdentity.profile = stateUser.profile
+  }
+  if (typeof stateUser?.name === 'string' && stateUser.name) {
+    feishuIdentity.name = stateUser.name
+  }
+  if (typeof stateUser?.avatarUrl === 'string' && stateUser.avatarUrl) {
+    feishuIdentity.avatarUrl = stateUser.avatarUrl
+  }
+  if (Array.isArray(stateUser?.profiles)) {
+    feishuIdentity.profiles = stateUser.profiles
   }
   ctx.body = {
     user: {
@@ -87,6 +104,7 @@ export async function currentUser(ctx: Context) {
       requiresCredentialChange: process.env.HERMES_DESKTOP === 'true'
         ? false
         : user.username === DEFAULT_USERNAME && verifyPassword(DEFAULT_PASSWORD, user.password_hash),
+      ...feishuIdentity,
     },
   }
 }

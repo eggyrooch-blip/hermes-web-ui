@@ -116,6 +116,7 @@ export default {
     profiles: 'Пользователи',
     plugins: 'Плагины',
     skills: 'Навыки',
+    connectors: 'Connectors',
     memory: 'Память',
     logs: 'Логи',
     usage: 'Использование',

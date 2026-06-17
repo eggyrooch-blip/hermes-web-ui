@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
 
 const openSessionSearchMock = vi.hoisted(() => vi.fn())
+const fetchCurrentUserMock = vi.hoisted(() => vi.fn())
 const mockAppStore = vi.hoisted(() => ({
   sidebarOpen: true,
   sidebarCollapsed: false,
@@ -18,6 +19,12 @@ const mockAppStore = vi.hoisted(() => ({
   doUpdate: vi.fn(),
   reloadClient: vi.fn(),
 }))
+const mockProfilesStore = vi.hoisted(() => ({
+  currentUser: null as Record<string, any> | null,
+  activeProfileName: 'feishu_user_a',
+  setBoundProfile: vi.fn(),
+  setCurrentUser: vi.fn(),
+}))
 
 vi.mock('@/composables/useSessionSearch', () => ({
   useSessionSearch: () => ({
@@ -27,6 +34,14 @@ vi.mock('@/composables/useSessionSearch', () => ({
 
 vi.mock('@/stores/hermes/app', () => ({
   useAppStore: () => mockAppStore,
+}))
+
+vi.mock('@/stores/hermes/profiles', () => ({
+  useProfilesStore: () => mockProfilesStore,
+}))
+
+vi.mock('@/api/auth', () => ({
+  fetchCurrentUser: fetchCurrentUserMock,
 }))
 
 vi.mock('vue-router', async (importOriginal) => {
@@ -98,9 +113,26 @@ vi.mock('naive-ui', async () => {
 
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 
+function makeToken(payload: Record<string, unknown>): string {
+  const b64 = (obj: Record<string, unknown>) =>
+    btoa(JSON.stringify(obj)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  return `header.${b64(payload)}.sig`
+}
+
 describe('AppSidebar navigation', () => {
   beforeEach(() => {
+    localStorage.clear()
     openSessionSearchMock.mockClear()
+    mockProfilesStore.currentUser = null
+    mockProfilesStore.activeProfileName = 'feishu_user_a'
+    mockProfilesStore.setBoundProfile.mockClear()
+    mockProfilesStore.setCurrentUser.mockClear()
+    fetchCurrentUserMock.mockReset()
+    fetchCurrentUserMock.mockResolvedValue({
+      name: '孙可',
+      profile: 'sunke',
+      avatarUrl: 'https://example.com/current-avatar.png',
+    })
     mockAppStore.serverVersion = 'test'
     mockAppStore.latestVersion = ''
     mockAppStore.updateAvailable = false
@@ -110,7 +142,16 @@ describe('AppSidebar navigation', () => {
     mockAppStore.reloadClient.mockClear()
   })
 
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   it('keeps page-sidebar-only actions out of the app sidebar', () => {
+    mockAppStore.serverVersion = '0.6.15'
+    mockAppStore.latestVersion = '0.6.17'
+    mockAppStore.updateAvailable = true
+    mockAppStore.clientOutdated = true
+    ;(window as any).hermesDesktop = { isDesktop: true }
     const wrapper = mount(AppSidebar, {
       global: {
         stubs: {
@@ -125,7 +166,140 @@ describe('AppSidebar navigation', () => {
 
     expect(wrapper.text()).not.toContain('sidebar.search')
     expect(wrapper.text()).not.toContain('sidebar.reloadClientVersion')
+    expect(wrapper.text()).not.toContain('sidebar.updateVersion')
+    expect(wrapper.text()).not.toContain('sidebar.versionManagement')
+    expect(wrapper.text()).not.toContain('Studio v')
+    expect(wrapper.text()).not.toContain('sidebar.channels')
+    expect(wrapper.text()).not.toContain('sidebar.logs')
+    expect(wrapper.text()).not.toContain('sidebar.devices')
+    expect(wrapper.text()).not.toContain('sidebar.models')
+    expect(wrapper.text()).not.toContain('sidebar.mcp')
+    expect(wrapper.text()).toContain('sidebar.connectors')
+    expect(wrapper.find('.version-info').exists()).toBe(false)
+    expect(wrapper.find('.update-btn').exists()).toBe(false)
     expect(wrapper.find('.sidebar-return-tab').exists()).toBe(true)
+  })
+
+  it.each([
+    'feishu-oauth-dev',
+    'trusted-feishu',
+  ])('does not show admin nav from a stale super-admin JWT in %s mode', (authMode) => {
+    localStorage.setItem('hermes_auth_mode', authMode)
+    localStorage.setItem('hermes_api_key', makeToken({ username: 'sunke', role: 'super_admin' }))
+
+    const wrapper = mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+          NButton: true,
+        },
+      },
+    })
+
+    expect(wrapper.text()).not.toContain('sidebar.channels')
+    expect(wrapper.text()).not.toContain('sidebar.logs')
+    expect(wrapper.text()).not.toContain('sidebar.devices')
+    expect(wrapper.text()).not.toContain('sidebar.models')
+    expect(wrapper.text()).not.toContain('sidebar.mcp')
+    expect(wrapper.text()).toContain('sidebar.connectors')
+  })
+
+  it('renders the Feishu authenticated user card with the Feishu avatar', () => {
+    mockProfilesStore.currentUser = {
+      name: '孙可',
+      profile: 'sunke',
+      avatarUrl: 'https://example.com/feishu-avatar.png',
+    }
+
+    const wrapper = mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+          NButton: true,
+        },
+      },
+    })
+
+    const avatar = wrapper.get('img.user-avatar')
+    expect(avatar.attributes('src')).toBe('https://example.com/feishu-avatar.png')
+    expect(wrapper.text()).toContain('孙可')
+    expect(wrapper.text()).toContain('sunke')
+    expect(wrapper.find('.logout-username').exists()).toBe(false)
+  })
+
+  it('refreshes the Feishu user card from /api/auth/me even when a stale user was restored', async () => {
+    mockProfilesStore.currentUser = {
+      name: '旧用户',
+      profile: 'old_profile',
+      avatarUrl: 'https://example.com/old-avatar.png',
+    }
+    fetchCurrentUserMock.mockResolvedValueOnce({
+      name: '孙可',
+      profile: 'sunke',
+      avatarUrl: 'https://example.com/feishu-avatar.png',
+    })
+
+    mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+          NButton: true,
+        },
+      },
+    })
+    await flushPromises()
+
+    expect(fetchCurrentUserMock).toHaveBeenCalledOnce()
+    expect(mockProfilesStore.setBoundProfile).toHaveBeenCalledWith('sunke', {
+      name: '孙可',
+      profile: 'sunke',
+      avatarUrl: 'https://example.com/feishu-avatar.png',
+    })
+  })
+
+  it('clears the Feishu session cookie on logout before reloading', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true })
+    const reloadMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('location', { ...window.location, reload: reloadMock })
+    localStorage.setItem('hermes_auth_mode', 'feishu-oauth-dev')
+    localStorage.setItem('hermes_api_key', makeToken({ username: 'sunke', role: 'super_admin' }))
+    mockProfilesStore.currentUser = {
+      name: '孙可',
+      profile: 'sunke',
+      avatarUrl: 'https://example.com/feishu-avatar.png',
+    }
+    const wrapper = mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+          NButton: true,
+        },
+      },
+    })
+
+    await wrapper.get('.card-logout-button').trigger('click')
+    await flushPromises()
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/auth/feishu/logout', expect.objectContaining({
+      credentials: 'same-origin',
+      method: 'POST',
+    }))
+    expect(localStorage.getItem('hermes_auth_mode')).toBeNull()
+    expect(localStorage.getItem('hermes_api_key')).toBeNull()
+    expect(reloadMock).toHaveBeenCalledOnce()
   })
 
   it('uses short group labels and keeps group folding active when collapsed', async () => {

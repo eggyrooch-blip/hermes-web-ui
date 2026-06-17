@@ -190,6 +190,7 @@ export default {
     plugins: 'プラグイン',
     mcp: 'MCP',
     skills: 'スキル',
+    connectors: 'Connectors',
     memory: 'メモリ',
     logs: 'ログ',
     usage: '使用量',

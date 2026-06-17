@@ -189,6 +189,7 @@ export default {
     models: 'Models',
     profiles: 'Profiles',
     skills: 'Skills',
+    connectors: 'Connectors',
     plugins: 'Plugins',
     mcp: 'MCP',
     memory: 'Memory',

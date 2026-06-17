@@ -1,5 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import { hasApiKey, isStoredSuperAdmin } from '@/api/client'
+import { canAccessProtectedRoutes, clearApiKey, clearRuntimeMode, hasApiKey, isServerSessionAuthMode, isStoredSuperAdmin, setRuntimeMode } from '@/api/client'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -54,6 +54,7 @@ const router = createRouter({
       path: '/hermes/models',
       name: 'hermes.models',
       component: () => import('@/views/hermes/ModelsView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/profiles',
@@ -65,6 +66,7 @@ const router = createRouter({
       path: '/hermes/logs',
       name: 'hermes.logs',
       component: () => import('@/views/hermes/LogsView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/usage',
@@ -88,6 +90,12 @@ const router = createRouter({
       component: () => import('@/views/hermes/SkillsView.vue'),
     },
     {
+      path: '/hermes/connectors',
+      alias: '/hermes/credentials',
+      name: 'hermes.connectors',
+      component: () => import('@/views/hermes/CredentialsView.vue'),
+    },
+    {
       path: '/hermes/plugins',
       name: 'hermes.plugins',
       component: () => import('@/views/hermes/PluginsView.vue'),
@@ -106,6 +114,7 @@ const router = createRouter({
       path: '/hermes/channels',
       name: 'hermes.channels',
       component: () => import('@/views/hermes/ChannelsView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/terminal',
@@ -117,6 +126,7 @@ const router = createRouter({
       path: '/hermes/devices',
       name: 'hermes.devices',
       component: () => import('@/views/hermes/DevicesView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/group-chat',
@@ -153,7 +163,63 @@ const router = createRouter({
   ],
 })
 
-router.beforeEach((to, _from, next) => {
+let serverSessionVerified = false
+let serverSessionCheck: Promise<boolean> | null = null
+
+function isServerSessionAuthModeValue(value: unknown): value is 'feishu-oauth-dev' | 'trusted-feishu' {
+  return value === 'feishu-oauth-dev' || value === 'trusted-feishu'
+}
+
+function clearStaleServerSession() {
+  serverSessionVerified = false
+  clearApiKey()
+  clearRuntimeMode()
+}
+
+async function discoverServerSessionMode(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/auth/status', {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+    })
+    if (!res.ok) return false
+    const status = await res.json().catch(() => ({})) as { authMode?: unknown; plane?: unknown }
+    if (!isServerSessionAuthModeValue(status.authMode)) return false
+    setRuntimeMode(status.authMode, typeof status.plane === 'string' ? status.plane : undefined)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function hasValidServerSession(): Promise<boolean> {
+  if (!isServerSessionAuthMode()) return true
+  if (serverSessionVerified) return true
+  if (!serverSessionCheck) {
+    serverSessionCheck = fetch('/api/auth/me', {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+    })
+      .then((res) => {
+        if (res.ok) {
+          serverSessionVerified = true
+          return true
+        }
+        clearStaleServerSession()
+        return false
+      })
+      .catch(() => {
+        clearStaleServerSession()
+        return false
+      })
+      .finally(() => {
+        serverSessionCheck = null
+      })
+  }
+  return serverSessionCheck
+}
+
+router.beforeEach(async (to, _from, next) => {
   // Public pages don't need auth
   if (to.meta.public) {
     // Already has key, skip login
@@ -165,8 +231,16 @@ router.beforeEach((to, _from, next) => {
     return
   }
 
-  // All other pages require token
-  if (!hasApiKey()) {
+  // All other pages require auth. Feishu OAuth uses an httpOnly cookie instead
+  // of a JS-readable token, so do not gate protected routes on localStorage.
+  if (!canAccessProtectedRoutes()) {
+    if (!(await discoverServerSessionMode())) {
+      next({ name: 'login' })
+      return
+    }
+  }
+
+  if (!(await hasValidServerSession())) {
     next({ name: 'login' })
     return
   }

@@ -190,6 +190,7 @@ export default {
     plugins: 'Plugins',
     mcp: 'MCP',
     skills: 'Competences',
+    connectors: 'Connectors',
     memory: 'Memoire',
     logs: 'Journaux',
     usage: 'Utilisation',

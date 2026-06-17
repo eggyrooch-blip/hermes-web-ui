@@ -36,7 +36,12 @@ onMounted(async () => {
   try {
     const status = await fetchAuthStatus();
     setRuntimeMode(status.authMode, status.plane);
-    if (status.authMode === "feishu-oauth-dev" || status.authMode === "trusted-feishu") {
+    if (status.authMode === "trusted-feishu") {
+      loginMethod.value = "feishu";
+      router.replace("/hermes/chat");
+      return;
+    }
+    if (status.authMode === "feishu-oauth-dev") {
       // Wake Feishu immediately; never render the password form.
       loginMethod.value = "feishu";
       redirectToFeishu();

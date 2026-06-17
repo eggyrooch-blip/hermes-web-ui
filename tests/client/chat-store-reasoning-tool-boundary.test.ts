@@ -29,6 +29,7 @@ vi.mock('@/api/hermes/chat', () => ({
 vi.mock('@/api/client', () => ({
   getActiveProfileName: () => 'default',
   hasApiKey: () => false,
+  canAccessProtectedRoutes: () => true,
 }))
 
 vi.mock('@/api/hermes/sessions', () => ({

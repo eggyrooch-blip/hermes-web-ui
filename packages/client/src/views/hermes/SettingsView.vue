@@ -26,26 +26,21 @@ const settingsStore = useSettingsStore();
 const profilesStore = useProfilesStore();
 const { t } = useI18n();
 const canManageUsers = isStoredSuperAdmin();
+const defaultTab = canManageUsers ? "account" : "display";
 const route = useRoute();
 const router = useRouter();
-const activeTab = ref("account");
+const activeTab = ref(defaultTab);
 
 const validTabs = computed(() => new Set([
-  "account",
-  ...(canManageUsers ? ["users"] : []),
+  ...(canManageUsers ? ["account", "users", "agent", "memory", "compression", "models", "voice"] : []),
   "display",
-  "agent",
-  "memory",
-  "compression",
   "session",
   "privacy",
-  "models",
-  "voice",
 ]));
 
 function normalizeTab(value: unknown): string {
   const tab = typeof value === "string" ? value : "";
-  return validTabs.value.has(tab) ? tab : "account";
+  return validTabs.value.has(tab) ? tab : defaultTab;
 }
 
 function handleTabUpdate(tab: string) {
@@ -53,7 +48,7 @@ function handleTabUpdate(tab: string) {
   router.replace({
     query: {
       ...route.query,
-      tab: activeTab.value === "account" ? undefined : activeTab.value,
+      tab: activeTab.value === defaultTab ? undefined : activeTab.value,
     },
   });
 }
@@ -87,7 +82,7 @@ onMounted(() => {
         :description="t('common.loading')"
       >
         <NTabs v-model:value="activeTab" type="line" animated @update:value="handleTabUpdate">
-          <NTabPane name="account" :tab="t('settings.tabs.account')">
+          <NTabPane v-if="canManageUsers" name="account" :tab="t('settings.tabs.account')">
             <AccountSettings />
           </NTabPane>
           <NTabPane v-if="canManageUsers" name="users" :tab="t('settings.tabs.users')">
@@ -96,14 +91,14 @@ onMounted(() => {
           <NTabPane name="display" :tab="t('settings.tabs.display')">
             <DisplaySettings />
           </NTabPane>
-          <NTabPane name="agent" :tab="t('settings.tabs.agent')">
+          <NTabPane v-if="canManageUsers" name="agent" :tab="t('settings.tabs.agent')">
             <AgentSettings />
             <GatewayAutoStartSettings />
           </NTabPane>
-          <NTabPane name="memory" :tab="t('settings.tabs.memory')">
+          <NTabPane v-if="canManageUsers" name="memory" :tab="t('settings.tabs.memory')">
             <MemorySettings />
           </NTabPane>
-          <NTabPane name="compression" :tab="t('settings.tabs.compression')">
+          <NTabPane v-if="canManageUsers" name="compression" :tab="t('settings.tabs.compression')">
             <CompressionSettings />
           </NTabPane>
           <NTabPane name="session" :tab="t('settings.tabs.session')">
@@ -112,10 +107,10 @@ onMounted(() => {
           <NTabPane name="privacy" :tab="t('settings.tabs.privacy')">
             <PrivacySettings />
           </NTabPane>
-          <NTabPane name="models" :tab="t('settings.tabs.models')">
+          <NTabPane v-if="canManageUsers" name="models" :tab="t('settings.tabs.models')">
             <ModelSettings />
           </NTabPane>
-          <NTabPane name="voice" :tab="t('settings.tabs.voice')">
+          <NTabPane v-if="canManageUsers" name="voice" :tab="t('settings.tabs.voice')">
             <VoiceSettings />
           </NTabPane>
         </NTabs>

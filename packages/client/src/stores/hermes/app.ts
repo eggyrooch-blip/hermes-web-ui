@@ -15,7 +15,7 @@ import {
   type ModelVisibility,
   type ModelVisibilityRule,
 } from '@/api/hermes/system'
-import { hasApiKey } from '@/api/client'
+import { canAccessProtectedRoutes } from '@/api/client'
 
 const WEB_UI_VERSION = __APP_VERSION__
 
@@ -157,7 +157,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function loadModels(force = false, opts: { preserveSelection?: boolean } = {}) {
-    if (!hasApiKey()) return
+    if (!canAccessProtectedRoutes()) return
     if (!force && modelsLoadPromise) return modelsLoadPromise
     if (!force && modelsLastRequestedAt > 0 && Date.now() - modelsLastRequestedAt < MODELS_CACHE_TTL_MS) return
     modelsLastRequestedAt = Date.now()
@@ -175,7 +175,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function waitForModelsForRun(timeoutMs = 15000) {
-    if (!hasApiKey()) return
+    if (!canAccessProtectedRoutes()) return
     const pending = modelsLoadPromise || (modelsLastRequestedAt === 0 ? loadModels() : null)
     if (!pending) return
     await Promise.race([
