@@ -26,7 +26,7 @@ related:
 >
 > App startup 不能再把 `app.mount('#app')` 阻塞在 `router.isReady()` 后，否则 fresh Feishu cookie 首屏会被 ChatView/Monaco 大 chunk 卡在空白 `.boot-fallback`。当前边界是：先 mount shell；router 用 `authNavigationReady` 表示可显示安全企业 chrome，用 `routeContentReady` 表示可显示 route content。普通用户 direct 到 super-admin route 时可以先看到安全 chrome，但 router-view 必须隐藏到安全 chat redirect 完成；未登录 direct 到受保护 route 时不能在跳 Feishu 登录前渲染受保护 chrome/content。
 >
-> 连接器页沿用旧 Credentials 能力并更名为「连接器」：路由为 `/hermes/connectors`，保留 `/hermes/credentials` alias；底层 API 仍是 `/api/auth/skill-credentials*`。`lark-cli` 授权通过 multitenancy Run Broker UAT/session endpoint，`bind-token` 只转发给 Run Broker 按 profile 存储，WebUI 不落 token。Skills 页面和 profile-local skill editor 不能在跨版本时丢掉；MCP 管理仍保持 super-admin-only。
+> 连接器页沿用旧 Credentials 能力并更名为「连接器」：路由为 `/hermes/connectors`，保留 `/hermes/credentials` alias；底层 API 仍是 `/api/auth/skill-credentials*`。`lark-cli` 授权通过 multitenancy Run Broker UAT/session endpoint，`bind-token` 只转发给 Run Broker 按 profile 存储，WebUI 不落 token。Skills 页面和 profile-local skill editor 不能在跨版本时丢掉；普通员工不能加载 upstream skill recommendation Markdown 或外部推荐链接面板，避免把外部 skill 市场/推广面带进企业员工态；MCP 管理仍保持 super-admin-only。
 >
 > 下次跨版本更新前先对照 `docs/plans/2026-06-17-enterprise-upstream-rebaseline-checklist.md`，再吸收 upstream UI/route 变更。
 
