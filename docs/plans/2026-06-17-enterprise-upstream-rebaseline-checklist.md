@@ -19,13 +19,17 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
 - `AppSidebar` must not render `updateVersion`, `reloadClientVersion`,
   `versionManagement`, `Studio v...`, update buttons, version management modals,
   changelog buttons, or product promotion links.
-- Ordinary users may use chat, history, jobs, kanban, skills, plugins, memory,
-  group chat, files, coding agents, settings, and connectors when those views
-  keep existing owner/profile guards.
-- Logs, channels, devices, MCP manager, profiles, performance, terminal,
-  version preview, and model provider management are super-admin-only.
+- Ordinary users may use chat, history, jobs, kanban, skills, memory, group
+  chat, files, settings, and connectors when those views keep existing
+  owner/profile guards.
+- Logs, channels, devices, Plugins inventory, Coding Agents install/config,
+  MCP manager, profiles, performance, terminal, version preview, and model
+  provider management are super-admin-only.
 - The chat model picker remains available. `/hermes/models` is provider/cache
   management and must stay super-admin-only.
+- Chat's new-session agent picker must not offer Claude Code/Codex to ordinary
+  users; those choices depend on host-level coding-agent status and launch
+  configuration.
 
 ## Settings
 
@@ -83,6 +87,8 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
 - Router test: risky routes have `requiresSuperAdmin`; Feishu cookie-mode can
   enter protected routes without a JS token, and stale super-admin JWTs cannot
   bypass Feishu/trusted route gates.
+- ChatPanel test: ordinary users only see Hermes in the new-session agent
+  picker and cannot trigger Coding Agents status/launch flows.
 - Settings test: normal users only see allowed tabs; super-admin still sees the
   full management surface.
 - Auth/API test: `/api/auth/me` preserves Feishu identity fields; client access

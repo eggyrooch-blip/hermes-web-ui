@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-06-17
+updated: 2026-06-18
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
@@ -18,7 +18,7 @@ related:
 > [!info] 2026-06-17 worktree — upstream rebaseline 后企业入口收口
 > `sidebar-enterprise-chrome` 是 upstream rebaseline 验收期的本机修正，生产尚未发布。边界是 WebUI 适配层，不改 Hermes Agent，不把员工运维/升级入口暴露到普通用户。
 >
-> 员工侧栏必须隐藏 upstream 自助升级/版本推广 UI：`升级版本 v...`、`Studio v...`、版本管理、更新日志、GitHub/Website 外链都不能从 `AppSidebar` 渲染。普通用户也不能看到或直达日志、频道、设备、模型 provider 管理；这些路由都要 `requiresSuperAdmin`，侧栏用同一角色判断隐藏。聊天里的模型选择器是使用面，保留；`ModelsView` 是 provider/cache 管理面，收回。
+> 员工侧栏必须隐藏 upstream 自助升级/版本推广 UI：`升级版本 v...`、`Studio v...`、版本管理、更新日志、GitHub/Website 外链都不能从 `AppSidebar` 渲染。普通用户也不能看到或直达日志、频道、设备、模型 provider 管理、Plugins inventory、Coding Agents 本机安装/配置面；这些路由都要 `requiresSuperAdmin`，侧栏用同一角色判断隐藏。聊天里的模型选择器是使用面，保留；`ModelsView` 是 provider/cache 管理面，收回。Chat 新建会话里的 Claude Code/Codex 入口同属本机 coding-agent 维护/执行面，普通员工只保留 Hermes。
 >
 > Settings 的普通用户面只保留 `display`、`session`、`privacy`。`account`、`users`、`agent`、`memory`、`compression`、`models`、`voice` 都属于运维/全局配置面，必须 super-admin-only；尤其不能让 Feishu 员工改 WebUI username/password、锁定 IP、gateway 自动启动、agent/provider/voice 配置。
 >
@@ -26,7 +26,7 @@ related:
 >
 > App startup 不能再把 `app.mount('#app')` 阻塞在 `router.isReady()` 后，否则 fresh Feishu cookie 首屏会被 ChatView/Monaco 大 chunk 卡在空白 `.boot-fallback`。当前边界是：先 mount shell；router 用 `authNavigationReady` 表示可显示安全企业 chrome，用 `routeContentReady` 表示可显示 route content。普通用户 direct 到 super-admin route 时可以先看到安全 chrome，但 router-view 必须隐藏到安全 chat redirect 完成；未登录 direct 到受保护 route 时不能在跳 Feishu 登录前渲染受保护 chrome/content。
 >
-> 连接器页沿用旧 Credentials 能力并更名为「连接器」：路由为 `/hermes/connectors`，保留 `/hermes/credentials` alias；底层 API 仍是 `/api/auth/skill-credentials*`。`lark-cli` 授权通过 multitenancy Run Broker UAT/session endpoint，`bind-token` 只转发给 Run Broker 按 profile 存储，WebUI 不落 token。Skills 页面和 profile-local skill editor 不能在跨版本时丢掉；普通员工不能加载 upstream skill recommendation Markdown 或外部推荐链接面板，避免把外部 skill 市场/推广面带进企业员工态；MCP 管理仍保持 super-admin-only。
+> 连接器页沿用旧 Credentials 能力并更名为「连接器」：路由为 `/hermes/connectors`，保留 `/hermes/credentials` alias；底层 API 仍是 `/api/auth/skill-credentials*`。`lark-cli` 授权通过 multitenancy Run Broker UAT/session endpoint，`bind-token` 只转发给 Run Broker 按 profile 存储，WebUI 不落 token。Skills 页面和 profile-local skill editor 不能在跨版本时丢掉；普通员工不能加载 upstream skill recommendation Markdown 或外部推荐链接面板，避免把外部 skill 市场/推广面带进企业员工态。Plugins 和 Coding Agents 暂不聚合进 Connectors，它们展示/操作的是主机插件 inventory、`~/.claude`/`~/.codex` 配置和本机安装/启动能力，必须和 MCP 一样保持 super-admin-only。
 >
 > 下次跨版本更新前先对照 `docs/plans/2026-06-17-enterprise-upstream-rebaseline-checklist.md`，再吸收 upstream UI/route 变更。
 
