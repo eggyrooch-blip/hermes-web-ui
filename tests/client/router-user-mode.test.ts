@@ -27,6 +27,10 @@ describe('router route metadata + auth gating', () => {
   beforeEach(() => {
     vi.resetModules()
     localStorage.clear()
+    Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
+      configurable: true,
+      value: vi.fn(() => ({})),
+    })
     fetchMock.mockReset()
     fetchMock.mockResolvedValue({ ok: true, json: () => Promise.resolve({ user: { id: 1 } }) })
     vi.stubGlobal('fetch', fetchMock)
@@ -50,6 +54,9 @@ describe('router route metadata + auth gating', () => {
     'hermes.models',
     'hermes.plugins',
     'hermes.codingAgents',
+    'hermes.performance',
+    'hermes.versionPreview',
+    'hermes.mcp',
   ])('gates %s behind super-admin', async (routeName) => {
     const router = (await import('@/router')).default
 
@@ -171,6 +178,9 @@ describe('router route metadata + auth gating', () => {
     '/hermes/models',
     '/hermes/plugins',
     '/hermes/coding-agents',
+    '/hermes/performance',
+    '/hermes/version-preview',
+    '/hermes/mcp',
   ])('keeps a non-admin user off %s', async (path) => {
     localStorage.setItem('hermes_api_key', USER_TOKEN)
     const router = (await import('@/router')).default

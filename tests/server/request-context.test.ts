@@ -287,11 +287,15 @@ describe('chat plane access control', () => {
       '/api/hermes/gateways',
       '/api/hermes/logs',
       '/api/hermes/channels',
+      '/api/hermes/devices',
+      '/api/hermes/plugins',
+      '/api/hermes/mcp/servers',
       '/api/hermes/cron-history',
       '/api/hermes/model-context',
       '/api/hermes/auth/copilot/check-token',
       '/api/hermes/weixin/qrcode',
       '/api/hermes/skills/toggle',
+      '/api/coding-agents',
     ]
 
     for (const path of allowed) {

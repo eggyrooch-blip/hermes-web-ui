@@ -90,6 +90,11 @@ vi.mock('@/api/coding-agents', () => ({
   fetchCodingAgentsStatus: vi.fn(() => Promise.resolve({})),
 }))
 
+vi.mock('vue-router', () => ({
+  useRoute: () => ({ name: 'hermes.chat', params: {}, query: {} }),
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+}))
+
 vi.mock('@/shared/session-display', () => ({
   getSourceLabel: (source: string) => source,
 }))
