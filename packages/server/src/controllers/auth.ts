@@ -800,6 +800,38 @@ export async function skillCredentialStart(ctx: Context) {
   }
 }
 
+export async function skillCredentialBindToken(ctx: Context) {
+  try {
+    const user = getOptionalFeishuUser(ctx)
+    const profileName = getRequestProfile(ctx)
+    const id = String(ctx.params?.id || '').trim().toLowerCase()
+    const body = (ctx.request.body || {}) as { token?: unknown }
+    const token = typeof body.token === 'string' ? body.token : ''
+    if (!id) {
+      ctx.status = 400
+      ctx.body = { error: 'credential id is required' }
+      return
+    }
+    if (!token.trim()) {
+      ctx.status = 400
+      ctx.body = { error: 'token is required' }
+      return
+    }
+    // Self-bind: forward to multitenancy, which stores the token ONLY in this
+    // profile's vault + token file. The webui never persists the token itself.
+    const payload: Record<string, string> = { profile_name: profileName, provider: id, token }
+    if (user?.openid) payload.user_key = user.openid
+    const res = await fetch(brokerUrl('/api/run-broker/credentials/token/bind'), {
+      method: 'POST',
+      headers: brokerHeaders(),
+      body: JSON.stringify(payload),
+    })
+    await pipeBrokerJson(ctx, res)
+  } catch (err: any) {
+    handleUatProxyError(ctx, err)
+  }
+}
+
 /**
  * GET /api/auth/kep-cli/callback/:sessionId
  * Public OAuth callback for the kep-cli browser authorization flow.

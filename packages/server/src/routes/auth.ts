@@ -24,6 +24,7 @@ authProtectedRoutes.put('/api/auth/users/:id', requireSuperAdmin, ctrl.updateMan
 authProtectedRoutes.delete('/api/auth/users/:id', requireSuperAdmin, ctrl.deleteManagedUser)
 authProtectedRoutes.get('/api/auth/skill-credentials', ctrl.skillCredentialsStatus)
 authProtectedRoutes.post('/api/auth/skill-credentials/:id/start', ctrl.skillCredentialStart)
+authProtectedRoutes.post('/api/auth/skill-credentials/:id/bind-token', ctrl.skillCredentialBindToken)
 authProtectedRoutes.post('/api/auth/skill-credentials/:id/complete', ctrl.skillCredentialComplete)
 authProtectedRoutes.get('/api/auth/locked-ips', ctrl.listLockedIps)
 authProtectedRoutes.delete('/api/auth/locked-ips', ctrl.unlockIpHandler)
