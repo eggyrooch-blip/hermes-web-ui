@@ -36,6 +36,18 @@ async function loadSkillsController() {
   return import('../../packages/server/src/controllers/hermes/skills')
 }
 
+async function loadConfigController(env: Record<string, string> = {}) {
+  vi.resetModules()
+  process.env = {
+    ...process.env,
+    HERMES_HOME: hermesHome,
+    HERMES_WEB_PLANE: 'chat',
+    HERMES_CHAT_PLANE_ALLOW_SETTINGS: '1',
+    ...env,
+  }
+  return import('../../packages/server/src/controllers/hermes/config')
+}
+
 function makeCtx(body: unknown): any {
   return {
     request: { body },
@@ -118,5 +130,54 @@ describe('config mutating controllers', () => {
     const config = YAML.load(await readFile(join(hermesHome, 'config.yaml'), 'utf-8')) as any
     expect(config.model.default).toBe('glm-5.1')
     expect(config.skills.disabled).toEqual(['new-skill'])
+  })
+
+  it('chat-plane config exposes and writes only employee-visible settings sections', async () => {
+    const employeeDir = join(hermesHome, 'profiles', 'employee')
+    await mkdir(employeeDir, { recursive: true })
+    await writeFile(join(employeeDir, 'config.yaml'), [
+      'display:',
+      '  compact: false',
+      'session_reset:',
+      '  enabled: true',
+      'privacy:',
+      '  redact_pii: true',
+      'agent:',
+      '  skip_confirmations: true',
+      'memory:',
+      '  enabled: true',
+      'approvals:',
+      '  mode: auto',
+      '',
+    ].join('\n'), 'utf-8')
+
+    const { getConfig, updateConfig } = await loadConfigController()
+    const baseCtx = makeCtx({})
+    baseCtx.state.user = { openid: 'ou_employee', profile: 'employee', role: 'user' }
+
+    await getConfig(baseCtx)
+
+    expect(baseCtx.body).toEqual({
+      display: { compact: false },
+      session_reset: { enabled: true },
+      privacy: { redact_pii: true },
+    })
+
+    const agentReadCtx = makeCtx({})
+    agentReadCtx.query = { section: 'agent' }
+    agentReadCtx.state.user = baseCtx.state.user
+
+    await getConfig(agentReadCtx)
+
+    expect(agentReadCtx.status).toBe(403)
+
+    const agentWriteCtx = makeCtx({ section: 'agent', values: { skip_confirmations: false } })
+    agentWriteCtx.state.user = baseCtx.state.user
+
+    await updateConfig(agentWriteCtx)
+
+    expect(agentWriteCtx.status).toBe(403)
+    const config = YAML.load(await readFile(join(employeeDir, 'config.yaml'), 'utf-8')) as any
+    expect(config.agent.skip_confirmations).toBe(true)
   })
 })

@@ -41,6 +41,9 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
   tabs are super-admin-only.
 - Do not expose username/password changes, locked IP management, gateway
   auto-start, provider defaults, or agent/runtime configuration to employees.
+- Keep the backend in sync with the visible tabs. In chat-plane,
+  `/api/hermes/config` may only expose or write `display`, `session_reset`, and
+  `privacy`, even when `HERMES_CHAT_PLANE_ALLOW_SETTINGS=1`.
 
 ## Feishu Auth
 
@@ -82,6 +85,9 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
 - `bind-token` forwards profile-scoped token binding to Run Broker and must not
   persist raw token values in WebUI storage.
 - Do not regress profile-local generated skill editing.
+- MCP reload is host maintenance. Ordinary users must not see `/reload-mcp`
+  slash suggestions, and chat-plane server code must reject `/reload-mcp` even
+  if a client sends it manually.
 
 ## Regression Tests To Keep
 
@@ -96,7 +102,11 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
   picker and cannot trigger Coding Agents status/launch flows.
 - Settings test: normal users only see allowed tabs; super-admin still sees the
   full management surface.
+- Config API test: chat-plane config reads/writes only employee-visible
+  sections and rejects hidden settings sections.
 - Auth/API test: `/api/auth/me` preserves Feishu identity fields; client access
   helpers distinguish token presence from protected-route access.
 - Credentials test: Connectors renders `lark-cli`, `keep-record`, `kep-cli`,
   and does not leak raw secrets.
+- Slash command test: ordinary users do not see `/reload-mcp`, and chat-plane
+  backend rejects it without calling MCP reload.

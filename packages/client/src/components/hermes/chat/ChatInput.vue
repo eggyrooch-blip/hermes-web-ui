@@ -6,6 +6,7 @@ import { useProfilesStore } from '@/stores/hermes/profiles'
 import { fetchContextLength } from '@/api/hermes/sessions'
 import { setModelContext } from '@/api/hermes/model-context'
 import { fetchSkills, type SkillCategory, type SkillInfo } from '@/api/hermes/skills'
+import { isStoredSuperAdmin } from '@/api/client'
 import { NButton, NTooltip, NSwitch, NModal, NInputNumber, NPopselect, useMessage } from 'naive-ui'
 import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -25,6 +26,7 @@ const profilesStore = useProfilesStore()
 const { t } = useI18n()
 const message = useMessage()
 const { toolTraceVisible, toggleToolTraceVisible } = useToolTraceVisibility()
+const isSuperAdmin = computed(() => isStoredSuperAdmin())
 
 const reasoningEffortOptions = computed(() => [
   { label: t('chat.reasoningEffort.options.default'), value: '' },
@@ -175,28 +177,33 @@ const voiceDialogueError = computed(() =>
   ?? null,
 )
 
-const bridgeCommands = computed<SlashCommandOption[]>(() => [
-  { key: 'command:usage', name: 'usage', args: '', description: t('chat.slashCommands.usage') },
-  { key: 'command:status', name: 'status', args: '', description: t('chat.slashCommands.status') },
-  { key: 'command:abort', name: 'abort', args: '', description: t('chat.slashCommands.abort') },
-  { key: 'command:queue', name: 'queue', args: t('chat.slashCommandArgs.message'), description: t('chat.slashCommands.queue') },
-  { key: 'command:skill', name: 'skill', args: '', description: t('skills.title'), opensSkillPicker: true },
-  { key: 'command:plan', name: 'plan', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.plan') },
-  { key: 'command:goal', name: 'goal', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.goal') },
-  { key: 'command:goal-status', name: 'goal', args: 'status', insertText: 'goal status', description: t('chat.slashCommands.goalStatus') },
-  { key: 'command:goal-pause', name: 'goal', args: 'pause', insertText: 'goal pause', description: t('chat.slashCommands.goalPause') },
-  { key: 'command:goal-resume', name: 'goal', args: 'resume', insertText: 'goal resume', description: t('chat.slashCommands.goalResume') },
-  { key: 'command:goal-done', name: 'goal', args: 'done', insertText: 'goal done', description: t('chat.slashCommands.goalDone') },
-  { key: 'command:goal-clear', name: 'goal', args: 'clear', insertText: 'goal clear', description: t('chat.slashCommands.goalClear') },
-  { key: 'command:subgoal', name: 'subgoal', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.subgoal') },
-  { key: 'command:clear', name: 'clear', args: '', description: t('chat.slashCommands.clear') },
-  { key: 'command:clear-history', name: 'clear', args: '--history', insertText: 'clear --history', description: t('chat.slashCommands.clearHistory') },
-  { key: 'command:title', name: 'title', args: t('chat.slashCommandArgs.title'), description: t('chat.slashCommands.title') },
-  { key: 'command:compress', name: 'compress', args: '', description: t('chat.slashCommands.compress') },
-  { key: 'command:steer', name: 'steer', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.steer') },
-  { key: 'command:destroy', name: 'destroy', args: '', description: t('chat.slashCommands.destroy') },
-  { key: 'command:reload-mcp', name: 'reload-mcp', args: '', description: t('chat.slashCommands.reloadMcp') },
-])
+const bridgeCommands = computed<SlashCommandOption[]>(() => {
+  const commands: SlashCommandOption[] = [
+    { key: 'command:usage', name: 'usage', args: '', description: t('chat.slashCommands.usage') },
+    { key: 'command:status', name: 'status', args: '', description: t('chat.slashCommands.status') },
+    { key: 'command:abort', name: 'abort', args: '', description: t('chat.slashCommands.abort') },
+    { key: 'command:queue', name: 'queue', args: t('chat.slashCommandArgs.message'), description: t('chat.slashCommands.queue') },
+    { key: 'command:skill', name: 'skill', args: '', description: t('skills.title'), opensSkillPicker: true },
+    { key: 'command:plan', name: 'plan', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.plan') },
+    { key: 'command:goal', name: 'goal', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.goal') },
+    { key: 'command:goal-status', name: 'goal', args: 'status', insertText: 'goal status', description: t('chat.slashCommands.goalStatus') },
+    { key: 'command:goal-pause', name: 'goal', args: 'pause', insertText: 'goal pause', description: t('chat.slashCommands.goalPause') },
+    { key: 'command:goal-resume', name: 'goal', args: 'resume', insertText: 'goal resume', description: t('chat.slashCommands.goalResume') },
+    { key: 'command:goal-done', name: 'goal', args: 'done', insertText: 'goal done', description: t('chat.slashCommands.goalDone') },
+    { key: 'command:goal-clear', name: 'goal', args: 'clear', insertText: 'goal clear', description: t('chat.slashCommands.goalClear') },
+    { key: 'command:subgoal', name: 'subgoal', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.subgoal') },
+    { key: 'command:clear', name: 'clear', args: '', description: t('chat.slashCommands.clear') },
+    { key: 'command:clear-history', name: 'clear', args: '--history', insertText: 'clear --history', description: t('chat.slashCommands.clearHistory') },
+    { key: 'command:title', name: 'title', args: t('chat.slashCommandArgs.title'), description: t('chat.slashCommands.title') },
+    { key: 'command:compress', name: 'compress', args: '', description: t('chat.slashCommands.compress') },
+    { key: 'command:steer', name: 'steer', args: t('chat.slashCommandArgs.text'), description: t('chat.slashCommands.steer') },
+    { key: 'command:destroy', name: 'destroy', args: '', description: t('chat.slashCommands.destroy') },
+  ]
+  if (isSuperAdmin.value) {
+    commands.push({ key: 'command:reload-mcp', name: 'reload-mcp', args: '', description: t('chat.slashCommands.reloadMcp') })
+  }
+  return commands
+})
 
 const slashActive = ref(false)
 const slashQuery = ref('')

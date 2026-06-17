@@ -332,6 +332,288 @@
         }
       }
     },
+    "/api/auth/feishu/callback": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get callback",
+        "description": "GET /api/auth/feishu/callback",
+        "operationId": "feishuCallback",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "string"
+              ]
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "string"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "/api/auth/feishu/login": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get login",
+        "description": "GET /api/auth/feishu/login",
+        "operationId": "feishuLogin",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/api/auth/feishu/logout": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create logout",
+        "description": "POST /api/auth/feishu/logout",
+        "operationId": "feishuLogout",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/auth/feishu/uat/sessions/{sessionId}": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get :sessionId",
+        "description": "GET /api/auth/feishu/uat/sessions/:sessionId",
+        "operationId": "feishuUatPoll",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Delete :sessionId",
+        "description": "DELETE /api/auth/feishu/uat/sessions/:sessionId",
+        "operationId": "feishuUatCancel",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/auth/feishu/uat/start": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create start",
+        "description": "POST /api/auth/feishu/uat/start",
+        "operationId": "feishuUatStart",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/feishu/uat/status": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get status",
+        "description": "GET /api/auth/feishu/uat/status",
+        "operationId": "feishuUatStatus",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "required_scopes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "string"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "/api/auth/kep-cli/callback/{sessionId}": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get :sessionId",
+        "description": "GET /api/auth/kep-cli/callback/:sessionId",
+        "operationId": "kepCliCallback",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
     "/api/auth/locked-ips": {
       "get": {
         "tags": [
@@ -568,6 +850,164 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/auth/skill-credentials": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get skill-credentials",
+        "description": "GET /api/auth/skill-credentials",
+        "operationId": "skillCredentialsStatus",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/api/auth/skill-credentials/{id}/bind-token": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create bind-token",
+        "description": "POST /api/auth/skill-credentials/:id/bind-token",
+        "operationId": "skillCredentialBindToken",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/auth/skill-credentials/{id}/complete": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create complete",
+        "description": "POST /api/auth/skill-credentials/:id/complete",
+        "operationId": "skillCredentialComplete",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/skill-credentials/{id}/start": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create start",
+        "description": "POST /api/auth/skill-credentials/:id/start",
+        "operationId": "skillCredentialStart",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true
+              }
+            }
           }
         }
       }
@@ -3230,25 +3670,7 @@
           "404": {
             "description": "Not found"
           }
-        },
-        "parameters": [
-          {
-            "name": "section",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "sections",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ]
+        }
       },
       "put": {
         "tags": [
@@ -3766,25 +4188,7 @@
           "404": {
             "description": "Not found"
           }
-        },
-        "parameters": [
-          {
-            "name": "name",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "path",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ]
+        }
       }
     },
     "/api/hermes/files/copy": {
@@ -4870,17 +5274,7 @@
           "404": {
             "description": "Not found"
           }
-        },
-        "parameters": [
-          {
-            "name": "include_disabled",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean"
-            }
-          }
-        ]
+        }
       },
       "post": {
         "tags": [
@@ -5301,9 +5695,25 @@
         },
         "parameters": [
           {
+            "name": "board",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "path",
             "in": "query",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "query",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -7464,27 +7874,6 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "clone": {
-                    "type": "boolean"
-                  },
-                  "name": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "name"
-                ]
-              }
-            }
-          }
         }
       }
     },
@@ -9320,6 +9709,44 @@
         }
       }
     },
+    "/api/hermes/skills/file": {
+      "put": {
+        "tags": [
+          "Skills"
+        ],
+        "summary": "Update file",
+        "description": "PUT /api/hermes/skills/file",
+        "operationId": "updateFile_",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/hermes/skills/import": {
       "post": {
         "tags": [
@@ -10336,17 +10763,7 @@
           "404": {
             "description": "Not found"
           }
-        },
-        "parameters": [
-          {
-            "name": "days",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer"
-            }
-          }
-        ]
+        }
       }
     },
     "/api/hermes/weixin/qrcode": {

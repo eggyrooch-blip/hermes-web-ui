@@ -1,5 +1,6 @@
 import type { Server, Socket } from 'socket.io'
 import { addMessage, clearSessionMessages, createSession, getSession, renameSession, updateSessionStats } from '../../../db/hermes/session-store'
+import { config } from '../../../config'
 import { logger } from '../../logger'
 import type { AgentBridgeClient } from '../agent-bridge'
 import { flushBridgePendingToDb } from './bridge-message'
@@ -575,6 +576,15 @@ export async function handleSessionCommand(
     }
 
     case 'reload-mcp': {
+      if (config.webPlane === 'chat') {
+        emitCommand({
+          ok: false,
+          action: 'reload-mcp',
+          terminal: !state.isWorking,
+          message: 'MCP reload is only available in the admin plane.',
+        })
+        return
+      }
       if (state.isWorking) {
         emitCommand({
           ok: false,

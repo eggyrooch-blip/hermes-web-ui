@@ -439,4 +439,39 @@ describe('plan session command', () => {
       message: 'MCP reload can only run while the session is idle. Wait for the current run to finish or abort it first.',
     }))
   })
+
+  it('rejects MCP reload in chat plane even when the session is idle', async () => {
+    const previousPlane = process.env.HERMES_WEB_PLANE
+    process.env.HERMES_WEB_PLANE = 'chat'
+    vi.resetModules()
+
+    try {
+      const state = { messages: [], isWorking: false, events: [], queue: [] }
+      const { bridge, namespaceEmit, runQueuedItem, sessionMap, socket, nsp } = makeContext(state)
+      const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+      const command = parseSessionCommand('/reload-mcp github')!
+
+      await handleSessionCommand('session-1', command, {
+        nsp: nsp as any,
+        socket: socket as any,
+        sessionMap,
+        bridge: bridge as any,
+        profile: 'default',
+        runQueuedItem,
+      })
+
+      expect(bridge.mcpReload).not.toHaveBeenCalled()
+      expect(runQueuedItem).not.toHaveBeenCalled()
+      expect(namespaceEmit).toHaveBeenCalledWith('session.command', expect.objectContaining({
+        command: 'reload-mcp',
+        ok: false,
+        action: 'reload-mcp',
+        message: 'MCP reload is only available in the admin plane.',
+      }))
+    } finally {
+      if (previousPlane === undefined) delete process.env.HERMES_WEB_PLANE
+      else process.env.HERMES_WEB_PLANE = previousPlane
+      vi.resetModules()
+    }
+  })
 })

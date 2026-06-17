@@ -18,11 +18,8 @@ export interface WebUser {
 
 export const CHAT_PLANE_CONFIG_SECTIONS = new Set([
   'display',
-  'agent',
-  'memory',
   'session_reset',
   'privacy',
-  'approvals',
 ])
 
 function headerValue(ctx: Context, name: string): string {

@@ -209,11 +209,8 @@ custom_providers:
 
     expect(ctx.body).toEqual({
       display: { compact: true },
-      agent: { max_turns: 8 },
-      memory: {},
       session_reset: {},
       privacy: {},
-      approvals: {},
     })
   })
 

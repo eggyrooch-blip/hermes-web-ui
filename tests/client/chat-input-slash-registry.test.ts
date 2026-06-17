@@ -34,6 +34,7 @@ const profilesStoreMock = vi.hoisted(() => ({
 }))
 
 const fetchSkillsMock = vi.hoisted(() => vi.fn())
+const isStoredSuperAdminMock = vi.hoisted(() => vi.fn(() => false))
 
 vi.mock('@/stores/hermes/chat', () => ({
   useChatStore: () => chatStoreMock,
@@ -57,6 +58,10 @@ vi.mock('@/api/hermes/model-context', () => ({
 
 vi.mock('@/api/hermes/skills', () => ({
   fetchSkills: fetchSkillsMock,
+}))
+
+vi.mock('@/api/client', () => ({
+  isStoredSuperAdmin: isStoredSuperAdminMock,
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -108,6 +113,7 @@ describe('ChatInput slash registry', () => {
     chatStoreMock.activeSession = { id: 's1', source: 'cli', profile: 'owner_sync_profile' }
     chatStoreMock.activeSessionId = 's1'
     fetchSkillsMock.mockResolvedValue({ categories: [] })
+    isStoredSuperAdminMock.mockReturnValue(false)
   })
 
   it('renders client-side bridge slash suggestions when the user starts a command', async () => {
@@ -122,6 +128,17 @@ describe('ChatInput slash registry', () => {
     expect(wrapper.find('.slash-command-dropdown').exists()).toBe(true)
     expect(wrapper.text()).toContain('/clear')
     expect(wrapper.text()).toContain('/compress')
+  })
+
+  it('does not expose host-maintenance MCP reload to ordinary users', async () => {
+    const wrapper = shallowMount(ChatInput)
+    const textarea = wrapper.find('textarea')
+
+    await textarea.setValue('/reload')
+    await textarea.trigger('input')
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('/reload-mcp')
   })
 
   it('inserts the selected command and still sends slash text through the normal chat path', async () => {
