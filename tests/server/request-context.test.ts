@@ -114,6 +114,26 @@ describe('chat plane access control', () => {
     expect(pinCtx.status).toBe(403)
   })
 
+  it('allows profile-local write-gate review endpoints in chat plane', async () => {
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const listCtx = mockCtx('/api/hermes/write-gate/pending', 'GET')
+    const diffCtx = mockCtx('/api/hermes/write-gate/pending/skills/abc123/diff', 'GET')
+    const approveCtx = mockCtx('/api/hermes/write-gate/pending/skills/abc123/approve', 'POST')
+    const rejectCtx = mockCtx('/api/hermes/write-gate/pending/memory/def456/reject', 'POST')
+    const next = vi.fn(async () => {})
+
+    await enforcePlaneAccess(listCtx, next)
+    await enforcePlaneAccess(diffCtx, next)
+    await enforcePlaneAccess(approveCtx, next)
+    await enforcePlaneAccess(rejectCtx, next)
+
+    expect(next).toHaveBeenCalledTimes(4)
+    expect(listCtx.status).toBe(200)
+    expect(diffCtx.status).toBe(200)
+    expect(approveCtx.status).toBe(200)
+    expect(rejectCtx.status).toBe(200)
+  })
+
   it('allows owner-scoped group chat endpoints in chat plane', async () => {
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
     const listCtx = mockCtx('/api/hermes/group-chat/rooms', 'GET')

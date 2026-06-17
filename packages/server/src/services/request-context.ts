@@ -263,6 +263,9 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   if (path === '/api/hermes/skills/skillhub/install' && method === 'POST') return false
   if (path === '/api/hermes/skills/file' && method === 'PUT') return false
   if (path.startsWith('/api/hermes/skills')) return method === 'PUT' || method === 'POST' || method === 'DELETE'
+  if (path === '/api/hermes/write-gate/pending' && method === 'GET') return false
+  if (/^\/api\/hermes\/write-gate\/pending\/[^/]+\/[^/]+\/diff$/.test(path) && method === 'GET') return false
+  if (/^\/api\/hermes\/write-gate\/pending\/[^/]+\/[^/]+\/(approve|reject)$/.test(path) && method === 'POST') return false
   if (path === '/api/hermes/memory') return method !== 'GET' && method !== 'POST'
   if (path.startsWith('/api/hermes/download')) return false
   if (path.startsWith('/api/hermes/v1/') || path.startsWith('/v1/')) return false

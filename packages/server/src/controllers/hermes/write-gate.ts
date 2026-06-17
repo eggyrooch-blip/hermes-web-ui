@@ -6,8 +6,10 @@ import {
   listPendingWrites,
   rejectPendingWrite,
 } from '../../services/hermes/write-gate'
+import { getRequestProfile, isChatPlaneRequest } from '../../services/request-context'
 
 function requestedProfile(ctx: Context): string {
+  if (isChatPlaneRequest(ctx)) return getRequestProfile(ctx)
   return ctx.state?.profile?.name || getActiveProfileName() || 'default'
 }
 

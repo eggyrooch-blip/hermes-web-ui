@@ -10,6 +10,7 @@ import PendingWriteApprovals from '@/components/hermes/skills/PendingWriteApprov
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
 import { fetchSkills, type SkillCategory, type SkillSource, type SkillInfo } from '@/api/hermes/skills'
 import { fetchPendingWrites } from '@/api/hermes/write-gate'
+import { isStoredSuperAdmin } from '@/api/client'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 
 type SourceFilter = SkillSource | 'modified'
@@ -30,6 +31,8 @@ const showExternalDirsModal = ref(false)
 const showWriteApprovalDrawer = ref(false)
 const pendingWriteCount = ref(0)
 const writeApprovalSupported = ref(true)
+const isSuperAdmin = computed(() => isStoredSuperAdmin())
+const showHostSkillActions = computed(() => isSuperAdmin.value)
 let mobileQuery: MediaQueryList | null = null
 let recommendationsRequestSeq = 0
 
@@ -209,6 +212,7 @@ function handlePinToggled(name: string, pinned: boolean) {
           </span>
         </NButton>
         <NButton
+          v-if="showHostSkillActions"
           class="header-action-btn"
           size="small"
           :title="t('skills.import')"
@@ -225,6 +229,7 @@ function handlePinToggled(name: string, pinned: boolean) {
           <span class="header-action-label">{{ t('skills.import') }}</span>
         </NButton>
         <NButton
+          v-if="showHostSkillActions"
           class="header-action-btn"
           size="small"
           :title="t('skills.externalDirs.manage')"
@@ -248,8 +253,8 @@ function handlePinToggled(name: string, pinned: boolean) {
       </div>
     </header>
 
-    <SkillImportModal v-if="showImportModal" @close="showImportModal = false" @saved="handleImported" />
-    <SkillExternalDirsModal v-if="showExternalDirsModal"
+    <SkillImportModal v-if="showHostSkillActions && showImportModal" @close="showImportModal = false" @saved="handleImported" />
+    <SkillExternalDirsModal v-if="showHostSkillActions && showExternalDirsModal"
       @close="showExternalDirsModal = false" @saved="handleExternalDirsSaved" />
     <NDrawer
       v-model:show="showWriteApprovalDrawer"
