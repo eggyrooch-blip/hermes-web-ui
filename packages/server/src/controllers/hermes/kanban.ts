@@ -1,109 +1,17 @@
 import type { Context } from 'koa'
 import { readFile } from 'fs/promises'
-import { resolve, normalize } from 'path'
+import { isAbsolute, relative, resolve, normalize } from 'path'
 import { homedir } from 'os'
+import { config } from '../../config'
 import * as kanbanCli from '../../services/hermes/hermes-kanban'
-import { isPathWithin } from '../../services/hermes/hermes-path'
-import { listProfileNamesFromDisk } from '../../services/hermes/hermes-profile'
+import { ownerOwnsProfile } from '../../services/hermes/agent-ownership'
+import { isChatPlaneRequest, type WebUser } from '../../services/request-context'
 import {
   searchSessionSummariesWithProfile,
   getSessionDetailFromDbWithProfile,
   getExactSessionDetailFromDbWithProfile,
   findLatestExactSessionIdWithProfile,
 } from '../../db/hermes/sessions-db'
-import { listUserProfiles } from '../../db/hermes/users-store'
-
-const DEFAULT_PROFILE = 'default'
-
-function profileName(value: string | null | undefined): string {
-  return value?.trim() || DEFAULT_PROFILE
-}
-
-function requestedProfile(ctx: Context): string | null {
-  return ctx.state?.profile?.name || null
-}
-
-function allowedProfileSet(ctx: Context): Set<string> | null {
-  const user = ctx.state?.user
-  if (!user || user.role === 'super_admin') return null
-  return new Set(listUserProfiles(user.id).map(profile => profile.profile_name))
-}
-
-function visibleProfileSet(ctx: Context): Set<string> | null {
-  return allowedProfileSet(ctx)
-}
-
-function canUseProfile(ctx: Context, profile: string | null | undefined): boolean {
-  const allowed = allowedProfileSet(ctx)
-  return !allowed || allowed.has(profileName(profile))
-}
-
-function denyProfileAccess(ctx: Context, profile: string | null | undefined): boolean {
-  if (canUseProfile(ctx, profile)) return false
-  ctx.status = 403
-  ctx.body = { error: `Profile "${profileName(profile)}" is not available for this user` }
-  return true
-}
-
-function taskAssigneeProfile(task: { assignee: string | null }): string {
-  return profileName(task.assignee)
-}
-
-function filterTasksByVisibleProfiles(ctx: Context, tasks: kanbanCli.KanbanTask[]): kanbanCli.KanbanTask[] {
-  const visible = visibleProfileSet(ctx)
-  if (!visible) return tasks
-  return tasks.filter(task => visible.has(taskAssigneeProfile(task)))
-}
-
-function statsForTasks(tasks: kanbanCli.KanbanTask[]): kanbanCli.KanbanStats {
-  const by_status: Record<string, number> = {}
-  const by_assignee: Record<string, number> = {}
-  for (const task of tasks) {
-    by_status[task.status] = (by_status[task.status] || 0) + 1
-    const assignee = taskAssigneeProfile(task)
-    by_assignee[assignee] = (by_assignee[assignee] || 0) + 1
-  }
-  return { by_status, by_assignee, total: tasks.length }
-}
-
-function assignableProfileNames(ctx: Context): Set<string> | null {
-  const user = ctx.state?.user
-  if (!user) return null
-  if (user.role === 'super_admin') return new Set(listProfileNamesFromDisk())
-  return new Set(listUserProfiles(user.id).map(profile => profile.profile_name))
-}
-
-function assigneesForUser(ctx: Context, assignees: kanbanCli.KanbanAssignee[]): kanbanCli.KanbanAssignee[] {
-  const assignable = assignableProfileNames(ctx)
-  if (!assignable) return assignees
-
-  const byName = new Map<string, kanbanCli.KanbanAssignee>()
-  for (const assignee of assignees) {
-    const name = profileName(assignee.name)
-    if (assignable.has(name)) byName.set(name, { ...assignee, name })
-  }
-  for (const name of [...assignable].sort()) {
-    if (!byName.has(name)) byName.set(name, { name, on_disk: true, counts: null })
-  }
-  return [...byName.values()]
-}
-
-async function getVisibleTasksForBoard(ctx: Context, board: string, opts: {
-  status?: string
-  assignee?: string
-  tenant?: string
-  includeArchived?: boolean
-} = {}): Promise<kanbanCli.KanbanTask[]> {
-  if (opts.assignee && denyProfileAccess(ctx, opts.assignee)) return []
-  const tasks = await kanbanCli.listTasks({
-    board,
-    status: opts.status,
-    assignee: opts.assignee,
-    tenant: opts.tenant,
-    includeArchived: opts.includeArchived,
-  })
-  return filterTasksByVisibleProfiles(ctx, tasks)
-}
 
 function getLatestRunProfile(detail: { runs: Array<{ profile: string | null }> }): string | null {
   return [...detail.runs].reverse().find(run => run.profile)?.profile || null
@@ -111,6 +19,88 @@ function getLatestRunProfile(detail: { runs: Array<{ profile: string | null }> }
 
 function firstQueryValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value
+}
+
+function requireOpenId(ctx: Context): string | null {
+  const user = ctx.state.user as { openid?: string } | undefined
+  if (!user?.openid) {
+    ctx.status = 401
+    ctx.body = { error: 'Unauthorized' }
+    return null
+  }
+  return user.openid
+}
+
+// Per-request memoized ownership check so a multi-task list opens the
+// multitenancy DB at most once per distinct profile, not once per task.
+function makeOwnershipCache(openid: string): (profile: string | null | undefined) => boolean {
+  const cache = new Map<string, boolean>()
+  return (profile) => {
+    if (!profile || !profile.trim()) return false
+    const key = profile.trim()
+    const cached = cache.get(key)
+    if (cached !== undefined) return cached
+    const owned = ownerOwnsProfile(openid, key)
+    cache.set(key, owned)
+    return owned
+  }
+}
+
+// A task is visible to openid when it owns the agent profile that the task
+// is attributed to. Prefer the stronger created_by signal when the CLI
+// populated it; otherwise fall back to the assignee↔owned-agent mapping.
+function taskOwnedBy(task: { assignee: string | null; created_by?: string | null; tenant?: string | null }, isOwned: (p: string | null | undefined) => boolean, openid: string): boolean {
+  if (task.created_by && task.created_by.trim()) return isOwned(task.created_by)
+  if (task.assignee && task.assignee.trim()) return isOwned(task.assignee)
+  return task.tenant === openid
+}
+
+async function getOwnedTaskDetail(
+  ctx: Context,
+  taskId: string,
+  board: string,
+  openid: string,
+): Promise<kanbanCli.KanbanTaskDetail | null> {
+  const detail = await kanbanCli.getTask(taskId, { board })
+  const isOwned = makeOwnershipCache(openid)
+  if (!detail || !taskOwnedBy(detail.task, isOwned, openid)) {
+    ctx.status = 404
+    ctx.body = { error: 'Task not found' }
+    return null
+  }
+  return detail
+}
+
+async function requireOwnedTasks(ctx: Context, taskIds: string[], board: string, openid: string): Promise<boolean> {
+  const isOwned = makeOwnershipCache(openid)
+  // Fail closed for the whole write batch so a missing or unowned id cannot slip through via partial success semantics.
+  for (const taskId of taskIds) {
+    const detail = await kanbanCli.getTask(taskId, { board })
+    if (!detail || !taskOwnedBy(detail.task, isOwned, openid)) {
+      ctx.status = 403
+      ctx.body = { error: 'You do not own one or more of these tasks' }
+      return false
+    }
+  }
+  return true
+}
+
+async function isOwnedTaskId(taskId: string, board: string, openid: string): Promise<boolean> {
+  const detail = await kanbanCli.getTask(taskId, { board })
+  if (!detail) return false
+  return taskOwnedBy(detail.task, makeOwnershipCache(openid), openid)
+}
+
+function inferTaskIdFromArtifactPath(resolvedPath: string, kanbanDir: string): string | null {
+  const rel = relative(kanbanDir, resolvedPath)
+  if (!rel || rel.startsWith('..') || rel === '.' || isAbsolute(rel)) return null
+  const first = rel.split(/[\\/]/)[0]?.trim()
+  return first || null
+}
+
+function pathInsideDir(resolvedPath: string, dir: string): boolean {
+  const rel = relative(dir, resolvedPath)
+  return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel))
 }
 
 function requestBoard(ctx: Context): string | null {
@@ -137,11 +127,22 @@ const MAX_LOG_TAIL_BYTES = 1_000_000
 const MAX_DISPATCH_TASKS = 100
 const MAX_DISPATCH_FAILURE_LIMIT = 100
 const MAX_BULK_TASKS = 100
+const BROKER_TIMEOUT_MS = 30_000
+const CHAT_PLANE_KANBAN_BODY_BLOCKLIST = new Set([
+  'tenant',
+  'owner_open_id',
+  'owner_profile',
+  'profile',
+  'x-hermes-profile',
+  'token',
+  'authorization',
+])
 
 type PositiveIntegerResult = { value?: number; error?: string }
 type StringResult = { value?: string; error?: string }
 type BooleanResult = { value?: boolean; error?: string }
 type BodyResult = { body: Record<string, unknown>; error?: string }
+type BrokerJsonResult = { status: number; contentType: string; body: unknown }
 
 function optionalPositiveInteger(value: unknown, name: string, max: number): PositiveIntegerResult {
   if (value === undefined || value === null || value === '') return {}
@@ -241,7 +242,159 @@ function rejectBadRequest(ctx: Context, error?: string): boolean {
   return true
 }
 
+function getChatPlaneOpenId(ctx: Context): string | undefined {
+  if (!isChatPlaneRequest(ctx)) return undefined
+  const user = ctx.state?.user as WebUser | undefined
+  const openid = user?.openid?.trim()
+  return openid || undefined
+}
+
+function shouldUseKanbanBroker(ctx: Context): boolean {
+  return isChatPlaneRequest(ctx) && config.webuiRunBroker
+}
+
+function rejectMissingKanbanBroker(ctx: Context): boolean {
+  if (!isChatPlaneRequest(ctx) || config.webuiRunBroker) return false
+  ctx.status = 503
+  ctx.set?.('Content-Type', 'application/json')
+  ctx.body = { error: 'HERMES_WEBUI_RUN_BROKER is required for Kanban in chat plane' }
+  return true
+}
+
+function sanitizeChatPlaneKanbanBody(ctx: Context, value: unknown): unknown {
+  if (!isChatPlaneRequest(ctx) || !value || typeof value !== 'object' || Array.isArray(value)) return value
+  const sanitized: Record<string, unknown> = {}
+  for (const [key, fieldValue] of Object.entries(value as Record<string, unknown>)) {
+    if (CHAT_PLANE_KANBAN_BODY_BLOCKLIST.has(key)) continue
+    sanitized[key] = fieldValue
+  }
+  return sanitized
+}
+
+async function readUpstreamError(res: Response): Promise<unknown> {
+  const contentType = res.headers.get('content-type') || ''
+  if (contentType.includes('application/json')) {
+    try {
+      return await res.json()
+    } catch {
+      // Fall through to stable error shape.
+    }
+  }
+  const text = await res.text().catch(() => '')
+  return { error: text || `Upstream error: ${res.status} ${res.statusText}` }
+}
+
+function brokerSearchParams(ctx: Context): URLSearchParams {
+  const params = new URLSearchParams(ctx.search || '')
+  params.delete('token')
+  params.delete('profile')
+  params.delete('x-hermes-profile')
+  return params
+}
+
+async function brokerJsonRequest(
+  ctx: Context,
+  brokerPath: string,
+  method?: string,
+  searchParams?: URLSearchParams,
+): Promise<BrokerJsonResult | null> {
+  if (!config.runBrokerUrl) {
+    ctx.status = 503
+    ctx.set?.('Content-Type', 'application/json')
+    ctx.body = { error: 'HERMES_RUN_BROKER_URL is required for Kanban broker mode' }
+    return null
+  }
+
+  const params = searchParams ?? brokerSearchParams(ctx)
+  const search = params.toString()
+  const url = `${config.runBrokerUrl.replace(/\/+$/, '')}${brokerPath}${search ? `?${search}` : ''}`
+  const requestMethod = method || ctx.req?.method || ctx.method || 'GET'
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const openid = getChatPlaneOpenId(ctx)
+  if (openid) headers['X-Hermes-Owner-Open-Id'] = openid
+  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
+  const body = requestMethod !== 'GET' && requestMethod !== 'HEAD'
+    ? JSON.stringify(sanitizeChatPlaneKanbanBody(ctx, ctx.request.body || {}))
+    : undefined
+
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: requestMethod,
+      headers,
+      body,
+      signal: AbortSignal.timeout(BROKER_TIMEOUT_MS),
+    })
+  } catch (e: any) {
+    ctx.status = 502
+    ctx.set?.('Content-Type', 'application/json')
+    ctx.body = { error: `Broker error: ${e.message}` }
+    return null
+  }
+
+  if (!res.ok) {
+    ctx.status = res.status
+    ctx.set?.('Content-Type', 'application/json')
+    ctx.body = await readUpstreamError(res)
+    return null
+  }
+
+  return {
+    status: res.status,
+    contentType: res.headers.get('content-type') || 'application/json',
+    body: await res.json(),
+  }
+}
+
+async function brokerRequest(ctx: Context, brokerPath: string, method?: string): Promise<void> {
+  const res = await brokerJsonRequest(ctx, brokerPath, method)
+  if (!res) return
+  ctx.status = res.status
+  ctx.set?.('Content-Type', res.contentType)
+  ctx.body = res.body
+}
+
+async function brokerTaskDetail(ctx: Context, taskId: string, board: string): Promise<void> {
+  const params = new URLSearchParams()
+  params.set('board', board)
+  params.set('includeArchived', 'true')
+  const res = await brokerJsonRequest(ctx, '/api/run-broker/kanban/tasks', 'GET', params)
+  if (!res) return
+
+  const body = res.body as { tasks?: unknown }
+  const tasks = Array.isArray(body.tasks) ? body.tasks : []
+  const task = tasks.find((item): item is Record<string, unknown> => (
+    !!item && typeof item === 'object' && String((item as Record<string, unknown>).id || '') === taskId
+  ))
+  if (!task) {
+    ctx.status = 404
+    ctx.set?.('Content-Type', 'application/json')
+    ctx.body = { error: 'Task not found' }
+    return
+  }
+
+  const result = typeof task.result === 'string' && task.result.trim() ? task.result : null
+  ctx.status = 200
+  ctx.set?.('Content-Type', 'application/json')
+  ctx.body = {
+    task,
+    latest_summary: result,
+    comments: [],
+    events: [],
+    runs: [],
+    parents: [],
+    children: [],
+  }
+}
+
 export async function listBoards(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/kanban/boards')
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   const includeArchived = firstQueryValue(ctx.query.includeArchived as string | string[] | undefined) === 'true'
   try {
     const boards = await kanbanCli.listBoards({ includeArchived })
@@ -253,6 +406,8 @@ export async function listBoards(ctx: Context) {
 }
 
 export async function createBoard(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const bodyResult = requestBody(ctx)
   if (rejectBadRequest(ctx, bodyResult.error)) return
   const body = bodyResult.body
@@ -280,6 +435,8 @@ export async function createBoard(ctx: Context) {
 }
 
 export async function archiveBoard(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const slug = ctx.params.slug
   if (!slug?.trim()) {
     ctx.status = 400
@@ -296,6 +453,13 @@ export async function archiveBoard(ctx: Context) {
 }
 
 export async function capabilities(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/kanban/capabilities')
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   try {
     const capabilities = await kanbanCli.getCapabilities()
     ctx.body = { capabilities }
@@ -306,6 +470,13 @@ export async function capabilities(ctx: Context) {
 }
 
 export async function list(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/kanban/tasks')
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   const status = firstQueryValue(ctx.query.status as string | string[] | undefined)
   const assignee = firstQueryValue(ctx.query.assignee as string | string[] | undefined)
   const tenant = firstQueryValue(ctx.query.tenant as string | string[] | undefined)
@@ -313,9 +484,9 @@ export async function list(ctx: Context) {
   const board = requestBoard(ctx)
   if (!board) return
   try {
-    const tasks = await getVisibleTasksForBoard(ctx, board, { status, assignee, tenant, includeArchived })
-    if (ctx.status === 403) return
-    ctx.body = { tasks }
+    const tasks = await kanbanCli.listTasks({ board, status, assignee, tenant, includeArchived })
+    const isOwned = makeOwnershipCache(openid)
+    ctx.body = { tasks: tasks.filter(task => taskOwnedBy(task, isOwned, openid)) }
   } catch (err: any) {
     ctx.status = 500
     ctx.body = { error: err.message }
@@ -323,8 +494,15 @@ export async function list(ctx: Context) {
 }
 
 export async function get(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const board = requestBoard(ctx)
   if (!board) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerTaskDetail(ctx, ctx.params.id, board)
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   try {
     const detail = await kanbanCli.getTask(ctx.params.id, { board })
     if (!detail) {
@@ -332,7 +510,8 @@ export async function get(ctx: Context) {
       ctx.body = { error: 'Task not found' }
       return
     }
-    if (!filterTasksByVisibleProfiles(ctx, [detail.task]).length) {
+    const isOwned = makeOwnershipCache(openid)
+    if (!taskOwnedBy(detail.task, isOwned, openid)) {
       ctx.status = 404
       ctx.body = { error: 'Task not found' }
       return
@@ -390,6 +569,13 @@ export async function get(ctx: Context) {
 }
 
 export async function create(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/kanban/tasks', 'POST')
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   const bodyResult = requestBody(ctx)
   if (rejectBadRequest(ctx, bodyResult.error)) return
   const payload = bodyResult.body
@@ -407,17 +593,25 @@ export async function create(ctx: Context) {
   const goalMode = optionalBoolean(payload.goalMode, 'goalMode')
   const goalMaxTurns = optionalPositiveInteger(payload.goalMaxTurns, 'goalMaxTurns', 100)
   if (rejectBadRequest(ctx, title.error || body.error || assignee.error || priority.error || tenant.error || workspace.error || branch.error || triage.error || skills.error || maxRuntime.error || maxRetries.error || goalMode.error || goalMaxTurns.error)) return
-  const targetAssignee = assignee.value || requestedProfile(ctx) || undefined
-  if (targetAssignee && denyProfileAccess(ctx, targetAssignee)) return
   const board = requestBoard(ctx)
   if (!board) return
   try {
+    if (tenant.value && tenant.value !== openid) {
+      ctx.status = 403
+      ctx.body = { error: 'You cannot create tasks for another tenant' }
+      return
+    }
+    if (assignee.value && !ownerOwnsProfile(openid, assignee.value)) {
+      ctx.status = 403
+      ctx.body = { error: 'You do not own this agent profile' }
+      return
+    }
     const task = await kanbanCli.createTask(title.value!, {
       board,
       body: body.value,
-      assignee: targetAssignee,
+      assignee: assignee.value,
       priority: priority.value,
-      tenant: tenant.value,
+      tenant: tenant.value ?? openid,
       workspace: workspace.value,
       branch: branch.value,
       triage: triage.value,
@@ -435,6 +629,8 @@ export async function create(ctx: Context) {
 }
 
 export async function complete(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const bodyResult = requestBody(ctx)
   if (rejectBadRequest(ctx, bodyResult.error)) return
   const payload = bodyResult.body
@@ -444,6 +640,7 @@ export async function complete(ctx: Context) {
   const board = requestBoard(ctx)
   if (!board) return
   try {
+    if (!await requireOwnedTasks(ctx, taskIds.value!, board, openid)) return
     await kanbanCli.completeTasks(taskIds.value!, summary.value, { board })
     ctx.body = { ok: true }
   } catch (err: any) {
@@ -453,6 +650,8 @@ export async function complete(ctx: Context) {
 }
 
 export async function block(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const bodyResult = requestBody(ctx)
   if (rejectBadRequest(ctx, bodyResult.error)) return
   const reason = requiredNonEmptyString(bodyResult.body.reason, 'reason')
@@ -460,6 +659,7 @@ export async function block(ctx: Context) {
   const board = requestBoard(ctx)
   if (!board) return
   try {
+    if (!await requireOwnedTasks(ctx, [ctx.params.id], board, openid)) return
     await kanbanCli.blockTask(ctx.params.id, reason.value!, { board })
     ctx.body = { ok: true }
   } catch (err: any) {
@@ -469,6 +669,8 @@ export async function block(ctx: Context) {
 }
 
 export async function unblock(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const bodyResult = requestBody(ctx)
   if (rejectBadRequest(ctx, bodyResult.error)) return
   const taskIds = requiredNonEmptyStringArray(bodyResult.body.task_ids, 'task_ids')
@@ -476,6 +678,7 @@ export async function unblock(ctx: Context) {
   const board = requestBoard(ctx)
   if (!board) return
   try {
+    if (!await requireOwnedTasks(ctx, taskIds.value!, board, openid)) return
     await kanbanCli.unblockTasks(taskIds.value!, { board })
     ctx.body = { ok: true }
   } catch (err: any) {
@@ -485,14 +688,21 @@ export async function unblock(ctx: Context) {
 }
 
 export async function assign(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const bodyResult = requestBody(ctx)
   if (rejectBadRequest(ctx, bodyResult.error)) return
   const profile = requiredNonEmptyString(bodyResult.body.profile, 'profile')
   if (rejectBadRequest(ctx, profile.error)) return
-  if (denyProfileAccess(ctx, profile.value)) return
+  if (!ownerOwnsProfile(openid, profile.value!)) {
+    ctx.status = 403
+    ctx.body = { error: 'You do not own this agent profile' }
+    return
+  }
   const board = requestBoard(ctx)
   if (!board) return
   try {
+    if (!await requireOwnedTasks(ctx, [ctx.params.id], board, openid)) return
     await kanbanCli.assignTask(ctx.params.id, profile.value!, { board })
     ctx.body = { ok: true }
   } catch (err: any) {
@@ -502,6 +712,8 @@ export async function assign(ctx: Context) {
 }
 
 export async function addComment(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const bodyResult = requestBody(ctx)
   if (rejectBadRequest(ctx, bodyResult.error)) return
   const bodyPayload = bodyResult.body
@@ -511,6 +723,7 @@ export async function addComment(ctx: Context) {
   const board = requestBoard(ctx)
   if (!board) return
   try {
+    if (!await requireOwnedTasks(ctx, [ctx.params.id], board, openid)) return
     ctx.body = await kanbanCli.addComment(ctx.params.id, body.value!, { board, author: author.value })
   } catch (err: any) {
     ctx.status = 500
@@ -519,6 +732,8 @@ export async function addComment(ctx: Context) {
 }
 
 export async function linkTasks(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const bodyResult = requestBody(ctx)
   if (rejectBadRequest(ctx, bodyResult.error)) return
   const parentId = requiredNonEmptyString(bodyResult.body.parent_id, 'parent_id')
@@ -527,6 +742,7 @@ export async function linkTasks(ctx: Context) {
   const board = requestBoard(ctx)
   if (!board) return
   try {
+    if (!await requireOwnedTasks(ctx, [parentId.value!.trim(), childId.value!.trim()], board, openid)) return
     ctx.body = await kanbanCli.linkTasks(parentId.value!.trim(), childId.value!.trim(), { board })
   } catch (err: any) {
     ctx.status = 500
@@ -535,12 +751,15 @@ export async function linkTasks(ctx: Context) {
 }
 
 export async function unlinkTasks(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const parentId = requiredNonEmptyString(firstQueryValue(ctx.query.parent_id as string | string[] | undefined), 'parent_id')
   const childId = requiredNonEmptyString(firstQueryValue(ctx.query.child_id as string | string[] | undefined), 'child_id')
   if (rejectBadRequest(ctx, parentId.error || childId.error)) return
   const board = requestBoard(ctx)
   if (!board) return
   try {
+    if (!await requireOwnedTasks(ctx, [parentId.value!.trim(), childId.value!.trim()], board, openid)) return
     ctx.body = await kanbanCli.unlinkTasks(parentId.value!.trim(), childId.value!.trim(), { board })
   } catch (err: any) {
     ctx.status = 500
@@ -549,6 +768,8 @@ export async function unlinkTasks(ctx: Context) {
 }
 
 export async function bulkUpdateTasks(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const bodyResult = requestBody(ctx)
   if (rejectBadRequest(ctx, bodyResult.error)) return
   const body = bodyResult.body
@@ -559,7 +780,6 @@ export async function bulkUpdateTasks(ctx: Context) {
   const summary = optionalString(body.summary, 'summary')
   const reason = optionalString(body.reason, 'reason')
   if (rejectBadRequest(ctx, ids.error || status.error || assignee.error || archive.error || summary.error || reason.error)) return
-  if (assignee.value && denyProfileAccess(ctx, assignee.value)) return
   if (!archive.value && status.value === undefined && !hasOwn(body, 'assignee')) {
     ctx.status = 400
     ctx.body = { error: 'at least one bulk action is required' }
@@ -578,9 +798,16 @@ export async function bulkUpdateTasks(ctx: Context) {
   const board = requestBoard(ctx)
   if (!board) return
   try {
+    const taskIds = ids.value!.map(id => id.trim())
+    if (!await requireOwnedTasks(ctx, taskIds, board, openid)) return
+    if (assignee.value && !ownerOwnsProfile(openid, assignee.value)) {
+      ctx.status = 403
+      ctx.body = { error: 'You do not own this agent profile' }
+      return
+    }
     ctx.body = await kanbanCli.bulkUpdateTasks({
       board,
-      ids: ids.value!.map(id => id.trim()),
+      ids: taskIds,
       status: status.value,
       assignee: assignee.value,
       archive: archive.value,
@@ -594,12 +821,15 @@ export async function bulkUpdateTasks(ctx: Context) {
 }
 
 export async function taskLog(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const board = requestBoard(ctx)
   if (!board) return
   const tailRaw = firstQueryValue(ctx.query.tail as string | string[] | undefined)
   const tail = optionalPositiveIntegerQuery(tailRaw, 'tail', MAX_LOG_TAIL_BYTES)
   if (rejectBadRequest(ctx, tail.error)) return
   try {
+    if (!await requireOwnedTasks(ctx, [ctx.params.id], board, openid)) return
     ctx.body = await kanbanCli.getTaskLog(ctx.params.id, { board, tail: tail.value })
   } catch (err: any) {
     ctx.status = err.message?.includes('not found') ? 404 : 500
@@ -608,6 +838,8 @@ export async function taskLog(ctx: Context) {
 }
 
 export async function diagnostics(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const board = requestBoard(ctx)
   if (!board) return
   const task = firstQueryValue(ctx.query.task as string | string[] | undefined)
@@ -618,8 +850,22 @@ export async function diagnostics(ctx: Context) {
     return
   }
   try {
+    if (task && !await requireOwnedTasks(ctx, [task], board, openid)) return
     const diagnostics = await kanbanCli.getDiagnostics({ board, task, severity })
-    ctx.body = { diagnostics }
+    if (task) {
+      ctx.body = { diagnostics }
+      return
+    }
+    const ownedDiagnostics = []
+    for (const item of diagnostics) {
+      const taskId = typeof item === 'object' && item !== null
+        ? String((item as any).task_id || (item as any).task || (item as any).id || '').trim()
+        : ''
+      if (taskId && await isOwnedTaskId(taskId, board, openid)) {
+        ownedDiagnostics.push(item)
+      }
+    }
+    ctx.body = { diagnostics: ownedDiagnostics }
   } catch (err: any) {
     ctx.status = 500
     ctx.body = { error: err.message }
@@ -627,6 +873,8 @@ export async function diagnostics(ctx: Context) {
 }
 
 export async function reclaim(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const bodyResult = requestBody(ctx)
   if (rejectBadRequest(ctx, bodyResult.error)) return
   const body = bodyResult.body
@@ -635,6 +883,7 @@ export async function reclaim(ctx: Context) {
   const board = requestBoard(ctx)
   if (!board) return
   try {
+    if (!await requireOwnedTasks(ctx, [ctx.params.id], board, openid)) return
     ctx.body = await kanbanCli.reclaimTask(ctx.params.id, { board, reason: reason.value })
   } catch (err: any) {
     ctx.status = 500
@@ -643,6 +892,8 @@ export async function reclaim(ctx: Context) {
 }
 
 export async function reassign(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const bodyResult = requestBody(ctx)
   if (rejectBadRequest(ctx, bodyResult.error)) return
   const body = bodyResult.body
@@ -650,10 +901,15 @@ export async function reassign(ctx: Context) {
   const reclaim = optionalBoolean(body.reclaim, 'reclaim')
   const reason = optionalString(body.reason, 'reason')
   if (rejectBadRequest(ctx, profile.error || reclaim.error || reason.error)) return
-  if (denyProfileAccess(ctx, profile.value)) return
   const board = requestBoard(ctx)
   if (!board) return
   try {
+    if (!await requireOwnedTasks(ctx, [ctx.params.id], board, openid)) return
+    if (profile.value !== 'none' && !ownerOwnsProfile(openid, profile.value!)) {
+      ctx.status = 403
+      ctx.body = { error: 'You do not own this agent profile' }
+      return
+    }
     ctx.body = await kanbanCli.reassignTask(ctx.params.id, profile.value!, { board, reclaim: reclaim.value, reason: reason.value })
   } catch (err: any) {
     ctx.status = 500
@@ -662,6 +918,8 @@ export async function reassign(ctx: Context) {
 }
 
 export async function specify(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const bodyResult = requestBody(ctx)
   if (rejectBadRequest(ctx, bodyResult.error)) return
   const body = bodyResult.body
@@ -670,6 +928,7 @@ export async function specify(ctx: Context) {
   const board = requestBoard(ctx)
   if (!board) return
   try {
+    if (!await requireOwnedTasks(ctx, [ctx.params.id], board, openid)) return
     const results = await kanbanCli.specifyTask(ctx.params.id, { board, author: author.value })
     ctx.body = { results }
   } catch (err: any) {
@@ -679,6 +938,13 @@ export async function specify(ctx: Context) {
 }
 
 export async function dispatch(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/kanban/dispatch', 'POST')
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   const bodyResult = requestBody(ctx)
   if (rejectBadRequest(ctx, bodyResult.error)) return
   const body = bodyResult.body
@@ -689,6 +955,14 @@ export async function dispatch(ctx: Context) {
   const board = requestBoard(ctx)
   if (!board) return
   try {
+    const tasks = await kanbanCli.listTasks({ board, includeArchived: true })
+    const isOwned = makeOwnershipCache(openid)
+    const foreignTask = tasks.find(task => !taskOwnedBy(task, isOwned, openid))
+    if (foreignTask) {
+      ctx.status = 403
+      ctx.body = { error: 'Kanban dispatch is disabled while this board contains tasks owned by other users' }
+      return
+    }
     const result = await kanbanCli.dispatch({ board, dryRun: dryRun.value, max: max.value, failureLimit: failureLimit.value })
     ctx.body = { result }
   } catch (err: any) {
@@ -698,13 +972,17 @@ export async function dispatch(ctx: Context) {
 }
 
 export async function stats(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/kanban/stats')
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   const board = requestBoard(ctx)
   if (!board) return
   try {
-    const visible = visibleProfileSet(ctx)
-    const stats = visible
-      ? statsForTasks(await getVisibleTasksForBoard(ctx, board, { includeArchived: true }))
-      : await kanbanCli.getStats({ board })
+    const stats = await kanbanCli.getStats({ board })
     ctx.body = { stats }
   } catch (err: any) {
     ctx.status = 500
@@ -713,10 +991,17 @@ export async function stats(ctx: Context) {
 }
 
 export async function assignees(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
+  if (shouldUseKanbanBroker(ctx)) {
+    await brokerRequest(ctx, '/api/run-broker/kanban/assignees')
+    return
+  }
+  if (rejectMissingKanbanBroker(ctx)) return
   const board = requestBoard(ctx)
   if (!board) return
   try {
-    const assignees = assigneesForUser(ctx, await kanbanCli.getAssignees({ board }))
+    const assignees = await kanbanCli.getAssignees({ board })
     ctx.body = { assignees }
   } catch (err: any) {
     ctx.status = 500
@@ -725,7 +1010,10 @@ export async function assignees(ctx: Context) {
 }
 
 export async function readArtifact(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const filePath = ctx.query.path as string | undefined
+  const taskIdQuery = firstQueryValue(ctx.query.task_id as string | string[] | undefined)
   if (!filePath) {
     ctx.status = 400
     ctx.body = { error: 'path is required' }
@@ -735,13 +1023,17 @@ export async function readArtifact(ctx: Context) {
   const kanbanDir = resolve(homedir(), '.hermes', 'kanban', 'workspaces')
   const resolved = resolve(normalize(filePath))
 
-  if (!isPathWithin(resolved, kanbanDir)) {
+  if (!pathInsideDir(resolved, kanbanDir)) {
     ctx.status = 403
     ctx.body = { error: 'Path must be within kanban workspaces' }
     return
   }
 
   try {
+    const board = requestBoard(ctx)
+    if (!board) return
+    const taskId = taskIdQuery?.trim() || inferTaskIdFromArtifactPath(resolved, kanbanDir)
+    if (!taskId || !await getOwnedTaskDetail(ctx, taskId, board, openid)) return
     const data = await readFile(resolved, 'utf-8')
     ctx.body = { content: data, path: filePath }
   } catch (err: any) {
@@ -756,6 +1048,8 @@ export async function readArtifact(ctx: Context) {
 }
 
 export async function searchSessions(ctx: Context) {
+  const openid = requireOpenId(ctx)
+  if (!openid) return
   const { task_id, profile, q } = ctx.query as {
     task_id?: string
     profile?: string
@@ -766,7 +1060,11 @@ export async function searchSessions(ctx: Context) {
     ctx.body = { error: 'task_id and profile are required' }
     return
   }
-  if (denyProfileAccess(ctx, profile)) return
+  if (!ownerOwnsProfile(openid, profile)) {
+    ctx.status = 403
+    ctx.body = { error: 'You do not own this agent profile' }
+    return
+  }
   try {
     if (!q) {
       const exactSessionId = await findLatestExactSessionIdWithProfile(task_id, profile)

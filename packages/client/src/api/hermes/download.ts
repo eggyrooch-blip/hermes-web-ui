@@ -15,6 +15,15 @@ function safeDecodeURIComponent(value: string): string {
 export function getDownloadUrl(filePath: string, fileName?: string): string {
   const base = getBaseUrlValue()
 
+  // Remote-URL passthrough: AIGC image generation returns remote Tencent VOD/CDN
+  // URLs (http/https). Wrapping them in the local /api/hermes/download proxy makes
+  // the server treat the URL as a local file path → 404 → broken image
+  // (chenggaowei 2026-06-08). Return them untouched. Must run BEFORE the
+  // double-wrap guard and URLSearchParams logic below.
+  if (/^https?:\/\//i.test(filePath)) {
+    return filePath
+  }
+
   // Guard: if filePath is already a full download URL, extract the real path
   // to prevent double-wrapping (/api/hermes/download?path=/api/hermes/download?path=...)
   if (filePath.startsWith('/api/hermes/download?')) {

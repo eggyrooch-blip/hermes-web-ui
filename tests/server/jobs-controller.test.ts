@@ -1,30 +1,17 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const testState = vi.hoisted(() => ({
-  profileDir: '',
-  execFile: vi.fn(),
-}))
-
-vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
-  getActiveProfileName: () => 'default',
-  getProfileDir: () => testState.profileDir || '/fake/home/.hermes',
-}))
-
-vi.mock('../../packages/server/src/services/hermes/hermes-path', () => ({
-  getHermesBin: () => '/fake/bin/hermes',
-}))
-
-vi.mock('child_process', () => ({
-  execFile: testState.execFile,
+vi.mock('../../packages/server/src/services/gateway-bootstrap', () => ({
+  getGatewayManagerInstance: () => ({
+    getUpstream: () => 'http://127.0.0.1:8642',
+    getApiKey: () => null,
+  }),
 }))
 
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
-import { create, pause, remove, resume, run as runJob, update } from '../../packages/server/src/controllers/hermes/jobs'
+import { config } from '../../packages/server/src/config'
+import { create, list, run, update } from '../../packages/server/src/controllers/hermes/jobs'
 
 function createMockCtx(overrides: Record<string, any> = {}) {
   const ctx: any = {
@@ -34,6 +21,7 @@ function createMockCtx(overrides: Record<string, any> = {}) {
     query: {},
     search: '',
     headers: {},
+    state: {},
     status: 200,
     set: vi.fn(),
     body: null,
@@ -47,41 +35,16 @@ function createMockCtx(overrides: Record<string, any> = {}) {
   return ctx
 }
 
-function writeExistingJob(tempDir: string) {
-  const cronDir = join(tempDir, 'cron')
-  mkdirSync(cronDir, { recursive: true })
-  writeFileSync(join(cronDir, 'jobs.json'), JSON.stringify({
-    jobs: [{
-      job_id: 'abc123abc123',
-      id: 'abc123abc123',
-      name: 'daily',
-      schedule: { kind: 'cron', expr: '0 9 * * *', display: '0 9 * * *' },
-      schedule_display: '0 9 * * *',
-      prompt: 'run daily',
-      repeat: { times: 3, completed: 1 },
-    }],
-  }))
-}
-
-describe('Hermes jobs controller', () => {
-  let tempDir = ''
-
+describe('Hermes jobs controller proxy', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    tempDir = mkdtempSync(join(tmpdir(), 'hermes-web-ui-jobs-test-'))
-    testState.profileDir = tempDir
-    testState.execFile.mockImplementation((_bin, _args, _opts, cb) => {
-      cb(null, { stdout: '', stderr: '' })
-    })
+    config.webPlane = 'both'
+    config.webuiJobsBroker = false
+    config.runBrokerUrl = ''
+    config.runBrokerKey = ''
   })
 
-  afterEach(() => {
-    if (tempDir) rmSync(tempDir, { recursive: true, force: true })
-    tempDir = ''
-    testState.profileDir = ''
-  })
-
-  it('returns 404 before editing when the local cron job does not exist', async () => {
+  it('passes through upstream validation status and body instead of masking it as 502', async () => {
     mockFetch.mockResolvedValue({
       ok: false,
       status: 400,
@@ -93,100 +56,197 @@ describe('Hermes jobs controller', () => {
     const ctx = createMockCtx()
     await update(ctx)
 
-    expect(ctx.status).toBe(404)
-    expect(ctx.body).toEqual({ error: { message: 'Job not found' } })
-    expect(mockFetch).not.toHaveBeenCalled()
+    expect(ctx.status).toBe(400)
+    expect(ctx.body).toEqual({ error: 'Prompt must be ≤ 5000 characters' })
+    expect(ctx.set).toHaveBeenCalledWith('Content-Type', 'application/json')
   })
 
-  it('does not call the removed gateway proxy path for missing jobs', async () => {
+  it('keeps real proxy connection failures as 502', async () => {
     mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
 
     const ctx = createMockCtx()
     await update(ctx)
 
-    expect(ctx.status).toBe(404)
-    expect(ctx.body).toEqual({ error: { message: 'Job not found' } })
-    expect(mockFetch).not.toHaveBeenCalled()
+    expect(ctx.status).toBe(502)
+    expect(ctx.body).toEqual({ error: { message: 'Proxy error: ECONNREFUSED' } })
   })
 
-  it('clears repeat by passing repeat 0 to Hermes CLI', async () => {
-    writeExistingJob(tempDir)
+  it('binds chat-plane job creation to the Feishu user and defaults delivery to Feishu', async () => {
+    config.webPlane = 'chat'
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({
+        job: {
+          id: 'job1',
+          name: 'user_a smoke',
+          deliver: 'feishu',
+          owner_open_id: 'ou_test_owner_a',
+          owner_profile: 'user_a',
+        },
+      }),
+    })
 
     const ctx = createMockCtx({
-      request: { body: { repeat: null } },
+      req: { method: 'POST' },
+      request: {
+        body: {
+          name: 'user_a smoke',
+          schedule: '*/5 * * * *',
+          prompt: 'ping',
+          deliver: 'origin',
+          owner_open_id: 'spoofed',
+          profile: 'other',
+        },
+      },
+      params: {},
+      state: { user: { openid: 'ou_test_owner_a', profile: 'user_a', role: 'user' } },
     })
-    await update(ctx)
 
-    expect(ctx.status).toBe(200)
-    expect(testState.execFile).toHaveBeenCalledWith(
-      '/fake/bin/hermes',
-      ['cron', 'edit', '--profile', 'default', 'abc123abc123', '--repeat', '0'],
-      expect.objectContaining({
-        env: expect.objectContaining({ HERMES_HOME: tempDir }),
-        windowsHide: true,
-      }),
-      expect.any(Function),
-    )
+    await create(ctx)
+
+    const [, options] = mockFetch.mock.calls[0]
+    expect(options.headers['X-Hermes-Feishu-OpenId']).toBe('ou_test_owner_a')
+    expect(JSON.parse(options.body)).toMatchObject({
+      name: 'user_a smoke',
+      schedule: '*/5 * * * *',
+      prompt: 'ping',
+      deliver: 'feishu',
+      owner_open_id: 'ou_test_owner_a',
+      owner_profile: 'user_a',
+    })
+    expect(JSON.parse(options.body).profile).toBeUndefined()
   })
 
-  it('passes the selected profile to every Hermes cron command', async () => {
-    const profileState = { profile: { name: 'research' } }
-
-    const createCtx = createMockCtx({
-      state: profileState,
-      request: { body: { schedule: '0 9 * * *', prompt: 'daily summary' } },
+  it('uses the multitenancy broker for chat-plane job creation when enabled', async () => {
+    config.webPlane = 'chat'
+    config.webuiJobsBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+    config.runBrokerKey = 'broker-secret'
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({
+        job: {
+          id: 'job1',
+          name: 'user_a smoke',
+          deliver: 'feishu',
+          owner_open_id: 'ou_test_owner_a',
+          owner_profile: 'user_a',
+        },
+      }),
     })
-    await create(createCtx)
-    expect(testState.execFile).toHaveBeenLastCalledWith(
-      '/fake/bin/hermes',
-      ['cron', 'create', '--profile', 'research', '0 9 * * *', 'daily summary'],
-      expect.any(Object),
-      expect.any(Function),
-    )
 
-    const commands = [
-      {
-        handler: update,
-        body: { name: 'renamed' },
-        args: ['cron', 'edit', '--profile', 'research', 'abc123abc123', '--name', 'renamed'],
+    const ctx = createMockCtx({
+      req: { method: 'POST' },
+      request: {
+        body: {
+          name: 'user_a smoke',
+          schedule: '*/5 * * * *',
+          prompt: 'ping',
+          deliver: 'origin',
+          owner_open_id: 'spoofed',
+          profile: 'other',
+          api_key: 'secret',
+        },
       },
-      {
-        handler: remove,
-        body: {},
-        args: ['cron', 'remove', '--profile', 'research', 'abc123abc123'],
-      },
-      {
-        handler: pause,
-        body: {},
-        args: ['cron', 'pause', '--profile', 'research', 'abc123abc123'],
-      },
-      {
-        handler: resume,
-        body: {},
-        args: ['cron', 'resume', '--profile', 'research', 'abc123abc123'],
-      },
-      {
-        handler: runJob,
-        body: {},
-        args: ['cron', 'run', '--profile', 'research', 'abc123abc123'],
-      },
-    ]
+      params: {},
+      state: { user: { openid: 'ou_test_owner_a', profile: 'user_a', role: 'user' } },
+    })
 
-    for (const command of commands) {
-      writeExistingJob(tempDir)
-      const ctx = createMockCtx({
-        state: profileState,
-        request: { body: command.body },
-      })
+    await create(ctx)
 
-      await command.handler(ctx)
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(url).toBe('http://127.0.0.1:8766/api/run-broker/jobs')
+    expect(options.headers).toMatchObject({
+      Authorization: 'Bearer broker-secret',
+      'X-Hermes-Profile': 'user_a',
+      'X-Hermes-User-Key': 'ou_test_owner_a',
+    })
+    expect(JSON.parse(options.body)).toMatchObject({
+      name: 'user_a smoke',
+      schedule: '*/5 * * * *',
+      prompt: 'ping',
+      deliver: 'feishu',
+      owner_open_id: 'ou_test_owner_a',
+      owner_profile: 'user_a',
+    })
+    expect(JSON.parse(options.body).profile).toBeUndefined()
+    expect(JSON.parse(options.body).api_key).toBeUndefined()
+  })
 
-      expect(testState.execFile).toHaveBeenLastCalledWith(
-        '/fake/bin/hermes',
-        command.args,
-        expect.any(Object),
-        expect.any(Function),
-      )
-    }
+  it('lists chat-plane jobs through the multitenancy broker without profile selectors', async () => {
+    config.webPlane = 'chat'
+    config.webuiJobsBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({ jobs: [] }),
+    })
+
+    const ctx = createMockCtx({
+      req: { method: 'GET' },
+      search: '?profile=other&token=secret&include_disabled=true',
+      state: { user: { openid: 'ou_test_owner_a', profile: 'user_a', role: 'user' } },
+    })
+
+    await list(ctx)
+
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(url).toBe('http://127.0.0.1:8766/api/run-broker/jobs?include_disabled=true')
+    expect(options.headers).toMatchObject({
+      'X-Hermes-Profile': 'user_a',
+      'X-Hermes-User-Key': 'ou_test_owner_a',
+    })
+  })
+
+  it('routes chat-plane manual job runs through the multitenancy broker when enabled', async () => {
+    config.webPlane = 'chat'
+    config.webuiJobsBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+    config.runBrokerKey = 'broker-secret'
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({
+        job: {
+          id: 'abc123abc123',
+          state: 'scheduled',
+          next_run_at: '2026-05-20T07:00:00Z',
+        },
+        queued: true,
+      }),
+    })
+
+    const ctx = createMockCtx({
+      req: { method: 'POST' },
+      request: { body: {} },
+      params: { id: 'abc123abc123' },
+      state: { user: { openid: 'ou_test_owner_a', profile: 'user_a', role: 'user' } },
+    })
+
+    await run(ctx)
+
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(url).toBe('http://127.0.0.1:8766/api/run-broker/jobs/abc123abc123/run')
+    expect(options.headers).toMatchObject({
+      Authorization: 'Bearer broker-secret',
+      'X-Hermes-Profile': 'user_a',
+      'X-Hermes-User-Key': 'ou_test_owner_a',
+    })
+    expect(ctx.status).toBe(200)
+    expect(ctx.body).toEqual({
+      job: {
+        id: 'abc123abc123',
+        state: 'scheduled',
+        next_run_at: '2026-05-20T07:00:00Z',
+      },
+      queued: true,
+    })
   })
 })

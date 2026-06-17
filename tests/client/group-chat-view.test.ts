@@ -7,6 +7,22 @@ const storeMock = vi.hoisted(() => ({
   connect: vi.fn(),
   loadRooms: vi.fn(),
   disconnect: vi.fn(),
+  joinRoom: vi.fn(),
+  currentRoomId: null,
+  rooms: [],
+}))
+
+const routerMock = vi.hoisted(() => ({
+  replace: vi.fn(),
+}))
+
+const routeMock = vi.hoisted(() => ({
+  params: {} as Record<string, string>,
+}))
+
+vi.mock('vue-router', () => ({
+  useRoute: () => routeMock,
+  useRouter: () => routerMock,
 }))
 
 vi.mock('@/api/client', () => ({
@@ -35,6 +51,11 @@ describe('GroupChatView user mode', () => {
     storeMock.connect.mockClear()
     storeMock.loadRooms.mockClear()
     storeMock.disconnect.mockClear()
+    storeMock.joinRoom.mockClear()
+    storeMock.currentRoomId = null
+    storeMock.rooms = []
+    routerMock.replace.mockClear()
+    routeMock.params = {}
   })
 
   it('opens the group-chat panel in user mode', () => {

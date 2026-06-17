@@ -63,6 +63,10 @@ vi.mock('naive-ui', () => ({
   NInputNumber: {
     template: '<input />',
   },
+  NPopselect: {
+    props: ['value', 'options'],
+    template: '<div><slot /></div>',
+  },
   useMessage: () => ({
     error: vi.fn(),
     success: vi.fn(),

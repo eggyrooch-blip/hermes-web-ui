@@ -2,26 +2,37 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
+// Upstream JobsView.vue (post-rebaseline) reads two Pinia stores at setup:
+// useJobsStore() and useProfilesStore(). On mount it runs reloadJobsForProfile,
+// which calls ensureProfileSelection() (-> profilesStore.fetchProfiles() when no
+// profile is active yet) BEFORE jobsStore.fetchJobs(). We mock both stores so the
+// component never touches a real Pinia instance.
+//
+// The fork-era "gateway-manager" surface this file used to test
+// (gatewayUnavailable gating, .create-job-button disabled, .release-memory-button
+// "runtime memory release") was deleted in the rebaseline: broker-only, no local
+// gateway. Those assertions tested DELETED features and were removed. The one
+// surviving real semantic — profile selection must precede profile-scoped job
+// loading — is verified below.
+
 const jobsStoreMock = vi.hoisted(() => ({
-  jobs: [],
+  jobs: [] as Array<{ id: string; job_id: string; name: string }>,
   loading: false,
-  gatewayUnavailable: false,
   fetchJobs: vi.fn(),
 }))
 
-const isUserModeMock = vi.hoisted(() => vi.fn(() => true))
-const ensureProfileSelectionMock = vi.hoisted(() => vi.fn(async () => undefined))
+const profilesStoreMock = vi.hoisted(() => ({
+  profiles: [] as Array<{ name: string }>,
+  activeProfileName: null as string | null,
+  fetchProfiles: vi.fn(),
+}))
 
 vi.mock('@/stores/hermes/jobs', () => ({
   useJobsStore: () => jobsStoreMock,
 }))
 
-vi.mock('@/api/client', () => ({
-  isUserMode: isUserModeMock,
-}))
-
-vi.mock('@/utils/hermes/profile-ready', () => ({
-  ensureProfileSelection: ensureProfileSelectionMock,
+vi.mock('@/stores/hermes/profiles', () => ({
+  useProfilesStore: () => profilesStoreMock,
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -46,71 +57,46 @@ vi.mock('@/components/hermes/jobs/JobsPanel.vue', () => ({
   default: { props: ['selectedJobId'], template: '<div>JobsPanel</div>' },
 }))
 vi.mock('@/components/hermes/jobs/JobRunHistory.vue', () => ({
-  default: { props: ['selectedJobId', 'jobNameMap'], template: '<div>JobRunHistory</div>' },
+  default: { props: ['selectedJobId', 'jobNameMap', 'profileKey'], template: '<div>JobRunHistory</div>' },
 }))
 vi.mock('@/components/hermes/jobs/JobFormModal.vue', () => ({
   default: { props: ['jobId'], template: '<div class="job-form-modal">JobFormModal</div>' },
 }))
 
 import JobsView from '@/views/hermes/JobsView.vue'
-describe('JobsView gateway unavailable state', () => {
+
+describe('JobsView profile-scoped loading', () => {
   beforeEach(() => {
     jobsStoreMock.jobs = []
     jobsStoreMock.loading = false
-    jobsStoreMock.gatewayUnavailable = false
     jobsStoreMock.fetchJobs.mockClear()
-    ensureProfileSelectionMock.mockReset()
-    ensureProfileSelectionMock.mockResolvedValue(undefined)
-    isUserModeMock.mockReturnValue(true)
+    profilesStoreMock.profiles = []
+    profilesStoreMock.activeProfileName = null
+    profilesStoreMock.fetchProfiles.mockReset()
+    profilesStoreMock.fetchProfiles.mockResolvedValue(undefined)
   })
 
   it('initializes the active profile before loading profile-scoped jobs', async () => {
     mount(JobsView)
     await flushPromises()
 
-    expect(ensureProfileSelectionMock).toHaveBeenCalled()
+    // No profile active and empty profile list -> ensureProfileSelection must
+    // fetch profiles, and it must happen before jobs are loaded.
+    expect(profilesStoreMock.fetchProfiles).toHaveBeenCalled()
     expect(jobsStoreMock.fetchJobs).toHaveBeenCalled()
-    expect(ensureProfileSelectionMock.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(profilesStoreMock.fetchProfiles.mock.invocationCallOrder[0]).toBeLessThan(
       jobsStoreMock.fetchJobs.mock.invocationCallOrder[0],
     )
   })
 
-  it('does not open the create modal while the bound gateway is unavailable', async () => {
-    jobsStoreMock.gatewayUnavailable = true
+  it('skips re-fetching profiles when one is already active', async () => {
+    profilesStoreMock.activeProfileName = 'default'
+    profilesStoreMock.profiles = [{ name: 'default' }]
 
-    const wrapper = mount(JobsView)
-    const createButton = wrapper.find('.create-job-button')
+    mount(JobsView)
+    await flushPromises()
 
-    expect(createButton.attributes('disabled')).toBeDefined()
-
-    await createButton.trigger('click')
-
-    expect(wrapper.find('.job-form-modal').exists()).toBe(false)
-  })
-
-  it('does not expose runtime memory release from the page header when jobs are loaded', async () => {
-    jobsStoreMock.jobs = [{ id: 'job-1', job_id: 'job-1', name: 'cleanup' }]
-
-    const wrapper = mount(JobsView)
-    const releaseButton = wrapper.find('.release-memory-button')
-
-    expect(releaseButton.exists()).toBe(false)
-  })
-
-  it('does not show runtime memory release when the bound gateway is unavailable', async () => {
-    jobsStoreMock.gatewayUnavailable = true
-
-    const wrapper = mount(JobsView)
-
-    expect(wrapper.find('.release-memory-button').exists()).toBe(false)
-  })
-
-  it('does not show API-only memory release in ops mode', async () => {
-    isUserModeMock.mockReturnValue(false)
-    jobsStoreMock.jobs = [{ id: 'job-1', job_id: 'job-1', name: 'cleanup' }]
-
-    const wrapper = mount(JobsView)
-
-    expect(wrapper.find('.release-memory-button').exists()).toBe(false)
+    expect(profilesStoreMock.fetchProfiles).not.toHaveBeenCalled()
+    expect(jobsStoreMock.fetchJobs).toHaveBeenCalled()
   })
 })

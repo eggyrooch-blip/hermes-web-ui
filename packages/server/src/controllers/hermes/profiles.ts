@@ -2,7 +2,7 @@ import { createReadStream, existsSync, readFileSync, readdirSync, renameSync, rm
 import { mkdir, writeFile } from 'fs/promises'
 import { basename, join } from 'path'
 import { tmpdir } from 'os'
-import { getWebUiHome } from '../../config'
+import { config, getWebUiHome } from '../../config'
 import * as hermesCli from '../../services/hermes/hermes-cli'
 import { SessionDeleter } from '../../services/hermes/session-deleter'
 import { AgentBridgeClient } from '../../services/hermes/agent-bridge'
@@ -17,6 +17,7 @@ import { getActiveProfileName } from '../../services/hermes/hermes-profile'
 import { HermesSkillInjector } from '../../services/hermes/skill-injector'
 import type { HermesProfile } from '../../services/hermes/hermes-cli'
 import { listUserProfiles } from '../../db/hermes/users-store'
+import { registerOwnedProfile } from '../../services/hermes/agent-ownership'
 
 const bridgeCleanupClient = () => new AgentBridgeClient({ connectRetryMs: 0, timeoutMs: 5000 })
 
@@ -403,7 +404,20 @@ export async function create(ctx: any) {
     return
   }
   try {
-    const output = await hermesCli.createProfile(name, clone)
+    // Chat-plane (Feishu) tenant security boundary.
+    //
+    // In chat-plane every authenticated Feishu user can reach POST /api/hermes/profiles.
+    // The current hermesCli.createProfile(name, clone) only accepts a boolean clone flag
+    // and unconditionally clones from the ACTIVE/admin profile — which carries that
+    // profile's LLM provider API keys (.env) and OAuth pool (auth.json). Letting a tenant
+    // clone would leak the admin's credentials. origin/main avoids this by passing an
+    // explicit cloneFrom = caller's own profile; the rebaselined CLI has no cloneFrom
+    // parameter, so we close the hole by forcing clone=false in chat-plane — a tenant may
+    // only create a brand-new profile that inherits no credentials at all.
+    const user = ctx.state?.user as { openid?: string; profile?: string } | undefined
+    const userMode = config.webPlane === 'chat' && !!user?.openid
+    const effectiveClone = userMode ? false : !!clone
+    const output = await hermesCli.createProfile(name, effectiveClone)
 
     // clone=true 时执行智能清理：
     //   - 删除 .env 中的独占平台凭据（Weixin / Telegram / Slack / ...）
@@ -412,7 +426,7 @@ export async function create(ctx: any) {
     let strippedCredentials: string[] = []
     let disabledPlatforms: string[] = []
     let strippedConfigCredentials: string[] = []
-    if (clone) {
+    if (effectiveClone) {
       try {
         const cleanup = smartCloneCleanup(name)
         strippedCredentials = cleanup.strippedCredentials
@@ -434,6 +448,16 @@ export async function create(ctx: any) {
       } catch (err: any) {
         // 清理失败不应阻断 profile 创建，仅记日志
         logger.error(err, 'Smart clone cleanup failed for "%s"', name)
+      }
+    }
+
+    // Attribute the newly-created profile to the calling Feishu tenant so chat-plane
+    // isolation (ownerOwnsProfile / getRequestProfile) recognizes it as theirs.
+    if (userMode && user?.openid) {
+      try {
+        registerOwnedProfile(user.openid, name, user.profile)
+      } catch (err: any) {
+        logger.error(err, 'Failed to register owned profile "%s" for openid', name)
       }
     }
 

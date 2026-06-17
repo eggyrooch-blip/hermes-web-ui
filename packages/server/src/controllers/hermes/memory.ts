@@ -1,18 +1,10 @@
 import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { safeReadFile, safeStat } from '../../services/config-helpers'
-import { getActiveProfileName, getProfileDir } from '../../services/hermes/hermes-profile'
-
-function requestedProfile(ctx: any): string {
-  return ctx.state?.profile?.name || getActiveProfileName() || 'default'
-}
-
-function requestProfileDir(ctx: any): string {
-  return getProfileDir(requestedProfile(ctx))
-}
+import { getRequestProfileDir } from '../../services/request-context'
 
 export async function get(ctx: any) {
-  const hd = requestProfileDir(ctx)
+  const hd = getRequestProfileDir(ctx)
   const memoryPath = join(hd, 'memories', 'MEMORY.md')
   const userPath = join(hd, 'memories', 'USER.md')
   const soulPath = join(hd, 'SOUL.md')
@@ -39,7 +31,7 @@ export async function save(ctx: any) {
     return
   }
   let filePath: string
-  const hd = requestProfileDir(ctx)
+  const hd = getRequestProfileDir(ctx)
   if (section === 'soul') {
     filePath = join(hd, 'SOUL.md')
   } else {

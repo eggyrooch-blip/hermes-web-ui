@@ -8,6 +8,7 @@ const setSessionModelMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)))
 const startRunViaSocketMock = vi.hoisted(() => vi.fn(() => ({ abort: vi.fn() })))
 const respondClarifyMock = vi.hoisted(() => vi.fn())
 const fetchSessionMock = vi.hoisted(() => vi.fn())
+const fetchSessionMessagesPageMock = vi.hoisted(() => vi.fn())
 const fetchSessionsMock = vi.hoisted(() => vi.fn(() => Promise.resolve([])))
 const resumeSessionMock = vi.hoisted(() => vi.fn((_sessionId: string, onResumed: (data: any) => void) => {
   onResumed({ messages: [], isWorking: false, events: [] })
@@ -25,6 +26,11 @@ vi.mock('@/stores/hermes/app', () => ({
     selectedProvider: 'default-provider',
     waitForModelsForRun: vi.fn(() => Promise.resolve()),
     switchModel: switchModelMock,
+    // Upstream rebaseline: sendMessage now reads these to build the run's
+    // model_groups payload. Empty groups keep model/provider resolution
+    // falling back to selectedModel/selectedProvider.
+    modelGroups: [],
+    profileModelGroups: [],
   }),
 }))
 
@@ -34,12 +40,21 @@ vi.mock('@/api/hermes/chat', () => ({
   registerSessionHandlers: vi.fn(),
   unregisterSessionHandlers: vi.fn(),
   getChatRunSocket: vi.fn(() => null),
+  respondToolApproval: vi.fn(),
   respondClarify: respondClarifyMock,
+  // Upstream rebaseline added module-level handler registrations the store
+  // wires up at setup time; each returns an unsubscribe fn.
+  onPeerUserMessage: vi.fn(() => vi.fn()),
+  onSessionCommand: vi.fn(() => vi.fn()),
+  onSessionTitleUpdated: vi.fn(() => vi.fn()),
 }))
 
 vi.mock('@/api/hermes/sessions', () => ({
   deleteSession: vi.fn(),
   fetchSession: fetchSessionMock,
+  // Upstream rebaseline: refreshActiveSession now pulls via the paginated
+  // messages endpoint instead of fetchSession.
+  fetchSessionMessagesPage: fetchSessionMessagesPageMock,
   fetchSessions: fetchSessionsMock,
   setSessionModel: setSessionModelMock,
 }))
@@ -69,50 +84,17 @@ describe('chat store user-mode model selection', () => {
     })
   })
 
-  it('does not stamp new chats with a session-local model override', async () => {
-    isUserModeMock.mockReturnValue(true)
-    const store = useChatStore()
-
-    store.newChat()
-
-    expect(store.activeSession?.model).toBeUndefined()
-    expect(store.activeSession?.provider).toBeUndefined()
-    expect(setSessionModelMock).not.toHaveBeenCalled()
-    expect(switchModelMock).not.toHaveBeenCalled()
-  })
-
-  it('keeps updating the default model outside chat plane user mode', async () => {
-    const store = useChatStore()
-    setActiveTestSession(store)
-
-    await store.switchSessionModel('gpt-5.4', 'openai')
-
-    expect(setSessionModelMock).toHaveBeenCalledWith('session-1', 'gpt-5.4', 'openai')
-    expect(switchModelMock).toHaveBeenCalledWith('gpt-5.4', 'openai')
-  })
-
-  it('uses the current default model in chat run payloads instead of stale session overrides', async () => {
-    const store = useChatStore()
-    store.newChat()
-    store.activeSession!.model = 'gpt-5.4'
-    store.activeSession!.provider = 'openai'
-
-    await store.sendMessage('hello')
-
-    expect(startRunViaSocketMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        model: 'default-model',
-        provider: 'default-provider',
-      }),
-      expect.any(Function),
-      expect.any(Function),
-      expect.any(Function),
-      undefined,
-      expect.objectContaining({
-        onReconnectResume: expect.any(Function),
-      }),
-    )
-  })
+  // NOTE: The three "user-mode model selection" cases that used to live here
+  // (does-not-stamp-new-chats, keeps-updating-default-model, uses-current-
+  // default-model-in-payloads) were removed during the upstream rebaseline.
+  // They exercised the fork-only "user mode / chat plane" model-override
+  // suppression — a feature the upstream EKKOLearnAI client does not have.
+  // Upstream's newChat() always stamps the session with appStore.selectedModel,
+  // switchSessionModel() no longer touches the app-level default, and
+  // sendMessage() sends the session's own model rather than forcing the
+  // default. With the feature gone these assertions test nonexistent behavior,
+  // so the cases are deleted rather than rewritten. The isUserModeMock setup
+  // is retained only because other suites import the same mock shape.
 
   it('stores tool completed output on the visible tool message', async () => {
     const store = useChatStore()
@@ -244,45 +226,52 @@ describe('chat store user-mode model selection', () => {
     const store = useChatStore()
     store.newChat()
     const sessionId = store.activeSession!.id
-    fetchSessionMock.mockResolvedValue({
-      id: sessionId,
-      title: 'tool session',
-      messages: [
-        {
-          id: 1,
-          role: 'user',
-          content: 'create a doc',
-          timestamp: 1,
-        },
-        {
-          id: 2,
-          role: 'assistant',
-          content: '',
-          timestamp: 2,
-          tool_calls: [{
-            id: 'call-1',
-            type: 'function',
-            function: {
-              name: 'lark_cli',
-              arguments: '{"cmd":"docx create"}',
-            },
-          }],
-        },
-        {
-          id: 3,
-          role: 'tool',
-          content: 'created doc',
-          timestamp: 3,
-          tool_call_id: 'call-1',
-          tool_name: 'lark_cli',
-        },
-        {
-          id: 4,
-          role: 'assistant',
-          content: 'Done.',
-          timestamp: 4,
-        },
-      ],
+    // Upstream rebaseline: refreshActiveSession reads the paginated messages
+    // endpoint (fetchSessionMessagesPage), which wraps the messages in a
+    // { session, messages, total, hasMore } envelope.
+    const restoredMessages = [
+      {
+        id: 1,
+        role: 'user',
+        content: 'create a doc',
+        timestamp: 1,
+      },
+      {
+        id: 2,
+        role: 'assistant',
+        content: '',
+        timestamp: 2,
+        tool_calls: [{
+          id: 'call-1',
+          type: 'function',
+          function: {
+            name: 'lark_cli',
+            arguments: '{"cmd":"docx create"}',
+          },
+        }],
+      },
+      {
+        id: 3,
+        role: 'tool',
+        content: 'created doc',
+        timestamp: 3,
+        tool_call_id: 'call-1',
+        tool_name: 'lark_cli',
+      },
+      {
+        id: 4,
+        role: 'assistant',
+        content: 'Done.',
+        timestamp: 4,
+      },
+    ]
+    fetchSessionMessagesPageMock.mockResolvedValue({
+      session: { id: sessionId, title: 'tool session' },
+      messages: restoredMessages,
+      total: restoredMessages.length,
+      offset: 0,
+      limit: 150,
+      hasMore: false,
     })
 
     await store.refreshActiveSession()
@@ -506,8 +495,11 @@ describe('chat store user-mode model selection', () => {
     onError(new Error('HTTP 429: The service may be temporarily overloaded'))
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    const systemMessage = store.activeSession!.messages.find(m => m.role === 'system')
-    expect(systemMessage?.content).toContain('HTTP 429')
+    // Upstream rebaseline renders agent/stream errors as an assistant message
+    // tagged systemType:'error' (instead of role:'system'). The guarantee under
+    // test — the failure stays visible after the socket error callback — holds.
+    const errorMessage = store.activeSession!.messages.find(m => m.systemType === 'error')
+    expect(errorMessage?.content).toContain('HTTP 429')
   })
 
   it('does not let a stale resume response overwrite the currently active session', async () => {
@@ -536,9 +528,14 @@ describe('chat store user-mode model selection', () => {
       }],
     })
 
+    // Upstream rebaseline tightened the resume guard: a resume payload whose
+    // session is no longer the active one is dropped entirely (it does not even
+    // populate the inactive session's buffer). The anti-clobber guarantee under
+    // test is therefore stronger — neither the active nor the stale session is
+    // mutated by a stale resume response.
     expect(store.activeSessionId).toBe(secondId)
     expect(store.sessions.find(s => s.id === secondId)?.messages).toEqual([])
-    expect(store.sessions.find(s => s.id === firstId)?.messages[0]?.content).toBe('stale first-session reply')
+    expect(store.sessions.find(s => s.id === firstId)?.messages).toEqual([])
   })
 
   it('loads the route-selected session from the requested profile', async () => {
@@ -593,7 +590,8 @@ describe('chat store user-mode model selection', () => {
     expect(fetchSessionsMock).toHaveBeenCalledWith(undefined, undefined, 'tester')
     expect(store.activeSessionId).toBe('session-2')
     expect(store.activeSession?.profile).toBe('tester')
-    expect(resumeSessionMock).toHaveBeenCalledWith('session-2', expect.any(Function), 'tester')
+    // Upstream rebaseline added a transport arg ('chat-run') to resumeSession.
+    expect(resumeSessionMock).toHaveBeenCalledWith('session-2', expect.any(Function), 'tester', 'chat-run')
   })
 
   it('renders subagent run events as a delegate_task tool card', async () => {
@@ -654,13 +652,16 @@ describe('chat store user-mode model selection', () => {
       choices: ['brief', 'detailed'],
     })
 
-    store.respondClarify('clarify-1', 'brief')
+    // Upstream rebaseline renamed the store action to respondToClarify and it
+    // now derives sessionId/clarifyId from the active pending-clarify state
+    // (single `response` arg) and passes the runtime transport ('chat-run').
+    store.respondToClarify('brief')
 
     expect(respondClarifyMock).toHaveBeenCalledWith(
       store.activeSession!.id,
       'clarify-1',
       'brief',
-      undefined,
+      'chat-run',
     )
     expect(store.activePendingClarify).toBeNull()
   })

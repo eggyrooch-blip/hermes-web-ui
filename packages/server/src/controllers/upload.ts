@@ -3,12 +3,32 @@ import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { getActiveProfileName } from '../services/hermes/hermes-profile'
 import { getProfileUploadDir } from '../services/hermes/upload-paths'
+import { getRequestProfileDir, isChatPlaneRequest } from '../services/request-context'
 import { MultipartParseError, parseMultipartBoundary, parseMultipartFilename, splitMultipart } from '../lib/multipart'
 
 const MAX_UPLOAD_SIZE = 50 * 1024 * 1024 // 50MB
 
 function requestedProfile(ctx: any): string {
   return ctx.state?.profile?.name || getActiveProfileName() || 'default'
+}
+
+// Fork: chat-plane uploads are isolated to the caller's OWNED profile workspace
+// (getRequestProfileDir strips any caller-supplied selector the user does not own
+// and falls back to ctx.state.user.profile), and only a RELATIVE path is returned
+// so the absolute host layout never leaks to a multi-tenant chat user. Admin/JWT
+// requests keep the upstream per-profile uploadDir behavior unchanged.
+async function getUploadTarget(ctx: any, savedName: string): Promise<{ savedPath: string; responsePath: string }> {
+  if (!isChatPlaneRequest(ctx)) {
+    const uploadDir = getProfileUploadDir(requestedProfile(ctx))
+    await mkdir(uploadDir, { recursive: true })
+    const savedPath = join(uploadDir, savedName)
+    return { savedPath, responsePath: savedPath }
+  }
+
+  const relativePath = `uploads/${savedName}`
+  const uploadDir = join(getRequestProfileDir(ctx), 'workspace', 'uploads')
+  await mkdir(uploadDir, { recursive: true })
+  return { savedPath: join(uploadDir, savedName), responsePath: relativePath }
 }
 
 export async function handleUpload(ctx: any) {
@@ -32,8 +52,6 @@ export async function handleUpload(ctx: any) {
   const raw = Buffer.concat(chunks)
   const parts = splitMultipart(raw, boundaryBuf)
   const results: { name: string; path: string }[] = []
-  const uploadDir = getProfileUploadDir(requestedProfile(ctx))
-  await mkdir(uploadDir, { recursive: true })
   for (const part of parts) {
     const headerEnd = part.indexOf(Buffer.from('\r\n\r\n'))
     if (headerEnd === -1) continue
@@ -52,9 +70,9 @@ export async function handleUpload(ctx: any) {
     if (!filename) continue
     const ext = filename.includes('.') ? '.' + filename.split('.').pop() : ''
     const savedName = randomBytes(8).toString('hex') + ext
-    const savedPath = join(uploadDir, savedName)
-    await writeFile(savedPath, data)
-    results.push({ name: filename, path: savedPath })
+    const target = await getUploadTarget(ctx, savedName)
+    await writeFile(target.savedPath, data)
+    results.push({ name: filename, path: target.responsePath })
   }
   ctx.body = { files: results }
 }

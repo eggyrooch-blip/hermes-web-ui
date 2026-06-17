@@ -1931,11 +1931,15 @@ export const useChatStore = defineStore('chat', () => {
       // (b) run with only tool activity, (c) run with truly nothing visible.
       // Reset on every run.started because one handler may span multiple queued runs.
       let runProducedAssistantText = false
+      let runProducedReasoning = false
       let runProducedAssistantContent = false
       let runHadToolActivity = false
       let activeAssistantMessageId: string | null = null
       let reasoningAssistantMessageId: string | null = null
       let activeRunMarker: string | null = null
+      // Tool cards created during the CURRENT run — scope existingTool lookups
+      // so a repeated broker tool_call_id can't re-target an older run's card.
+      let currentRunToolMsgIds = new Set<string>()
 
       const closeStreamingAssistant = () => {
         const msgs = getSessionMsgs(sid)
@@ -2104,8 +2108,10 @@ export const useChatStore = defineStore('chat', () => {
               setAbortState(null)
               setCompressionState(sid, null)
               runProducedAssistantText = false
+              runProducedReasoning = false
               runProducedAssistantContent = false
               runHadToolActivity = false
+              currentRunToolMsgIds = new Set<string>()
               closeStreamingAssistant()
               activeRunMarker = readRunMarker(evt) ?? null
               if ((evt as any).queue_length > 0) {
@@ -2207,7 +2213,10 @@ export const useChatStore = defineStore('chat', () => {
             case 'thinking.delta': {
               const text = evt.text || evt.delta || ''
               if (!text) break
-              runProducedAssistantText = true
+              // Reasoning/thinking is NOT a final assistant reply — track it on
+              // its own flag so a reasoning-only run still trips the empty-output
+              // guard below instead of looking "succeeded".
+              runProducedReasoning = true
               const msgs = getSessionMsgs(sid)
               const reasoningTargetId = reasoningAssistantMessageId || activeAssistantMessageId
               const last = reasoningTargetId
@@ -2301,10 +2310,17 @@ export const useChatStore = defineStore('chat', () => {
                 updateMessage(sid, last.id, { isStreaming: false })
               }
               activeAssistantMessageId = null
+              // Reuse a tool card from THIS run, or a still-open card with the
+              // same id (e.g. one restored on resume). Broker can repeat the same
+              // tool_call_id across runs, so a card that already finished
+              // (done/error) belongs to an older run — never re-target it; create
+              // a fresh card instead.
               const existingTool = toolCallId
-                ? msgs.find(m => m.role === 'tool' && m.toolCallId === toolCallId)
+                ? (msgs.find(m => m.role === 'tool' && m.toolCallId === toolCallId && currentRunToolMsgIds.has(m.id))
+                    ?? msgs.find(m => m.role === 'tool' && m.toolCallId === toolCallId && m.toolStatus !== 'done' && m.toolStatus !== 'error'))
                 : null
               if (existingTool) {
+                currentRunToolMsgIds.add(existingTool.id)
                 updateMessage(sid, existingTool.id, {
                   toolName: evt.tool || evt.name,
                   toolArgs: hasRuntimeToolPayload((evt as any).arguments) ? (evt as any).arguments : existingTool.toolArgs,
@@ -2313,8 +2329,10 @@ export const useChatStore = defineStore('chat', () => {
                 })
                 break
               }
+              const newToolMsgId = uid()
+              currentRunToolMsgIds.add(newToolMsgId)
               addMessage(sid, {
-                id: uid(),
+                id: newToolMsgId,
                 role: 'tool',
                 content: '',
                 timestamp: Date.now(),
@@ -2332,9 +2350,18 @@ export const useChatStore = defineStore('chat', () => {
               runHadToolActivity = true
               const msgs = getSessionMsgs(sid)
               const toolCallId = (evt as any).tool_call_id as string | undefined
-              const toolMsgs = toolCallId
-                ? msgs.filter(m => m.role === 'tool' && m.toolCallId === toolCallId)
-                : msgs.filter(m => m.role === 'tool' && m.toolStatus === 'running')
+              // Prefer this run's tool cards (see tool.started) so a repeated
+              // broker tool_call_id can't complete an older run's card. Fall back
+              // to a session-wide running card when this run created none (e.g. a
+              // card restored on resume, or completion before a tool.started).
+              const currentRunMatches = toolCallId
+                ? msgs.filter(m => m.role === 'tool' && m.toolCallId === toolCallId && currentRunToolMsgIds.has(m.id))
+                : msgs.filter(m => m.role === 'tool' && m.toolStatus === 'running' && currentRunToolMsgIds.has(m.id))
+              const toolMsgs = currentRunMatches.length > 0
+                ? currentRunMatches
+                : (toolCallId
+                    ? msgs.filter(m => m.role === 'tool' && m.toolCallId === toolCallId && m.toolStatus !== 'done' && m.toolStatus !== 'error')
+                    : msgs.filter(m => m.role === 'tool' && m.toolStatus === 'running'))
               if (toolMsgs.length > 0) {
                 const last = toolMsgs[toolMsgs.length - 1]
                 const output = runtimeToolPayloadOrUndefined((evt as any).output)
@@ -2478,15 +2505,29 @@ export const useChatStore = defineStore('chat', () => {
               // empty final output. Usage being zero is a *supporting*
               // signal but not required, since some providers/local models
               // legitimately omit usage.
-              const swallowedError =
+              // Empty final output, no assistant text produced. Two shapes:
+              //   - no tool activity at all  -> swallowed agent error
+              //   - tool activity then empty -> ran tools but never replied
+              // Reasoning-only counts as empty (reasoning is not a final reply).
+              const emptyFinalOutput =
                 !runProducedAssistantText &&
-                !runHadToolActivity &&
                 finalOutputTrimmed === ''
+              const swallowedError = emptyFinalOutput && !runHadToolActivity
+              const emptyAfterToolActivity = emptyFinalOutput && runHadToolActivity
               if (swallowedError) {
                 addMessage(sid, {
                   id: uid(),
                   role: 'system',
-                  content: 'Error: Agent returned no output. The model call may have failed (e.g. invalid API key, model not supported by provider, or context exceeded). Check the hermes-agent logs for details.',
+                  content: runProducedReasoning
+                    ? 'Error: Agent returned no output. The model produced reasoning but never emitted a final reply (the run may have been cut off). Check the hermes-agent logs for details.'
+                    : 'Error: Agent returned no output. The model call may have failed (e.g. invalid API key, model not supported by provider, or context exceeded). Check the hermes-agent logs for details.',
+                  timestamp: Date.now(),
+                })
+              } else if (emptyAfterToolActivity) {
+                addMessage(sid, {
+                  id: uid(),
+                  role: 'system',
+                  content: 'Error: no final output after tool activity. The agent used tools but never produced a reply — the run may have been cut off. Check the hermes-agent logs for details.',
                   timestamp: Date.now(),
                 })
               } else {
@@ -2622,11 +2663,17 @@ export const useChatStore = defineStore('chat', () => {
 
     let closed = false
     let runProducedAssistantText = false
+    let runProducedReasoning = false
     let runProducedAssistantContent = false
     let runHadToolActivity = false
     let activeAssistantMessageId: string | null = null
     let reasoningAssistantMessageId: string | null = null
     let activeRunMarker: string | null = null
+    // Tool cards created during the CURRENT run. Broker reuses tool_call_id
+    // across runs; matching by id alone would re-target a tool card from an
+    // earlier run. Scope existingTool lookups to this set so each run only
+    // touches its own cards.
+    let currentRunToolMsgIds = new Set<string>()
 
     const cleanup = () => {
       if (closed) return
@@ -2702,8 +2749,10 @@ export const useChatStore = defineStore('chat', () => {
           setAbortState(null)
           setCompressionState(sid, null)
           runProducedAssistantText = false
+          runProducedReasoning = false
           runProducedAssistantContent = false
           runHadToolActivity = false
+          currentRunToolMsgIds = new Set<string>()
           closeStreamingAssistant()
           activeRunMarker = readRunMarker(evt) ?? null
           if ((evt as any).queue_length > 0) {
@@ -2784,7 +2833,10 @@ export const useChatStore = defineStore('chat', () => {
         case 'thinking.delta': {
           const text = evt.text || evt.delta || ''
           if (!text) break
-          runProducedAssistantText = true
+          // Reasoning/thinking is NOT a final assistant reply. Track it on a
+          // dedicated flag so a reasoning-only run still trips the empty-output
+          // guard below (otherwise a thinking-only run looks "succeeded").
+          runProducedReasoning = true
           const msgs = getSessionMsgs(sid)
           const reasoningTargetId = reasoningAssistantMessageId || activeAssistantMessageId
           const last = reasoningTargetId
@@ -2870,10 +2922,17 @@ export const useChatStore = defineStore('chat', () => {
             updateMessage(sid, last.id, { isStreaming: false })
           }
           activeAssistantMessageId = null
+          // Reuse a tool card from THIS run, or a still-open card with the same
+          // id (e.g. one restored on resume). Broker can repeat the same
+          // tool_call_id across runs, so a card that already finished
+          // (done/error) belongs to an older run — never re-target it; create a
+          // fresh card instead.
           const existingTool = toolCallId
-            ? msgs.find(m => m.role === 'tool' && m.toolCallId === toolCallId)
+            ? (msgs.find(m => m.role === 'tool' && m.toolCallId === toolCallId && currentRunToolMsgIds.has(m.id))
+                ?? msgs.find(m => m.role === 'tool' && m.toolCallId === toolCallId && m.toolStatus !== 'done' && m.toolStatus !== 'error'))
             : null
           if (existingTool) {
+            currentRunToolMsgIds.add(existingTool.id)
             updateMessage(sid, existingTool.id, {
               toolName: evt.tool || evt.name,
               toolArgs: hasRuntimeToolPayload((evt as any).arguments) ? (evt as any).arguments : existingTool.toolArgs,
@@ -2882,8 +2941,10 @@ export const useChatStore = defineStore('chat', () => {
             })
             break
           }
+          const newToolMsgId = uid()
+          currentRunToolMsgIds.add(newToolMsgId)
           addMessage(sid, {
-            id: uid(),
+            id: newToolMsgId,
             role: 'tool',
             content: '',
             timestamp: Date.now(),
@@ -2901,9 +2962,18 @@ export const useChatStore = defineStore('chat', () => {
           runHadToolActivity = true
           const msgs = getSessionMsgs(sid)
           const toolCallId = (evt as any).tool_call_id as string | undefined
-          const toolMsgs = toolCallId
-            ? msgs.filter(m => m.role === 'tool' && m.toolCallId === toolCallId)
-            : msgs.filter(m => m.role === 'tool' && m.toolStatus === 'running')
+          // Prefer this run's tool cards (see tool.started) so a repeated broker
+          // tool_call_id can't complete an older run's card. Fall back to a
+          // session-wide running card when this run created none (e.g. a card
+          // restored on resume, or completion arriving before a tool.started).
+          const currentRunMatches = toolCallId
+            ? msgs.filter(m => m.role === 'tool' && m.toolCallId === toolCallId && currentRunToolMsgIds.has(m.id))
+            : msgs.filter(m => m.role === 'tool' && m.toolStatus === 'running' && currentRunToolMsgIds.has(m.id))
+          const toolMsgs = currentRunMatches.length > 0
+            ? currentRunMatches
+            : (toolCallId
+                ? msgs.filter(m => m.role === 'tool' && m.toolCallId === toolCallId && m.toolStatus !== 'done' && m.toolStatus !== 'error')
+                : msgs.filter(m => m.role === 'tool' && m.toolStatus === 'running'))
           if (toolMsgs.length > 0) {
             const output = runtimeToolPayloadOrUndefined((evt as any).output)
             const hasError = (evt as any).error === true || runtimeToolOutputHasError(output)
@@ -3035,12 +3105,27 @@ export const useChatStore = defineStore('chat', () => {
               runProducedAssistantContent = true
             }
           }
-          const swallowedError = !runProducedAssistantText && !runHadToolActivity && finalOutputTrimmed === ''
+          // Empty final output, no assistant text produced. Two shapes:
+          //   - no tool activity at all  -> swallowed agent error
+          //   - tool activity then empty -> agent ran tools but never replied
+          // Reasoning-only counts as empty (reasoning is not a final reply).
+          const emptyFinalOutput = !runProducedAssistantText && finalOutputTrimmed === ''
+          const swallowedError = emptyFinalOutput && !runHadToolActivity
+          const emptyAfterToolActivity = emptyFinalOutput && runHadToolActivity
           if (swallowedError) {
             addMessage(sid, {
               id: uid(),
               role: 'system',
-              content: 'Error: Agent returned no output. The model call may have failed (e.g. invalid API key, model not supported by provider, or context exceeded). Check the hermes-agent logs for details.',
+              content: runProducedReasoning
+                ? 'Error: Agent returned no output. The model produced reasoning but never emitted a final reply (the run may have been cut off). Check the hermes-agent logs for details.'
+                : 'Error: Agent returned no output. The model call may have failed (e.g. invalid API key, model not supported by provider, or context exceeded). Check the hermes-agent logs for details.',
+              timestamp: Date.now(),
+            })
+          } else if (emptyAfterToolActivity) {
+            addMessage(sid, {
+              id: uid(),
+              role: 'system',
+              content: 'Error: no final output after tool activity. The agent used tools but never produced a reply — the run may have been cut off. Check the hermes-agent logs for details.',
               timestamp: Date.now(),
             })
           } else {

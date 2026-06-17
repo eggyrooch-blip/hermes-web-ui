@@ -1750,6 +1750,13 @@ export default {
     otherSkills: 'Другие навыки',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: 'Внутренние системы',
+      otherCredentials: 'Другие учётные данные',
+    },
+  },
+
   
   files: {
     title: 'Файлы',

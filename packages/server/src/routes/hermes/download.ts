@@ -1,13 +1,21 @@
 import Router from '@koa/router'
-import { basename, extname, isAbsolute } from 'path'
+import type { Context } from 'koa'
+import { mkdir } from 'fs/promises'
+import { basename, extname, isAbsolute, join, normalize } from 'path'
 import {
   createFileProvider,
   localProvider,
   isInUploadDir,
+  isSensitivePath,
   validatePath,
   resolveHermesPath,
 } from '../../services/hermes/file-provider'
+import {
+  getRequestProfileDir,
+  isChatPlaneRequest,
+} from '../../services/request-context'
 import { getActiveProfileName } from '../../services/hermes/hermes-profile'
+import { isPathWithin } from '../../services/hermes/hermes-path'
 
 export const downloadRoutes = new Router()
 
@@ -63,8 +71,78 @@ function getMimeType(fileName: string): string {
   return MIME_MAP[ext] || 'application/octet-stream'
 }
 
-function requestedProfile(ctx: any): string {
-  return ctx.state?.profile?.name || getActiveProfileName() || 'default'
+/**
+ * Chat-plane multi-tenant isolation: relative paths that point at a profile's
+ * runtime config or materialized credentials must never be downloadable, even
+ * though they live under the bound profile's home. This mirrors the fork's
+ * isSensitivePath blocklist so a chat-plane user can only reach their own
+ * workspace artifacts, never `config.yaml`, `.env`, `auth.json`, or anything
+ * under `credentials/`, `tokens/`, `.ssh/`, `feishu_uat/`.
+ */
+const CHAT_PLANE_SENSITIVE_FILES = new Set(['.env', 'auth.json', 'config.yaml'])
+const CHAT_PLANE_SENSITIVE_PARTS = new Set(['credentials', 'tokens', '.ssh', 'feishu_uat'])
+
+function isChatPlaneSensitiveRelative(relativePath: string): boolean {
+  const parts = relativePath.replace(/\\/g, '/').split('/').filter(Boolean)
+  if (parts.length === 0) return false
+  const fileName = parts[parts.length - 1]
+  return CHAT_PLANE_SENSITIVE_FILES.has(fileName) || parts.some(part => CHAT_PLANE_SENSITIVE_PARTS.has(part))
+}
+
+/**
+ * Legacy / admin (JWT) resolution: keep upstream behavior so admin downloads
+ * across the active profile keep working unchanged.
+ */
+function legacyProfile(ctx: Context): string {
+  return (ctx.state as any)?.profile?.name || getActiveProfileName() || 'default'
+}
+
+async function getDownloadTarget(ctx: Context, filePath: string): Promise<{
+  validPath: string
+  forceLocalRoot?: string
+  useLocalUploadProvider: boolean
+}> {
+  // Admin / JWT plane: unchanged upstream resolution across the active profile.
+  if (!isChatPlaneRequest(ctx)) {
+    const profile = legacyProfile(ctx)
+    const validPath = isAbsolute(filePath)
+      ? validatePath(filePath)
+      : resolveHermesPath(filePath, profile)
+    return { validPath, useLocalUploadProvider: isInUploadDir(validPath) }
+  }
+
+  // Chat plane: confined to the bound profile.
+  if (isAbsolute(filePath)) {
+    // Absolute downloads are only legal inside the shared upload dir; anything
+    // else (profile/root config, arbitrary host paths) is rejected.
+    const validPath = validatePath(filePath)
+    if (!isInUploadDir(validPath)) {
+      throw Object.assign(
+        new Error('Absolute downloads are not available in chat plane'),
+        { code: 'invalid_path' },
+      )
+    }
+    return { validPath, useLocalUploadProvider: true }
+  }
+
+  // Relative downloads are scoped to the bound profile's workspace dir. The
+  // request profile is resolved by getRequestProfileDir, which already strips
+  // unowned caller-supplied selectors via ownerOwnsProfile(openid, profile).
+  const workspaceDir = join(getRequestProfileDir(ctx), 'workspace')
+  await mkdir(workspaceDir, { recursive: true })
+  const normalized = normalize(filePath).replace(/\\/g, '/')
+  if (normalized.startsWith('..') || normalized.includes('/../') || normalized.startsWith('/')) {
+    throw Object.assign(new Error('Invalid file path'), { code: 'invalid_path' })
+  }
+  const resolved = join(workspaceDir, normalized)
+  if (!isPathWithin(resolved, workspaceDir)) {
+    throw Object.assign(new Error('Path traversal detected'), { code: 'invalid_path' })
+  }
+  return {
+    validPath: resolved,
+    forceLocalRoot: workspaceDir,
+    useLocalUploadProvider: false,
+  }
 }
 
 downloadRoutes.get('/api/hermes/download', async (ctx) => {
@@ -77,23 +155,39 @@ downloadRoutes.get('/api/hermes/download', async (ctx) => {
     return
   }
 
+  // Block sensitive relative paths (profile config / materialized credentials)
+  // before any resolution. Absolute paths skip this (chat plane confines them to
+  // the upload dir below; admin plane validates them directly).
+  const relative = !isAbsolute(filePath)
+  if (relative && isChatPlaneRequest(ctx) && isChatPlaneSensitiveRelative(filePath)) {
+    ctx.status = 403
+    ctx.body = { error: 'Cannot download sensitive file', code: 'permission_denied' }
+    return
+  }
+  if (relative && isSensitivePath(filePath)) {
+    ctx.status = 403
+    ctx.body = { error: 'Cannot download sensitive file', code: 'permission_denied' }
+    return
+  }
+
   try {
-    const profile = requestedProfile(ctx)
-    // Validate the path first
-    // Support both absolute and relative paths
-    const validPath = isAbsolute(filePath) ? validatePath(filePath) : resolveHermesPath(filePath, profile)
+    const target = await getDownloadTarget(ctx, filePath)
 
     // Choose provider: always use local for upload directory files
     let data: Buffer
-    if (isInUploadDir(validPath)) {
-      data = await localProvider.readFile(validPath)
+    if (target.useLocalUploadProvider) {
+      data = await localProvider.readFile(target.validPath)
+    } else if (target.forceLocalRoot) {
+      // Chat-plane workspace read: the resolved path is already confined to the
+      // bound profile's workspace; the local provider reads it as an absolute path.
+      data = await localProvider.readFile(target.validPath)
     } else {
-      const provider = await createFileProvider(profile)
-      data = await provider.readFile(validPath)
+      const provider = await createFileProvider(legacyProfile(ctx))
+      data = await provider.readFile(target.validPath)
     }
 
     // Determine filename and MIME type
-    const name = fileName || basename(validPath)
+    const name = fileName || basename(target.validPath)
     const mime = getMimeType(name)
 
     // Set response headers
@@ -109,6 +203,7 @@ downloadRoutes.get('/api/hermes/download', async (ctx) => {
       invalid_path: 400,
       not_found: 404,
       ENOENT: 404,
+      permission_denied: 403,
       file_too_large: 413,
       unsupported_backend: 501,
       backend_error: 502,

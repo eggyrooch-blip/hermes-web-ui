@@ -1,8 +1,11 @@
-import { readFile } from 'fs/promises'
+import { readFile, writeFile, copyFile } from 'fs/promises'
+import YAML from 'js-yaml'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { getActiveEnvPath, getActiveAuthPath, getActiveProfileName, getProfileDir, listProfileNamesFromDisk } from '../../services/hermes/hermes-profile'
 import { readConfigYaml, readConfigYamlForProfile, updateConfigYaml, updateConfigYamlForProfile, fetchProviderModels, buildModelGroups, PROVIDER_ENV_MAP } from '../../services/config-helpers'
+import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
+import { ownerOwnsProfile } from '../../services/hermes/agent-ownership'
 import { getCompatibleCustomProviders } from '../../services/hermes/custom-providers-compat'
 import { buildProviderModelMap, PROVIDER_PRESETS } from '../../shared/providers'
 import { getCopilotModelsDetailed, resolveCopilotOAuthToken, type CopilotModelMeta } from '../../services/hermes/copilot-models'
@@ -438,7 +441,293 @@ async function buildAvailableForProfile(
   return { profile, default: currentDefault, default_provider: currentDefaultProvider, groups: groupsWithCustomModels }
 }
 
+// --- Chat-plane (Feishu user-mode) isolation ---------------------------------
+// The chat plane binds each request to a single Feishu-owned profile. These
+// helpers read/write only that profile's files and strip provider secrets from
+// any response. They are applied ONLY when isChatPlaneRequest(ctx) is true, so
+// the upstream admin/JWT aggregation path above is left untouched.
+
+function requestConfigPath(ctx: any): string {
+  return join(getRequestProfileDir(ctx), 'config.yaml')
+}
+
+function requestEnvPath(ctx: any): string {
+  return join(getRequestProfileDir(ctx), '.env')
+}
+
+function requestAuthPath(ctx: any): string {
+  return join(getRequestProfileDir(ctx), 'auth.json')
+}
+
+async function readRequestConfigYaml(ctx: any): Promise<Record<string, any>> {
+  try {
+    const raw = await readFile(requestConfigPath(ctx), 'utf-8')
+    return (YAML.load(raw) as Record<string, any>) || {}
+  } catch {
+    return readConfigYaml()
+  }
+}
+
+async function writeRequestConfigYaml(ctx: any, config: Record<string, any>): Promise<void> {
+  const cp = requestConfigPath(ctx)
+  await copyFile(cp, cp + '.bak')
+  await writeFile(cp, YAML.dump(config, { lineWidth: -1, noRefs: true, quotingType: '"' }), 'utf-8')
+}
+
+function sanitizeAvailableGroups(groups: AvailableGroup[]): AvailableGroup[] {
+  return groups.map(group => ({
+    ...group,
+    base_url: '',
+    api_key: '',
+  }))
+}
+
+function getExplicitSelectedProfile(ctx: any): string {
+  return String(ctx.get?.('x-hermes-profile') || ctx.query?.profile || '').trim()
+}
+
+// Hard 403 when a chat-plane caller explicitly selects a profile it does not
+// own. getRequestProfile() silently falls back to the bound profile on an
+// unowned selector; the controller must instead reject so a caller can never
+// probe / mutate another tenant's profile by passing a foreign selector.
+function ensureChatPlaneSelectedProfileOwned(ctx: any): boolean {
+  if (!isChatPlaneRequest(ctx)) return true
+  const selectedProfile = getExplicitSelectedProfile(ctx)
+  if (!selectedProfile) return true
+
+  const user = ctx.state?.user as { openid?: string; profile?: string } | undefined
+  if (selectedProfile === user?.profile) return true
+  if (user?.openid && ownerOwnsProfile(user.openid, selectedProfile)) return true
+
+  ctx.status = 403
+  ctx.body = { error: 'Selected profile is not owned by this user' }
+  return false
+}
+
+function configuredCustomProviderGroup(
+  modelSection: unknown,
+  currentDefault: string,
+  currentDefaultProvider: string,
+): AvailableGroup | null {
+  if (!currentDefault || !currentDefaultProvider.startsWith('custom:')) return null
+
+  const providerName = currentDefaultProvider.replace(/^custom:/, '').trim()
+  const baseUrl = typeof modelSection === 'object' && modelSection !== null
+    ? String((modelSection as Record<string, any>).base_url || '').trim().replace(/\/+$/, '')
+    : ''
+
+  return {
+    provider: currentDefaultProvider,
+    label: providerName || 'custom',
+    base_url: baseUrl,
+    models: [currentDefault],
+    api_key: '',
+  }
+}
+
+export async function getAvailableChatPlane(ctx: any) {
+  try {
+    if (!ensureChatPlaneSelectedProfileOwned(ctx)) return
+
+    const config = await readRequestConfigYaml(ctx)
+    const modelSection = config.model
+    let currentDefault = ''
+    let currentDefaultProvider = ''
+    if (typeof modelSection === 'object' && modelSection !== null) {
+      currentDefault = String(modelSection.default || '').trim()
+      currentDefaultProvider = String(modelSection.provider || '').trim()
+      // When hermes CLI sets provider: custom, resolve to custom:name
+      // by matching base_url + model against custom_providers
+      if (currentDefaultProvider === 'custom' && currentDefault) {
+        const cps = Array.isArray(config.custom_providers) ? config.custom_providers as any[] : []
+        const match = cps.find(
+          (cp: any) => cp.base_url?.replace(/\/+$/, '') === String(modelSection.base_url || '').replace(/\/+$/, '')
+            && cp.model === currentDefault,
+        )
+        if (match) {
+          currentDefaultProvider = `custom:${match.name.trim().toLowerCase().replace(/ /g, '-')}`
+        } else if (currentDefault.startsWith('custom:')) {
+          currentDefaultProvider = currentDefault.split('/')[0]
+        }
+      }
+    } else if (typeof modelSection === 'string') {
+      currentDefault = modelSection.trim()
+    }
+
+    const groups: AvailableGroup[] = []
+    const seenProviders = new Set<string>()
+
+    let envContent = ''
+    try { envContent = await readFile(requestEnvPath(ctx), 'utf-8') } catch { }
+
+    const envHasValue = (key: string): boolean => {
+      if (!key) return false
+      const match = envContent.match(new RegExp(`^${key}\\s*=\\s*(.+)`, 'm'))
+      return !!match && match[1].trim() !== '' && !match[1].trim().startsWith('#')
+    }
+    const envGetValue = (key: string): string => {
+      if (!key) return ''
+      const match = envContent.match(new RegExp(`^${key}\\s*=\\s*(.+)`, 'm'))
+      return match?.[1]?.trim() || ''
+    }
+    const addGroup = (provider: string, label: string, base_url: string, models: string[], api_key: string, builtin?: boolean, model_meta?: Record<string, ModelMeta>) => {
+      if (seenProviders.has(provider)) return
+      seenProviders.add(provider)
+      groups.push({ provider, label, base_url, models: [...models], api_key, ...(builtin ? { builtin: true } : {}), ...(model_meta ? { model_meta } : {}) })
+    }
+
+    const isOAuthAuthorized = (providerKey: string): boolean => {
+      try {
+        const authPath = requestAuthPath(ctx)
+        if (!existsSync(authPath)) return false
+        const auth = JSON.parse(readFileSync(authPath, 'utf-8'))
+        const provider = auth.providers?.[providerKey]
+        if (!provider) return false
+        return !!(
+          provider.tokens?.access_token ||
+          provider.access_token
+        )
+      } catch { return false }
+    }
+
+    let copilotLiveModels: CopilotModelMeta[] | null = null
+    const getCopilotLive = async (): Promise<CopilotModelMeta[]> => {
+      if (copilotLiveModels !== null) return copilotLiveModels
+      try { copilotLiveModels = await getCopilotModelsDetailed(envContent) }
+      catch { copilotLiveModels = [] }
+      return copilotLiveModels
+    }
+
+    const appConfig = await readAppConfig()
+    const copilotEnabled = appConfig.copilotEnabled === true
+
+    if (!copilotEnabled && currentDefaultProvider.toLowerCase() === 'copilot') {
+      currentDefault = ''
+      currentDefaultProvider = ''
+    }
+
+    for (const [providerKey, envMapping] of Object.entries(PROVIDER_ENV_MAP)) {
+      if (envMapping.api_key_env && !envHasValue(envMapping.api_key_env)) continue
+      if (!envMapping.api_key_env) {
+        if (providerKey === 'copilot') {
+          if (!copilotEnabled) continue
+          if (!(await isCopilotAuthorized(envContent))) continue
+        } else if (!isOAuthAuthorized(providerKey)) {
+          continue
+        }
+      }
+      const preset = PROVIDER_PRESETS.find((p: any) => p.value === providerKey)
+      const label = preset?.label || providerKey.replace(/^custom:/, '')
+      let baseUrl = preset?.base_url || ''
+      if (envMapping.base_url_env && envHasValue(envMapping.base_url_env)) {
+        baseUrl = envGetValue(envMapping.base_url_env) || baseUrl
+      }
+      const catalogModels = PROVIDER_MODEL_CATALOG[providerKey]
+      let modelsList: string[] = catalogModels && catalogModels.length > 0 ? [...catalogModels] : []
+      let modelMeta: Record<string, ModelMeta> | undefined
+      if (providerKey === 'copilot') {
+        const live = await getCopilotLive()
+        if (live.length > 0) {
+          modelsList = live.map((m) => m.id)
+          modelMeta = {}
+          for (const m of live) {
+            if (m.preview || m.disabled) {
+              modelMeta[m.id] = {
+                ...(m.preview ? { preview: true } : {}),
+                ...(m.disabled ? { disabled: true } : {}),
+              }
+            }
+          }
+          if (Object.keys(modelMeta).length === 0) modelMeta = undefined
+        }
+      } else if (providerKey === 'openrouter' || providerKey === 'cliproxyapi') {
+        if (envMapping.api_key_env) {
+          const apiKey = envGetValue(envMapping.api_key_env)
+          if (apiKey) {
+            try {
+              const fetched = await fetchProviderModels(baseUrl, apiKey, providerKey === 'openrouter')
+              if (fetched.length > 0) modelsList = fetched
+            } catch { /* ignore — leave empty, won't show */ }
+          }
+        }
+      }
+      if (modelsList.length > 0) {
+        const apiKey = envMapping.api_key_env ? envGetValue(envMapping.api_key_env) : ''
+        addGroup(providerKey, label, baseUrl, modelsList, apiKey, true, modelMeta)
+      }
+    }
+
+    const customProviders = Array.isArray(config.custom_providers)
+      ? config.custom_providers as Array<{ name: string; base_url: string; model: string; api_key?: string }>
+      : []
+
+    const customFetches = await Promise.allSettled(
+      customProviders.map(async cp => {
+        if (!cp.base_url) return null
+        const providerKey = `custom:${cp.name.trim().toLowerCase().replace(/ /g, '-')}`
+        const baseUrl = cp.base_url.replace(/\/+$/, '')
+        let models = [cp.model]
+        if (cp.api_key) {
+          try { const fetched = await fetchProviderModels(baseUrl, cp.api_key); if (fetched.length > 0) models = [...new Set([cp.model, ...fetched])] } catch { }
+        }
+        return { providerKey, label: cp.name, base_url: baseUrl, models, api_key: cp.api_key || '' }
+      }),
+    )
+
+    for (const result of customFetches) {
+      if (result.status === 'fulfilled' && result.value) {
+        const { providerKey, label, base_url, models, api_key: cpApiKey } = result.value as any
+        addGroup(providerKey, label, base_url, models, cpApiKey)
+      }
+    }
+
+    const configuredCustomGroup = configuredCustomProviderGroup(modelSection, currentDefault, currentDefaultProvider)
+    if (configuredCustomGroup) {
+      addGroup(
+        configuredCustomGroup.provider,
+        configuredCustomGroup.label,
+        configuredCustomGroup.base_url,
+        configuredCustomGroup.models,
+        configuredCustomGroup.api_key,
+      )
+    }
+
+    for (const g of groups) { g.models = Array.from(new Set(g.models)) }
+
+    const liveCopilotModels = copilotEnabled ? await getCopilotLive() : []
+    const liveCopilotIds = liveCopilotModels.map((m) => m.id)
+
+    const allProvidersBase = PROVIDER_PRESETS.map((p: any) => ({
+      provider: p.value,
+      label: p.label,
+      base_url: p.base_url,
+      models: p.value === 'copilot' && liveCopilotIds.length > 0 ? liveCopilotIds : p.models,
+    }))
+
+    if (groups.length === 0) {
+      const fallback = buildModelGroups(config)
+      ctx.body = {
+        ...fallback,
+        groups: sanitizeAvailableGroups((fallback.groups as any) || []),
+        allProviders: sanitizeAvailableGroups(allProvidersBase as any),
+      }
+      return
+    }
+
+    ctx.body = {
+      default: currentDefault,
+      default_provider: currentDefaultProvider,
+      groups: sanitizeAvailableGroups(groups),
+      allProviders: sanitizeAvailableGroups(allProvidersBase as any),
+    }
+  } catch (err: any) {
+    ctx.status = 500
+    ctx.body = { error: err.message }
+  }
+}
+
 export async function getAvailable(ctx: any) {
+  if (isChatPlaneRequest(ctx)) return getAvailableChatPlane(ctx)
   try {
     const requestedProfile = requestedProfileName(ctx)
     if (!requestedProfile) {
@@ -926,6 +1215,12 @@ export async function setModelAlias(ctx: any) {
 
 export async function getConfigModels(ctx: any) {
   try {
+    if (isChatPlaneRequest(ctx)) {
+      if (!ensureChatPlaneSelectedProfileOwned(ctx)) return
+      const config = await readRequestConfigYaml(ctx)
+      ctx.body = buildModelGroups(config)
+      return
+    }
     const config = await readConfigYamlForProfile(requestScopedProfileName(ctx))
     ctx.body = buildModelGroups(config)
   } catch (err: any) {
@@ -941,7 +1236,25 @@ export async function setConfigModel(ctx: any) {
     ctx.body = { error: 'Missing default model' }
     return
   }
+  if (!ensureChatPlaneSelectedProfileOwned(ctx)) return
+
   try {
+    if (isChatPlaneRequest(ctx)) {
+      // Chat plane: write only config.model to the bound/owned profile. Preserve
+      // an existing model.base_url, and never copy provider credentials —
+      // switching the model must not leak/duplicate secrets across profiles.
+      const config = await readRequestConfigYaml(ctx)
+      const existingModel = typeof config.model === 'object' && config.model !== null ? config.model as Record<string, any> : {}
+      config.model = { default: defaultModel }
+      if (reqProvider) { config.model.provider = reqProvider }
+      if (typeof existingModel.base_url === 'string' && existingModel.base_url.trim()) {
+        config.model.base_url = existingModel.base_url.trim()
+      }
+      await writeRequestConfigYaml(ctx, config)
+      ctx.body = { success: true }
+      return
+    }
+
     const profile = requestScopedProfileName(ctx)
     await updateConfigYamlForProfile(profile, (config) => {
       config.model = {}

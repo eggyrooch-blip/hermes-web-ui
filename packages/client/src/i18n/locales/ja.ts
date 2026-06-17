@@ -1804,6 +1804,13 @@ export default {
     otherSkills: 'その他',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: '内部システム',
+      otherCredentials: 'その他の認証情報',
+    },
+  },
+
   // 更新履歴
   changelog: {
     new_0_6_15_1: 'チャットサイドバーを再設計し、履歴読み込み操作を調整して、長い会話をより追いやすくしました',

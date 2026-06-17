@@ -90,6 +90,18 @@ function parseWebPlane(raw: string | undefined): WebPlane {
   return 'both'
 }
 
+// Fork security invariant: a Feishu auth mode IS the multi-tenant chat plane.
+// The entire defense (enforcePlaneAccess blocklist + every controller's per-profile
+// isolation) is gated on webPlane === 'chat'. If a Feishu deployment forgot to also
+// set HERMES_WEB_PLANE=chat, that gate would silently disable and every tenant could
+// reach admin endpoints + other tenants' data. So derive 'chat' from the auth mode
+// rather than trusting two env vars to stay in sync.
+function getEffectiveWebPlane(): WebPlane {
+  const authMode = parseAuthMode(process.env.HERMES_AUTH_MODE)
+  if (authMode === 'feishu-oauth-dev' || authMode === 'trusted-feishu') return 'chat'
+  return parseWebPlane(process.env.HERMES_WEB_PLANE)
+}
+
 function parseAuthMode(raw: string | undefined): AuthMode {
   const value = raw?.trim().toLowerCase()
   if (value === 'trusted-feishu' || value === 'feishu-oauth-dev') return value
@@ -111,7 +123,7 @@ export const config = {
   dataDir: resolve(__dirname, '..', 'data'),
   corsOrigins: getCorsOrigins(),
   sessionStore: (process.env.SESSION_STORE || 'local') as 'local' | 'remote',
-  webPlane: parseWebPlane(process.env.HERMES_WEB_PLANE),
+  webPlane: getEffectiveWebPlane(),
   authMode: parseAuthMode(process.env.HERMES_AUTH_MODE),
   trustedHeaderOpenId: process.env.HERMES_TRUSTED_HEADER_OPENID || 'X-Feishu-OpenID',
   trustedHeaderTimestamp: process.env.HERMES_TRUSTED_HEADER_TIMESTAMP || 'X-Hermes-Auth-Timestamp',

@@ -23,8 +23,21 @@ import {
   type UserStatus,
 } from '../db/hermes/users-store'
 import { issueUserJwt } from '../middleware/user-auth'
-import { listProfileNamesFromDisk } from '../services/hermes/hermes-profile'
+import { getProfileDir, listProfileNamesFromDisk } from '../services/hermes/hermes-profile'
 import { startOutboundRelayClient } from '../services/global-agent/outbound-relay-client'
+import { config } from '../config'
+import { logger } from '../services/logger'
+import type { WebUser } from '../services/request-context'
+import { getRequestProfile } from '../services/request-context'
+import {
+  completeKepCliAuthCallback,
+  completeKeepRecordAuth,
+  getSkillCredentialStartAction,
+  listSkillCredentialStatuses,
+  startFeishuProjectAuth,
+  startKepCliAuth,
+  startKeepRecordAuth,
+} from '../services/hermes/skill-credentials'
 
 /**
  * GET /api/auth/status
@@ -604,4 +617,238 @@ export async function unlockIpHandler(ctx: Context) {
   // No IP specified — unlock all
   const count = unlockAll()
   ctx.body = { success: true, count }
+}
+
+// ---------------------------------------------------------------------------
+// Skill credentials (CredentialsView) — HTTP controller layer connecting the
+// surviving services/hermes/skill-credentials service to the client. Profile
+// resolution and chat-plane / owner isolation are handled in getRequestProfile
+// (services/request-context), which scopes the request to an owner-owned
+// profile and is excluded from chat-plane forbidden paths.
+// ---------------------------------------------------------------------------
+
+function getHeader(ctx: Context, name: string): string {
+  return typeof ctx.get === 'function' ? ctx.get(name) : ''
+}
+
+function firstForwardedHeader(value: string): string {
+  return value.split(',')[0]?.trim() || ''
+}
+
+function externalRequestOrigin(ctx: Context): string {
+  const forwardedProto = firstForwardedHeader(getHeader(ctx, 'x-forwarded-proto'))
+  const forwardedHost = firstForwardedHeader(getHeader(ctx, 'x-forwarded-host'))
+  if (forwardedProto && forwardedHost) {
+    try {
+      return new URL(`${forwardedProto}://${forwardedHost}`).origin
+    } catch {
+      // Fall through to Koa's origin below.
+    }
+  }
+  return typeof ctx.origin === 'string' ? ctx.origin : ''
+}
+
+function getOptionalFeishuUser(ctx: Context): WebUser | undefined {
+  const user = ctx.state?.user as WebUser | undefined
+  return user?.profile && user?.openid ? user : undefined
+}
+
+function brokerHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
+  return headers
+}
+
+function brokerUrl(path: string): string {
+  if (!config.runBrokerUrl) {
+    const err: any = new Error('HERMES_RUN_BROKER_URL is required for Feishu UAT auth')
+    err.status = 503
+    throw err
+  }
+  return `${config.runBrokerUrl}${path}`
+}
+
+async function pipeBrokerJson(ctx: Context, res: Response): Promise<void> {
+  const body = await res.json().catch(async () => ({ error: await res.text().catch(() => 'Broker request failed') }))
+  ctx.status = res.status
+  ctx.body = body
+}
+
+function handleUatProxyError(ctx: Context, err: any): void {
+  ctx.status = typeof err?.status === 'number' ? err.status : 500
+  ctx.body = { error: err?.message || 'Feishu UAT auth failed' }
+}
+
+async function fetchFeishuUatStatusForUser(user: WebUser, requiredScopes = ''): Promise<Record<string, any>> {
+  const params = new URLSearchParams()
+  params.set('profile_name', user.profile)
+  params.set('user_key', user.openid)
+  if (requiredScopes) params.set('required_scopes', requiredScopes)
+  const res = await fetch(brokerUrl(`/api/run-broker/credentials/feishu/uat/status?${params.toString()}`), {
+    method: 'GET',
+    headers: brokerHeaders(),
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err: any = new Error(body?.error || 'Feishu UAT status failed')
+    err.status = res.status
+    throw err
+  }
+  return body
+}
+
+/**
+ * GET /api/auth/skill-credentials
+ * Summarize first-party skill credential status for the request profile.
+ */
+export async function skillCredentialsStatus(ctx: Context) {
+  try {
+    const user = getOptionalFeishuUser(ctx)
+    const profileName = getRequestProfile(ctx)
+    let larkStatus: Record<string, any> | null = null
+    if (user) {
+      try {
+        larkStatus = await fetchFeishuUatStatusForUser(user)
+      } catch (err) {
+        logger.warn(err, 'Failed to load Lark-cli credential status for credentials page')
+      }
+    }
+    ctx.status = 200
+    ctx.body = await listSkillCredentialStatuses({
+      profileName,
+      profileDir: getProfileDir(profileName),
+      user,
+      larkStatus,
+    })
+  } catch (err: any) {
+    handleUatProxyError(ctx, err)
+  }
+}
+
+/**
+ * POST /api/auth/skill-credentials/:id/start
+ * Start the authorization flow for a single skill credential.
+ */
+export async function skillCredentialStart(ctx: Context) {
+  try {
+    const user = getOptionalFeishuUser(ctx)
+    const profileName = getRequestProfile(ctx)
+    const id = String(ctx.params?.id || '').trim()
+    if (!id) {
+      ctx.status = 400
+      ctx.body = { error: 'credential id is required' }
+      return
+    }
+    const normalized = id.toLowerCase() === 'lark_cli' ? 'lark-cli' : id.toLowerCase()
+    if (normalized === 'lark-cli') {
+      if (!user) {
+        ctx.status = 401
+        ctx.body = { error: 'Feishu user session is required for Lark-cli authorization' }
+        return
+      }
+      const body = (ctx.request.body || {}) as { scope?: unknown }
+      const payload: Record<string, string> = {
+        profile_name: user.profile,
+        user_key: user.openid,
+      }
+      if (typeof body.scope === 'string' && body.scope.trim()) payload.scope = body.scope.trim()
+      const res = await fetch(brokerUrl('/api/run-broker/feishu-auth/sessions'), {
+        method: 'POST',
+        headers: brokerHeaders(),
+        body: JSON.stringify(payload),
+      })
+      await pipeBrokerJson(ctx, res)
+      return
+    }
+    if (normalized === 'keep-record') {
+      ctx.status = 200
+      ctx.body = await startKeepRecordAuth({
+        id,
+        profileName,
+        profileDir: getProfileDir(profileName),
+      })
+      return
+    }
+    if (normalized === 'kep-cli' || normalized === 'keep-cli') {
+      ctx.status = 200
+      ctx.body = await startKepCliAuth({
+        id,
+        profileName,
+        profileDir: getProfileDir(profileName),
+        publicOrigin: externalRequestOrigin(ctx),
+      })
+      return
+    }
+    if (normalized === 'feishu-project-mcp' || normalized === 'feishu_project_mcp' || normalized === 'feishu-project') {
+      ctx.status = 200
+      ctx.body = await startFeishuProjectAuth({
+        id,
+        profileName,
+        profileDir: getProfileDir(profileName),
+        publicOrigin: externalRequestOrigin(ctx),
+      })
+      return
+    }
+    ctx.status = 200
+    ctx.body = await getSkillCredentialStartAction({
+      id,
+      profileName,
+      profileDir: getProfileDir(profileName),
+    })
+  } catch (err: any) {
+    handleUatProxyError(ctx, err)
+  }
+}
+
+/**
+ * GET /api/auth/kep-cli/callback/:sessionId
+ * Public OAuth callback for the kep-cli browser authorization flow.
+ */
+export async function kepCliCallback(ctx: Context) {
+  try {
+    const sessionId = String(ctx.params?.sessionId || '').trim()
+    const result = await completeKepCliAuthCallback({
+      sessionId,
+      query: ctx.querystring || '',
+    })
+    ctx.status = 200
+    ctx.type = 'html'
+    ctx.body = result.body || '<!doctype html><meta charset="utf-8"><title>kep-cli authenticated</title><p>kep-cli authentication completed. You can close this window.</p>'
+  } catch (err: any) {
+    ctx.status = typeof err?.status === 'number' ? err.status : 500
+    ctx.body = { error: err?.message || 'kep-cli OAuth callback failed' }
+  }
+}
+
+/**
+ * POST /api/auth/skill-credentials/:id/complete
+ * Complete a QR-based credential flow (Keep-record).
+ */
+export async function skillCredentialComplete(ctx: Context) {
+  try {
+    const profileName = getRequestProfile(ctx)
+    const id = String(ctx.params?.id || '').trim()
+    const normalized = id.toLowerCase() === 'lark_cli' ? 'lark-cli' : id.toLowerCase()
+    if (normalized !== 'keep-record') {
+      ctx.status = 400
+      ctx.body = { error: 'credential completion is not supported for this skill' }
+      return
+    }
+    const body = (ctx.request.body || {}) as { qrcode_id?: unknown }
+    const qrcodeId = typeof body.qrcode_id === 'string' ? body.qrcode_id.trim() : ''
+    if (!qrcodeId) {
+      ctx.status = 400
+      ctx.body = { error: 'qrcode_id is required' }
+      return
+    }
+    ctx.status = 200
+    ctx.body = await completeKeepRecordAuth({
+      id,
+      profileName,
+      profileDir: getProfileDir(profileName),
+      qrcodeId,
+    })
+  } catch (err: any) {
+    handleUatProxyError(ctx, err)
+  }
 }

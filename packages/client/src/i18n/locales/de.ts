@@ -1805,6 +1805,13 @@ jobTriggered: 'Job ausgelost',
     otherSkills: 'Andere Skills',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: 'Interne Systeme',
+      otherCredentials: 'Andere Anmeldedaten',
+    },
+  },
+
   // Anderungsprotokoll
   changelog: {
     new_0_6_15_1: 'Chat-Seitenleisten wurden neu gestaltet, und die Historien-Ladecontrols machen lange Unterhaltungen leichter navigierbar',

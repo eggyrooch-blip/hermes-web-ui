@@ -1,27 +1,80 @@
 import Router from '@koa/router'
+import type { Context } from 'koa'
+import { mkdir } from 'fs/promises'
+import { join, normalize, resolve } from 'path'
 import {
   createFileProvider,
+  LocalFileProvider,
   resolveHermesPath,
-  isSensitivePath,
   MAX_EDIT_SIZE,
 } from '../../services/hermes/file-provider'
 import { requireSuperAdmin } from '../../middleware/user-auth'
+import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 import { MultipartParseError, parseMultipartBoundary, parseMultipartFilename, splitMultipart } from '../../lib/multipart'
 
 function requestedProfile(ctx: any): string | undefined {
   return ctx.state?.profile?.name
 }
 
-function resolveRequestPath(ctx: any, relativePath: string): string {
+// Fork's chat-plane isolation predicate. The upstream `isSensitivePath` only
+// blocks `.env`/`auth.json` basenames; the fork additionally blocks `config.yaml`
+// and any path containing a credentials/tokens/.ssh/feishu_uat segment so a
+// Feishu user can never reach root/profile config or materialized secrets even
+// inside their own workspace. Kept local because we may only edit this file.
+const SENSITIVE_FILE_NAMES = new Set(['.env', 'auth.json', 'config.yaml'])
+const SENSITIVE_PATH_PARTS = new Set(['credentials', 'tokens', '.ssh', 'feishu_uat'])
+
+function isSensitivePath(relativePath: string): boolean {
+  const parts = relativePath.replace(/\\/g, '/').split('/').filter(Boolean)
+  const fileName = parts[parts.length - 1] || ''
+  return SENSITIVE_FILE_NAMES.has(fileName) || parts.some(part => SENSITIVE_PATH_PARTS.has(part))
+}
+
+// Chat-plane requests are scoped to the bound profile's `workspace` subdir so a
+// Feishu user can never read/write the profile home, root config, sibling
+// profiles, or materialized credentials. Admin/JWT requests keep the upstream
+// profile-home behavior (rootDir undefined → resolve via resolveHermesPath).
+async function getFileRootDir(ctx: Context): Promise<string | undefined> {
+  if (!isChatPlaneRequest(ctx)) return undefined
+  const workspaceDir = join(getRequestProfileDir(ctx), 'workspace')
+  await mkdir(workspaceDir, { recursive: true })
+  return workspaceDir
+}
+
+// Resolve a caller-supplied relative path. When a chat-plane rootDir is in
+// effect the path is confined to that workspace (traversal-checked); otherwise
+// fall back to the upstream profile-home resolution.
+function resolveFilePath(ctx: any, relativePath: string, rootDir?: string): string {
+  if (rootDir) {
+    if (!relativePath || relativePath === '.' || relativePath === '/') {
+      return rootDir
+    }
+    const normalized = normalize(relativePath).replace(/\\/g, '/')
+    if (normalized.startsWith('..') || normalized.includes('/../') || normalized.startsWith('/')) {
+      throw Object.assign(new Error('Invalid file path'), { code: 'invalid_path' })
+    }
+    const resolved = resolve(rootDir, normalized)
+    if (resolved !== rootDir && !resolved.startsWith(rootDir + '/')) {
+      throw Object.assign(new Error('Path traversal detected'), { code: 'invalid_path' })
+    }
+    return resolved
+  }
   return resolveHermesPath(relativePath, requestedProfile(ctx))
 }
 
-async function createRequestFileProvider(ctx: any) {
-  return createFileProvider(requestedProfile(ctx))
+async function createRequestFileProvider(ctx: any, rootDir?: string) {
+  return rootDir ? new LocalFileProvider(rootDir) : createFileProvider(requestedProfile(ctx))
 }
 
-function withAbsolutePath<T extends { path: string }>(ctx: any, entry: T): T & { absolutePath: string } {
-  return { ...entry, absolutePath: resolveRequestPath(ctx, entry.path) }
+function withAbsolutePath<T extends { path: string }>(ctx: any, entry: T, rootDir?: string): T & { absolutePath: string } {
+  return { ...entry, absolutePath: resolveFilePath(ctx, entry.path, rootDir) }
+}
+
+function denySensitivePath(ctx: Context, relativePath: string, action = 'access'): boolean {
+  if (!isSensitivePath(relativePath)) return false
+  ctx.status = 403
+  ctx.body = { error: `Cannot ${action} sensitive file`, code: 'permission_denied' }
+  return true
 }
 
 export const fileRoutes = new Router()
@@ -49,15 +102,18 @@ function handleError(ctx: any, err: any) {
 // GET /api/hermes/files/list?path=
 fileRoutes.get('/api/hermes/files/list', async (ctx) => {
   const relativePath = (ctx.query.path as string) || ''
+  if (relativePath && denySensitivePath(ctx, relativePath)) return
   try {
-    const absPath = resolveRequestPath(ctx, relativePath)
-    const provider = await createRequestFileProvider(ctx)
-    const entries = await provider.listDir(absPath)
+    const rootDir = await getFileRootDir(ctx)
+    const absPath = resolveFilePath(ctx, relativePath, rootDir)
+    const provider = await createRequestFileProvider(ctx, rootDir)
+    const entries = (await provider.listDir(absPath))
+      .filter(entry => !isSensitivePath(entry.path || entry.name))
     entries.sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
       return a.name.localeCompare(b.name)
     })
-    ctx.body = { entries: entries.map(entry => withAbsolutePath(ctx, entry)), path: relativePath, absolutePath: absPath }
+    ctx.body = { entries: entries.map(entry => withAbsolutePath(ctx, entry, rootDir)), path: relativePath, absolutePath: absPath }
   } catch (err: any) {
     handleError(ctx, err)
   }
@@ -71,11 +127,13 @@ fileRoutes.get('/api/hermes/files/stat', async (ctx) => {
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
+  if (denySensitivePath(ctx, relativePath)) return
   try {
-    const absPath = resolveRequestPath(ctx, relativePath)
-    const provider = await createRequestFileProvider(ctx)
+    const rootDir = await getFileRootDir(ctx)
+    const absPath = resolveFilePath(ctx, relativePath, rootDir)
+    const provider = await createRequestFileProvider(ctx, rootDir)
     const info = await provider.stat(absPath)
-    ctx.body = withAbsolutePath(ctx, info)
+    ctx.body = withAbsolutePath(ctx, info, rootDir)
   } catch (err: any) {
     handleError(ctx, err)
   }
@@ -89,9 +147,11 @@ fileRoutes.get('/api/hermes/files/read', requireSuperAdmin, async (ctx) => {
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
+  if (denySensitivePath(ctx, relativePath)) return
   try {
-    const absPath = resolveRequestPath(ctx, relativePath)
-    const provider = await createRequestFileProvider(ctx)
+    const rootDir = await getFileRootDir(ctx)
+    const absPath = resolveFilePath(ctx, relativePath, rootDir)
+    const provider = await createRequestFileProvider(ctx, rootDir)
     const data = await provider.readFile(absPath)
     if (data.length > MAX_EDIT_SIZE) {
       ctx.status = 413
@@ -112,11 +172,7 @@ fileRoutes.put('/api/hermes/files/write', requireSuperAdmin, async (ctx) => {
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
-  if (isSensitivePath(relativePath)) {
-    ctx.status = 403
-    ctx.body = { error: 'Cannot modify sensitive file', code: 'permission_denied' }
-    return
-  }
+  if (denySensitivePath(ctx, relativePath, 'modify')) return
   try {
     const buf = Buffer.from(content || '', 'utf-8')
     if (buf.length > MAX_EDIT_SIZE) {
@@ -124,8 +180,9 @@ fileRoutes.put('/api/hermes/files/write', requireSuperAdmin, async (ctx) => {
       ctx.body = { error: 'Content too large', code: 'file_too_large' }
       return
     }
-    const absPath = resolveRequestPath(ctx, relativePath)
-    const provider = await createRequestFileProvider(ctx)
+    const rootDir = await getFileRootDir(ctx)
+    const absPath = resolveFilePath(ctx, relativePath, rootDir)
+    const provider = await createRequestFileProvider(ctx, rootDir)
     await provider.writeFile(absPath, buf)
     ctx.body = { ok: true, path: relativePath }
   } catch (err: any) {
@@ -135,20 +192,20 @@ fileRoutes.put('/api/hermes/files/write', requireSuperAdmin, async (ctx) => {
 
 // DELETE /api/hermes/files/delete  body: { path, recursive? }
 fileRoutes.delete('/api/hermes/files/delete', requireSuperAdmin, async (ctx) => {
-  const { path: relativePath, recursive } = (ctx.request.body || {}) as { path?: string; recursive?: boolean }
+  const body = (ctx.request.body || {}) as { path?: string; recursive?: boolean }
+  const query = (ctx.query || {}) as { path?: string; recursive?: string }
+  const relativePath = body.path || (query.path as string)
+  const recursive = body.recursive ?? query.recursive === 'true'
   if (!relativePath) {
     ctx.status = 400
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
-  if (isSensitivePath(relativePath)) {
-    ctx.status = 403
-    ctx.body = { error: 'Cannot delete sensitive file', code: 'permission_denied' }
-    return
-  }
+  if (denySensitivePath(ctx, relativePath, 'delete')) return
   try {
-    const absPath = resolveRequestPath(ctx, relativePath)
-    const provider = await createRequestFileProvider(ctx)
+    const rootDir = await getFileRootDir(ctx)
+    const absPath = resolveFilePath(ctx, relativePath, rootDir)
+    const provider = await createRequestFileProvider(ctx, rootDir)
     if (recursive) {
       await provider.deleteDir(absPath)
     } else {
@@ -168,15 +225,13 @@ fileRoutes.post('/api/hermes/files/rename', requireSuperAdmin, async (ctx) => {
     ctx.body = { error: 'Missing oldPath or newPath', code: 'missing_path' }
     return
   }
-  if (isSensitivePath(oldPath)) {
-    ctx.status = 403
-    ctx.body = { error: 'Cannot rename sensitive file', code: 'permission_denied' }
-    return
-  }
+  if (denySensitivePath(ctx, oldPath, 'rename')) return
+  if (denySensitivePath(ctx, newPath, 'rename into')) return
   try {
-    const absOld = resolveRequestPath(ctx, oldPath)
-    const absNew = resolveRequestPath(ctx, newPath)
-    const provider = await createRequestFileProvider(ctx)
+    const rootDir = await getFileRootDir(ctx)
+    const absOld = resolveFilePath(ctx, oldPath, rootDir)
+    const absNew = resolveFilePath(ctx, newPath, rootDir)
+    const provider = await createRequestFileProvider(ctx, rootDir)
     await provider.renameFile(absOld, absNew)
     ctx.body = { ok: true }
   } catch (err: any) {
@@ -192,9 +247,11 @@ fileRoutes.post('/api/hermes/files/mkdir', requireSuperAdmin, async (ctx) => {
     ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
     return
   }
+  if (denySensitivePath(ctx, relativePath, 'create')) return
   try {
-    const absPath = resolveRequestPath(ctx, relativePath)
-    const provider = await createRequestFileProvider(ctx)
+    const rootDir = await getFileRootDir(ctx)
+    const absPath = resolveFilePath(ctx, relativePath, rootDir)
+    const provider = await createRequestFileProvider(ctx, rootDir)
     await provider.mkDir(absPath)
     ctx.body = { ok: true }
   } catch (err: any) {
@@ -210,10 +267,13 @@ fileRoutes.post('/api/hermes/files/copy', requireSuperAdmin, async (ctx) => {
     ctx.body = { error: 'Missing srcPath or destPath', code: 'missing_path' }
     return
   }
+  if (denySensitivePath(ctx, srcPath, 'copy')) return
+  if (denySensitivePath(ctx, destPath, 'copy into')) return
   try {
-    const absSrc = resolveRequestPath(ctx, srcPath)
-    const absDest = resolveRequestPath(ctx, destPath)
-    const provider = await createRequestFileProvider(ctx)
+    const rootDir = await getFileRootDir(ctx)
+    const absSrc = resolveFilePath(ctx, srcPath, rootDir)
+    const absDest = resolveFilePath(ctx, destPath, rootDir)
+    const provider = await createRequestFileProvider(ctx, rootDir)
     await provider.copyFile(absSrc, absDest)
     ctx.body = { ok: true }
   } catch (err: any) {
@@ -243,7 +303,8 @@ fileRoutes.post('/api/hermes/files/upload', requireSuperAdmin, async (ctx) => {
   const raw = Buffer.concat(chunks)
 
   const parts = splitMultipart(raw, boundaryBuf)
-  const provider = await createRequestFileProvider(ctx)
+  const rootDir = await getFileRootDir(ctx)
+  const provider = await createRequestFileProvider(ctx, rootDir)
   const results: { name: string; path: string }[] = []
 
   for (const part of parts) {
@@ -279,7 +340,7 @@ fileRoutes.post('/api/hermes/files/upload', requireSuperAdmin, async (ctx) => {
       return
     }
 
-    const absPath = resolveRequestPath(ctx, filePath)
+    const absPath = resolveFilePath(ctx, filePath, rootDir)
     await provider.writeFile(absPath, data)
     results.push({ name: filename, path: filePath })
   }

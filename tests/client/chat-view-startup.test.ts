@@ -5,8 +5,18 @@ import { nextTick } from 'vue'
 
 const loadModelsMock = vi.hoisted(() => vi.fn())
 const loadSessionsMock = vi.hoisted(() => vi.fn())
+const setRuntimeModeMock = vi.hoisted(() => vi.fn())
+const switchSessionMock = vi.hoisted(() => vi.fn())
+const chatState = vi.hoisted(() => ({
+  sessionProfileFilter: 'tester',
+  activeSessionId: null as string | null,
+  activeSession: null as { title?: string } | null,
+  sessionsLoaded: false,
+  sessions: [] as Array<{ id: string }>,
+}))
 const fetchProfilesMock = vi.hoisted(() => vi.fn())
 const fetchSettingsMock = vi.hoisted(() => vi.fn())
+const routerReplaceMock = vi.hoisted(() => vi.fn())
 const routeState = vi.hoisted(() => ({
   params: {} as Record<string, unknown>,
   query: {} as Record<string, unknown>,
@@ -25,6 +35,13 @@ vi.mock('@/stores/hermes/app', () => ({
 vi.mock('@/stores/hermes/chat', () => ({
   useChatStore: () => ({
     loadSessions: loadSessionsMock,
+    setRuntimeMode: setRuntimeModeMock,
+    switchSession: switchSessionMock,
+    get sessionProfileFilter() { return chatState.sessionProfileFilter },
+    get activeSessionId() { return chatState.activeSessionId },
+    get activeSession() { return chatState.activeSession },
+    get sessionsLoaded() { return chatState.sessionsLoaded },
+    get sessions() { return chatState.sessions },
   }),
 }))
 
@@ -42,6 +59,7 @@ vi.mock('@/stores/hermes/settings', () => ({
 
 vi.mock('vue-router', () => ({
   useRoute: () => routeState,
+  useRouter: () => ({ replace: routerReplaceMock }),
 }))
 
 import ChatView from '@/views/hermes/ChatView.vue'
@@ -61,9 +79,17 @@ describe('ChatView startup', () => {
     fetchSettingsMock.mockResolvedValue(undefined)
     routeState.params = {}
     routeState.query = {}
+    chatState.sessionProfileFilter = 'tester'
+    chatState.activeSessionId = null
+    chatState.activeSession = null
+    chatState.sessionsLoaded = false
+    chatState.sessions = []
   })
 
-  it('starts loading sessions without waiting for the slower profile list', async () => {
+  it('loads profiles first, then sessions once the profile fetch resolves', async () => {
+    // Upstream intentionally awaits the profile/settings fetch BEFORE loading
+    // sessions, so the cache key uses the correct profile name. While the profile
+    // promise is still pending, sessions must NOT have been loaded yet.
     const profiles = deferred()
     fetchProfilesMock.mockReturnValue(profiles.promise)
     fetchSettingsMock.mockResolvedValue(undefined)
@@ -73,12 +99,21 @@ describe('ChatView startup', () => {
     await Promise.resolve()
 
     expect(fetchProfilesMock).toHaveBeenCalled()
+    expect(loadSessionsMock).not.toHaveBeenCalled()
+
+    profiles.resolve()
+    await nextTick()
+    await Promise.resolve()
+    await Promise.resolve()
+
     expect(loadSessionsMock).toHaveBeenCalled()
   })
 
-  it('loads the route-selected session with its profile query', async () => {
+  it('loads the route-selected session using the store profile filter', async () => {
+    // Upstream loadRouteSession threads chatStore.sessionProfileFilter (not the
+    // route query) as the profile arg into loadSessions, alongside the route sessionId.
     routeState.params = { sessionId: 'session-9' }
-    routeState.query = { profile: 'tester' }
+    chatState.sessionProfileFilter = 'tester'
 
     mount(ChatView)
     await nextTick()

@@ -10,7 +10,7 @@ vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
   getProfileDir: () => tmpRoot,
 }))
 
-import { buildResponsesInput } from '../../packages/server/src/services/hermes/chat-run-socket'
+import { buildResponsesInput } from '../../packages/server/src/services/hermes/broker-controller'
 
 function stageUpload(name: string, body: string) {
   const dir = join(tmpRoot, 'workspace', 'uploads')

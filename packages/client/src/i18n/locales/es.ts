@@ -1805,6 +1805,13 @@ jobTriggered: 'Job ejecutado',
     otherSkills: 'Otras habs.',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: 'Sistemas internos',
+      otherCredentials: 'Otras credenciales',
+    },
+  },
+
   // Registro de cambios
   changelog: {
     new_0_6_15_1: 'Las barras laterales del chat se redisenaron y los controles de carga del historial facilitan navegar conversaciones largas',

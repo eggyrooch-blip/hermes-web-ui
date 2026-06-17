@@ -18,6 +18,7 @@ import type { UsageStatsModelRow, UsageStatsDailyRow } from '../../db/hermes/usa
 import { getModelContextLength } from '../../services/hermes/model-context'
 import { getActiveProfileName, listProfileNamesFromDisk } from '../../services/hermes/hermes-profile'
 import { isPathWithin } from '../../services/hermes/hermes-path'
+import { getRequestProfile, isChatPlaneRequest } from '../../services/request-context'
 import { getGroupChatServer } from '../../routes/hermes/group-chat'
 import { logger } from '../../services/logger'
 import type { ConversationSummary } from '../../services/hermes/conversations'
@@ -294,7 +295,9 @@ export async function listConversations(ctx: any) {
   const source = (ctx.query.source as string) || undefined
   const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
 
-  const profile = explicitProfileFilter(ctx)
+  // Chat plane is bound to the caller's owned profile; never honor a raw
+  // ?profile= selector that could reach another tenant's conversations.
+  const profile = isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : explicitProfileFilter(ctx)
   const sessions = localListSessions(profile, source, limit && limit > 0 ? limit : 200)
   const summaries: ConversationSummary[] = sessions.map(s => ({
     id: s.id,
@@ -363,7 +366,7 @@ export async function getConversationMessages(ctx: any) {
 export async function list(ctx: any) {
   const source = (ctx.query.source as string) || undefined
   const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
-  const profile = explicitProfileFilter(ctx)
+  const profile = isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : explicitProfileFilter(ctx)
   const effectiveLimit = limit && limit > 0 ? limit : 2000
 
   const allSessions = localListSessions(profile, source, effectiveLimit)
@@ -383,7 +386,7 @@ export async function list(ctx: any) {
 export async function listHermesSessions(ctx: any) {
   const source = (ctx.query.source as string) || undefined
   const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
-  const profile = requestedProfile(ctx)
+  const profile = isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : requestedProfile(ctx)
   const effectiveLimit = limit && limit > 0 ? limit : 2000
 
   const importedIds = new Set(localListSessions(profile, undefined, effectiveLimit).map(session => session.id))
@@ -399,7 +402,7 @@ export async function search(ctx: any) {
   const q = typeof ctx.query.q === 'string' ? ctx.query.q : ''
   const source = (ctx.query.source as string) || undefined
   const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
-  const profile = explicitProfileFilter(ctx)
+  const profile = isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : explicitProfileFilter(ctx)
   const results = localSearchSessions(profile, q, limit && limit > 0 ? limit : 20)
   const knownProfiles = profile ? null : new Set(listProfileNamesFromDisk())
   ctx.body = {
@@ -426,7 +429,7 @@ export async function get(ctx: any) {
  * GET /api/hermes/sessions/hermes/:id
  */
 export async function getHermesSession(ctx: any) {
-  const profile = requestedProfile(ctx)
+  const profile = isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : requestedProfile(ctx)
 
   // Prefer the Web UI local session store. Hermes state.db can lag behind or
   // miss messages for Bridge-backed runs, while the local store is the source
@@ -473,7 +476,9 @@ export async function getHermesSession(ctx: any) {
 
 export async function importHermesSession(ctx: any) {
   const sessionId = ctx.params.id
-  const profile = requestedProfile(ctx) || getActiveProfileName()
+  const profile = isChatPlaneRequest(ctx)
+    ? getRequestProfile(ctx)
+    : (requestedProfile(ctx) || getActiveProfileName())
   if (!canAccessProfile(ctx, profile)) {
     ctx.status = 403
     ctx.body = { error: `Profile "${profile || 'default'}" is not available for this user` }
@@ -718,7 +723,8 @@ export async function setWorkspace(ctx: any) {
   const existing = getSession(id)
   if (denySessionAccess(ctx, existing)) return
   if (!existing) {
-    createSession({ id, profile: requestedProfile(ctx) || 'default', title: '' })
+    const newProfile = isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : (requestedProfile(ctx) || 'default')
+    createSession({ id, profile: newProfile, title: '' })
   }
   updateSession(id, { workspace: workspace || null } as any)
   ctx.body = { ok: true }
@@ -740,7 +746,9 @@ export async function setModel(ctx: any) {
   const id = ctx.params.id
   const existing = getSession(id)
   if (denySessionAccess(ctx, existing)) return
-  const profile = existing?.profile || requestedProfile(ctx) || 'default'
+  const profile = existing?.profile
+    || (isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : requestedProfile(ctx))
+    || 'default'
   if (!existing) {
     createSession({ id, profile, title: '' })
   }
@@ -761,7 +769,10 @@ export async function contextLength(ctx: any) {
 export async function usageStats(ctx: any) {
   const rawDays = parseInt(String(ctx.query?.days ?? '30'), 10)
   const days = Number.isFinite(rawDays) && rawDays > 0 ? Math.min(rawDays, 365) : 30
-  const profile = requestedProfile(ctx)
+  const chatPlane = isChatPlaneRequest(ctx)
+  // In chat plane the request is bound to the caller's owned profile; cost and
+  // raw api-call totals are owner-only details and must never reach the chat UI.
+  const profile = chatPlane ? getRequestProfile(ctx) : requestedProfile(ctx)
 
   let hermes = {
     input_tokens: 0,
@@ -795,7 +806,7 @@ export async function usageStats(ctx: any) {
     if (existing) {
       existing.input_tokens += d.input_tokens; existing.output_tokens += d.output_tokens
       existing.cache_read_tokens += d.cache_read_tokens; existing.cache_write_tokens += d.cache_write_tokens
-      existing.sessions += d.sessions; existing.errors += d.errors; existing.cost += d.cost
+      existing.sessions += d.sessions; existing.errors += d.errors; existing.cost += chatPlane ? 0 : d.cost
     }
   }
 
@@ -806,8 +817,8 @@ export async function usageStats(ctx: any) {
     total_cache_write_tokens: hermes.cache_write_tokens,
     total_reasoning_tokens: hermes.reasoning_tokens,
     total_sessions: hermes.sessions,
-    total_cost: hermes.cost,
-    total_api_calls: hermes.total_api_calls,
+    total_cost: chatPlane ? 0 : hermes.cost,
+    ...(chatPlane ? {} : { total_api_calls: hermes.total_api_calls }),
     period_days: days,
     model_usage: hermes.by_model.sort((a, b) => (b.input_tokens + b.output_tokens) - (a.input_tokens + a.output_tokens)),
     daily_usage: [...dayMap.values()],
@@ -1064,7 +1075,7 @@ function serializeAsText(title: string | null, messages: any[]): string {
 export async function getConversationMessagesPaginated(ctx: any) {
   const offset = ctx.query.offset ? parseInt(ctx.query.offset as string, 10) : 0
   const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : 150
-  const profile = requestedProfile(ctx)
+  const profile = isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : requestedProfile(ctx)
 
   const { getSessionDetailPaginated } = await import('../../db/hermes/session-store')
   const localResult = getSessionDetailPaginated(ctx.params.id, offset, limit)

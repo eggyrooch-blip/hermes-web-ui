@@ -31,6 +31,8 @@ import { startOutboundRelayClient } from './services/global-agent/outbound-relay
 import { logger } from './services/logger'
 import { createStaticCompressionMiddleware } from './middleware/static-compression'
 import { requireUserJwt, resolveUserProfile } from './middleware/user-auth'
+import { feishuOAuthAuth } from './services/feishu-oauth'
+import { trustedFeishuAuth, enforcePlaneAccess } from './services/request-context'
 import { createCorsOriginResolver, securityHeaders } from './security'
 import type { ShutdownHandler } from './services/shutdown'
 
@@ -306,9 +308,21 @@ export async function bootstrap() {
 
   registerDesktopShutdownRoute(app)
 
-  // Register all routes (handles auth internally)
-  registerRoutes(app, [requireUserJwt, resolveUserProfile])
-  console.log('[bootstrap] routes registered')
+  // Register all routes (handles auth internally).
+  // Fork: in Feishu chat-plane deployments the HTTP auth chain is the security
+  // linchpin — feishu cookie auth (which maps the openid into a real user-store
+  // identity via the compat plane) THEN enforcePlaneAccess, which blocklists
+  // admin/host endpoints (gateways/logs/cron/profiles-writes/credentials/...) for
+  // tenant requests. Dropping enforcePlaneAccess while wiring feishu auth would let
+  // a tenant reach admin endpoints, so the two are wired together, per authMode.
+  // Non-Feishu (token/JWT) deployments keep upstream's plain JWT chain.
+  const authChain = config.authMode === 'feishu-oauth-dev'
+    ? [feishuOAuthAuth, enforcePlaneAccess]
+    : config.authMode === 'trusted-feishu'
+      ? [trustedFeishuAuth, enforcePlaneAccess]
+      : [requireUserJwt, resolveUserProfile]
+  registerRoutes(app, authChain)
+  console.log(`[bootstrap] routes registered (authMode=${config.authMode})`)
 
   // SPA fallback
   const distDir = resolve(__dirname, '..', 'client')

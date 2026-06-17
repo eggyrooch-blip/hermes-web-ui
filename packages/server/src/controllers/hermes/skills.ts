@@ -10,13 +10,21 @@ import {
 import type { SkillSource } from '../../services/config-helpers'
 import { isPathWithin } from '../../services/hermes/hermes-path'
 import { getActiveProfileName, getProfileDir } from '../../services/hermes/hermes-profile'
+import { getRequestProfile, getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 import { getSkillUsageStatsFromDb } from '../../db/hermes/sessions-db'
 
+// Chat-plane isolation (fork): when a request arrives on the chat plane it is
+// bound to the caller's own profile (resolved from ctx.state.user.profile via
+// the multitenancy routing table). Admin/JWT requests keep the upstream
+// active-profile behaviour. Isolation is applied ONLY when isChatPlaneRequest
+// is true so the non-chat-plane path is byte-for-byte upstream.
 function requestedProfile(ctx: any): string {
+  if (isChatPlaneRequest(ctx)) return getRequestProfile(ctx)
   return ctx.state?.profile?.name || getActiveProfileName() || 'default'
 }
 
 function requestProfileDir(ctx: any): string {
+  if (isChatPlaneRequest(ctx)) return getRequestProfileDir(ctx)
   return getProfileDir(requestedProfile(ctx))
 }
 
@@ -240,7 +248,7 @@ async function resolveSkillDirFromConfig(
  * or by containing subdirectories with SKILL.md (three-level pattern).
  * Skills without a parent category (flat skills) are grouped under the "misc" category.
  */
-async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, string>, hubNames: Set<string>, disabledList: string[], usageStats: Map<string, UsageStats>) {
+async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, string>, hubNames: Set<string>, disabledList: string[], usageStats: Map<string, UsageStats>, chatPlane = false) {
   const allEntries = await readdir(skillsDir, { withFileTypes: true })
   const dirNames = allEntries
     .filter(e => e.isDirectory() && !e.name.startsWith('.'))
@@ -292,7 +300,11 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
         if (skillMd) {
           const source = getSkillSource(entry.name, bundledManifest, hubNames)
           let modified = false
-          if (source === 'builtin') {
+          // The builtin-modified check is an admin-only signal: it requires
+          // hashing the skill dir against the global bundled manifest. On the
+          // chat plane the bound profile is not authoritative for that manifest,
+          // so skip it (fork parity: never surface `modified` to chat-plane users).
+          if (source === 'builtin' && !chatPlane) {
             const manifestHash = bundledManifest.get(entry.name)
             if (manifestHash) {
               const currentHash = await dirHash(entryPath)
@@ -415,6 +427,7 @@ function mergeExternalCategories(categories: any[], externalCategories: any[]): 
 }
 
 export async function list(ctx: any) {
+  const chatPlane = isChatPlaneRequest(ctx)
   const skillsDir = requestSkillsDir(ctx)
   try {
     const config = await readConfigYamlForProfile(requestedProfile(ctx))
@@ -426,7 +439,7 @@ export async function list(ctx: any) {
     const usageStats = readUsageStats(await safeReadFile(join(skillsDir, '.usage.json')))
 
     // Scan all skills (supports both two-level and three-level directory structures)
-    let categories = await scanSkillsDir(skillsDir, bundledManifest, hubNames, disabledList, usageStats)
+    let categories = await scanSkillsDir(skillsDir, bundledManifest, hubNames, disabledList, usageStats, chatPlane)
     // Map resolved → raw so we can attach the user-written path (e.g. ~/...) to
     // each external skill — the SkillsView groups by this when the external
     // filter is active.

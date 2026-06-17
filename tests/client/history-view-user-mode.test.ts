@@ -1,21 +1,38 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { reactive } from 'vue'
 import { mount } from '@vue/test-utils'
 
 const fetchHermesSessionsMock = vi.hoisted(() => vi.fn())
 const fetchHermesSessionMock = vi.hoisted(() => vi.fn())
 const renameSessionMock = vi.hoisted(() => vi.fn())
 const setSessionWorkspaceMock = vi.hoisted(() => vi.fn())
-const routerPushMock = vi.hoisted(() => vi.fn())
-const routerReplaceMock = vi.hoisted(() => vi.fn())
-const routeState = vi.hoisted(() => ({
+// Rebaseline: upstream HistoryView no longer loads the auto-selected session
+// directly — it navigates (router.push) and a watch on the route drives the
+// load. To keep the auto-load semantics genuinely exercised, the router
+// push/replace mocks mutate routeState (a reactive object), simulating the real
+// router updating the route and re-triggering the component's route watch.
+// `reactive` is an import, so it can't run inside vi.hoisted (which executes
+// before imports) — routeState is wrapped reactive after imports resolve.
+const routeState = reactive({
   params: {} as Record<string, unknown>,
   query: {} as Record<string, unknown>,
-}))
+})
+const routerPushMock = vi.hoisted(() => vi.fn())
+const routerReplaceMock = vi.hoisted(() => vi.fn())
+function applyRouterLocation(location?: any) {
+  routeState.params = location?.params ? { ...location.params } : {}
+  routeState.query = location?.query ? { ...location.query } : {}
+  return Promise.resolve(undefined)
+}
 
 vi.mock('@/api/hermes/sessions', () => ({
   fetchHermesSessions: fetchHermesSessionsMock,
   fetchHermesSession: fetchHermesSessionMock,
+  // Rebaseline: upstream HistoryView now tries paginated message loading first and
+  // falls back to fetchHermesSession when it returns null. Returning null here keeps
+  // these (pre-pagination) tests exercising the fetchHermesSession fallback path.
+  fetchSessionMessagesPage: vi.fn(async () => null),
   renameSession: renameSessionMock,
   setSessionWorkspace: setSessionWorkspaceMock,
 }))
@@ -135,10 +152,12 @@ describe('HistoryView user-mode session loading', () => {
     fetchHermesSessionMock.mockReset()
     renameSessionMock.mockReset()
     setSessionWorkspaceMock.mockReset()
+    // Reinstall the routeState-mutating implementation so navigation simulates
+    // the real router driving the component's route watch.
     routerPushMock.mockReset()
     routerReplaceMock.mockReset()
-    routerPushMock.mockResolvedValue(undefined)
-    routerReplaceMock.mockResolvedValue(undefined)
+    routerPushMock.mockImplementation(applyRouterLocation)
+    routerReplaceMock.mockImplementation(applyRouterLocation)
     routeState.params = {}
     routeState.query = {}
     window.matchMedia = vi.fn().mockReturnValue({
@@ -185,11 +204,15 @@ describe('HistoryView user-mode session loading', () => {
     const wrapper = mount(HistoryView)
     await flushMountedWork()
 
+    // Rebaseline: upstream removed the fork's dedicated `.history-empty-state`
+    // panel (and its `chat.historyEmptyTitle`/`historyEmptyHint` strings — none
+    // of these exist in the upstream component). With zero sessions the sidebar
+    // renders the `.session-empty` placeholder (`chat.noSessions`) and the main
+    // area always mounts HistoryMessageList with a null session (renders "empty").
     expect(fetchHermesSessionMock).not.toHaveBeenCalled()
-    expect(wrapper.find('.history-empty-state').exists()).toBe(true)
-    expect(wrapper.text()).toContain('chat.historyEmptyTitle')
-    expect(wrapper.text()).toContain('chat.historyEmptyHint')
-    expect(wrapper.text()).not.toContain('chat.newChat')
-    expect(wrapper.find('.history-message-list').exists()).toBe(false)
+    expect(wrapper.find('.session-empty').exists()).toBe(true)
+    expect(wrapper.find('.session-empty').text()).toBe('chat.noSessions')
+    expect(wrapper.find('.history-message-list').exists()).toBe(true)
+    expect(wrapper.find('.history-message-list').text()).toBe('empty')
   })
 })

@@ -11,8 +11,8 @@ describe('profile list parser', () => {
 `
     const info = parseProfileListRuntimeInfo(output, ['daily_assistant', 'long_model'])
 
-    expect(info.get('daily_assistant')).toMatchObject({ active: false, gateway: 'running' })
-    expect(info.get('long_model')).toMatchObject({ active: false, gateway: 'stopped' })
+    expect(info.get('daily_assistant')).toMatchObject({ active: false, gatewayStatus: 'running' })
+    expect(info.get('long_model')).toMatchObject({ active: false, gatewayStatus: 'stopped' })
   })
 
   it('matches the longest profile name first when names share a prefix', () => {
@@ -24,7 +24,7 @@ describe('profile list parser', () => {
 `
     const info = parseProfileListRuntimeInfo(output, ['agent', 'agent_long'])
 
-    expect(info.get('agent')).toMatchObject({ active: true, gateway: 'running' })
-    expect(info.get('agent_long')).toMatchObject({ active: false, gateway: 'stopped', alias: 'worker' })
+    expect(info.get('agent')).toMatchObject({ active: true, gatewayStatus: 'running' })
+    expect(info.get('agent_long')).toMatchObject({ active: false, gatewayStatus: 'stopped', alias: 'worker' })
   })
 })

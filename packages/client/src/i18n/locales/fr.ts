@@ -1805,6 +1805,13 @@ jobTriggered: 'Job declenche',
     otherSkills: 'Autres comp.',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: 'Systèmes internes',
+      otherCredentials: 'Autres identifiants',
+    },
+  },
+
   // Journal des modifications
   changelog: {
     new_0_6_15_1: 'Les barres laterales du chat ont ete repensees, et les controles de chargement de l historique rendent les longues conversations plus faciles a parcourir',

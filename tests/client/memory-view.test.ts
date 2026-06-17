@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 
 const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
 const fetchMemoryMock = vi.hoisted(() => vi.fn())
@@ -17,6 +18,10 @@ vi.mock('@/api/hermes/skills', () => ({
 
 vi.mock('@/utils/hermes/profile-ready', () => ({
   ensureProfileSelection: vi.fn(async () => undefined),
+}))
+
+vi.mock('@/api/hermes/profiles', () => ({
+  fetchProfiles: vi.fn(async () => []),
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -45,6 +50,7 @@ import MemoryView from '@/views/hermes/MemoryView.vue'
 
 describe('MemoryView user mode', () => {
   beforeEach(() => {
+    setActivePinia(createPinia())
     isUserModeMock.mockReturnValue(false)
     fetchMemoryMock.mockReset()
     saveMemoryMock.mockReset()

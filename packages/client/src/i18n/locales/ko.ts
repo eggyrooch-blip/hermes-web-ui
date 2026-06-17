@@ -1804,6 +1804,13 @@ export default {
     otherSkills: '기타',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: '내부 시스템',
+      otherCredentials: '기타 자격 증명',
+    },
+  },
+
   // 변경 이력
   changelog: {
     new_0_6_15_1: '채팅 사이드바를 다시 디자인하고 기록 로딩 컨트롤을 조정해 긴 대화를 더 쉽게 탐색할 수 있습니다',

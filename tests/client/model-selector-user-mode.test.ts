@@ -2,26 +2,40 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 
+// Upstream ModelSelector reads model data from appStore.profileModelGroups
+// (keyed by the active profile name) and resolves display names via
+// appStore.displayModelName. It selects via appStore.switchModel(model, provider).
 const appStoreMock = vi.hoisted(() => ({
   selectedModel: 'default-model',
   selectedProvider: 'default-provider',
-  modelGroups: [
-    { provider: 'openai', label: 'OpenAI', models: ['gpt-5.4'] },
+  profileModelGroups: [
+    {
+      profile: 'default',
+      default: 'gpt-5.4',
+      default_provider: 'openai',
+      groups: [
+        { provider: 'openai', label: 'OpenAI', models: ['gpt-5.4'], model_meta: {} },
+      ],
+    },
   ],
   customModels: {} as Record<string, string[]>,
+  displayModelName: (model: string) => model,
+  getModelAlias: () => '',
+  removeCustomModel: vi.fn(),
+  reloadModels: vi.fn(),
   switchModel: vi.fn(),
 }))
 
-const chatStoreMock = vi.hoisted(() => ({
-  activeSession: null as Record<string, any> | null,
+const profilesStoreMock = vi.hoisted(() => ({
+  activeProfileName: 'default',
 }))
 
 vi.mock('@/stores/hermes/app', () => ({
   useAppStore: () => appStoreMock,
 }))
 
-vi.mock('@/stores/hermes/chat', () => ({
-  useChatStore: () => chatStoreMock,
+vi.mock('@/stores/hermes/profiles', () => ({
+  useProfilesStore: () => profilesStoreMock,
 }))
 
 vi.mock('@/utils/providerLogo', () => ({
@@ -56,7 +70,9 @@ import ModelSelector from '@/components/layout/ModelSelector.vue'
 describe('ModelSelector user mode', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    chatStoreMock.activeSession = null
+    appStoreMock.selectedModel = 'default-model'
+    appStoreMock.selectedProvider = 'default-provider'
+    profilesStoreMock.activeProfileName = 'default'
   })
 
   it('updates the profile default model from the sidebar selector', async () => {

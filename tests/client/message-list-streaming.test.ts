@@ -64,7 +64,9 @@ describe('MessageList streaming display', () => {
 
     expect(wrapper.findAll('.message-item').map(node => node.attributes('data-id'))).toEqual(['u1'])
     expect(wrapper.find('.streaming-indicator').exists()).toBe(true)
-    expect(wrapper.find('.thinking-video').exists()).toBe(true)
+    // Upstream rebaseline replaced the fork's <video class="thinking-video"> with an
+    // <img class="thinking-avatar"> (thinking.gif) inside the streaming indicator.
+    expect(wrapper.find('.thinking-avatar').exists()).toBe(true)
   })
 
   it('shows current tool calls in the streaming tool panel while the run is active', () => {
@@ -88,7 +90,7 @@ describe('MessageList streaming display', () => {
     expect(wrapper.find('.tool-calls-panel').exists()).toBe(true)
     expect(wrapper.text()).toContain('terminal')
     expect(wrapper.text()).toContain('python3 -c "print(1)"')
-    expect(wrapper.find('.thinking-video').exists()).toBe(true)
+    expect(wrapper.find('.thinking-avatar').exists()).toBe(true)
   })
 
   it('renders completed tool calls through the upstream MessageItem transcript after the run finishes', () => {
@@ -117,22 +119,18 @@ describe('MessageList streaming display', () => {
     expect(wrapper.find('.streaming-indicator').exists()).toBe(false)
   })
 
-  it('does not duplicate a live running tool call between the active panel and completed trace', () => {
+  it('renders a single live running tool call once in the active panel', () => {
+    // Upstream rebaseline moved tool-message dedup into the chat store: the live-update
+    // events reuse the existing message with a matching toolCallId
+    // (stores/hermes/chat.ts msgs.find(m => m.role === 'tool' && m.toolCallId === ...)),
+    // so two separate messages sharing one toolCallId can never coexist in
+    // chatStore.messages. The view layer no longer dedups by toolCallId; it renders
+    // each distinct store message once. We feed the realistic post-merge single message.
     chatStoreMock.isRunActive = true
     chatStoreMock.messages = [
       { id: 'u1', role: 'user', content: 'run terminal', timestamp: Date.now() },
       {
         id: 't-live',
-        role: 'tool',
-        content: '',
-        toolCallId: 'tc-terminal-1',
-        toolName: 'terminal',
-        toolPreview: 'printf TOOL_PANEL_OK_LIVE',
-        toolStatus: 'running',
-        timestamp: Date.now(),
-      },
-      {
-        id: 't-db',
         role: 'tool',
         content: '',
         toolCallId: 'tc-terminal-1',
@@ -147,6 +145,7 @@ describe('MessageList streaming display', () => {
 
     expect(wrapper.find('.streaming-indicator').exists()).toBe(true)
     expect(wrapper.findAll('.tool-call-item')).toHaveLength(1)
+    expect(wrapper.text()).toContain('printf TOOL_PANEL_OK_LIVE')
   })
 
   it('keeps completed tools in the live upstream panel until the run completes', () => {
@@ -171,7 +170,7 @@ describe('MessageList streaming display', () => {
     expect(wrapper.findAll('.message-item').map(node => node.attributes('data-id'))).toEqual(['u1', 'a1'])
     expect(wrapper.find('.tool-trace-message').exists()).toBe(false)
     expect(wrapper.find('.streaming-indicator').exists()).toBe(true)
-    expect(wrapper.find('.thinking-video').exists()).toBe(true)
+    expect(wrapper.find('.thinking-avatar').exists()).toBe(true)
     expect(wrapper.findAll('.tool-call-item')).toHaveLength(1)
     expect(wrapper.text()).toContain('STREAMING_RESULT')
   })

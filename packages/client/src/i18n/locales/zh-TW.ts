@@ -2005,6 +2005,13 @@ export default {
     otherSkills: '其他技能',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: '內部系統',
+      otherCredentials: '其他憑證',
+    },
+  },
+
   // 檔案管理
   files: {
     title: '檔案',

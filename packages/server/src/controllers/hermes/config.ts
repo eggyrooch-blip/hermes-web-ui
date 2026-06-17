@@ -6,6 +6,7 @@ import { readAppConfig, writeAppConfig, normalizeGatewayAutoStartConfig } from '
 import { saveEnvValueForProfile } from '../../services/config-helpers'
 import { logger } from '../../services/logger'
 import { safeFileStore } from '../../services/safe-file-store'
+import { CHAT_PLANE_CONFIG_SECTIONS, getRequestProfile, isChatPlaneRequest } from '../../services/request-context'
 
 const PLATFORM_SECTIONS = new Set([
   'telegram', 'discord', 'slack', 'whatsapp', 'matrix',
@@ -16,6 +17,14 @@ const PLATFORM_SECTIONS = new Set([
 const APP_CONFIG_SECTIONS = new Set(['gatewayAutoStart'])
 
 function requestedProfile(ctx: any): string {
+  // Chat plane: the caller may not freely select a profile via header/query/body.
+  // getRequestProfile binds the request to the openid's owned profile and only
+  // honours an explicit x-hermes-profile/profile selector when ownerOwnsProfile
+  // proves the caller owns it. This strips the caller's profile/credential
+  // selector and prevents cross-profile escalation.
+  if (isChatPlaneRequest(ctx)) {
+    return getRequestProfile(ctx)
+  }
   const headerProfile = typeof ctx.get === 'function' ? ctx.get('x-hermes-profile') : ''
   const queryProfile = typeof ctx.query?.profile === 'string' ? ctx.query.profile : ''
   const bodyProfile = typeof ctx.request?.body?.profile === 'string' ? ctx.request.body.profile : ''
@@ -182,10 +191,51 @@ async function readConfig(profile: string): Promise<Record<string, any>> {
   return safeFileStore.readYaml(configPath(profile))
 }
 
+function safeConfigSections(config: Record<string, any>): Record<string, any> {
+  const result: Record<string, any> = {}
+  for (const section of CHAT_PLANE_CONFIG_SECTIONS) {
+    result[section] = config[section] || {}
+  }
+  return result
+}
+
 export async function getConfig(ctx: any) {
   try {
     const profile = requestedProfile(ctx)
     const config = await readConfig(profile)
+
+    // Chat plane: never expose env-backed platform credentials, app-level
+    // gateway config, or any section outside the safe allow-list. Bound to the
+    // caller's owned profile via requestedProfile().
+    if (isChatPlaneRequest(ctx)) {
+      const { section, sections } = ctx.query
+      if (section) {
+        const key = String(section).trim()
+        if (!CHAT_PLANE_CONFIG_SECTIONS.has(key)) {
+          ctx.status = 403
+          ctx.body = { error: 'This settings section is not available in chat plane' }
+          return
+        }
+        ctx.body = { [key]: config[key] || {} }
+        return
+      }
+      if (sections) {
+        const keys = (sections as string).split(',').map((key) => key.trim()).filter(Boolean)
+        const unsafe = keys.find((key) => !CHAT_PLANE_CONFIG_SECTIONS.has(key))
+        if (unsafe) {
+          ctx.status = 403
+          ctx.body = { error: 'This settings section is not available in chat plane' }
+          return
+        }
+        const result: Record<string, any> = {}
+        for (const key of keys) { result[key] = config[key] || {} }
+        ctx.body = result
+        return
+      }
+      ctx.body = safeConfigSections(config)
+      return
+    }
+
     const appConfig = await readAppConfig()
     const gatewayAutoStart = normalizeGatewayAutoStartConfig(appConfig.gatewayAutoStart)
     const envPlatforms = await readEnvPlatforms(profile)
@@ -225,6 +275,13 @@ export async function updateConfig(ctx: any) {
   if (!section || !values) {
     ctx.status = 400; ctx.body = { error: 'Missing section or values' }; return
   }
+  // Chat plane: only the safe allow-list of sections may be written, and never
+  // the app-level (gatewayAutoStart) config.
+  if (isChatPlaneRequest(ctx) && !CHAT_PLANE_CONFIG_SECTIONS.has(section)) {
+    ctx.status = 403
+    ctx.body = { error: 'This settings section is not available in chat plane' }
+    return
+  }
   try {
     if (APP_CONFIG_SECTIONS.has(section)) {
       if (section === 'gatewayAutoStart') {
@@ -252,8 +309,9 @@ export async function updateConfig(ctx: any) {
     })
 
     // Platform adapters run through Hermes gateway; restart it so channel
-    // config changes (Feishu/Weixin/etc.) are applied.
-    if (restart !== false && PLATFORM_SECTIONS.has(section)) {
+    // config changes (Feishu/Weixin/etc.) are applied. Chat-plane callers never
+    // reach a PLATFORM_SECTIONS write (gated above), but guard the restart too.
+    if (!isChatPlaneRequest(ctx) && restart !== false && PLATFORM_SECTIONS.has(section)) {
       try {
         const restartResult = await restartGatewayForProfile(profile)
         logger.info('[config] gateway restarted after config update section=%s profile=%s result=%j', section, profile, restartResult)
@@ -272,6 +330,13 @@ export async function updateConfig(ctx: any) {
 }
 
 export async function getAuxiliaryModels(ctx: any) {
+  // Auxiliary model config carries provider api_key/base_url and is outside the
+  // chat-plane safe section allow-list; never expose it to chat-plane callers.
+  if (isChatPlaneRequest(ctx)) {
+    ctx.status = 403
+    ctx.body = { error: 'This settings section is not available in chat plane' }
+    return
+  }
   try {
     const profile = requestedProfile(ctx)
     const config = await readConfig(profile)
@@ -286,6 +351,13 @@ export async function getAuxiliaryModels(ctx: any) {
 }
 
 export async function updateAuxiliaryModels(ctx: any) {
+  // Auxiliary model config carries provider api_key/base_url and is outside the
+  // chat-plane safe section allow-list; never let chat-plane callers write it.
+  if (isChatPlaneRequest(ctx)) {
+    ctx.status = 403
+    ctx.body = { error: 'This settings section is not available in chat plane' }
+    return
+  }
   const body = ctx.request.body as { auxiliary?: unknown }
   if (!body || !isPlainRecord(body.auxiliary)) {
     ctx.status = 400
@@ -317,6 +389,12 @@ export async function updateCredentials(ctx: any) {
   const { platform, values } = ctx.request.body as { platform: string; values: Record<string, any> }
   if (!platform || !values) {
     ctx.status = 400; ctx.body = { error: 'Missing platform or values' }; return
+  }
+  // Chat plane never exposes platform credentials (read or write).
+  if (isChatPlaneRequest(ctx)) {
+    ctx.status = 403
+    ctx.body = { error: 'Credentials are not available in chat plane' }
+    return
   }
   try {
     const profile = requestedProfile(ctx)

@@ -123,12 +123,16 @@ export async function trustedFeishuAuth(ctx: Context, next: Next): Promise<void>
     return
   }
 
-  // Fork: the Feishu auth paths store a WebUser in ctx.state.user, while
-  // upstream's koa DefaultState types user as AuthenticatedUser. The fork's own
-  // readers cast back to WebUser, so bridge the assignment locally rather than
-  // widening the shared koa declaration (which would break upstream consumers
-  // that read user.id / user.profiles).
-  ctx.state.user = ({ openid: verified.openid, profile, role: 'user' } satisfies WebUser) as unknown as typeof ctx.state.user
+  // Fork: bridge the Feishu identity into the upstream user-store so ctx.state.user
+  // carries a real numeric `.id` + owned `profiles` (upstream controllers enforce
+  // isolation off those) while ALSO retaining the WebUser fields (openid/profile/
+  // role) the fork's own readers cast back to. Merge AuthenticatedUser last so
+  // `id`/`profiles` win. Imported lazily to avoid a request-context ↔ compat-user
+  // import cycle at module-load time.
+  const { ensureWebUserForFeishu } = await import('./compat-user')
+  const webUser = { openid: verified.openid, profile, role: 'user' } satisfies WebUser
+  const authUser = ensureWebUserForFeishu(verified.openid)
+  ctx.state.user = { ...webUser, ...authUser } as unknown as typeof ctx.state.user
   await next()
 }
 

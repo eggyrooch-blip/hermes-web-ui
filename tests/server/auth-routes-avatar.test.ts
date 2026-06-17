@@ -18,6 +18,10 @@ vi.mock('../../packages/server/src/controllers/auth', () => ({
   deleteManagedUser: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
   listLockedIps: vi.fn(async (ctx: any) => { ctx.body = { locks: [] } }),
   unlockIpHandler: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
+  skillCredentialsStatus: vi.fn(async (ctx: any) => { ctx.body = { credentials: [] } }),
+  skillCredentialStart: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
+  kepCliCallback: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
+  skillCredentialComplete: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
 }))
 
 const requireSuperAdminMock = vi.fn(async (_ctx: any, next: any) => { await next() })

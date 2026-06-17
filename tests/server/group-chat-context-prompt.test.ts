@@ -20,8 +20,12 @@ describe('group-chat context prompt', () => {
       ],
     } as any)
 
-    expect(instructions).toContain('当前 profile：hello')
-    expect(instructions).toContain('不要声称自己是其它成员或其它 profile')
+    // Upstream rewrite anchors identity via the `你是"<name>"` opener + member
+    // roster rather than the fork-era `当前 profile：` / anti-impersonation lines
+    // (those discrete lines were dropped in the upstream prompt). The anchoring
+    // semantic still holds: the agent is bound to its own name and sees the roster.
+    expect(instructions).toContain('你是"hello"，群聊房间"room-1"中的 AI 助手。')
+    expect(instructions).toContain('- hello: Writing agent')
     expect(instructions).toContain('当你收到群聊任务时，说明系统已经判断你需要回复')
     expect(instructions).toContain('不要主动 @ 任何人，除非最新消息明确要求你转交')
   })

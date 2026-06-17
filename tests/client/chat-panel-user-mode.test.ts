@@ -18,15 +18,33 @@ const chatStoreMock = vi.hoisted(() => ({
   deleteSession: vi.fn(),
   loadSessions: vi.fn(),
   isSessionLive: vi.fn(() => false),
+  // Upstream-rebaseline drift: ChatPanel render/computed reads these.
+  messages: [] as Array<Record<string, any>>,
+  runtimeMode: 'agent',
+  sessionProfileFilter: '__all__',
+  clearSessionCompletedUnread: vi.fn(),
+  isSessionCompletedUnread: vi.fn(() => false),
+  switchSessionModel: vi.fn(),
 }))
 
 const appStoreMock = vi.hoisted(() => ({
   connected: true,
+  // Upstream-rebaseline drift: ChatPanel's model selector reads these.
+  modelGroups: [] as Array<Record<string, any>>,
+  profileModelGroups: [] as Array<Record<string, any>>,
+  customModels: {} as Record<string, any>,
+  displayModelName: vi.fn((m: string) => m),
+  getModelAlias: vi.fn((m: string) => m),
+  loadModels: vi.fn(),
 }))
 
 const profilesStoreMock = vi.hoisted(() => ({
   currentUser: null as Record<string, any> | null,
   activeProfileName: 'user_a',
+  // Upstream-rebaseline drift: profileFilterOptions computed maps over this.
+  profiles: [] as Array<Record<string, any>>,
+  loading: false,
+  fetchProfiles: vi.fn(),
 }))
 
 const prefsStoreMock = vi.hoisted(() => ({
@@ -39,6 +57,8 @@ const prefsStoreMock = vi.hoisted(() => ({
 
 vi.mock('@/api/client', () => ({
   isUserMode: isUserModeMock,
+  // Upstream-rebaseline drift: ChatPanel gates admin-only UI on this.
+  isStoredSuperAdmin: vi.fn(() => false),
 }))
 
 vi.mock('@/stores/hermes/chat', () => ({
@@ -61,6 +81,12 @@ vi.mock('@/api/hermes/sessions', () => ({
   renameSession: vi.fn(),
   setSessionWorkspace: vi.fn(),
   batchDeleteSessions: vi.fn(),
+  // Upstream-rebaseline drift: ChatPanel now imports exportSession too.
+  exportSession: vi.fn(),
+}))
+
+vi.mock('@/api/coding-agents', () => ({
+  fetchCodingAgentsStatus: vi.fn(() => Promise.resolve({})),
 }))
 
 vi.mock('@/shared/session-display', () => ({
@@ -101,6 +127,28 @@ vi.mock('naive-ui', () => ({
   NTooltip: {
     template: '<span><slot name="trigger" /><slot /></span>',
   },
+  // Upstream-rebaseline drift: ChatPanel now also imports these naive-ui parts.
+  NDrawer: {
+    props: ['show'],
+    template: '<div v-if="show"><slot /></div>',
+  },
+  NDrawerContent: {
+    template: '<div><slot name="header" /><slot /><slot name="footer" /></div>',
+  },
+  NSelect: {
+    props: ['value', 'options'],
+    emits: ['update:value'],
+    template: '<select class="n-select-stub" />',
+  },
+  NRadioGroup: {
+    props: ['value'],
+    emits: ['update:value'],
+    template: '<div class="n-radio-group-stub"><slot /></div>',
+  },
+  NRadioButton: {
+    props: ['value', 'label'],
+    template: '<label class="n-radio-button-stub"><slot />{{ label }}</label>',
+  },
   useMessage: () => ({
     success: vi.fn(),
     error: vi.fn(),
@@ -130,6 +178,26 @@ vi.mock('@/components/hermes/chat/DrawerPanel.vue', () => ({
 
 vi.mock('@/components/hermes/chat/FolderPicker.vue', () => ({
   default: { template: '<div class="folder-picker-stub" />' },
+}))
+
+// Upstream-rebaseline drift: ChatPanel now imports these heavy side panels.
+// FilesPanel -> FileEditor.vue pulls in monaco-editor (crashes in jsdom at
+// import time via document.queryCommandSupported); TerminalPanel pulls xterm.
+// Stub them like the other child components above to sever those import chains.
+vi.mock('@/components/hermes/chat/OutlinePanel.vue', () => ({
+  default: { template: '<div class="outline-panel-stub" />' },
+}))
+
+vi.mock('@/components/hermes/chat/FilesPanel.vue', () => ({
+  default: { template: '<div class="files-panel-stub" />' },
+}))
+
+vi.mock('@/components/hermes/chat/TerminalPanel.vue', () => ({
+  default: { template: '<div class="terminal-panel-stub" />' },
+}))
+
+vi.mock('@/components/layout/PageSidebarNav.vue', () => ({
+  default: { template: '<div class="page-sidebar-nav-stub" />' },
 }))
 
 import ChatPanel from '@/components/hermes/chat/ChatPanel.vue'

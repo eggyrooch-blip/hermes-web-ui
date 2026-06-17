@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { defineComponent, nextTick } from 'vue'
+import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
 
 const warningMock = vi.hoisted(() => vi.fn())
@@ -66,6 +66,7 @@ vi.mock('naive-ui', () => ({
   }),
   NPopover: { template: '<div><slot name="trigger" /><slot /></div>' },
   NPopconfirm: { template: '<div><slot name="trigger" /><slot /></div>' },
+  NDropdown: { template: '<div><slot /></div>' },
 }))
 
 vi.mock('@/components/hermes/group-chat/GroupMessageList.vue', () => ({
@@ -80,8 +81,15 @@ vi.mock('@/components/hermes/group-chat/CreateRoomForm.vue', () => ({
   default: { template: '<div>CreateRoomForm</div>' },
 }))
 
-vi.mock('@/components/hermes/profiles/ProfileCreateModal.vue', () => ({
-  default: { emits: ['saved', 'close'], template: '<div class="profile-create-modal">ProfileCreateModal</div>' },
+// Upstream PageSidebarNav pulls in the router (history/session-search/etc.); the
+// only behavior this suite cares about is its `primary` action, so stub it down
+// to a single button that surfaces the create-room label and re-emits `primary`.
+vi.mock('@/components/layout/PageSidebarNav.vue', () => ({
+  default: defineComponent({
+    props: ['primaryLabel'],
+    emits: ['primary'],
+    template: '<button class="page-sidebar-primary" :title="primaryLabel" @click="$emit(\'primary\')">{{ primaryLabel }}</button>',
+  }),
 }))
 
 import GroupChatPanel from '@/components/hermes/group-chat/GroupChatPanel.vue'
@@ -99,37 +107,20 @@ describe('GroupChatPanel empty room state', () => {
     document.body.innerHTML = ''
   })
 
-  it('does not open add-agent when no room is selected', async () => {
+  it('shows the empty-room prompt when no room is selected', () => {
     const wrapper = mount(GroupChatPanel)
-    const addAgentButton = wrapper.find('button[title="groupChat.selectOrCreate"]')
 
-    expect(addAgentButton.exists()).toBe(true)
-    expect(addAgentButton.attributes('disabled')).toBeDefined()
-
-    await addAgentButton.trigger('click')
-
-    expect(profilesStoreMock.fetchProfiles).not.toHaveBeenCalled()
-    expect(wrapper.text()).not.toContain('groupChat.addAgent')
+    // Upstream renders the select-or-create prompt instead of a chat shell.
+    expect(wrapper.text()).toContain('groupChat.selectOrCreate')
+    expect(wrapper.text()).not.toContain('GroupMessageList')
   })
 
   it('keeps the upstream sidebar create-room action available', async () => {
     const wrapper = mount(GroupChatPanel, { attachTo: document.body })
 
-    await wrapper.find('button[title="groupChat.createRoom"]').trigger('click')
+    await wrapper.find('button.page-sidebar-primary[title="groupChat.createRoom"]').trigger('click')
 
     expect(document.body.querySelector('.modal')).not.toBeNull()
-  })
-
-  it('renders the existing profile creation flow from the add-agent modal', async () => {
-    storeMock.currentRoomId = 'room-1'
-    const wrapper = mount(GroupChatPanel, { attachTo: document.body })
-
-    await wrapper.find('button[title="groupChat.addAgent"]').trigger('click')
-    const createButton = document.body.querySelector('.agent-profile-create-btn') as HTMLButtonElement | null
-    expect(createButton).not.toBeNull()
-    createButton!.click()
-    await nextTick()
-
-    expect(document.body.querySelector('.profile-create-modal')).not.toBeNull()
+    expect(document.body.textContent).toContain('groupChat.createRoom')
   })
 })

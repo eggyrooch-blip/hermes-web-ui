@@ -2,6 +2,7 @@ import type { Context, Next } from 'koa'
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto'
 import { config } from '../config'
 import { resolveProfileForOpenId, type WebUser } from './request-context'
+import { ensureWebUserForFeishu } from './compat-user'
 
 export const FEISHU_SESSION_COOKIE = 'hermes_feishu_session'
 export const FEISHU_STATE_COOKIE = 'hermes_feishu_state'
@@ -291,10 +292,17 @@ export async function feishuOAuthAuth(ctx: Context, next: Next): Promise<void> {
     return
   }
 
-  // Fork: store the Feishu WebUser in ctx.state.user. Upstream types the koa
-  // DefaultState user as AuthenticatedUser; the fork's readers cast back to
-  // WebUser, so bridge locally instead of widening the shared declaration.
-  ctx.state.user = user as unknown as typeof ctx.state.user
+  // Fork: bridge the Feishu identity into the upstream user-store so that
+  // ctx.state.user carries a real numeric `.id` + owned `profiles` (upstream
+  // kanban/group-chat/jobs/files controllers enforce isolation off those),
+  // while ALSO retaining the WebUser fields (openid/profile/role) that the
+  // fork's own readers — getRequestProfile etc. — cast back to. Merge order:
+  // WebUser first, AuthenticatedUser last, so `id`/`profiles` are authoritative.
+  const authUser = ensureWebUserForFeishu(user.openid, {
+    ...(user.name ? { name: user.name } : {}),
+    ...(user.avatarUrl ? { avatarUrl: user.avatarUrl } : {}),
+  })
+  ctx.state.user = { ...user, ...authUser } as unknown as typeof ctx.state.user
   await next()
 }
 

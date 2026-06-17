@@ -2001,6 +2001,13 @@ export default {
     otherSkills: 'Other skills',
   },
 
+  skillCredentials: {
+    groups: {
+      internalSystems: 'Internal Systems',
+      otherCredentials: 'Other Credentials',
+    },
+  },
+
   // Files
   files: {
     title: 'Files',

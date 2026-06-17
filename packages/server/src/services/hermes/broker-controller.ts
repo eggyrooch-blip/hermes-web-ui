@@ -36,6 +36,7 @@ import {
   parseFeishuSessionCookie,
 } from '../feishu-oauth'
 import { ownerOwnsProfile, resolveOwnedProfileAgentId } from './agent-ownership'
+import { ensureWebUserForFeishu } from '../compat-user'
 import { authenticateUserToken, isAuthEnabled } from '../../middleware/user-auth'
 import { userCanAccessProfile } from '../../db/hermes/users-store'
 import {
@@ -638,7 +639,11 @@ export class BrokerRunController {
       const requestedProfile = typeof socket.handshake.query?.profile === 'string'
         ? socket.handshake.query.profile.trim()
         : ''
-      socket.data.user = user
+      // Bridge the Feishu identity into the upstream user-store so socket.data.user
+      // carries a real numeric `.id` + owned `profiles` (upstream isolation), while
+      // retaining the WebUser fields the broker chat paths read. The local `user`
+      // (WebUser) is kept intact for the profile/agentId resolution just below.
+      socket.data.user = { ...user, ...ensureWebUserForFeishu(user.openid) }
       const resolvedProfile = requestedProfile && requestedProfile !== user.profile && ownerOwnsProfile(user.openid, requestedProfile)
         ? requestedProfile
         : user.profile

@@ -3,6 +3,18 @@ import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProfileSelector from '@/components/layout/ProfileSelector.vue'
 
+// NOTE (upstream rebaseline 2026-06-17):
+// ProfileSelector.vue was replaced wholesale by the upstream EKKOLearnAI component.
+// The fork's NSelect/optgroup grouped selector — with kind-based grouping,
+// owner-prefix stripping (displayLabel/ownerOpenId) and an inline "Create Profile"
+// button + ProfileCreateModal — no longer exists. The upstream component renders a
+// click-to-open profile manager modal with a flat runtime list, and an avatar editor
+// (customize -> random/reset) reached from each list row.
+// Two fork-only cases were therefore deleted (see end of file): the create-profile
+// modal flow and the kind-grouping/owner-prefix test both targeted deleted features.
+// The avatar display + randomize/reset cases are rewritten against the real upstream
+// DOM so the owner-scoped store contract (updateAvatar/deleteAvatar) stays verified.
+
 const profilesStoreMock = vi.hoisted(() => ({
   profiles: [
     { name: 'feishu_user_a', active: true, model: '', gateway: '', alias: '', avatar: { type: 'generated', seed: 'current-seed' } },
@@ -20,23 +32,41 @@ vi.mock('@/stores/hermes/profiles', () => ({
   useProfilesStore: () => profilesStoreMock,
 }))
 
+// The upstream component pulls runtime status + restart helpers from the api module
+// when the profile manager modal opens. Stub them so mount/open don't hit the network.
+vi.mock('@/api/hermes/profiles', () => ({
+  fetchProfileRuntimeStatusesWithMeta: vi.fn().mockResolvedValue({ profiles: [], refreshing: false }),
+  restartProfileGateway: vi.fn(),
+  restartProfileRuntime: vi.fn(),
+}))
+
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string, params?: Record<string, string>) => {
       const values: Record<string, string> = {
         'sidebar.profiles': 'Profiles',
-        'profiles.create': 'Create Profile',
-        'profiles.groups.user': 'Personal',
-        'profiles.groups.agent': 'Agents',
-        'profiles.groups.group': 'Groups',
-        'profiles.groups.other': 'Other',
         'profiles.avatar.customize': 'Customize Avatar',
-        'profiles.avatar.randomize': 'Randomize',
+        'profiles.avatar.upload': 'Upload',
+        'profiles.avatar.random': 'Randomize',
         'profiles.avatar.reset': 'Reset',
-        'profiles.avatar.updateSuccess': 'Avatar updated',
-        'profiles.avatar.updateFailed': 'Avatar update failed',
+        'profiles.avatar.title': 'Avatar',
+        'profiles.avatar.hint': 'hint',
+        'profiles.avatar.saveSuccess': 'Avatar updated',
+        'profiles.avatar.saveFailed': 'Avatar update failed',
         'profiles.avatar.resetSuccess': 'Avatar reset',
         'profiles.avatar.resetFailed': 'Avatar reset failed',
+        'profiles.runtime.checking': 'Checking',
+        'profiles.runtime.running': 'Running',
+        'profiles.runtime.stopped': 'Stopped',
+        'profiles.runtime.active': 'Active',
+        'profiles.runtime.idle': 'Idle',
+        'profiles.runtime.activeTag': 'Active',
+        'profiles.runtime.activeProfile': `Active ${params?.name || ''}`,
+        'profiles.runtime.bridgeWorker': 'Bridge',
+        'profiles.runtime.gateway': 'Gateway',
+        'profiles.runtime.restartGateway': 'Restart Gateway',
+        'profiles.runtime.restartProfile': 'Restart Profile',
+        'profiles.runtime.switchProfile': 'Switch Profile',
         'profiles.switchSuccess': `Switched ${params?.name || ''}`,
         'profiles.switchFailed': 'Switch failed',
       }
@@ -46,32 +76,24 @@ vi.mock('vue-i18n', () => ({
 }))
 
 vi.mock('naive-ui', () => ({
-  NSelect: {
-    props: ['value', 'options', 'loading', 'size'],
-    template: `
-      <select>
-        <template v-for="option in options" :key="option.key || option.value">
-          <optgroup v-if="option.type === 'group'" :label="option.label">
-            <option v-for="child in option.children" :key="child.value" :value="child.value">{{ child.label }}</option>
-          </optgroup>
-          <option v-else :value="option.value">{{ option.label }}</option>
-        </template>
-      </select>
-    `,
-  },
   NButton: {
-    props: ['title', 'size', 'quaternary', 'circle', 'secondary', 'type', 'loading'],
+    props: ['title', 'size', 'quaternary', 'circle', 'secondary', 'type', 'loading', 'disabled'],
     emits: ['click'],
     template: '<button type="button" :title="title" @click="$emit(\'click\')"><slot /></button>',
   },
   NModal: {
-    props: ['show', 'title', 'preset'],
+    props: ['show', 'title', 'preset', 'bordered'],
     emits: ['update:show'],
-    template: '<div v-if="show" class="n-modal"><slot /></div>',
+    template: '<div v-if="show" class="n-modal"><slot name="header" /><slot /></div>',
+  },
+  NSpin: {
+    props: ['show', 'size'],
+    template: '<div class="n-spin"><slot /></div>',
   },
   useMessage: () => ({
     success: vi.fn(),
     error: vi.fn(),
+    warning: vi.fn(),
   }),
 }))
 
@@ -79,12 +101,11 @@ vi.mock('@multiavatar/multiavatar', () => ({
   default: (seed: string) => `<svg data-seed="${seed}"></svg>`,
 }))
 
-vi.mock('@/components/hermes/profiles/ProfileCreateModal.vue', () => ({
-  default: {
-    emits: ['saved', 'close'],
-    template: '<div class="profile-create-modal"><button class="save-created" @click="$emit(\'saved\')">saved</button><button @click="$emit(\'close\')">close</button></div>',
-  },
-}))
+// Find an NButton stub by its rendered text label (upstream avatar buttons carry
+// no title attribute — they are labelled by i18n text).
+function findButtonByText(wrapper: ReturnType<typeof mount>, text: string) {
+  return wrapper.findAll('button').find(button => button.text().includes(text))
+}
 
 describe('ProfileSelector', () => {
   beforeEach(() => {
@@ -99,16 +120,21 @@ describe('ProfileSelector', () => {
   it('shows the active profile avatar beside the upstream selector', () => {
     const wrapper = mount(ProfileSelector)
 
-    expect(wrapper.find('.profile-selector-avatar .profile-avatar-view').exists()).toBe(true)
+    // Upstream renders the active profile avatar (ProfileAvatarView -> .profile-avatar-view)
+    // inside the click-to-open .profile-display row.
+    expect(wrapper.find('.profile-display .profile-avatar-view').exists()).toBe(true)
     expect(wrapper.find('.profile-avatar-svg').html()).toContain('data-seed="current-seed"')
+    expect(wrapper.find('.profile-name').text()).toBe('feishu_user_a')
   })
 
   it('randomizes the active profile avatar through the owner-scoped profile store', async () => {
     profilesStoreMock.updateAvatar.mockResolvedValue({ type: 'generated', seed: 'new-seed' })
     const wrapper = mount(ProfileSelector)
 
-    await wrapper.find('button[title="Customize Avatar"]').trigger('click')
-    await wrapper.find('.avatar-random').trigger('click')
+    // Open the profile manager modal, then the per-profile avatar editor.
+    await wrapper.find('.profile-display').trigger('click')
+    await findButtonByText(wrapper, 'Customize Avatar')!.trigger('click')
+    await findButtonByText(wrapper, 'Randomize')!.trigger('click')
 
     expect(profilesStoreMock.updateAvatar).toHaveBeenCalledWith(
       'feishu_user_a',
@@ -120,50 +146,20 @@ describe('ProfileSelector', () => {
     profilesStoreMock.deleteAvatar.mockResolvedValue(undefined)
     const wrapper = mount(ProfileSelector)
 
-    await wrapper.find('button[title="Customize Avatar"]').trigger('click')
-    await wrapper.find('.avatar-reset').trigger('click')
+    await wrapper.find('.profile-display').trigger('click')
+    await findButtonByText(wrapper, 'Customize Avatar')!.trigger('click')
+    await findButtonByText(wrapper, 'Reset')!.trigger('click')
 
     expect(profilesStoreMock.deleteAvatar).toHaveBeenCalledWith('feishu_user_a')
   })
 
-  it('opens the upstream create profile modal from the selector and refreshes after save', async () => {
-    const wrapper = mount(ProfileSelector)
+  // DELETED (upstream rebaseline): "opens the upstream create profile modal from the
+  // selector and refreshes after save" — the upstream ProfileSelector has no inline
+  // Create Profile button and does not import ProfileCreateModal. Profile creation is
+  // no longer reachable from this component, so the case tested a deleted feature.
 
-    const createButton = wrapper.find('button[title="Create Profile"]')
-    expect(createButton.exists()).toBe(true)
-
-    await createButton.trigger('click')
-    expect(wrapper.find('.profile-create-modal').exists()).toBe(true)
-
-    await wrapper.find('.save-created').trigger('click')
-    expect(profilesStoreMock.fetchProfiles).toHaveBeenCalled()
-  })
-
-  it('groups owner-scoped profiles by profile kind and strips owner prefixes from group labels', () => {
-    profilesStoreMock.profiles = [
-      { name: 'feishu_user_a', active: true, model: '', gateway: '', alias: '', kind: 'user' },
-      { name: 'webui_hash_coder', active: false, model: '', gateway: '', alias: '', kind: 'agent', displayLabel: 'coder' },
-      {
-        name: 'feishu_group_alpha',
-        active: false,
-        model: '',
-        gateway: '',
-        alias: '',
-        kind: 'group',
-        ownerOpenId: 'ou_owner',
-        displayLabel: 'ou_owner-研发群',
-      },
-      { name: 'legacy_profile', active: false, model: '', gateway: '', alias: '' },
-    ]
-
-    const wrapper = mount(ProfileSelector)
-
-    const groups = wrapper.findAll('optgroup')
-    expect(groups.map(group => group.attributes('label'))).toEqual(['Personal', 'Agents', 'Groups', 'Other'])
-    expect(wrapper.text()).toContain('feishu_user_a')
-    expect(wrapper.text()).toContain('coder · webui_hash_coder')
-    expect(wrapper.text()).toContain('研发群 · feishu_group_alpha')
-    expect(wrapper.text()).not.toContain('ou_owner-研发群')
-    expect(wrapper.text()).toContain('legacy_profile')
-  })
+  // DELETED (upstream rebaseline): "groups owner-scoped profiles by profile kind and
+  // strips owner prefixes from group labels" — the upstream component renders a flat
+  // runtime list (no NSelect/optgroup, no kind grouping, no displayLabel/ownerOpenId
+  // prefix stripping). That grouping behaviour was fork-only and no longer exists.
 })

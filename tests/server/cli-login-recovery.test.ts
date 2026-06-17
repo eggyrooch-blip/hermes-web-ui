@@ -1,8 +1,9 @@
 import { existsSync } from 'fs'
-import { mkdtemp, mkdir, readFile, writeFile } from 'fs/promises'
+import { mkdtemp, mkdir, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { scryptSync } from 'crypto'
+import { DatabaseSync } from 'node:sqlite'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 const originalHome = process.env.HERMES_WEB_UI_HOME
@@ -42,18 +43,28 @@ describe('CLI login recovery commands', () => {
     expect(existsSync(pidFile)).toBe(false)
   })
 
-  it('resets the default file-backed password login used by this fork', async () => {
-    const result = cli.resetDefaultLogin({ silent: true })
+  it('resets the default SQLite-backed password login used by this fork', async () => {
+    const result = await cli.resetDefaultLogin({ silent: true })
 
+    const dbFile = join(home, 'hermes-web-ui.db')
     expect(result).toMatchObject({
-      path: join(home, '.credentials'),
+      path: dbFile,
       username: 'admin',
       password: '123456',
       action: 'created',
     })
 
-    const credentials = JSON.parse(await readFile(join(home, '.credentials'), 'utf-8'))
-    const hash = scryptSync('123456', credentials.salt, 64, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }).toString('hex')
-    expect(credentials).toMatchObject({ username: 'admin', password_hash: hash })
+    const db = new DatabaseSync(dbFile)
+    try {
+      const row = db.prepare('SELECT username, password_hash, role, status FROM users WHERE username = ?').get('admin')
+      expect(row).toMatchObject({ username: 'admin', role: 'super_admin', status: 'active' })
+
+      const [scheme, salt, storedHash] = String(row.password_hash).split(':')
+      expect(scheme).toBe('scrypt')
+      const expectedHash = scryptSync('123456', salt, 64).toString('hex')
+      expect(storedHash).toBe(expectedHash)
+    } finally {
+      db.close()
+    }
   })
 })
