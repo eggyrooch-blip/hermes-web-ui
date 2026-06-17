@@ -36,6 +36,8 @@ import {
   parseFeishuSessionCookie,
 } from '../feishu-oauth'
 import { ownerOwnsProfile, resolveOwnedProfileAgentId } from './agent-ownership'
+import { authenticateUserToken, isAuthEnabled } from '../../middleware/user-auth'
+import { userCanAccessProfile } from '../../db/hermes/users-store'
 import {
   handleBrokerRun as handleRunChatBrokerRun,
   parseBrokerSessionCommand,
@@ -645,13 +647,23 @@ export class BrokerRunController {
       return next()
     }
 
+    // Token mode: align with upstream's user-token auth. The rebaselined client
+    // login now issues a per-user session token (validated by authenticateUserToken),
+    // not the legacy static server token — comparing against getToken() here would
+    // reject every real login. Feishu (prod) auth is handled in the branch above.
     const token = socket.handshake.auth?.token as string | undefined
-    if (!process.env.AUTH_DISABLED && process.env.AUTH_DISABLED !== '1') {
-      const { getToken } = await import('../auth')
-      const serverToken = await getToken()
-      if (serverToken && token !== serverToken) {
-        return next(new Error('Authentication failed'))
-      }
+    if (!(await isAuthEnabled())) {
+      next()
+      return
+    }
+    const user = await authenticateUserToken(token || '')
+    if (!user) {
+      return next(new Error('Authentication failed'))
+    }
+    socket.data.user = user
+    const socketProfile = String(socket.handshake.query?.profile || '').trim()
+    if (socketProfile && user.role !== 'super_admin' && !userCanAccessProfile(user.id, socketProfile)) {
+      return next(new Error('Profile access denied'))
     }
     next()
   }
