@@ -2,7 +2,7 @@ import { readFile, writeFile, copyFile } from 'fs/promises'
 import YAML from 'js-yaml'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
-import { getActiveEnvPath, getActiveAuthPath, getActiveProfileName, getProfileDir, listProfileNamesFromDisk } from '../../services/hermes/hermes-profile'
+import { getActiveEnvPath, getActiveAuthPath, getActiveProfileName, getProfileDir, getHermesBaseDir, listProfileNamesFromDisk } from '../../services/hermes/hermes-profile'
 import { readConfigYaml, readConfigYamlForProfile, updateConfigYaml, updateConfigYamlForProfile, fetchProviderModels, buildModelGroups, PROVIDER_ENV_MAP } from '../../services/config-helpers'
 import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 import { ownerOwnsProfile } from '../../services/hermes/agent-ownership'
@@ -468,6 +468,34 @@ async function readRequestConfigYaml(ctx: any): Promise<Record<string, any>> {
   }
 }
 
+/**
+ * Fork: per-profile config.yaml carries only the `model:` block; shared
+ * custom_providers (e.g. litellm-sre with its api_key + model) live in the
+ * shared ~/.hermes/config.yaml and are merged at RUN time by multitenancy's
+ * `_load_profile_config` (agent_real.py). The model picker reads per-profile
+ * config only, so `custom:<name>` providers were invisible (→ "No models").
+ * Merge the shared custom_providers here (READ-ONLY, display path) so the
+ * picker resolves + fetches the same catalogs the run path uses. Per-profile
+ * entries win on name conflict; the shared api_key never gets persisted into
+ * per-profile configs (this only mutates the in-memory object for display).
+ */
+async function mergeSharedCustomProviders(config: Record<string, any>): Promise<void> {
+  try {
+    // Read the SHARED hermes config (~/.hermes/config.yaml = getHermesBaseDir()),
+    // NOT readConfigYaml() (which resolves to the active PROFILE's config and has
+    // no custom_providers). This mirrors multitenancy's _load_profile_config, which
+    // inherits the shared config's litellm-sre provider (base_url + api_key).
+    const sharedRaw = await readFile(join(getHermesBaseDir(), 'config.yaml'), 'utf-8')
+    const shared = (YAML.load(sharedRaw) as Record<string, any>) || {}
+    const sharedCps = Array.isArray(shared?.custom_providers) ? shared.custom_providers as any[] : []
+    if (sharedCps.length === 0) return
+    const own = Array.isArray(config.custom_providers) ? config.custom_providers as any[] : []
+    const ownNames = new Set(own.map(cp => String(cp?.name || '').trim().toLowerCase()))
+    const inherited = sharedCps.filter(cp => !ownNames.has(String(cp?.name || '').trim().toLowerCase()))
+    if (inherited.length > 0) config.custom_providers = [...own, ...inherited]
+  } catch { /* shared config is optional */ }
+}
+
 async function writeRequestConfigYaml(ctx: any, config: Record<string, any>): Promise<void> {
   const cp = requestConfigPath(ctx)
   await copyFile(cp, cp + '.bak')
@@ -530,6 +558,7 @@ export async function getAvailableChatPlane(ctx: any) {
     if (!ensureChatPlaneSelectedProfileOwned(ctx)) return
 
     const config = await readRequestConfigYaml(ctx)
+    await mergeSharedCustomProviders(config)
     const modelSection = config.model
     let currentDefault = ''
     let currentDefaultProvider = ''
