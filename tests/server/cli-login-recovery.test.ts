@@ -38,7 +38,7 @@ describe('CLI login recovery commands', () => {
     await mkdir(home, { recursive: true })
     await writeFile(pidFile, '999999999\n')
 
-    cli.stopDaemon()
+    cli.stopDaemon({ recoverFromPort: false })
 
     expect(existsSync(pidFile)).toBe(false)
   })

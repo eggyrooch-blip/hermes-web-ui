@@ -478,7 +478,7 @@ function startDaemon(port) {
 }
 
 function stopDaemon(options = {}) {
-  const { restart = false } = options
+  const { restart = false, recoverFromPort = true } = options
   const stoppedPreviewPids = stopPreviewRuntimeFromCli()
   let pidFromFile = readPidFile()
   let cleanedStalePid = false
@@ -489,7 +489,7 @@ function stopDaemon(options = {}) {
     cleanedStalePid = true
   }
 
-  const pid = pidFromFile ?? recoverPidFromPort()
+  const pid = pidFromFile ?? (recoverFromPort ? recoverPidFromPort() : null)
   if (!pid) {
     if (cleanedStalePid) return
     if (stoppedPreviewPids) {
