@@ -280,10 +280,12 @@ export async function feishuOAuthAuth(ctx: Context, next: Next): Promise<void> {
     secret: getFeishuSessionSecret(),
   })
   if (!user) {
-    ctx.status = 401
-    ctx.set('Content-Type', 'application/json')
-    ctx.body = { error: 'Unauthorized' }
-    return
+    // No Feishu session cookie — fall through to JWT/password auth so the admin
+    // account (username/password login) also works in feishu-oauth-dev mode, not
+    // just the Feishu-cookie tenant path. Lazy import avoids a feishu-oauth <->
+    // user-auth import cycle.
+    const { requireUserJwt, resolveUserProfile } = await import('../middleware/user-auth')
+    return requireUserJwt(ctx, () => resolveUserProfile(ctx, next))
   }
   if (config.requiredProfile && user.profile !== config.requiredProfile) {
     ctx.status = 401
