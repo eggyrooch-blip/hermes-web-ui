@@ -12,13 +12,16 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
 - Keep chat execution on the multitenancy Run Broker path. Do not port upstream
   bridge execution unless owner/profile/sandbox parity is explicitly rebuilt.
 - Do not expose self-update, desktop runtime update, release promotion, GitHub,
-  Website, or changelog calls in the enterprise sidebar.
+  Website, API Relay, or changelog calls in the enterprise sidebar or chat
+  page sidebar.
 
 ## User Chrome
 
 - `AppSidebar` must not render `updateVersion`, `reloadClientVersion`,
   `versionManagement`, `Studio v...`, update buttons, version management modals,
   changelog buttons, or product promotion links.
+- `PageSidebarNav` must not render `sidebar.apiRelay` or open external
+  promotion/affiliate links for ordinary chat users.
 - Ordinary users may use chat, history, jobs, kanban, skills, memory, group
   chat, files, settings, and connectors when those views keep existing
   owner/profile guards.
@@ -84,6 +87,8 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
 
 - Sidebar test: update/version promotion controls absent; employee-only risky
   nav items hidden; Connectors present.
+- Page sidebar test: API Relay / external promotion link absent from chat page
+  sidebar.
 - Router test: risky routes have `requiresSuperAdmin`; Feishu cookie-mode can
   enter protected routes without a JS token, and stale super-admin JWTs cannot
   bypass Feishu/trusted route gates.

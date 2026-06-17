@@ -18,7 +18,7 @@ related:
 > [!info] 2026-06-17 worktree — upstream rebaseline 后企业入口收口
 > `sidebar-enterprise-chrome` 是 upstream rebaseline 验收期的本机修正，生产尚未发布。边界是 WebUI 适配层，不改 Hermes Agent，不把员工运维/升级入口暴露到普通用户。
 >
-> 员工侧栏必须隐藏 upstream 自助升级/版本推广 UI：`升级版本 v...`、`Studio v...`、版本管理、更新日志、GitHub/Website 外链都不能从 `AppSidebar` 渲染。普通用户也不能看到或直达日志、频道、设备、模型 provider 管理、Plugins inventory、Coding Agents 本机安装/配置面；这些路由都要 `requiresSuperAdmin`，侧栏用同一角色判断隐藏。聊天里的模型选择器是使用面，保留；`ModelsView` 是 provider/cache 管理面，收回。Chat 新建会话里的 Claude Code/Codex 入口同属本机 coding-agent 维护/执行面，普通员工只保留 Hermes。
+> 员工侧栏必须隐藏 upstream 自助升级/版本推广 UI：`升级版本 v...`、`Studio v...`、版本管理、更新日志、GitHub/Website/API Relay 外链都不能从 `AppSidebar` 或聊天 `PageSidebarNav` 渲染。普通用户也不能看到或直达日志、频道、设备、模型 provider 管理、Plugins inventory、Coding Agents 本机安装/配置面；这些路由都要 `requiresSuperAdmin`，侧栏用同一角色判断隐藏。聊天里的模型选择器是使用面，保留；`ModelsView` 是 provider/cache 管理面，收回。Chat 新建会话里的 Claude Code/Codex 入口同属本机 coding-agent 维护/执行面，普通员工只保留 Hermes。
 >
 > Settings 的普通用户面只保留 `display`、`session`、`privacy`。`account`、`users`、`agent`、`memory`、`compression`、`models`、`voice` 都属于运维/全局配置面，必须 super-admin-only；尤其不能让 Feishu 员工改 WebUI username/password、锁定 IP、gateway 自动启动、agent/provider/voice 配置。
 >
