@@ -45,6 +45,10 @@
       "description": "Hermes file browser"
     },
     {
+      "name": "Gateways",
+      "description": "Gateway process management"
+    },
+    {
       "name": "Gemini Auth",
       "description": "Google Gemini OAuth"
     },
@@ -4135,6 +4139,140 @@
             }
           }
         }
+      }
+    },
+    "/api/hermes/gateways": {
+      "get": {
+        "tags": [
+          "Gateways"
+        ],
+        "summary": "List gateways",
+        "description": "GET /api/hermes/gateways",
+        "operationId": "list",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/api/hermes/gateways/{name}/health": {
+      "get": {
+        "tags": [
+          "Gateways"
+        ],
+        "summary": "Get health",
+        "description": "GET /api/hermes/gateways/:name/health",
+        "operationId": "health",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/hermes/gateways/{name}/start": {
+      "post": {
+        "tags": [
+          "Gateways"
+        ],
+        "summary": "Create start",
+        "description": "POST /api/hermes/gateways/:name/start",
+        "operationId": "start",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/hermes/gateways/{name}/stop": {
+      "post": {
+        "tags": [
+          "Gateways"
+        ],
+        "summary": "Create stop",
+        "description": "POST /api/hermes/gateways/:name/stop",
+        "operationId": "stop",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
       }
     },
     "/api/hermes/group-chat/rooms": {

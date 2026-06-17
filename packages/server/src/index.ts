@@ -165,7 +165,11 @@ function envFlagEnabled(name: string): boolean {
 }
 
 function gatewayAutostartDisabled(): boolean {
-  return envFlagEnabled('HERMES_WEB_UI_DISABLE_GATEWAY_AUTOSTART')
+  // Fork: in broker mode (multitenancy) the webui never runs local per-profile
+  // gateways — every run is proxied to the external run-broker (:8766). Upstream's
+  // gateway-autostart would otherwise thrash, endlessly respawning local gateways
+  // via the absent `hermes` CLI. Bypass local execution entirely (decision: broker-only).
+  return config.webuiRunBroker || envFlagEnabled('HERMES_WEB_UI_DISABLE_GATEWAY_AUTOSTART')
 }
 
 function skillInjectionDisabled(): boolean {
