@@ -467,7 +467,8 @@ hermes-web-ui/                       (单 package，不是 workspaces)
 | `/hermes/logs` | `hermes.logs` | ✅ | ❌ |
 | `/hermes/usage` | `hermes.usage` | ❌ | ✅ |
 | `/hermes/skills` | `hermes.skills` | ❌ | ✅ (profile-local 可编辑) |
-| `/hermes/plugins` | `hermes.plugins` | ❌ | ✅ |
+| `/hermes/plugins` | `hermes.plugins` | ✅ | ❌ |
+| `/hermes/mcp` | `hermes.mcp` | ✅ | ❌ |
 | `/hermes/memory` | `hermes.memory` | ❌ | ✅ (隐藏 SOUL) |
 | `/hermes/settings` | `hermes.settings` | ❌ | ✅ (只显示安全段) |
 | `/hermes/gateways` | `hermes.gateways` | ✅ | ❌ |
@@ -776,8 +777,8 @@ user_a  | ou_test_owner_a | feishu_user_a   | 1
 
 ### Milestone 3 — Chat Plane 服务端 ACL（2026-05-07 前半）
 - `request-context.ts:135 forbiddenInChatPlane()` 落黑名单：
-  - 403：`/api/hermes/profiles`, `/api/hermes/gateways`, `/api/hermes/config/credentials`, `/api/hermes/group-chat`, `/api/hermes/cron-history`, `/api/hermes/logs`, `/api/hermes/update`, `/api/hermes/channels`。
-  - 白名单允许：`/api/hermes/sessions`, `/search/sessions`, `/usage/stats`, `/jobs`, `/files`, `/skills`(GET only), `/memory`(GET/POST only), `/download`, `/v1/*`, `/available-models`。
+  - 403：`/api/hermes/profiles`, `/api/hermes/gateways`, `/api/hermes/config/credentials`, `/api/hermes/group-chat`, `/api/hermes/cron-history`, `/api/hermes/logs`, `/api/hermes/update`, `/api/hermes/channels`, `/api/hermes/plugins`, `/api/hermes/mcp`, `/api/coding-agents`。
+  - 白名单允许：`/api/hermes/sessions`, `/search/sessions`, `/usage/stats`, `/jobs`, `/files`, `/skills`（GET + 受限 `PUT /file`）, `/memory`(GET/POST only), `/download`, `/v1/*`, `/available-models`。
   - `HERMES_CHAT_PLANE_TEMP_OPEN_ADMIN` 已废弃。
 - `GET /api/hermes/config` 只返回安全段：`display / agent / memory / session_reset / privacy / approvals`，不返回 platforms / credentials。
 
