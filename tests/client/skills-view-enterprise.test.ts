@@ -83,6 +83,20 @@ describe('SkillsView enterprise surface gating', () => {
     expect(mockFetchPendingWrites).toHaveBeenCalledOnce()
   })
 
+  it('does not load external skill recommendation links for non-super-admin users', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: vi.fn().mockResolvedValue('[External skill](https://github.com/example/skill)'),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(SkillsView)
+    await flushPromises()
+
+    expect(fetchMock).not.toHaveBeenCalledWith('/skill-recommendations.en.md')
+    expect(wrapper.text()).not.toContain('github.com/example/skill')
+  })
+
   it('keeps host-level skill controls visible for super-admin users', async () => {
     mockIsStoredSuperAdmin.mockReturnValue(true)
 

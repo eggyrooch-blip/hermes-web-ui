@@ -85,6 +85,10 @@ async function loadSkills() {
 }
 
 async function loadRecommendations() {
+  if (!isSuperAdmin.value) {
+    recommendations.value = ''
+    return
+  }
   const requestSeq = ++recommendationsRequestSeq
   try {
     const response = await fetch(recommendationsPath.value)
