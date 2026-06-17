@@ -12,6 +12,7 @@ import { useAppStore } from '@/stores/hermes/app'
 import SessionSearchModal from '@/components/hermes/chat/SessionSearchModal.vue'
 import AuthEventListener from '@/components/auth/AuthEventListener.vue'
 import DefaultCredentialPrompt from '@/components/auth/DefaultCredentialPrompt.vue'
+import { authNavigationReady, routeContentReady } from '@/router'
 
 const { isDark, isComic } = useTheme()
 const { t } = useI18n()
@@ -23,10 +24,10 @@ const naiveTheme = computed(() => isDark.value ? darkTheme : null)
 
 const isLoginPage = computed(() => route.name === 'login')
 const usesPageSidebar = computed(() =>
-  ['hermes.chat', 'hermes.session', 'hermes.history', 'hermes.historySession', 'hermes.globalAgent', 'hermes.globalAgentSession', 'hermes.groupChat', 'hermes.groupChatRoom'].includes(route.name as string),
+  authNavigationReady.value && ['hermes.chat', 'hermes.session', 'hermes.history', 'hermes.historySession', 'hermes.globalAgent', 'hermes.globalAgentSession', 'hermes.groupChat', 'hermes.groupChatRoom'].includes(route.name as string),
 )
-const showAppSidebar = computed(() => !isLoginPage.value && !usesPageSidebar.value)
-const showMobileMenuButton = computed(() => !isLoginPage.value && (showAppSidebar.value || usesPageSidebar.value))
+const showAppSidebar = computed(() => authNavigationReady.value && !isLoginPage.value && !usesPageSidebar.value)
+const showMobileMenuButton = computed(() => authNavigationReady.value && !isLoginPage.value && (showAppSidebar.value || usesPageSidebar.value))
 
 const nodeVersionLow = computed(() => {
   const v = appStore.nodeVersion
@@ -50,8 +51,8 @@ function handleMobileMenuClick() {
   appStore.toggleSidebar()
 }
 
-watch(isLoginPage, (loginPage) => {
-  if (loginPage) {
+watch([authNavigationReady, isLoginPage], ([ready, loginPage]) => {
+  if (!ready || loginPage) {
     appStore.stopHealthPolling()
     return
   }
@@ -79,14 +80,14 @@ useKeyboard()
             <div v-if="nodeVersionLow" class="node-warning-bar">
               {{ t('sidebar.nodeVersionWarning', { version: appStore.nodeVersion }) }}
             </div>
-            <div class="app-layout" :class="{ 'no-sidebar': isLoginPage || !showAppSidebar }">
+            <div class="app-layout" :class="{ 'no-sidebar': !authNavigationReady || isLoginPage || !showAppSidebar }">
               <button v-if="showMobileMenuButton" class="hamburger-btn" @click="handleMobileMenuClick">
                 <img src="/logo.png" alt="Menu" style="width: 24px; height: 24px;" />
               </button>
-              <div v-if="!isLoginPage && showAppSidebar && appStore.sidebarOpen" class="mobile-backdrop" @click="appStore.closeSidebar" />
-              <AppSidebar v-if="!isLoginPage && showAppSidebar" />
+              <div v-if="authNavigationReady && !isLoginPage && showAppSidebar && appStore.sidebarOpen" class="mobile-backdrop" @click="appStore.closeSidebar" />
+              <AppSidebar v-if="authNavigationReady && !isLoginPage && showAppSidebar" />
               <main class="app-main">
-                <router-view />
+                <router-view v-if="routeContentReady" />
               </main>
             </div>
           </div>

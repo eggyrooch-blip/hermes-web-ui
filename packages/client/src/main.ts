@@ -42,6 +42,7 @@ const app = createApp(App)
 app.use(createPinia())
 app.use(i18n)
 app.use(router)
-router.isReady().finally(() => {
-  app.mount('#app')
+app.mount('#app')
+void router.isReady().catch((error) => {
+  console.error('Router failed to finish initial navigation', error)
 })

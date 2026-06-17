@@ -1,5 +1,9 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import { ref } from 'vue'
 import { canAccessProtectedRoutes, clearApiKey, clearRuntimeMode, hasApiKey, isServerSessionAuthMode, isStoredSuperAdmin, setRuntimeMode } from '@/api/client'
+
+export const authNavigationReady = ref(false)
+export const routeContentReady = ref(false)
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -171,6 +175,8 @@ function isServerSessionAuthModeValue(value: unknown): value is 'feishu-oauth-de
 }
 
 function clearStaleServerSession() {
+  authNavigationReady.value = false
+  routeContentReady.value = false
   serverSessionVerified = false
   clearApiKey()
   clearRuntimeMode()
@@ -245,12 +251,22 @@ router.beforeEach(async (to, _from, next) => {
     return
   }
 
+  authNavigationReady.value = true
   if (to.meta.requiresSuperAdmin && !isStoredSuperAdmin()) {
+    routeContentReady.value = false
     next({ name: 'hermes.chat' })
     return
   }
 
+  routeContentReady.value = true
   next()
+})
+
+router.afterEach((to) => {
+  if (to.meta.public) {
+    authNavigationReady.value = true
+    routeContentReady.value = true
+  }
 })
 
 export default router
