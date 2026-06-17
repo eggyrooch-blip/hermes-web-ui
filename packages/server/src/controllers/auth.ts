@@ -25,8 +25,18 @@ import {
 import { issueUserJwt } from '../middleware/user-auth'
 import { getProfileDir, listProfileNamesFromDisk } from '../services/hermes/hermes-profile'
 import { startOutboundRelayClient } from '../services/global-agent/outbound-relay-client'
-import { config } from '../config'
+import { config, parseBool } from '../config'
 import { logger } from '../services/logger'
+import {
+  buildFeishuAuthorizeUrl,
+  createBoundFeishuSession,
+  createFeishuState,
+  exchangeFeishuCode,
+  verifyFeishuState,
+  FEISHU_SESSION_COOKIE,
+  FEISHU_STATE_COOKIE,
+} from '../services/feishu-oauth'
+import { getGatewayManagerInstance } from '../services/gateway-bootstrap'
 import type { WebUser } from '../services/request-context'
 import { getRequestProfile } from '../services/request-context'
 import {
@@ -635,6 +645,84 @@ function firstForwardedHeader(value: string): string {
   return value.split(',')[0]?.trim() || ''
 }
 
+function cookieSecure(ctx: Context): boolean {
+  const forwardedProto = firstForwardedHeader(getHeader(ctx, 'x-forwarded-proto')).toLowerCase()
+  return ctx.protocol === 'https' || ctx.secure || forwardedProto === 'https'
+}
+
+function setFeishuCookie(ctx: Context, name: string, value: string, maxAgeSeconds: number) {
+  ctx.cookies.set(name, value, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: cookieSecure(ctx),
+    maxAge: maxAgeSeconds * 1000,
+    overwrite: true,
+  })
+}
+
+function maybeCanonicalFeishuLoginRedirect(ctx: Context): string | null {
+  const requestOrigin = externalRequestOrigin(ctx)
+  if (!requestOrigin || !config.feishuRedirectUri) return null
+
+  try {
+    const configuredOrigin = new URL(config.feishuRedirectUri).origin
+    if (configuredOrigin === requestOrigin) return null
+    const canonical = new URL('/api/auth/feishu/login', configuredOrigin)
+    canonical.search = ctx.search || ''
+    return canonical.toString()
+  } catch {
+    return null
+  }
+}
+
+function maskOpenId(openid: string): string {
+  return openid.length <= 8 ? '***' : `***${openid.slice(-8)}`
+}
+
+function getAuthenticatedFeishuUser(ctx: Context): WebUser {
+  const user = ctx.state?.user as WebUser | undefined
+  if (!user?.profile || !user?.openid) {
+    const err: any = new Error('Feishu user session is required')
+    err.status = 401
+    throw err
+  }
+  return user
+}
+
+function shouldSkipBoundProfileGatewayWake(): boolean {
+  if (parseBool(process.env.HERMES_WEBUI_ALLOW_API_ONLY_GATEWAYS)) return false
+  // In chat broker mode, user chat runs through Run Broker; API-only gateways
+  // stay blocked by gateway-manager and should not be woken after OAuth login.
+  return config.webPlane === 'chat' && (config.webuiRunBroker || config.webuiJobsBroker)
+}
+
+export async function wakeBoundProfileGateway(profile: string): Promise<void> {
+  const mgr = getGatewayManagerInstance()
+  if (!mgr || !profile) return
+  if (shouldSkipBoundProfileGatewayWake()) {
+    logger.debug(
+      'Skipping bound profile gateway wake for profile "%s": chat broker mode is active',
+      profile,
+    )
+    return
+  }
+  try {
+    const current = typeof mgr.detectStatus === 'function'
+      ? await mgr.detectStatus(profile)
+      : null
+    if (current?.running) return
+    if (typeof mgr.startApiOnly === 'function') {
+      await mgr.startApiOnly(profile)
+      return
+    }
+    if (typeof mgr.start === 'function') {
+      await mgr.start(profile)
+    }
+  } catch (err) {
+    logger.warn(err, 'Failed to wake bound profile gateway after Feishu OAuth login')
+  }
+}
+
 function externalRequestOrigin(ctx: Context): string {
   const forwardedProto = firstForwardedHeader(getHeader(ctx, 'x-forwarded-proto'))
   const forwardedHost = firstForwardedHeader(getHeader(ctx, 'x-forwarded-host'))
@@ -695,6 +783,175 @@ async function fetchFeishuUatStatusForUser(user: WebUser, requiredScopes = ''): 
     throw err
   }
   return body
+}
+
+/**
+ * GET /api/auth/feishu/login
+ * Local-dev Feishu OAuth entrypoint. Production can replace this with a
+ * reverse-proxy trusted-header layer while keeping the same request context.
+ */
+export async function feishuLogin(ctx: Context) {
+  if (config.authMode !== 'feishu-oauth-dev') {
+    ctx.status = 404
+    ctx.body = { error: 'Feishu OAuth is not enabled' }
+    return
+  }
+  if (!config.feishuAppId || !config.feishuRedirectUri) {
+    ctx.status = 500
+    ctx.body = { error: 'Feishu OAuth is not configured' }
+    return
+  }
+  const canonicalLoginUrl = maybeCanonicalFeishuLoginRedirect(ctx)
+  if (canonicalLoginUrl) {
+    ctx.redirect(canonicalLoginUrl)
+    return
+  }
+
+  const state = createFeishuState()
+  setFeishuCookie(ctx, FEISHU_STATE_COOKIE, state, 10 * 60)
+  ctx.redirect(buildFeishuAuthorizeUrl(state))
+}
+
+/**
+ * GET /api/auth/feishu/callback
+ * Exchanges Feishu authorization code, maps open_id to Hermes profile, then
+ * stores only a signed local session cookie in the browser.
+ */
+export async function feishuCallback(ctx: Context) {
+  if (config.authMode !== 'feishu-oauth-dev') {
+    ctx.status = 404
+    ctx.body = { error: 'Feishu OAuth is not enabled' }
+    return
+  }
+
+  const code = typeof ctx.query.code === 'string' ? ctx.query.code : ''
+  const state = typeof ctx.query.state === 'string' ? ctx.query.state : ''
+  const stateCookie = ctx.cookies.get(FEISHU_STATE_COOKIE)
+  if (!code) {
+    ctx.status = 400
+    ctx.body = { error: 'Missing Feishu authorization code' }
+    return
+  }
+  if (!verifyFeishuState(stateCookie, state)) {
+    ctx.status = 401
+    ctx.body = { error: 'Invalid Feishu OAuth state' }
+    return
+  }
+
+  try {
+    const token = await exchangeFeishuCode(code)
+    const bound = createBoundFeishuSession(token.openid, {
+      name: token.name,
+      avatarUrl: token.avatarUrl,
+    })
+    if (!bound) {
+      logger.warn({ openid: maskOpenId(token.openid) }, 'Feishu OAuth login rejected: no bound Hermes profile')
+      ctx.status = 403
+      ctx.body = { error: 'No Hermes profile is bound to this Feishu user' }
+      return
+    }
+
+    logger.info({ openid: maskOpenId(token.openid), profile: bound.user.profile }, 'Feishu OAuth login bound to Hermes profile')
+    await wakeBoundProfileGateway(bound.user.profile)
+    setFeishuCookie(ctx, FEISHU_SESSION_COOKIE, bound.cookie, config.feishuSessionMaxAgeSeconds)
+    ctx.cookies.set(FEISHU_STATE_COOKIE, '', {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: cookieSecure(ctx),
+      maxAge: 0,
+      overwrite: true,
+    })
+    ctx.redirect(config.feishuCallbackRedirect)
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Feishu OAuth failed' }
+  }
+}
+
+export async function feishuLogout(ctx: Context) {
+  ctx.cookies.set(FEISHU_SESSION_COOKIE, '', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: cookieSecure(ctx),
+    maxAge: 0,
+    overwrite: true,
+  })
+  ctx.body = { success: true }
+}
+
+export async function feishuUatStatus(ctx: Context) {
+  try {
+    const user = getAuthenticatedFeishuUser(ctx)
+    const requiredScopes = typeof ctx.query.required_scopes === 'string' ? ctx.query.required_scopes : ''
+    ctx.status = 200
+    ctx.body = await fetchFeishuUatStatusForUser(user, requiredScopes)
+  } catch (err: any) {
+    handleUatProxyError(ctx, err)
+  }
+}
+
+export async function feishuUatStart(ctx: Context) {
+  try {
+    const user = getAuthenticatedFeishuUser(ctx)
+    const body = (ctx.request.body || {}) as { scope?: unknown }
+    const payload: Record<string, string> = {
+      profile_name: user.profile,
+      user_key: user.openid,
+    }
+    if (typeof body.scope === 'string' && body.scope.trim()) payload.scope = body.scope.trim()
+    const res = await fetch(brokerUrl('/api/run-broker/feishu-auth/sessions'), {
+      method: 'POST',
+      headers: brokerHeaders(),
+      body: JSON.stringify(payload),
+    })
+    await pipeBrokerJson(ctx, res)
+  } catch (err: any) {
+    handleUatProxyError(ctx, err)
+  }
+}
+
+export async function feishuUatPoll(ctx: Context) {
+  try {
+    const user = getAuthenticatedFeishuUser(ctx)
+    const sessionId = String(ctx.params?.sessionId || '').trim()
+    if (!sessionId) {
+      ctx.status = 400
+      ctx.body = { error: 'sessionId is required' }
+      return
+    }
+    const params = new URLSearchParams()
+    params.set('profile_name', user.profile)
+    params.set('user_key', user.openid)
+    const res = await fetch(brokerUrl(`/api/run-broker/feishu-auth/sessions/${encodeURIComponent(sessionId)}?${params.toString()}`), {
+      method: 'GET',
+      headers: brokerHeaders(),
+    })
+    await pipeBrokerJson(ctx, res)
+  } catch (err: any) {
+    handleUatProxyError(ctx, err)
+  }
+}
+
+export async function feishuUatCancel(ctx: Context) {
+  try {
+    const user = getAuthenticatedFeishuUser(ctx)
+    const sessionId = String(ctx.params?.sessionId || '').trim()
+    if (!sessionId) {
+      ctx.status = 400
+      ctx.body = { error: 'sessionId is required' }
+      return
+    }
+    const params = new URLSearchParams()
+    params.set('profile_name', user.profile)
+    params.set('user_key', user.openid)
+    const res = await fetch(brokerUrl(`/api/run-broker/feishu-auth/sessions/${encodeURIComponent(sessionId)}?${params.toString()}`), {
+      method: 'DELETE',
+      headers: brokerHeaders(),
+    })
+    await pipeBrokerJson(ctx, res)
+  } catch (err: any) {
+    handleUatProxyError(ctx, err)
+  }
 }
 
 /**
