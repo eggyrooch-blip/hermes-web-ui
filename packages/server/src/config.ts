@@ -146,6 +146,14 @@ export const config = {
   webuiJobsBroker: getJobsBrokerEnabled(),
   runBrokerUrl: getRunBrokerUrl(),
   runBrokerKey: getRunBrokerKey(),
+  // Connector Registry Phase 2 (all default OFF → zero behavior change on ship):
+  // serve skill-credentials status from the Run Broker connector registry.
+  connectorsUseBroker: parseBool(process.env.HERMES_WEBUI_CONNECTORS_USE_BROKER),
+  // Phase 1.5 shadow compare: fetch the OTHER source in the background and log a
+  // redacted diff without changing the served result.
+  connectorShadowCompare: parseBool(process.env.HERMES_CONNECTOR_SHADOW_COMPARE),
+  // kep-cli public callback → thin-forward to the Run Broker callback route.
+  connectorKepCallbackForward: parseBool(process.env.HERMES_CONNECTOR_KEP_CALLBACK_FORWARD),
   chatPlaneAllowSettings: parseBool(process.env.HERMES_CHAT_PLANE_ALLOW_SETTINGS),
   chatPlaneTempOpenAdmin: parseBool(process.env.HERMES_CHAT_PLANE_TEMP_OPEN_ADMIN),
 }

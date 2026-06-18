@@ -48,6 +48,12 @@ import {
   startKepCliAuth,
   startKeepRecordAuth,
 } from '../services/hermes/skill-credentials'
+import type { SkillCredentialsResult } from '../services/hermes/skill-credentials'
+import {
+  failSafeResult,
+  fetchConnectorStatuses,
+  runShadowCompare,
+} from '../services/hermes/connector-registry-client'
 
 /**
  * GET /api/auth/status
@@ -982,21 +988,64 @@ export async function skillCredentialsStatus(ctx: Context) {
   try {
     const user = getOptionalFeishuUser(ctx)
     const profileName = getRequestProfile(ctx)
-    let larkStatus: Record<string, any> | null = null
-    if (user) {
-      try {
-        larkStatus = await fetchFeishuUatStatusForUser(user)
-      } catch (err) {
-        logger.warn(err, 'Failed to load Lark-cli credential status for credentials page')
+
+    // Local source: the WebUI's own 1192-line implementation (unchanged).
+    const localFetch = async (): Promise<SkillCredentialsResult> => {
+      let larkStatus: Record<string, any> | null = null
+      if (user) {
+        try {
+          larkStatus = await fetchFeishuUatStatusForUser(user)
+        } catch (err) {
+          logger.warn(err, 'Failed to load Lark-cli credential status for credentials page')
+        }
       }
+      return listSkillCredentialStatuses({
+        profileName,
+        profileDir: getProfileDir(profileName),
+        user,
+        larkStatus,
+      })
     }
+    // Broker source: the Run Broker connector registry (Phase 2 control plane).
+    const brokerFetch = (): Promise<SkillCredentialsResult> =>
+      fetchConnectorStatuses({ profileName, userKey: user?.openid })
+
+    let served: SkillCredentialsResult
+    let servedSource: 'local' | 'broker'
+    let brokerOk = false
+
+    if (config.connectorsUseBroker) {
+      servedSource = 'broker'
+      try {
+        served = await brokerFetch()
+        brokerOk = true
+      } catch (err: any) {
+        // FAIL-SAFE (plan red line): the broker is the source of truth, so if it
+        // is unavailable we surface error states — we do NOT fall back to the
+        // local result, which could report a stale `authenticated`.
+        logger.warn(err, 'Connector broker unavailable; serving fail-safe error states')
+        served = failSafeResult(profileName)
+      }
+    } else {
+      servedSource = 'local'
+      served = await localFetch()
+    }
+
+    // Phase 1.5 shadow compare: fetch the OTHER source in the background and log
+    // a redacted diff. Never blocks, never changes the served result. Skipped
+    // when the broker just failed (comparing the fail-safe to local is noise).
+    if (config.connectorShadowCompare && (servedSource === 'local' || brokerOk)) {
+      void runShadowCompare({
+        profileName,
+        userKey: user?.openid,
+        servedSource,
+        servedResult: served,
+        fetchOther: servedSource === 'local' ? brokerFetch : localFetch,
+      })
+    }
+
     ctx.status = 200
-    ctx.body = await listSkillCredentialStatuses({
-      profileName,
-      profileDir: getProfileDir(profileName),
-      user,
-      larkStatus,
-    })
+    ctx.body = served
   } catch (err: any) {
     handleUatProxyError(ctx, err)
   }
@@ -1116,6 +1165,21 @@ export async function skillCredentialBindToken(ctx: Context) {
 export async function kepCliCallback(ctx: Context) {
   try {
     const sessionId = String(ctx.params?.sessionId || '').trim()
+    // Phase 2: thin-forward to the Run Broker public callback (which owns the
+    // kep-auth session + localhost forward). The route id is unchanged so
+    // already-open OAuth browser tabs keep working. OFF (default) → local
+    // complete, the rollback path.
+    if (config.connectorKepCallbackForward) {
+      const qs = ctx.querystring ? `?${ctx.querystring}` : ''
+      const res = await fetch(
+        brokerUrl(`/api/run-broker/credentials/kep-cli/callback/${encodeURIComponent(sessionId)}${qs}`),
+        { method: 'GET' },
+      )
+      ctx.status = res.status
+      ctx.type = 'html'
+      ctx.body = await res.text().catch(() => '认证处理完成，可关闭本页面。')
+      return
+    }
     const result = await completeKepCliAuthCallback({
       sessionId,
       query: ctx.querystring || '',
