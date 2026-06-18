@@ -87,6 +87,32 @@ describe('McpManagerView loading behavior', () => {
     expect(mocks.fetchMcpServers).toHaveBeenCalledTimes(1)
   })
 
+  it('retries a partial read-only MCP inventory so live tool details can replace the static fallback', async () => {
+    mocks.fetchMcpServers
+      .mockResolvedValueOnce({ ok: true, partial: true, servers: [disconnectedServer()] })
+      .mockResolvedValueOnce({
+        ok: true,
+        servers: [{
+          ...disconnectedServer(),
+          connected: true,
+          tools: 1,
+          tools_registered: 1,
+          tool_names: ['search'],
+          tool_names_registered: ['search'],
+          tool_details: [{ name: 'search', description: 'Search docs' }],
+        }],
+      })
+
+    mount(McpManagerView)
+    await flushPromises()
+    expect(mocks.fetchMcpServers).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+
+    expect(mocks.fetchMcpServers).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps the existing server list visible while a manual refresh is pending', async () => {
     let resolveRefresh: (value: unknown) => void = () => {}
     mocks.fetchMcpServers

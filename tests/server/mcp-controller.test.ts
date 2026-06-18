@@ -96,7 +96,7 @@ const SAMPLE_TOOLS_RESPONSE = {
 // ── Tests ──────────────────────────────────────────────────
 describe('MCP Controller', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    vi.resetAllMocks()
     profileMock.dirs = {}
     profileMock.activeDir = ''
   })
@@ -225,6 +225,78 @@ describe('MCP Controller', () => {
         const server = (ctx.body as any).servers[0]
         expect(server).not.toHaveProperty('error')
         expect(server.tool_details).toEqual([])
+        expect(server.raw_config).toEqual({ enabled: true })
+      } finally {
+        vi.useRealTimers()
+        rmSync(profileDir, { recursive: true, force: true })
+      }
+    })
+
+    it('caches live bridge inventory after returning a fast static fallback', async () => {
+      vi.useFakeTimers()
+      const profileDir = mkdtempSync(join(tmpdir(), 'hermes-mcp-profile-'))
+      mkdirSync(profileDir, { recursive: true })
+      writeFileSync(join(profileDir, 'config.yaml'), [
+        'mcp_servers:',
+        '  codegraph:',
+        '    command: codegraph',
+        '    enabled: true',
+      ].join('\n'))
+      profileMock.dirs['cache-profile'] = profileDir
+      mcpListMock.mockImplementationOnce(() => new Promise(resolve => {
+        setTimeout(() => resolve({
+          ok: true,
+          servers: [{
+            name: 'codegraph',
+            transport: 'stdio',
+            connected: true,
+            tools: 1,
+            tools_registered: 1,
+            tool_names: ['search'],
+            tool_names_registered: ['search'],
+            tool_details: [{ name: 'search', description: 'Search docs', input_schema: { type: 'object' } }],
+            error: 'host diagnostic',
+            raw_config: { command: 'codegraph', enabled: true },
+          }],
+          total_tools: 1,
+        }), 1500)
+      }))
+      mcpListMock.mockResolvedValue({
+        ok: true,
+        servers: [{
+          name: 'codegraph',
+          transport: 'stdio',
+          connected: true,
+          tools: 1,
+          tools_registered: 1,
+          tool_names: ['search'],
+          tool_names_registered: ['search'],
+          tool_details: [{ name: 'search', description: 'Search docs' }],
+          raw_config: { command: 'codegraph', enabled: true },
+        }],
+        total_tools: 1,
+      })
+
+      try {
+        const { listServers } = await import('../../packages/server/src/controllers/hermes/mcp')
+        const firstCtx = createCtx({ state: { profile: { name: 'cache-profile' }, user: { role: 'user' } } })
+        const firstPending = listServers(firstCtx)
+        await vi.advanceTimersByTimeAsync(1200)
+        await firstPending
+
+        expect((firstCtx.body as any).partial).toBe(true)
+        expect((firstCtx.body as any).servers[0].tool_details).toEqual([])
+
+        await vi.advanceTimersByTimeAsync(300)
+
+        const secondCtx = createCtx({ state: { profile: { name: 'cache-profile' }, user: { role: 'user' } } })
+        await listServers(secondCtx)
+
+        const server = (secondCtx.body as any).servers[0]
+        expect((secondCtx.body as any).partial).toBeUndefined()
+        expect(server.tool_details).toEqual([{ name: 'search', description: 'Search docs' }])
+        expect(server).not.toHaveProperty('error')
+        expect(JSON.stringify(server.tool_details)).not.toContain('input_schema')
         expect(server.raw_config).toEqual({ enabled: true })
       } finally {
         vi.useRealTimers()

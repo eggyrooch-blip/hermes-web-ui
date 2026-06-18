@@ -8,8 +8,11 @@ import type { McpActionResponse, McpListResponse, McpServerEntry } from './mcp-t
 export type { McpServerEntry, McpActionResponse } from './mcp-types'
 
 const MCP_LIST_BRIDGE_TIMEOUT_MS = 1200
+const MCP_LIST_CACHE_TTL_MS = 30_000
 
 let bridgeClient: AgentBridgeClient | null = null
+const mcpListCache = new Map<string, { value: McpListResponse; expiresAt: number }>()
+const pendingMcpListRefresh = new Map<string, Promise<McpListResponse>>()
 
 export function getBridgeClient(): AgentBridgeClient {
   if (!bridgeClient) {
@@ -20,6 +23,44 @@ export function getBridgeClient(): AgentBridgeClient {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function cacheKey(profile?: string): string {
+  return profile || '__active__'
+}
+
+function getCachedMcpList(key: string): McpListResponse | null {
+  const cached = mcpListCache.get(key)
+  if (!cached) return null
+  if (cached.expiresAt < Date.now()) {
+    mcpListCache.delete(key)
+    return null
+  }
+  return cached.value
+}
+
+function rememberMcpList(key: string, value: McpListResponse): McpListResponse {
+  if (value?.ok && Array.isArray(value.servers) && !value.partial) {
+    mcpListCache.set(key, { value, expiresAt: Date.now() + MCP_LIST_CACHE_TTL_MS })
+  }
+  return value
+}
+
+function refreshMcpList(key: string, profile: string | undefined, shouldRemember: () => boolean): Promise<McpListResponse> {
+  const pending = pendingMcpListRefresh.get(key)
+  if (pending) return pending
+  let live: Promise<McpListResponse>
+  const cleanupTimer = setTimeout(() => {
+    if (pendingMcpListRefresh.get(key) === live) pendingMcpListRefresh.delete(key)
+  }, MCP_LIST_BRIDGE_TIMEOUT_MS)
+  live = (bridgeMcpAction('mcp_list', {}, profile) as Promise<McpListResponse>)
+    .then(response => shouldRemember() ? rememberMcpList(key, response) : response)
+    .finally(() => {
+      clearTimeout(cleanupTimer)
+      pendingMcpListRefresh.delete(key)
+    })
+  pendingMcpListRefresh.set(key, live)
+  return live
 }
 
 function readMcpConfig(profile?: string): Record<string, unknown> {
@@ -66,9 +107,20 @@ export function readMcpConfigSnapshot(profile?: string, error = 'MCP bridge inve
 }
 
 export async function listMcpServers(profile?: string): Promise<McpListResponse> {
-  const live = bridgeMcpAction('mcp_list', {}, profile) as Promise<McpListResponse>
+  const key = cacheKey(profile)
+  const cached = getCachedMcpList(key)
+  let shouldRememberLive = cached !== null
+  const live = refreshMcpList(key, profile, () => shouldRememberLive)
+  if (cached) {
+    void live.catch(() => {})
+    return cached
+  }
   const fallback = new Promise<McpListResponse>(resolve => {
-    setTimeout(() => resolve(readMcpConfigSnapshot(profile)), MCP_LIST_BRIDGE_TIMEOUT_MS)
+    setTimeout(() => {
+      shouldRememberLive = true
+      pendingMcpListRefresh.delete(key)
+      resolve(readMcpConfigSnapshot(profile))
+    }, MCP_LIST_BRIDGE_TIMEOUT_MS)
   })
   return Promise.race([live, fallback])
 }

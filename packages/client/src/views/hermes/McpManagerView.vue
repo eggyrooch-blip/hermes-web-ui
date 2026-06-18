@@ -215,6 +215,14 @@ async function loadServers() {
       }))
     }
     toolsByServer.value = nextToolsByServer
+    // A partial list is a fast static fallback; retry the read-only list so live
+    // bridge tool inventory can replace it without exposing reload/mutation.
+    if (data.partial === true && _autoRetryCount < MAX_AUTO_RETRIES) {
+      const delay = BASE_RETRY_DELAY * Math.pow(2, _autoRetryCount)
+      _autoRetryCount++
+      scheduleReload(delay)
+      return
+    }
     // Auto-retry with exponential backoff if enabled servers are still disconnected
     const hasPending = servers.value.some(s => s.raw_config.enabled !== false && !s.connected)
     if (canManageMcp.value && hasPending && _autoRetryCount < MAX_AUTO_RETRIES) {

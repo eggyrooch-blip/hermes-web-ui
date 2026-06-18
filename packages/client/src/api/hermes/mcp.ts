@@ -17,6 +17,7 @@ export interface McpServersResponse {
   ok: boolean
   servers: McpServerInfo[]
   total_tools: number
+  partial?: boolean
   error?: string
 }
 
