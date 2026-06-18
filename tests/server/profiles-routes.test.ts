@@ -18,6 +18,10 @@ const sessionDeleterMocks = vi.hoisted(() => ({
   switchProfile: vi.fn(),
 }))
 
+const usersStoreMocks = vi.hoisted(() => ({
+  listUserProfiles: vi.fn(),
+}))
+
 // Mock hermes-cli
 vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({
   listProfiles: vi.fn(),
@@ -55,6 +59,10 @@ vi.mock('../../packages/server/src/services/hermes/session-deleter', () => ({
   },
 }))
 
+vi.mock('../../packages/server/src/db/hermes/users-store', () => ({
+  listUserProfiles: usersStoreMocks.listUserProfiles,
+}))
+
 import * as hermesCli from '../../packages/server/src/services/hermes/hermes-cli'
 
 describe('Profile Routes', () => {
@@ -67,6 +75,7 @@ describe('Profile Routes', () => {
     agentBridgeMocks.destroyProfile.mockResolvedValue({ destroyed: 0 })
     skillInjectorMocks.injectMissingSkills.mockResolvedValue({ targets: [] })
     skillInjectorMocks.resolveTargetDirForProfile.mockImplementation((name: string) => join('/tmp/hermes-skills', name))
+    usersStoreMocks.listUserProfiles.mockReturnValue([])
   })
 
   afterEach(async () => {
@@ -117,6 +126,41 @@ describe('Profile Routes', () => {
       await hermesCli.renameProfile('old', 'new')
 
       expect(hermesCli.renameProfile).toHaveBeenCalledWith('old', 'new')
+    })
+  })
+
+  describe('profile listing', () => {
+    it('lists ordinary user profiles from the authorized profile set without running slow Hermes CLI list', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-fast-list-'))
+      tempHomes.push(hermesHome)
+      process.env.HERMES_HOME = hermesHome
+      await mkdir(join(hermesHome, 'profiles', 'feishu_user_a'), { recursive: true })
+      await writeFile(join(hermesHome, 'profiles', 'feishu_user_a', 'config.yaml'), 'model:\n  default: personal-model\n', 'utf-8')
+      await mkdir(join(hermesHome, 'profiles', 'group_agent_a'), { recursive: true })
+      await writeFile(join(hermesHome, 'profiles', 'group_agent_a', 'config.yaml'), 'model:\n  default: group-model\n', 'utf-8')
+      await writeFile(join(hermesHome, 'active_profile'), 'feishu_user_a\n', 'utf-8')
+      usersStoreMocks.listUserProfiles.mockReturnValue([
+        { user_id: 7, profile_name: 'feishu_user_a', is_default: 1, created_at: 1 },
+        { user_id: 7, profile_name: 'group_agent_a', is_default: 0, created_at: 1 },
+      ])
+      vi.mocked(hermesCli.listProfiles).mockRejectedValue(new Error('slow profile list should not run'))
+      const { list } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = {
+        state: {
+          user: { id: 7, role: 'user' },
+          profile: { name: 'group_agent_a' },
+        },
+        get: vi.fn(() => ''),
+        status: 200,
+        body: undefined,
+      }
+
+      await list(ctx)
+
+      expect(hermesCli.listProfiles).not.toHaveBeenCalled()
+      expect(ctx.status).toBe(200)
+      expect(ctx.body.profiles.map((profile: any) => profile.name)).toEqual(['feishu_user_a', 'group_agent_a'])
+      expect(ctx.body.profiles.find((profile: any) => profile.name === 'group_agent_a')?.active).toBe(true)
     })
   })
 

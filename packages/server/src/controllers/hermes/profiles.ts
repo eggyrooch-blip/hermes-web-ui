@@ -147,8 +147,37 @@ function requestedProfileName(ctx: any): string {
 function filterProfilesForUser(ctx: any, profiles: HermesProfile[]): HermesProfile[] {
   const user = ctx.state?.user
   if (!user || user.role === 'super_admin') return profiles
-  const allowed = new Set(listUserProfiles(user.id).map(profile => profile.profile_name))
+  const allowed = allowedProfileNamesForUser(user)
   return profiles.filter(profile => allowed.has(profile.name))
+}
+
+function allowedProfileNamesForUser(user: any): Set<string> {
+  const allowed = new Set<string>()
+  if (user?.id != null) {
+    for (const profile of listUserProfiles(user.id)) {
+      if (profile.profile_name) allowed.add(profile.profile_name)
+    }
+  }
+  if (Array.isArray(user?.profiles)) {
+    for (const profile of user.profiles) {
+      if (typeof profile === 'string' && profile.trim()) allowed.add(profile.trim())
+    }
+  }
+  return allowed
+}
+
+function listAuthorizedProfilesFromDisk(ctx: any): HermesProfile[] | null {
+  const user = ctx.state?.user
+  if (!user || user.role === 'super_admin') return null
+  const allowed = allowedProfileNamesForUser(user)
+  if (allowed.size === 0) return []
+
+  const activeProfileName = requestedProfileName(ctx)
+  const diskProfiles = listProfilesFromDisk(activeProfileName)
+  const byName = new Map(diskProfiles.map(profile => [profile.name, profile]))
+  return Array.from(allowed)
+    .map(name => byName.get(name))
+    .filter((profile): profile is HermesProfile => !!profile)
 }
 
 function canAccessProfile(ctx: any, profileName: string): boolean {
@@ -361,20 +390,21 @@ function scheduleRuntimeStatusRefresh(): void {
 
 export async function list(ctx: any) {
   try {
-    let profiles: HermesProfile[]
-    try {
-      profiles = await hermesCli.listProfiles()
-    } catch (err: any) {
-      const { getActiveProfileName } = await import('../../services/hermes/hermes-profile')
-      const activeProfileName = getActiveProfileName()
-      if (!isForbiddenProfileName(activeProfileName)) throw err
-
-      logger.warn(err, '[listProfiles] active_profile "%s" is invalid/reserved; resetting to default and listing profiles from disk', activeProfileName)
-      writeFileSync(getActiveProfileFile(), 'default\n', 'utf-8')
-      profiles = listProfilesFromDisk('default')
-    }
-
     const activeProfileName = requestedProfileName(ctx)
+    let profiles: HermesProfile[] | null = listAuthorizedProfilesFromDisk(ctx)
+    if (!profiles) {
+      try {
+        profiles = await hermesCli.listProfiles()
+      } catch (err: any) {
+        const { getActiveProfileName } = await import('../../services/hermes/hermes-profile')
+        const activeProfileName = getActiveProfileName()
+        if (!isForbiddenProfileName(activeProfileName)) throw err
+
+        logger.warn(err, '[listProfiles] active_profile "%s" is invalid/reserved; resetting to default and listing profiles from disk', activeProfileName)
+        writeFileSync(getActiveProfileFile(), 'default\n', 'utf-8')
+        profiles = listProfilesFromDisk('default')
+      }
+    }
 
     profiles = filterVisibleProfiles(profiles)
     profiles = filterProfilesForUser(ctx, profiles)
