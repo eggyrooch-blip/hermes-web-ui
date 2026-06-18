@@ -159,9 +159,22 @@ export async function fetchConnectorStatuses(opts: {
   if (!Array.isArray(rows)) {
     throw new BrokerUnavailableError('connector broker returned no connectors array', 502)
   }
+  let credentials: SkillCredentialEntry[]
+  try {
+    // A malformed row (null / missing id) must surface as a broker fault so the
+    // caller's fail-safe kicks in — not as a raw TypeError that becomes a 500.
+    credentials = rows.map((r: ConnectorStatusDict) => {
+      if (!r || typeof r !== 'object' || !r.id) {
+        throw new Error('connector row is missing an id')
+      }
+      return mapConnectorToEntry(r)
+    })
+  } catch (err: any) {
+    throw new BrokerUnavailableError(`connector broker returned a malformed row: ${err?.message || err}`, 502)
+  }
   return {
     profile_name: String(body?.profile_name || opts.profileName),
-    credentials: rows.map((r: ConnectorStatusDict) => mapConnectorToEntry(r)),
+    credentials,
   }
 }
 
