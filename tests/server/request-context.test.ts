@@ -307,14 +307,14 @@ describe('chat plane access control', () => {
     }
   })
 
-  it('allows MCP and plugin inventory reads but blocks MCP mutations in chat plane', async () => {
+  it('allows plugin and MCP server inventory reads but blocks MCP tools and mutations in chat plane', async () => {
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
     const allowed = [
       mockCtx('/api/hermes/plugins', 'GET'),
       mockCtx('/api/hermes/mcp/servers', 'GET'),
-      mockCtx('/api/hermes/mcp/tools', 'GET'),
     ]
     const blocked = [
+      mockCtx('/api/hermes/mcp/tools', 'GET'),
       mockCtx('/api/hermes/mcp/servers', 'POST'),
       mockCtx('/api/hermes/mcp/servers/github', 'PATCH'),
       mockCtx('/api/hermes/mcp/servers/github', 'DELETE'),

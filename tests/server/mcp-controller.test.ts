@@ -360,6 +360,19 @@ describe('MCP Controller', () => {
       expect(mcpToolsMock).toHaveBeenCalledWith('github', 'test-profile', true)
     })
 
+    it('blocks tool schema listing for ordinary read-only users', async () => {
+      mcpToolsMock.mockResolvedValue(SAMPLE_TOOLS_RESPONSE)
+      const { listTools } = await import('../../packages/server/src/controllers/hermes/mcp')
+      const ctx = createCtx({
+        state: { profile: { name: 'test-profile' }, user: { role: 'user' } },
+        query: { server: 'github', raw: '1' },
+      })
+      await listTools(ctx)
+      expect(ctx.status).toBe(403)
+      expect(ctx.body).toEqual({ error: 'Super administrator privileges are required' })
+      expect(mcpToolsMock).not.toHaveBeenCalled()
+    })
+
     it('returns 503 on bridge error', async () => {
       mcpToolsMock.mockRejectedValue(new Error('timeout'))
       const { listTools } = await import('../../packages/server/src/controllers/hermes/mcp')

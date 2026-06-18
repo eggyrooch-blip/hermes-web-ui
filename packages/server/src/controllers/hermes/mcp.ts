@@ -131,6 +131,11 @@ export async function testServer(ctx: Context) {
 
 export async function listTools(ctx: Context) {
   try {
+    if (!isSuperAdmin(ctx)) {
+      ctx.status = 403
+      ctx.body = { error: 'Super administrator privileges are required' }
+      return
+    }
     const server = ctx.query.server as string | undefined
     const raw = ctx.query.raw === '1' || ctx.query.raw === 'true'
     const payload: Record<string, any> = {}

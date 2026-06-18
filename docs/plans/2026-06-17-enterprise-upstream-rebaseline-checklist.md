@@ -97,6 +97,8 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
 - Ordinary plugin/MCP inventory responses must not include plugin paths,
   requiresEnv, host metadata/warnings, MCP raw command/env/headers, or raw MCP
   error strings.
+- `/api/hermes/mcp/tools` is a schema/visibility-management surface, not an
+  ordinary read-only employee endpoint.
 - MCP reload is host maintenance. Ordinary users must not see `/reload-mcp`
   slash suggestions, and chat-plane server code must reject `/reload-mcp` even
   if a client sends it manually.

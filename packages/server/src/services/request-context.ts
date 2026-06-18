@@ -264,7 +264,7 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   if (/^\/api\/hermes\/write-gate\/pending\/[^/]+\/[^/]+\/diff$/.test(path) && method === 'GET') return false
   if (/^\/api\/hermes\/write-gate\/pending\/[^/]+\/[^/]+\/(approve|reject)$/.test(path) && method === 'POST') return false
   if (path === '/api/hermes/plugins' && method === 'GET') return false
-  if ((path === '/api/hermes/mcp/servers' || path === '/api/hermes/mcp/tools') && method === 'GET') return false
+  if (path === '/api/hermes/mcp/servers' && method === 'GET') return false
   if (path === '/api/hermes/memory') return method !== 'GET' && method !== 'POST'
   if (path.startsWith('/api/hermes/download')) return false
   if (path.startsWith('/api/hermes/v1/') || path.startsWith('/v1/')) return false
