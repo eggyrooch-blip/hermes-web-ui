@@ -116,6 +116,10 @@ describe('MCP Controller', () => {
         ...SAMPLE_SERVERS_RESPONSE,
         servers: [{
           ...SAMPLE_SERVERS_RESPONSE.servers[0],
+          tool_details: [
+            { name: 'create_repository', description: 'Create a repo', input_schema: { type: 'object' } },
+            { name: 'search_repositories', description: 'Search repos', secret: 'not-for-ui' },
+          ] as any,
           raw_config: {
             command: 'npx',
             args: ['-y', '@modelcontextprotocol/server-github'],
@@ -129,6 +133,13 @@ describe('MCP Controller', () => {
       const ctx = createCtx({ state: { profile: { name: 'test-profile' }, user: { role: 'user' } } })
       await listServers(ctx)
       const server = (ctx.body as any).servers[0]
+      expect(server).not.toHaveProperty('error')
+      expect(server.tool_details).toEqual([
+        { name: 'create_repository', description: 'Create a repo' },
+        { name: 'search_repositories', description: 'Search repos' },
+      ])
+      expect(JSON.stringify(server.tool_details)).not.toContain('input_schema')
+      expect(JSON.stringify(server.tool_details)).not.toContain('not-for-ui')
       expect(server.raw_config).toEqual({ enabled: true })
       expect(server.raw_config).not.toHaveProperty('command')
       expect(server.raw_config).not.toHaveProperty('env')
@@ -212,6 +223,8 @@ describe('MCP Controller', () => {
         await pending
 
         const server = (ctx.body as any).servers[0]
+        expect(server).not.toHaveProperty('error')
+        expect(server.tool_details).toEqual([])
         expect(server.raw_config).toEqual({ enabled: true })
       } finally {
         vi.useRealTimers()

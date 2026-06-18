@@ -24,6 +24,16 @@ function redactRawConfig(config: Record<string, unknown> | undefined): Record<st
     : {}
 }
 
+function redactToolDetails(toolDetails: McpServerEntry['tool_details']): NonNullable<McpServerEntry['tool_details']> {
+  if (!Array.isArray(toolDetails)) return []
+  return toolDetails
+    .filter(tool => tool && typeof tool.name === 'string' && tool.name.trim())
+    .map(tool => ({
+      name: tool.name,
+      ...(typeof tool.description === 'string' ? { description: tool.description } : {}),
+    }))
+}
+
 function redactMcpServer(server: McpServerEntry): McpServerEntry {
   return {
     name: server.name,
@@ -33,8 +43,7 @@ function redactMcpServer(server: McpServerEntry): McpServerEntry {
     tools_registered: server.tools_registered,
     tool_names: server.tool_names || [],
     tool_names_registered: server.tool_names_registered || [],
-    tool_details: server.tool_details || [],
-    error: null,
+    tool_details: redactToolDetails(server.tool_details),
     raw_config: redactRawConfig(server.raw_config),
   }
 }
