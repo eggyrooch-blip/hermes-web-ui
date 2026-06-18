@@ -225,6 +225,13 @@ async function hasValidServerSession(): Promise<boolean> {
   return serverSessionCheck
 }
 
+export function freshServerSettingsLandingRedirect(discoveredServerSession: boolean, routeName: unknown) {
+  if (discoveredServerSession && isServerSessionAuthMode() && routeName === 'hermes.settings') {
+    return { name: 'hermes.chat' as const, replace: true }
+  }
+  return null
+}
+
 router.beforeEach(async (to, _from, next) => {
   // Public pages don't need auth
   if (to.meta.public) {
@@ -260,9 +267,10 @@ router.beforeEach(async (to, _from, next) => {
     return
   }
 
-  if (discoveredServerSession && isServerSessionAuthMode() && to.name === 'hermes.settings') {
+  const settingsRedirect = freshServerSettingsLandingRedirect(discoveredServerSession, to.name)
+  if (settingsRedirect) {
     routeContentReady.value = false
-    next({ name: 'hermes.chat' })
+    next(settingsRedirect)
     return
   }
 

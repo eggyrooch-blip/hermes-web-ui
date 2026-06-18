@@ -8,6 +8,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // exercises the beforeEach navigation guard, never the rendered views, so we
 // sever the monaco import chain with a harmless stub.
 vi.mock('monaco-editor', () => ({}))
+vi.mock('@/views/hermes/ChatView.vue', () => ({
+  default: { template: '<div data-test="chat-view" />' },
+}))
+vi.mock('@/views/hermes/SettingsView.vue', () => ({
+  default: { template: '<div data-test="settings-view" />' },
+}))
 
 const fetchMock = vi.hoisted(() => vi.fn())
 
@@ -38,6 +44,7 @@ describe('router route metadata + auth gating', () => {
 
   afterEach(() => {
     localStorage.clear()
+    window.history.replaceState(null, '', '/')
     vi.unstubAllGlobals()
   })
 
@@ -151,6 +158,18 @@ describe('router route metadata + auth gating', () => {
 
     expect(router.currentRoute.value.name).toBe('hermes.chat')
     expect(localStorage.getItem('hermes_auth_mode')).toBe('feishu-oauth-dev')
+  })
+
+  it('replaces the browser history entry when fresh Feishu cookie mode reaches settings', async () => {
+    localStorage.setItem('hermes_auth_mode', 'feishu-oauth-dev')
+    const { freshServerSettingsLandingRedirect } = await import('@/router')
+
+    expect(freshServerSettingsLandingRedirect(true, 'hermes.settings')).toEqual({
+      name: 'hermes.chat',
+      replace: true,
+    })
+    expect(freshServerSettingsLandingRedirect(false, 'hermes.settings')).toBeNull()
+    expect(freshServerSettingsLandingRedirect(true, 'hermes.chat')).toBeNull()
   })
 
   it.each([
