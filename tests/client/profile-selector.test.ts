@@ -85,7 +85,7 @@ vi.mock('naive-ui', () => ({
   NButton: {
     props: ['title', 'size', 'quaternary', 'circle', 'secondary', 'type', 'loading', 'disabled'],
     emits: ['click'],
-    template: '<button type="button" :title="title" @click="$emit(\'click\')"><slot /></button>',
+    template: '<button type="button" :title="title" :disabled="disabled" @click="$emit(\'click\')"><slot /></button>',
   },
   NModal: {
     props: ['show', 'title', 'preset', 'bordered'],
@@ -160,13 +160,17 @@ describe('ProfileSelector', () => {
     expect(profilesStoreMock.deleteAvatar).toHaveBeenCalledWith('feishu_user_a')
   })
 
-  it('hides profile runtime and frontend switching controls from ordinary Feishu users', async () => {
+  it('keeps frontend profile switching but hides runtime controls from ordinary Feishu users', async () => {
+    profilesStoreMock.profiles = [
+      { name: 'feishu_user_a', active: true, model: '', gateway: '', alias: '', kind: 'user', avatar: { type: 'generated', seed: 'current-seed' } },
+      { name: 'group_agent_a', active: false, model: '', gateway: '', alias: '', kind: 'group', avatar: { type: 'generated', seed: 'group-seed' } },
+    ]
     const wrapper = mount(ProfileSelector)
 
     await wrapper.find('.profile-display').trigger('click')
 
     expect(wrapper.text()).toContain('Customize Avatar')
-    expect(wrapper.text()).not.toContain('Switch Profile')
+    expect(wrapper.text()).toContain('Switch Profile')
     expect(wrapper.text()).not.toContain('Bridge')
     expect(wrapper.text()).not.toContain('Gateway')
     expect(wrapper.text()).not.toContain('Restart Gateway')
