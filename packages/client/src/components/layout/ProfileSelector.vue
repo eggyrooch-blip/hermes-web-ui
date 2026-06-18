@@ -71,6 +71,7 @@ async function loadRuntimeStatuses(options: { background?: boolean } = {}): Prom
 
 function openProfileModal() {
   setProfileModalShow(true)
+  void profilesStore.fetchProfiles()
   if (!isSuperAdmin.value) return
   void loadRuntimeStatuses().then((refreshing) => {
     if (refreshing) scheduleRuntimeStatusPoll()
@@ -248,7 +249,7 @@ onMounted(() => {
         </div>
       </template>
 
-      <NSpin :show="runtimeLoading" size="small">
+      <NSpin :show="runtimeLoading || profilesStore.loading" size="small">
         <div class="profile-runtime-list">
           <div
             v-for="profile in profilesStore.profiles"

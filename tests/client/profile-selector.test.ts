@@ -175,6 +175,7 @@ describe('ProfileSelector', () => {
     expect(wrapper.text()).not.toContain('Gateway')
     expect(wrapper.text()).not.toContain('Restart Gateway')
     expect(wrapper.text()).not.toContain('Restart Profile')
+    expect(profilesStoreMock.fetchProfiles).toHaveBeenCalled()
     expect(fetchProfileRuntimeStatusesWithMetaMock).not.toHaveBeenCalled()
   })
 
