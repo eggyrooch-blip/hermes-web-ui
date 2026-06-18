@@ -3490,6 +3490,7 @@ export const useChatStore = defineStore('chat', () => {
     isSessionLive,
     isSessionCompletedUnread,
     clearSessionCompletedUnread,
+    clearActiveSession,
     sessionProfileFilter,
     compressionState,
     abortState,

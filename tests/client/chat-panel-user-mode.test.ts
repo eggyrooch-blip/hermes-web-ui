@@ -31,6 +31,7 @@ const chatStoreMock = vi.hoisted(() => ({
   runtimeMode: 'agent',
   sessionProfileFilter: '__all__',
   clearSessionCompletedUnread: vi.fn(),
+  clearActiveSession: vi.fn(),
   isSessionCompletedUnread: vi.fn(() => false),
   switchSessionModel: vi.fn(),
 }))
@@ -55,6 +56,7 @@ const profilesStoreMock = vi.hoisted(() => ({
   profiles: [] as Array<Record<string, any>>,
   loading: false,
   fetchProfiles: vi.fn(),
+  switchProfile: vi.fn(() => Promise.resolve(true)),
 }))
 
 const prefsStoreMock = vi.hoisted(() => ({
@@ -245,6 +247,8 @@ describe('ChatPanel user-mode gateway state', () => {
     routerReplaceMock.mockClear()
     routerResolveMock.mockClear()
     vi.clearAllMocks()
+    chatStoreMock.loadSessions.mockResolvedValue(undefined)
+    profilesStoreMock.switchProfile.mockResolvedValue(true)
     localStorage.clear()
     window.matchMedia = vi.fn().mockReturnValue({
       matches: false,
@@ -353,6 +357,54 @@ describe('ChatPanel user-mode gateway state', () => {
     expect(routerPushMock).toHaveBeenCalledWith(expect.objectContaining({
       query: { profile: 'feishu_g41a5b5g' },
     }))
+  })
+
+  it('switches frontend profile and clears a stale active session when the profile filter changes', async () => {
+    profilesStoreMock.profiles = [
+      { name: '123' },
+      { name: 'feishu_g41a5b5g' },
+    ]
+    chatStoreMock.sessionProfileFilter = 'feishu_g41a5b5g'
+    chatStoreMock.sessions = [
+      {
+        id: 'old-session',
+        title: 'hello',
+        profile: 'feishu_g41a5b5g',
+        updatedAt: 2,
+        messages: [],
+      },
+    ]
+    chatStoreMock.activeSessionId = 'old-session'
+    chatStoreMock.activeSession = chatStoreMock.sessions[0]
+    chatStoreMock.loadSessions.mockImplementation(async () => {
+      chatStoreMock.activeSession = chatStoreMock.sessions[0]
+    })
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+          NSelect: {
+            props: ['value', 'options'],
+            emits: ['update:value'],
+            template: '<button class="session-profile-filter" @click="$emit(\'update:value\', \'123\')">{{ value }}</button>',
+          },
+          Select: {
+            props: ['value', 'options'],
+            emits: ['update:value'],
+            template: '<button class="session-profile-filter" @click="$emit(\'update:value\', \'123\')">{{ value }}</button>',
+          },
+        },
+      },
+    })
+
+    wrapper.findComponent('.session-profile-filter').vm.$emit('update:value', '123')
+    await flushPromises()
+
+    expect(profilesStoreMock.switchProfile).toHaveBeenCalledWith('123')
+    expect(chatStoreMock.loadSessions).toHaveBeenCalledWith('123')
+    expect(chatStoreMock.clearActiveSession).toHaveBeenCalled()
+    expect(routerReplaceMock).toHaveBeenCalledWith({ name: 'hermes.chat' })
   })
 
   it('does not offer coding-agent sessions to non-admin users', async () => {

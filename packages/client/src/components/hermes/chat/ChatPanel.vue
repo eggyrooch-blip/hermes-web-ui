@@ -184,7 +184,27 @@ const profileFilterOptions = computed(() => [
 
 async function handleProfileFilterChange(value: string) {
   chatStore.sessionProfileFilter = value === "__all__" ? null : value;
+  if (chatStore.sessionProfileFilter) {
+    const ok = await profilesStore.switchProfile(chatStore.sessionProfileFilter);
+    if (!ok) {
+      message.error(t("profiles.switchFailed"));
+      return;
+    }
+  }
   await chatStore.loadSessions(chatStore.sessionProfileFilter);
+  const active = chatStore.activeSession;
+  if (chatStore.sessionProfileFilter && (!active || active.profile !== chatStore.sessionProfileFilter)) {
+    chatStore.clearActiveSession();
+    await router.replace({ name: "hermes.chat" });
+    return;
+  }
+  if (active?.id) {
+    await router.replace({
+      name: chatStore.runtimeMode === "global_agent" ? "hermes.globalAgentSession" : "hermes.session",
+      params: { sessionId: active.id },
+      query: active.profile ? { profile: active.profile } : undefined,
+    });
+  }
 }
 
 function sortSessionsForSidebar(items: Session[]): Session[] {
