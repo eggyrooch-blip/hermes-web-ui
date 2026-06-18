@@ -179,8 +179,8 @@ describe('health controller version metadata', () => {
     const ctx = createMockCtx()
     await healthCheck(ctx)
 
-    expect(ctx.body.webui_latest).toBe('')
-    expect(ctx.body.webui_update_available).toBe(false)
+    expect(ctx.body).not.toHaveProperty('webui_latest')
+    expect(ctx.body).not.toHaveProperty('webui_update_available')
   })
 
   it('does not throw when latest-version lookup fails', async () => {

@@ -173,17 +173,20 @@ export async function healthCheck(ctx: any) {
   const raw = await hermesCli.getVersion()
   const hermesVersion = raw.split('\n')[0].replace('Hermes Agent ', '') || ''
   const agentBridge = await getAgentBridgeHealth()
-  ctx.body = {
+  const body: Record<string, unknown> = {
     status: 'ok',
     platform: 'hermes-agent',
     version: hermesVersion,
     gateway: 'running',
     webui_version: LOCAL_VERSION,
-    webui_latest: isUpdateCheckDisabled() ? '' : cachedLatestVersion,
-    webui_update_available: isUpdateCheckDisabled()
-      ? false
-      : Boolean(LOCAL_VERSION && cachedLatestVersion && cachedLatestVersion !== LOCAL_VERSION),
     node_version: process.versions.node,
     agent_bridge: agentBridge,
   }
+
+  if (!isUpdateCheckDisabled()) {
+    body.webui_latest = cachedLatestVersion
+    body.webui_update_available = Boolean(LOCAL_VERSION && cachedLatestVersion && cachedLatestVersion !== LOCAL_VERSION)
+  }
+
+  ctx.body = body
 }
