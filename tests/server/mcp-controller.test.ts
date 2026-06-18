@@ -230,6 +230,17 @@ describe('MCP Controller', () => {
       expect(ctx.body).toEqual({ ok: true, name: 'my-server' })
     })
 
+    it('blocks ordinary users from adding MCP servers', async () => {
+      const { addServer } = await import('../../packages/server/src/controllers/hermes/mcp')
+      const ctx = createCtx({
+        state: { profile: { name: 'test-profile' }, user: { role: 'user' } },
+        request: { body: { name: 'my-server', config: { command: 'node' } } },
+      })
+      await addServer(ctx)
+      expect(ctx.status).toBe(403)
+      expect(mcpAddMock).not.toHaveBeenCalled()
+    })
+
     it('returns 400 when name is missing', async () => {
       const { addServer } = await import('../../packages/server/src/controllers/hermes/mcp')
       const ctx = createCtx({ request: { body: { config: { command: 'x' } } } })
@@ -263,6 +274,18 @@ describe('MCP Controller', () => {
       const ctx = createCtx({ params: { name: 'github' }, request: { body: {} } })
       await updateServer(ctx)
       expect(ctx.status).toBe(400)
+    })
+
+    it('blocks ordinary users from updating MCP servers', async () => {
+      const { updateServer } = await import('../../packages/server/src/controllers/hermes/mcp')
+      const ctx = createCtx({
+        state: { profile: { name: 'test-profile' }, user: { role: 'user' } },
+        params: { name: 'github' },
+        request: { body: { config: { command: 'node' } } },
+      })
+      await updateServer(ctx)
+      expect(ctx.status).toBe(403)
+      expect(mcpUpdateMock).not.toHaveBeenCalled()
     })
 
     it('sends tools.include config for include mode', async () => {
@@ -321,6 +344,17 @@ describe('MCP Controller', () => {
       await removeServer(ctx)
       expect(mcpRemoveMock).toHaveBeenCalledWith('github', 'test-profile')
     })
+
+    it('blocks ordinary users from removing MCP servers', async () => {
+      const { removeServer } = await import('../../packages/server/src/controllers/hermes/mcp')
+      const ctx = createCtx({
+        state: { profile: { name: 'test-profile' }, user: { role: 'user' } },
+        params: { name: 'github' },
+      })
+      await removeServer(ctx)
+      expect(ctx.status).toBe(403)
+      expect(mcpRemoveMock).not.toHaveBeenCalled()
+    })
   })
 
   describe('testServer', () => {
@@ -331,6 +365,17 @@ describe('MCP Controller', () => {
       await testServer(ctx)
       expect(mcpTestMock).toHaveBeenCalledWith('github', 'test-profile')
       expect(ctx.body).toEqual({ ok: true, tools: ['create_repository', 'search_repositories'] })
+    })
+
+    it('blocks ordinary users from testing MCP servers', async () => {
+      const { testServer } = await import('../../packages/server/src/controllers/hermes/mcp')
+      const ctx = createCtx({
+        state: { profile: { name: 'test-profile' }, user: { role: 'user' } },
+        params: { name: 'github' },
+      })
+      await testServer(ctx)
+      expect(ctx.status).toBe(403)
+      expect(mcpTestMock).not.toHaveBeenCalled()
     })
   })
 
@@ -389,6 +434,17 @@ describe('MCP Controller', () => {
       const ctx = createCtx({ query: {} })
       await reloadMcp(ctx)
       expect(mcpReloadMock).toHaveBeenCalledWith(undefined, 'test-profile')
+    })
+
+    it('blocks ordinary users from reloading MCP servers', async () => {
+      const { reloadMcp } = await import('../../packages/server/src/controllers/hermes/mcp')
+      const ctx = createCtx({
+        state: { profile: { name: 'test-profile' }, user: { role: 'user' } },
+        query: {},
+      })
+      await reloadMcp(ctx)
+      expect(ctx.status).toBe(403)
+      expect(mcpReloadMock).not.toHaveBeenCalled()
     })
 
     it('reloads specific server', async () => {

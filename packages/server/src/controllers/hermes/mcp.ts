@@ -10,6 +10,13 @@ function isSuperAdmin(ctx: Context): boolean {
   return (ctx.state as any)?.user?.role === 'super_admin'
 }
 
+function requireSuperAdminMcp(ctx: Context): boolean {
+  if (isSuperAdmin(ctx)) return true
+  ctx.status = 403
+  ctx.body = { error: 'Super administrator privileges are required' }
+  return false
+}
+
 function redactRawConfig(config: Record<string, unknown> | undefined): Record<string, unknown> {
   if (!config || typeof config !== 'object') return {}
   return Object.prototype.hasOwnProperty.call(config, 'enabled')
@@ -60,6 +67,7 @@ export async function listServers(ctx: Context) {
 
 export async function addServer(ctx: Context) {
   try {
+    if (!requireSuperAdminMcp(ctx)) return
     const { name, config } = (ctx.request.body || {}) as Record<string, unknown>
     if (typeof name !== 'string' || !isValidServerName(name)) {
       ctx.status = 400
@@ -80,6 +88,7 @@ export async function addServer(ctx: Context) {
 
 export async function updateServer(ctx: Context) {
   try {
+    if (!requireSuperAdminMcp(ctx)) return
     const name = ctx.params.name as string
     const { config } = (ctx.request.body || {}) as Record<string, unknown>
     if (!name || !isValidServerName(name)) {
@@ -101,6 +110,7 @@ export async function updateServer(ctx: Context) {
 
 export async function removeServer(ctx: Context) {
   try {
+    if (!requireSuperAdminMcp(ctx)) return
     const name = ctx.params.name as string
     if (!name || !isValidServerName(name)) {
       ctx.status = 400
@@ -116,6 +126,7 @@ export async function removeServer(ctx: Context) {
 
 export async function testServer(ctx: Context) {
   try {
+    if (!requireSuperAdminMcp(ctx)) return
     const name = ctx.params.name as string
     if (!name || !isValidServerName(name)) {
       ctx.status = 400
@@ -131,11 +142,7 @@ export async function testServer(ctx: Context) {
 
 export async function listTools(ctx: Context) {
   try {
-    if (!isSuperAdmin(ctx)) {
-      ctx.status = 403
-      ctx.body = { error: 'Super administrator privileges are required' }
-      return
-    }
+    if (!requireSuperAdminMcp(ctx)) return
     const server = ctx.query.server as string | undefined
     const raw = ctx.query.raw === '1' || ctx.query.raw === 'true'
     const payload: Record<string, any> = {}
@@ -150,6 +157,7 @@ export async function listTools(ctx: Context) {
 
 export async function reloadMcp(ctx: Context) {
   try {
+    if (!requireSuperAdminMcp(ctx)) return
     const server = ctx.query.server as string | undefined
     const payload = server ? { server } : {}
     ctx.body = await bridgeMcpAction('mcp_reload', payload, getProfile(ctx))
