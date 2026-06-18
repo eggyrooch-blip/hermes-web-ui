@@ -104,7 +104,9 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
   if a client sends it manually.
 - MCP list loading should not block indefinitely on bridge discovery. A short
   timeout may return a static `config.yaml` snapshot; ordinary read-only users
-  should not auto-retry disconnected MCP servers in a loop.
+  may do one safe delayed refresh when `partial=true` so cached live tool tags
+  can replace the static snapshot. They must not auto-retry disconnected MCP
+  servers in a loop or trigger reload/test/tools schema endpoints.
 
 ## Regression Tests To Keep
 
@@ -127,8 +129,8 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
 - Credentials test: Connectors renders `lark-cli`, `keep-record`, `kep-cli`,
   and does not leak raw secrets.
 - MCP/Plugins tests: ordinary users can see inventory, cannot see mutation
-  controls, and MCP disconnected state does not trigger repeated read-only
-  auto-retries.
+  controls, partial MCP snapshots refresh into cached live inventory, and MCP
+  disconnected state does not trigger repeated read-only auto-retries.
 - Model selector test: profile-less or router/global model responses still show
   the aggregate default and custom provider list.
 - Slash command test: ordinary users do not see `/reload-mcp`, and chat-plane
