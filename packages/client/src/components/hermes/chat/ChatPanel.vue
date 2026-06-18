@@ -307,12 +307,17 @@ function getDefaultModelForProfile(profile: string) {
   const providerGroup = defaultProvider
     ? groups.find((group) => group.provider === defaultProvider)
     : undefined;
-  const fallbackGroup = providerGroup || groups.find((group) => group.models.length > 0);
+  const providerCustomModels = providerGroup ? appStore.customModels[providerGroup.provider] || [] : [];
+  if (providerGroup && (providerGroup.models.includes(defaultModel) || providerCustomModels.includes(defaultModel))) {
+    return {
+      provider: providerGroup.provider,
+      model: defaultModel,
+    };
+  }
+  const fallbackGroup = groups.find((group) => group.models.length > 0);
   return {
     provider: fallbackGroup?.provider || "",
-    model: fallbackGroup?.models.includes(defaultModel) || (appStore.customModels[defaultProvider] || []).includes(defaultModel)
-      ? defaultModel
-      : fallbackGroup?.models[0] || "",
+    model: fallbackGroup?.models[0] || "",
   };
 }
 

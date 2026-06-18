@@ -40,7 +40,7 @@ vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
 // ── Helpers ────────────────────────────────────────────────
 function createCtx(overrides: Record<string, any> = {}) {
   const ctx: any = {
-    state: { profile: { name: 'test-profile' } },
+    state: { profile: { name: 'test-profile' }, user: { role: 'super_admin' } },
     request: { body: {} },
     params: {},
     query: {},
@@ -111,6 +111,30 @@ describe('MCP Controller', () => {
       expect(mcpListMock).toHaveBeenCalledWith('test-profile')
     })
 
+    it('redacts raw MCP config for ordinary read-only users', async () => {
+      mcpListMock.mockResolvedValue({
+        ...SAMPLE_SERVERS_RESPONSE,
+        servers: [{
+          ...SAMPLE_SERVERS_RESPONSE.servers[0],
+          raw_config: {
+            command: 'npx',
+            args: ['-y', '@modelcontextprotocol/server-github'],
+            env: { GITHUB_TOKEN: 'secret-token' },
+            headers: { Authorization: 'Bearer secret-token' },
+            enabled: true,
+          },
+        }],
+      })
+      const { listServers } = await import('../../packages/server/src/controllers/hermes/mcp')
+      const ctx = createCtx({ state: { profile: { name: 'test-profile' }, user: { role: 'user' } } })
+      await listServers(ctx)
+      const server = (ctx.body as any).servers[0]
+      expect(server.raw_config).toEqual({ enabled: true })
+      expect(server.raw_config).not.toHaveProperty('command')
+      expect(server.raw_config).not.toHaveProperty('env')
+      expect(server.raw_config).not.toHaveProperty('headers')
+    })
+
     it('returns 503 on bridge error', async () => {
       mcpListMock.mockRejectedValue(new Error('bridge down'))
       const { listServers } = await import('../../packages/server/src/controllers/hermes/mcp')
@@ -157,6 +181,38 @@ describe('MCP Controller', () => {
             raw_config: { command: 'codegraph', args: ['serve'], enabled: true },
           }],
         })
+      } finally {
+        vi.useRealTimers()
+        rmSync(profileDir, { recursive: true, force: true })
+      }
+    })
+
+    it('redacts the static config snapshot for ordinary read-only users', async () => {
+      vi.useFakeTimers()
+      const profileDir = mkdtempSync(join(tmpdir(), 'hermes-mcp-profile-'))
+      mkdirSync(profileDir, { recursive: true })
+      writeFileSync(join(profileDir, 'config.yaml'), [
+        'mcp_servers:',
+        '  codegraph:',
+        '    command: codegraph',
+        '    env:',
+        '      TOKEN: secret',
+        '    headers:',
+        '      Authorization: Bearer secret',
+        '    enabled: true',
+      ].join('\n'))
+      profileMock.dirs['test-profile'] = profileDir
+      mcpListMock.mockImplementation(() => new Promise(() => {}))
+
+      try {
+        const { listServers } = await import('../../packages/server/src/controllers/hermes/mcp')
+        const ctx = createCtx({ state: { profile: { name: 'test-profile' }, user: { role: 'user' } } })
+        const pending = listServers(ctx)
+        await vi.advanceTimersByTimeAsync(2000)
+        await pending
+
+        const server = (ctx.body as any).servers[0]
+        expect(server.raw_config).toEqual({ enabled: true })
       } finally {
         vi.useRealTimers()
         rmSync(profileDir, { recursive: true, force: true })

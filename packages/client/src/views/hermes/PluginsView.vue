@@ -48,7 +48,7 @@ const filteredPlugins = computed(() => {
     if (statusFilter.value && plugin.effectiveStatus !== statusFilter.value) return false
     if (!query) return true
     const searchable = [plugin.key, plugin.name, plugin.description, plugin.source, plugin.kind]
-    if (canManagePlugins.value) searchable.push(plugin.path)
+    if (canManagePlugins.value) searchable.push(plugin.path || '')
     return searchable
       .some(value => String(value || '').toLowerCase().includes(query))
   })
@@ -226,7 +226,7 @@ watch(() => profilesStore.activeProfileName || 'default', () => {
                   <div class="capability-list">
                     <span>{{ t('plugins.capabilities.tools', { count: plugin.providesTools.length }) }}</span>
                     <span>{{ t('plugins.capabilities.hooks', { count: plugin.providesHooks.length }) }}</span>
-                    <span>{{ t('plugins.capabilities.env', { count: plugin.requiresEnv.length }) }}</span>
+                    <span>{{ t('plugins.capabilities.env', { count: (plugin.requiresEnv || []).length }) }}</span>
                   </div>
                 </td>
                 <td v-if="canManagePlugins"><code class="path-cell">{{ plugin.path || t('plugins.notAvailable') }}</code></td>

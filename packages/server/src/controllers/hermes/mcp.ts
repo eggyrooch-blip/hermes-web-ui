@@ -1,8 +1,42 @@
 import type { Context } from 'koa'
 import { bridgeMcpAction, listMcpServers } from '../../services/hermes/mcp'
+import type { McpListResponse, McpServerEntry } from '../../services/hermes/mcp-types'
 
 function getProfile(ctx: Context): string | undefined {
   return (ctx.state as any)?.profile?.name || undefined
+}
+
+function isSuperAdmin(ctx: Context): boolean {
+  return (ctx.state as any)?.user?.role === 'super_admin'
+}
+
+function redactRawConfig(config: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!config || typeof config !== 'object') return {}
+  return Object.prototype.hasOwnProperty.call(config, 'enabled')
+    ? { enabled: config.enabled }
+    : {}
+}
+
+function redactMcpServer(server: McpServerEntry): McpServerEntry {
+  return {
+    name: server.name,
+    transport: server.transport,
+    connected: server.connected,
+    tools: server.tools,
+    tools_registered: server.tools_registered,
+    tool_names: server.tool_names || [],
+    tool_names_registered: server.tool_names_registered || [],
+    tool_details: server.tool_details || [],
+    error: null,
+    raw_config: redactRawConfig(server.raw_config),
+  }
+}
+
+function redactMcpList(response: McpListResponse): McpListResponse {
+  return {
+    ...response,
+    servers: (response.servers || []).map(redactMcpServer),
+  }
 }
 
 /** Validate server name: non-empty, no control chars, no path separators */
@@ -16,7 +50,8 @@ function isValidServerName(name: string): boolean {
 
 export async function listServers(ctx: Context) {
   try {
-    ctx.body = await listMcpServers(getProfile(ctx))
+    const response = await listMcpServers(getProfile(ctx))
+    ctx.body = isSuperAdmin(ctx) ? response : redactMcpList(response)
   } catch (err: any) {
     ctx.status = 503
     ctx.body = { error: err.message || 'MCP bridge not available' }

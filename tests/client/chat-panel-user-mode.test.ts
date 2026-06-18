@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -34,6 +34,8 @@ const appStoreMock = vi.hoisted(() => ({
   modelGroups: [] as Array<Record<string, any>>,
   profileModelGroups: [] as Array<Record<string, any>>,
   customModels: {} as Record<string, any>,
+  selectedProvider: '',
+  selectedModel: '',
   displayModelName: vi.fn((m: string) => m),
   getModelAlias: vi.fn((m: string) => m),
   loadModels: vi.fn(),
@@ -217,6 +219,11 @@ describe('ChatPanel user-mode gateway state', () => {
     isUserModeMock.mockReturnValue(false)
     isStoredSuperAdminMock.mockReturnValue(false)
     appStoreMock.connected = true
+    appStoreMock.modelGroups = []
+    appStoreMock.profileModelGroups = []
+    appStoreMock.customModels = {}
+    appStoreMock.selectedProvider = ''
+    appStoreMock.selectedModel = ''
     chatStoreMock.sessions = []
     chatStoreMock.activeSession = null
     chatStoreMock.activeSessionId = null
@@ -330,6 +337,40 @@ describe('ChatPanel user-mode gateway state', () => {
     expect(wrapper.text()).not.toContain('Codex')
     expect(wrapper.text()).not.toContain('codingAgents.launchModeScope')
     expect(wrapper.text()).not.toContain('codingAgents.protocolScope')
+  })
+
+  it('does not pair a custom selected model with an unrelated fallback provider for new chats', async () => {
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    appStoreMock.modelGroups = [{
+      provider: 'anthropic',
+      label: 'Anthropic',
+      models: ['claude-sonnet-4-6'],
+    }]
+    appStoreMock.profileModelGroups = []
+    appStoreMock.selectedProvider = 'custom:litellm-sre'
+    appStoreMock.selectedModel = 'custom:litellm-sre/tencent-sonnet-4-6'
+    appStoreMock.customModels = {
+      'custom:litellm-sre': ['custom:litellm-sre/tencent-sonnet-4-6'],
+    }
+    chatStoreMock.newChat.mockReturnValue({ id: 'new-session' })
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    await wrapper.get('.page-sidebar-nav-stub').trigger('click')
+    await flushPromises()
+    await wrapper.findAll('.new-chat-actions .n-button').at(1)!.trigger('click')
+    await flushPromises()
+
+    expect(chatStoreMock.newChat).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+    }))
   })
 
   it('does not override MessageItem bubble colors in user mode', () => {

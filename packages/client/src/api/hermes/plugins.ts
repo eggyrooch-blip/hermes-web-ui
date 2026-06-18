@@ -13,23 +13,23 @@ export interface HermesPluginInfo {
   version: string
   description: string
   author: string
-  path: string
+  path?: string
   providesTools: string[]
   providesHooks: string[]
-  requiresEnv: Array<string | Record<string, unknown>>
+  requiresEnv?: Array<string | Record<string, unknown>>
 }
 
 export interface HermesPluginsMetadata {
-  hermesAgentRoot: string
-  pythonExecutable: string
-  cwd: string
-  projectPluginsEnabled: boolean
+  hermesAgentRoot?: string
+  pythonExecutable?: string
+  cwd?: string
+  projectPluginsEnabled?: boolean
 }
 
 export interface HermesPluginsResponse {
   plugins: HermesPluginInfo[]
   warnings: string[]
-  metadata: HermesPluginsMetadata
+  metadata?: HermesPluginsMetadata
 }
 
 export async function fetchPlugins(): Promise<HermesPluginsResponse> {

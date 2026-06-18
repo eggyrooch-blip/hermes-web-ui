@@ -31,6 +31,8 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
 - Plugins and MCP inventory may be visible to ordinary users as read-only tools.
   Host-level controls stay super-admin-only: plugin path/CLI/metadata, MCP
   add/edit/remove/reload/test/toggle/tools visibility, and any mutation route.
+  Backend responses must also redact host-sensitive fields for ordinary users;
+  do not rely on client-side hiding.
 - The chat model picker remains available. `/hermes/models` is provider/cache
   management and must stay super-admin-only.
 - The chat model picker uses the aggregate/router model list from
@@ -92,6 +94,9 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
   persist raw token values in WebUI storage.
 - Do not regress profile-local generated skill editing.
 - Do not regress read-only Plugins/MCP visibility for ordinary users.
+- Ordinary plugin/MCP inventory responses must not include plugin paths,
+  requiresEnv, host metadata/warnings, MCP raw command/env/headers, or raw MCP
+  error strings.
 - MCP reload is host maintenance. Ordinary users must not see `/reload-mcp`
   slash suggestions, and chat-plane server code must reject `/reload-mcp` even
   if a client sends it manually.
