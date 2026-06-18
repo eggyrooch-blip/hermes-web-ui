@@ -6,6 +6,7 @@ import { useAppStore } from '@/stores/hermes/app'
 import { useChatStore } from '@/stores/hermes/chat'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useSettingsStore } from '@/stores/hermes/settings'
+import { isStoredSuperAdmin } from '@/api/client'
 
 const appStore = useAppStore()
 const chatStore = useChatStore()
@@ -38,8 +39,24 @@ onUnmounted(() => {
   document.title = productTitle
 })
 
+function preferredSessionProfileFilter(): string | null {
+  if (routeProfile.value) return routeProfile.value
+  if (chatStore.sessionProfileFilter) return chatStore.sessionProfileFilter
+  if (isStoredSuperAdmin()) return chatStore.sessionProfileFilter
+  return profilesStore.activeProfileName || null
+}
+
+function applyPreferredSessionProfileFilter(): string | null {
+  const profile = preferredSessionProfileFilter()
+  if (profile !== chatStore.sessionProfileFilter) {
+    chatStore.sessionProfileFilter = profile
+  }
+  return profile
+}
+
 async function loadRouteSession() {
-  await chatStore.loadSessions(chatStore.sessionProfileFilter, routeSessionId.value)
+  const profile = applyPreferredSessionProfileFilter()
+  await chatStore.loadSessions(profile, routeSessionId.value)
   if (routeSessionId.value && chatStore.activeSessionId !== routeSessionId.value) {
     await router.replace({ name: 'hermes.chat' })
   }
@@ -59,13 +76,16 @@ onMounted(async () => {
 
 watch([routeSessionId, routeProfile], async ([sessionId]) => {
   if (!chatStore.sessionsLoaded) return
+  const profile = applyPreferredSessionProfileFilter()
   if (!sessionId) {
-    await chatStore.loadSessions(chatStore.sessionProfileFilter)
+    await chatStore.loadSessions(profile)
     return
   }
-  if (chatStore.activeSessionId === sessionId) return
+  if (chatStore.activeSessionId === sessionId && (!profile || chatStore.activeSession?.profile === profile)) return
 
-  const exists = chatStore.sessions.some(session => session.id === sessionId)
+  const exists = chatStore.sessions.some(session => (
+    session.id === sessionId && (!profile || session.profile === profile)
+  ))
   if (!exists) {
     await loadRouteSession()
     return

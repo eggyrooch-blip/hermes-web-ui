@@ -46,6 +46,7 @@ vi.mock('@/api/hermes/sessions', () => ({
 
 vi.mock('@/api/client', () => ({
   getActiveProfileName: () => 'default',
+  isStoredSuperAdmin: () => false,
 }))
 
 vi.mock('@/api/hermes/download', () => ({

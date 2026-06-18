@@ -77,16 +77,17 @@ const toolPanelStyle = computed(() => ({
   width: isMobile.value ? "100%" : `${toolPanelWidth.value}px`,
 }));
 
-function sessionHref(sessionId: string) {
+function sessionHref(sessionId: string, profile?: string | null) {
   return router.resolve({
     name: chatStore.runtimeMode === "global_agent" ? "hermes.globalAgentSession" : "hermes.session",
     params: { sessionId },
+    query: profile ? { profile } : undefined,
   }).href;
 }
 
 function openSessionInNewTab(sessionId: string) {
   if (typeof window === "undefined") return;
-  window.open(sessionHref(sessionId), "_blank", "noopener,noreferrer");
+  window.open(sessionHref(sessionId, sessionProfile(sessionId)), "_blank", "noopener,noreferrer");
 }
 
 function handleOutlineNavigate(target: { messageId: string; anchorId: string }) {
@@ -132,11 +133,12 @@ function startToolResize(event: PointerEvent) {
   document.body.style.cursor = "col-resize";
 }
 
-async function handleSessionClick(sessionId: string) {
-  chatStore.clearSessionCompletedUnread(sessionId);
+async function handleSessionClick(session: Session) {
+  chatStore.clearSessionCompletedUnread(session.id);
   await router.push({
     name: chatStore.runtimeMode === "global_agent" ? "hermes.globalAgentSession" : "hermes.session",
-    params: { sessionId },
+    params: { sessionId: session.id },
+    query: session.profile ? { profile: session.profile } : undefined,
   });
   if (mobileQuery?.matches) showSessions.value = false;
 }
@@ -515,6 +517,7 @@ async function confirmNewChat() {
   await router.push({
     name: chatStore.runtimeMode === "global_agent" ? "hermes.globalAgentSession" : "hermes.session",
     params: { sessionId: session.id },
+    query: session.profile ? { profile: session.profile } : undefined,
   });
   showNewChatModal.value = false;
 }
@@ -1109,8 +1112,8 @@ async function handleSessionModelCustomSubmit() {
             :selectable="isBatchMode"
             :selected="isSessionSelected(s)"
             :show-profile="true"
-            :to="sessionHref(s.id)"
-            @select="handleSessionClick(s.id)"
+            :to="sessionHref(s.id, s.profile)"
+            @select="handleSessionClick(s)"
             @contextmenu="handleContextMenu($event, s.id)"
             @delete="handleDeleteSession(s.id)"
             @toggle-select="toggleSessionSelection(s)"
@@ -1132,8 +1135,8 @@ async function handleSessionModelCustomSubmit() {
           :selectable="isBatchMode"
           :selected="isSessionSelected(s)"
           :show-profile="true"
-          :to="sessionHref(s.id)"
-          @select="handleSessionClick(s.id)"
+          :to="sessionHref(s.id, s.profile)"
+          @select="handleSessionClick(s)"
           @contextmenu="handleContextMenu($event, s.id)"
           @delete="handleDeleteSession(s.id)"
           @toggle-select="toggleSessionSelection(s)"

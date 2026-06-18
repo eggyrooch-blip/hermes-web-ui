@@ -15,6 +15,10 @@ const chatState = vi.hoisted(() => ({
   sessions: [] as Array<{ id: string }>,
 }))
 const fetchProfilesMock = vi.hoisted(() => vi.fn())
+const isStoredSuperAdminMock = vi.hoisted(() => vi.fn(() => false))
+const profilesState = vi.hoisted(() => ({
+  activeProfileName: 'tester',
+}))
 const fetchSettingsMock = vi.hoisted(() => vi.fn())
 const routerReplaceMock = vi.hoisted(() => vi.fn())
 const routeState = vi.hoisted(() => ({
@@ -38,6 +42,7 @@ vi.mock('@/stores/hermes/chat', () => ({
     setRuntimeMode: setRuntimeModeMock,
     switchSession: switchSessionMock,
     get sessionProfileFilter() { return chatState.sessionProfileFilter },
+    set sessionProfileFilter(value) { chatState.sessionProfileFilter = value },
     get activeSessionId() { return chatState.activeSessionId },
     get activeSession() { return chatState.activeSession },
     get sessionsLoaded() { return chatState.sessionsLoaded },
@@ -48,7 +53,12 @@ vi.mock('@/stores/hermes/chat', () => ({
 vi.mock('@/stores/hermes/profiles', () => ({
   useProfilesStore: () => ({
     fetchProfiles: fetchProfilesMock,
+    get activeProfileName() { return profilesState.activeProfileName },
   }),
+}))
+
+vi.mock('@/api/client', () => ({
+  isStoredSuperAdmin: isStoredSuperAdminMock,
 }))
 
 vi.mock('@/stores/hermes/settings', () => ({
@@ -77,9 +87,11 @@ describe('ChatView startup', () => {
     loadSessionsMock.mockResolvedValue(undefined)
     fetchProfilesMock.mockResolvedValue(undefined)
     fetchSettingsMock.mockResolvedValue(undefined)
+    isStoredSuperAdminMock.mockReturnValue(false)
     routeState.params = {}
     routeState.query = {}
     chatState.sessionProfileFilter = 'tester'
+    profilesState.activeProfileName = 'tester'
     chatState.activeSessionId = null
     chatState.activeSession = null
     chatState.sessionsLoaded = false
@@ -120,5 +132,33 @@ describe('ChatView startup', () => {
     await Promise.resolve()
 
     expect(loadSessionsMock).toHaveBeenCalledWith('tester', 'session-9')
+  })
+
+  it('defaults employee chat sessions to the active frontend profile', async () => {
+    chatState.sessionProfileFilter = null
+    profilesState.activeProfileName = 'bianmaceshi'
+
+    mount(ChatView)
+    await nextTick()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(chatState.sessionProfileFilter).toBe('bianmaceshi')
+    expect(loadSessionsMock).toHaveBeenCalledWith('bianmaceshi', null)
+  })
+
+  it('uses the route profile query when opening a session link', async () => {
+    routeState.params = { sessionId: 'session-9' }
+    routeState.query = { profile: 'bianmaceshi' }
+    chatState.sessionProfileFilter = null
+    profilesState.activeProfileName = 'feishu_g41a5b5g'
+
+    mount(ChatView)
+    await nextTick()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(chatState.sessionProfileFilter).toBe('bianmaceshi')
+    expect(loadSessionsMock).toHaveBeenCalledWith('bianmaceshi', 'session-9')
   })
 })

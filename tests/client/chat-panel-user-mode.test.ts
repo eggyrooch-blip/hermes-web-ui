@@ -6,6 +6,13 @@ import { join } from 'node:path'
 
 const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
 const isStoredSuperAdminMock = vi.hoisted(() => vi.fn(() => false))
+const routerPushMock = vi.hoisted(() => vi.fn(() => Promise.resolve()))
+const routerReplaceMock = vi.hoisted(() => vi.fn(() => Promise.resolve()))
+const routerResolveMock = vi.hoisted(() => vi.fn((to: any) => {
+  const sessionId = to?.params?.sessionId || ''
+  const profile = to?.query?.profile ? `?profile=${encodeURIComponent(to.query.profile)}` : ''
+  return { href: `#/hermes/session/${sessionId}${profile}` }
+}))
 
 const chatStoreMock = vi.hoisted(() => ({
   sessions: [] as Array<Record<string, any>>,
@@ -94,7 +101,7 @@ vi.mock('@/api/coding-agents', () => ({
 
 vi.mock('vue-router', () => ({
   useRoute: () => ({ name: 'hermes.chat', params: {}, query: {} }),
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useRouter: () => ({ push: routerPushMock, replace: routerReplaceMock, resolve: routerResolveMock }),
 }))
 
 vi.mock('@/shared/session-display', () => ({
@@ -177,7 +184,11 @@ vi.mock('@/components/hermes/chat/MessageList.vue', () => ({
 }))
 
 vi.mock('@/components/hermes/chat/SessionListItem.vue', () => ({
-  default: { props: ['session'], template: '<button class="session-item-stub">{{ session.title }}</button>' },
+  default: {
+    props: ['session', 'to'],
+    emits: ['select'],
+    template: '<a class="session-item-stub" :href="to" @click.prevent="$emit(\'select\')">{{ session.title }}</a>',
+  },
 }))
 
 vi.mock('@/components/hermes/chat/DrawerPanel.vue', () => ({
@@ -230,6 +241,9 @@ describe('ChatPanel user-mode gateway state', () => {
     chatStoreMock.isStreaming = false
     profilesStoreMock.currentUser = null
     profilesStoreMock.activeProfileName = 'user_a'
+    routerPushMock.mockClear()
+    routerReplaceMock.mockClear()
+    routerResolveMock.mockClear()
     vi.clearAllMocks()
     localStorage.clear()
     window.matchMedia = vi.fn().mockReturnValue({
@@ -311,6 +325,34 @@ describe('ChatPanel user-mode gateway state', () => {
     expect(wrapper.find('.session-scope-note').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('chat.sessionScopeHint')
     expect(wrapper.text()).not.toContain('chat.openHistory')
+  })
+
+  it('keeps the session profile in sidebar links and navigation', async () => {
+    chatStoreMock.sessions = [{
+      id: 'session-feishu',
+      title: 'from feishu profile',
+      profile: 'feishu_g41a5b5g',
+      source: 'api_server',
+      createdAt: 1,
+      updatedAt: 1,
+    }]
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    const item = wrapper.get('.session-item-stub')
+    expect(item.attributes('href')).toContain('profile=feishu_g41a5b5g')
+
+    await item.trigger('click')
+
+    expect(routerPushMock).toHaveBeenCalledWith(expect.objectContaining({
+      query: { profile: 'feishu_g41a5b5g' },
+    }))
   })
 
   it('does not offer coding-agent sessions to non-admin users', async () => {
