@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ── Mocks ──────────────────────────────────────────────────
@@ -8,6 +11,10 @@ const mcpRemoveMock = vi.fn()
 const mcpTestMock = vi.fn()
 const mcpToolsMock = vi.fn()
 const mcpReloadMock = vi.fn()
+const profileMock = vi.hoisted(() => ({
+  dirs: {} as Record<string, string>,
+  activeDir: '',
+}))
 
 vi.mock('../../packages/server/src/services/hermes/agent-bridge/client', () => ({
   AgentBridgeClient: vi.fn().mockImplementation(() => ({
@@ -23,6 +30,11 @@ vi.mock('../../packages/server/src/services/hermes/agent-bridge/client', () => (
 
 vi.mock('../../packages/server/src/services/logger', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+}))
+
+vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
+  getProfileDir: (name: string) => profileMock.dirs[name || 'default'] || profileMock.activeDir || '/tmp/hermes-missing-profile',
+  getActiveProfileDir: () => profileMock.activeDir || '/tmp/hermes-missing-profile',
 }))
 
 // ── Helpers ────────────────────────────────────────────────
@@ -85,6 +97,8 @@ const SAMPLE_TOOLS_RESPONSE = {
 describe('MCP Controller', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    profileMock.dirs = {}
+    profileMock.activeDir = ''
   })
 
   describe('listServers', () => {
@@ -104,6 +118,49 @@ describe('MCP Controller', () => {
       await listServers(ctx)
       expect(ctx.status).toBe(503)
       expect(ctx.body).toEqual({ error: 'bridge down' })
+    })
+
+    it('returns a static config snapshot when bridge list is slow', async () => {
+      vi.useFakeTimers()
+      const profileDir = mkdtempSync(join(tmpdir(), 'hermes-mcp-profile-'))
+      mkdirSync(profileDir, { recursive: true })
+      writeFileSync(join(profileDir, 'config.yaml'), [
+        'mcp_servers:',
+        '  codegraph:',
+        '    command: codegraph',
+        '    args:',
+        '      - serve',
+        '    enabled: true',
+      ].join('\n'))
+      profileMock.dirs['test-profile'] = profileDir
+      mcpListMock.mockImplementation(() => new Promise(() => {}))
+
+      try {
+        const { listServers } = await import('../../packages/server/src/controllers/hermes/mcp')
+        const ctx = createCtx()
+        const pending = listServers(ctx)
+        const outcome = Promise.race([
+          pending.then(() => 'resolved'),
+          new Promise(resolve => setTimeout(() => resolve('timed-out'), 2000)),
+        ])
+
+        await vi.advanceTimersByTimeAsync(2000)
+
+        expect(await outcome).toBe('resolved')
+        expect(ctx.body).toMatchObject({
+          ok: true,
+          partial: true,
+          total_tools: 0,
+          servers: [{
+            name: 'codegraph',
+            connected: false,
+            raw_config: { command: 'codegraph', args: ['serve'], enabled: true },
+          }],
+        })
+      } finally {
+        vi.useRealTimers()
+        rmSync(profileDir, { recursive: true, force: true })
+      }
     })
   })
 

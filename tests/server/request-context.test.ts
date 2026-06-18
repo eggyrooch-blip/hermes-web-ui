@@ -288,8 +288,6 @@ describe('chat plane access control', () => {
       '/api/hermes/logs',
       '/api/hermes/channels',
       '/api/hermes/devices',
-      '/api/hermes/plugins',
-      '/api/hermes/mcp/servers',
       '/api/hermes/cron-history',
       '/api/hermes/model-context',
       '/api/hermes/auth/copilot/check-token',
@@ -307,6 +305,30 @@ describe('chat plane access control', () => {
       expect(next, path).not.toHaveBeenCalled()
       expect(ctx.status, path).toBe(403)
     }
+  })
+
+  it('allows MCP and plugin inventory reads but blocks MCP mutations in chat plane', async () => {
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const allowed = [
+      mockCtx('/api/hermes/plugins', 'GET'),
+      mockCtx('/api/hermes/mcp/servers', 'GET'),
+      mockCtx('/api/hermes/mcp/tools', 'GET'),
+    ]
+    const blocked = [
+      mockCtx('/api/hermes/mcp/servers', 'POST'),
+      mockCtx('/api/hermes/mcp/servers/github', 'PATCH'),
+      mockCtx('/api/hermes/mcp/servers/github', 'DELETE'),
+      mockCtx('/api/hermes/mcp/servers/github/test', 'POST'),
+      mockCtx('/api/hermes/mcp/reload', 'POST'),
+    ]
+    const next = vi.fn(async () => {})
+
+    for (const ctx of allowed) await enforcePlaneAccess(ctx, next)
+    for (const ctx of blocked) await enforcePlaneAccess(ctx, next)
+
+    expect(next).toHaveBeenCalledTimes(allowed.length)
+    for (const ctx of allowed) expect(ctx.status, ctx.path).toBe(200)
+    for (const ctx of blocked) expect(ctx.status, ctx.path).toBe(403)
   })
 
   it('keeps sandboxed files available even when the removed temporary flag is set', async () => {

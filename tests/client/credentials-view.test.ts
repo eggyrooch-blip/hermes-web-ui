@@ -37,7 +37,7 @@ vi.mock('naive-ui', async () => {
     }),
     NButton: {
       props: ['loading', 'disabled'],
-      template: '<button :disabled="disabled"><slot /></button>',
+      template: '<button :disabled="disabled" :data-loading="loading ? \'true\' : undefined"><slot /></button>',
     },
     NSpin: {
       props: ['show'],
@@ -200,6 +200,28 @@ describe('CredentialsView', () => {
     expect(openSpy).toHaveBeenCalledWith('about:blank', '_blank')
     expect(authWindow.opener).toBe(null)
     expect(authWindow.location.href).toBe('https://auth.example.com/?response_url=http://localhost:52237&oauth2=1')
+  })
+
+  it('does not keep the OAuth action button in loading state while background polling continues', async () => {
+    const authWindow = { opener: {}, location: { href: '' } } as any
+    vi.spyOn(window, 'open').mockReturnValue(authWindow)
+    startSkillCredentialAuthMock.mockResolvedValueOnce({
+      id: 'kep-cli',
+      status: 'auth_pending',
+      verification_uri: 'https://auth.example.com/?response_url=http://localhost:52237&oauth2=1',
+      action: { kind: 'oauth_url', label: '打开 kep-cli 认证' },
+    })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-credential-action="kep-cli"]').trigger('click')
+    await Promise.resolve()
+    await wrapper.vm.$nextTick()
+
+    const action = wrapper.find('[data-credential-action="kep-cli"]')
+    expect(action.attributes('data-loading')).toBeUndefined()
   })
 
   it('opens the OAuth authorization URL returned by Feishu Project start', async () => {

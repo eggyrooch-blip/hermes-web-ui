@@ -159,22 +159,6 @@ onMounted(() => {
             </svg>
             <span>{{ t("sidebar.connectors") }}</span>
           </RouteLinkItem>
-          <RouteLinkItem v-if="isSuperAdmin" class="nav-item" :to="{ name: 'hermes.plugins' }" :active="selectedKey === 'hermes.plugins'">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2.1-2.1a4 4 0 0 1-5.3 5.3l-7.8 7.8a2.1 2.1 0 0 1-3-3l7.8-7.8a4 4 0 0 1 5.3-5.3l-2.1 2.1z" />
-              <path d="M5 19l1-1" />
-            </svg>
-            <span>{{ t("sidebar.plugins") }}</span>
-          </RouteLinkItem>
-          <RouteLinkItem v-if="isSuperAdmin" class="nav-item" :to="{ name: 'hermes.mcp' }" :active="selectedKey === 'hermes.mcp'">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M4 7V4h16v3" />
-              <path d="M9 20h6" />
-              <path d="M12 7v13" />
-              <rect x="4" y="7" width="16" height="7" rx="2" />
-            </svg>
-            <span>{{ t("sidebar.mcp") }}</span>
-          </RouteLinkItem>
           <RouteLinkItem class="nav-item" :to="{ name: 'hermes.memory' }" :active="selectedKey === 'hermes.memory'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M9 18h6" />
@@ -252,6 +236,22 @@ onMounted(() => {
           </svg>
         </div>
         <div v-show="!isGroupCollapsed('tools')" class="nav-group-items">
+          <RouteLinkItem v-if="hasRoute('hermes.plugins')" class="nav-item" :to="{ name: 'hermes.plugins' }" :active="selectedKey === 'hermes.plugins'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2.1-2.1a4 4 0 0 1-5.3 5.3l-7.8 7.8a2.1 2.1 0 0 1-3-3l7.8-7.8a4 4 0 0 1 5.3-5.3l-2.1 2.1z" />
+              <path d="M5 19l1-1" />
+            </svg>
+            <span>{{ t("sidebar.plugins") }}</span>
+          </RouteLinkItem>
+          <RouteLinkItem v-if="hasRoute('hermes.mcp')" class="nav-item" :to="{ name: 'hermes.mcp' }" :active="selectedKey === 'hermes.mcp'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 7V4h16v3" />
+              <path d="M9 20h6" />
+              <path d="M12 7v13" />
+              <rect x="4" y="7" width="16" height="7" rx="2" />
+            </svg>
+            <span>{{ t("sidebar.mcp") }}</span>
+          </RouteLinkItem>
           <RouteLinkItem v-if="hasRoute('hermes.codingAgents') && isSuperAdmin" class="nav-item" :to="{ name: 'hermes.codingAgents' }" :active="selectedKey === 'hermes.codingAgents'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="16 18 22 12 16 6" />
@@ -329,6 +329,9 @@ onMounted(() => {
         <div class="user-meta">
           <span class="user-name" :title="displayName">{{ displayName }}</span>
           <span v-if="showProfile" class="user-profile" :title="displayProfile">{{ displayProfile }}</span>
+          <span class="user-connection" :class="{ connected: appStore.connected }">
+            {{ appStore.connected ? t("sidebar.connected") : t("sidebar.disconnected") }}
+          </span>
         </div>
         <button class="card-logout-button" :title="t('sidebar.logout')" @click="handleLogout">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
@@ -348,21 +351,7 @@ onMounted(() => {
         <span v-if="currentUsername" class="logout-username" :title="currentUsername">{{ currentUsername }}</span>
       </button>
       <div class="status-row">
-        <div
-          class="status-indicator"
-          :class="{
-            connected: appStore.connected,
-            disconnected: !appStore.connected,
-          }"
-        >
-          <span class="status-dot"></span>
-          <span class="status-text">{{
-            appStore.connected
-              ? t("sidebar.connected")
-              : t("sidebar.disconnected")
-          }}</span>
-        </div>
-        <LanguageSwitch />
+        <LanguageSwitch v-if="isSuperAdmin" />
         <ThemeSwitch />
       </div>
     </div>
@@ -593,9 +582,14 @@ onMounted(() => {
   font-weight: 600;
 }
 
-.user-profile {
+.user-profile,
+.user-connection {
   color: $text-muted;
   font-size: 11px;
+}
+
+.user-connection.connected {
+  color: $success;
 }
 
 .card-logout-button {
@@ -646,42 +640,9 @@ onMounted(() => {
 .status-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 8px;
   padding: 2px 0 4px;
-}
-
-.status-indicator {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  padding-left: 12px;
-  font-size: 12px;
-  color: $text-secondary;
-
-  &.connected .status-dot {
-    background-color: $success;
-    box-shadow: 0 0 6px rgba(var(--success-rgb), 0.5);
-  }
-
-  &.disconnected .status-dot {
-    background-color: $error;
-  }
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.status-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 // ─── Collapsed sidebar (icon-rail mode) ─────────────────────────

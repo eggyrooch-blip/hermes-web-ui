@@ -136,13 +136,17 @@ export async function listSkillCredentialStatuses(options: ListSkillCredentialOp
   const profileDir = options.profileDir
   const skills = scanProfileSkills(profileDir)
   const requiredBy = credentialRequirementsById(skills)
+  const [feishuProject, kepCli] = await Promise.all([
+    feishuProjectStatus(profileDir, profileName, requiredBy.get(FEISHU_PROJECT_CREDENTIAL_ID)),
+    kepCliStatus(profileDir, profileName, skills, requiredBy.get('kep-cli')),
+  ])
   return {
     profile_name: profileName,
     credentials: [
       larkCliStatus(options, requiredBy.get('lark-cli')),
-      await feishuProjectStatus(profileDir, profileName, requiredBy.get(FEISHU_PROJECT_CREDENTIAL_ID)),
+      feishuProject,
       keepRecordStatus(profileDir, skills),
-      await kepCliStatus(profileDir, profileName, skills, requiredBy.get('kep-cli')),
+      kepCli,
       gitlabStatus(profileDir, skills),
     ],
   }

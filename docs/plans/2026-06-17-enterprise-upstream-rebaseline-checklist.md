@@ -25,11 +25,17 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
 - Ordinary users may use chat, history, jobs, kanban, skills, memory, group
   chat, files, settings, and connectors when those views keep existing
   owner/profile guards.
-- Logs, channels, devices, Plugins inventory, Coding Agents install/config,
-  MCP manager, profiles, performance, terminal, version preview, and model
-  provider management are super-admin-only.
+- Logs, channels, devices, Coding Agents install/config, profiles,
+  performance, terminal, version preview, and model provider management are
+  super-admin-only.
+- Plugins and MCP inventory may be visible to ordinary users as read-only tools.
+  Host-level controls stay super-admin-only: plugin path/CLI/metadata, MCP
+  add/edit/remove/reload/test/toggle/tools visibility, and any mutation route.
 - The chat model picker remains available. `/hermes/models` is provider/cache
   management and must stay super-admin-only.
+- The chat model picker uses the aggregate/router model list from
+  `/api/hermes/available-models`, not a browser-active profile's isolated model
+  source.
 - Chat's new-session agent picker must not offer Claude Code/Codex to ordinary
   users; those choices depend on host-level coding-agent status and launch
   configuration.
@@ -85,9 +91,13 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
 - `bind-token` forwards profile-scoped token binding to Run Broker and must not
   persist raw token values in WebUI storage.
 - Do not regress profile-local generated skill editing.
+- Do not regress read-only Plugins/MCP visibility for ordinary users.
 - MCP reload is host maintenance. Ordinary users must not see `/reload-mcp`
   slash suggestions, and chat-plane server code must reject `/reload-mcp` even
   if a client sends it manually.
+- MCP list loading should not block indefinitely on bridge discovery. A short
+  timeout may return a static `config.yaml` snapshot; ordinary read-only users
+  should not auto-retry disconnected MCP servers in a loop.
 
 ## Regression Tests To Keep
 
@@ -95,7 +105,8 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
   nav items hidden; Connectors present.
 - Page sidebar test: API Relay / external promotion link absent from chat page
   sidebar.
-- Router test: risky routes have `requiresSuperAdmin`; Feishu cookie-mode can
+- Router test: risky routes have `requiresSuperAdmin`; Plugins/MCP inventory
+  routes are authenticated but not super-admin gated; Feishu cookie-mode can
   enter protected routes without a JS token, and stale super-admin JWTs cannot
   bypass Feishu/trusted route gates.
 - ChatPanel test: ordinary users only see Hermes in the new-session agent
@@ -108,5 +119,10 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
   helpers distinguish token presence from protected-route access.
 - Credentials test: Connectors renders `lark-cli`, `keep-record`, `kep-cli`,
   and does not leak raw secrets.
+- MCP/Plugins tests: ordinary users can see inventory, cannot see mutation
+  controls, and MCP disconnected state does not trigger repeated read-only
+  auto-retries.
+- Model selector test: profile-less or router/global model responses still show
+  the aggregate default and custom provider list.
 - Slash command test: ordinary users do not see `/reload-mcp`, and chat-plane
   backend rejects it without calling MCP reload.

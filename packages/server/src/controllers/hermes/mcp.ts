@@ -1,5 +1,5 @@
 import type { Context } from 'koa'
-import { bridgeMcpAction } from '../../services/hermes/mcp'
+import { bridgeMcpAction, listMcpServers } from '../../services/hermes/mcp'
 
 function getProfile(ctx: Context): string | undefined {
   return (ctx.state as any)?.profile?.name || undefined
@@ -16,7 +16,7 @@ function isValidServerName(name: string): boolean {
 
 export async function listServers(ctx: Context) {
   try {
-    ctx.body = await bridgeMcpAction('mcp_list', {}, getProfile(ctx))
+    ctx.body = await listMcpServers(getProfile(ctx))
   } catch (err: any) {
     ctx.status = 503
     ctx.body = { error: err.message || 'MCP bridge not available' }

@@ -12,6 +12,7 @@ import {
 } from '@/api/hermes/profiles'
 import ProfileAvatarView from '@/components/hermes/profiles/ProfileAvatar.vue'
 import { useI18n } from 'vue-i18n'
+import { isStoredSuperAdmin } from '@/api/client'
 
 const emit = defineEmits<{
   'modal-show-change': [show: boolean]
@@ -20,6 +21,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const message = useMessage()
 const profilesStore = useProfilesStore()
+const isSuperAdmin = computed(() => isStoredSuperAdmin())
 
 const activeName = computed(() => profilesStore.activeProfileName ?? '')
 const displayName = computed(() => activeName.value || 'default')
@@ -288,6 +290,7 @@ onMounted(() => {
                 {{ t('profiles.avatar.customize') }}
               </NButton>
               <NButton
+                v-if="isSuperAdmin"
                 size="small"
                 type="primary"
                 :loading="gatewayRestarting[profile.name]"
@@ -296,6 +299,7 @@ onMounted(() => {
                 {{ t('profiles.runtime.restartGateway') }}
               </NButton>
               <NButton
+                v-if="isSuperAdmin"
                 size="small"
                 type="primary"
                 :loading="profileRestarting[profile.name]"

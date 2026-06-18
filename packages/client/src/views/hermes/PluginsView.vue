@@ -5,10 +5,12 @@ import { useI18n } from 'vue-i18n'
 import { fetchPlugins, type HermesPluginInfo, type HermesPluginsMetadata } from '@/api/hermes/plugins'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { copyToClipboard } from '@/utils/clipboard'
+import { isStoredSuperAdmin } from '@/api/client'
 
 const { t, te } = useI18n()
 const message = useMessage()
 const profilesStore = useProfilesStore()
+const canManagePlugins = computed(() => isStoredSuperAdmin())
 
 const plugins = ref<HermesPluginInfo[]>([])
 const warnings = ref<string[]>([])
@@ -45,7 +47,9 @@ const filteredPlugins = computed(() => {
     if (kindFilter.value && plugin.kind !== kindFilter.value) return false
     if (statusFilter.value && plugin.effectiveStatus !== statusFilter.value) return false
     if (!query) return true
-    return [plugin.key, plugin.name, plugin.description, plugin.path, plugin.source, plugin.kind]
+    const searchable = [plugin.key, plugin.name, plugin.description, plugin.source, plugin.kind]
+    if (canManagePlugins.value) searchable.push(plugin.path)
+    return searchable
       .some(value => String(value || '').toLowerCase().includes(query))
   })
 })
@@ -100,6 +104,7 @@ function statusTagType(plugin: HermesPluginInfo): 'success' | 'warning' | 'error
 }
 
 function pluginCommand(plugin: HermesPluginInfo) {
+  if (!canManagePlugins.value) return ''
   const escapedKey = plugin.key.replace(/'/g, `'\\''`)
   if (plugin.effectiveStatus === 'disabled' || plugin.effectiveStatus === 'inactive') {
     return `hermes plugins enable '${escapedKey}'`
@@ -194,8 +199,8 @@ watch(() => profilesStore.activeProfileName || 'default', () => {
                 <th>{{ t('plugins.table.source') }}</th>
                 <th>{{ t('plugins.table.kind') }}</th>
                 <th>{{ t('plugins.table.capabilities') }}</th>
-                <th>{{ t('plugins.table.path') }}</th>
-                <th>{{ t('plugins.table.cli') }}</th>
+                <th v-if="canManagePlugins">{{ t('plugins.table.path') }}</th>
+                <th v-if="canManagePlugins">{{ t('plugins.table.cli') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -224,8 +229,8 @@ watch(() => profilesStore.activeProfileName || 'default', () => {
                     <span>{{ t('plugins.capabilities.env', { count: plugin.requiresEnv.length }) }}</span>
                   </div>
                 </td>
-                <td><code class="path-cell">{{ plugin.path || t('plugins.notAvailable') }}</code></td>
-                <td>
+                <td v-if="canManagePlugins"><code class="path-cell">{{ plugin.path || t('plugins.notAvailable') }}</code></td>
+                <td v-if="canManagePlugins">
                   <NButton v-if="pluginCommand(plugin)" size="tiny" secondary @click="copyCommand(plugin)">
                     {{ t('plugins.copyCommand') }}
                   </NButton>
@@ -237,7 +242,7 @@ watch(() => profilesStore.activeProfileName || 'default', () => {
         </div>
         <NEmpty v-else :description="t('plugins.noMatch')" />
 
-        <div v-if="metadata" class="metadata-panel">
+        <div v-if="metadata && canManagePlugins" class="metadata-panel">
           <span>{{ t('plugins.metadata.agentRoot') }}: <code>{{ metadata.hermesAgentRoot }}</code></span>
           <span>{{ t('plugins.metadata.python') }}: <code>{{ metadata.pythonExecutable }}</code></span>
           <span>{{ t('plugins.metadata.scanCwd') }}: <code>{{ metadata.cwd }}</code></span>

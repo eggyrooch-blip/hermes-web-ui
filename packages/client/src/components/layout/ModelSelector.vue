@@ -22,7 +22,7 @@ const customProvider = ref('')
 const activeProfileName = computed(() => profilesStore.activeProfileName || 'default')
 const activeModelGroups = computed(() => {
   const profileModels = appStore.profileModelGroups.find(entry => entry.profile === activeProfileName.value)
-  return profileModels?.groups || []
+  return profileModels?.groups?.length ? profileModels.groups : appStore.modelGroups
 })
 
 const providerOptions = computed(() => {

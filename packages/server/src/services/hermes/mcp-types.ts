@@ -10,6 +10,7 @@ export interface McpServerEntry {
   tools_registered: number
   tool_names: string[]
   tool_names_registered: string[]
+  tool_details?: Array<{ name: string; description?: string }>
   error?: string | null
   command?: string
   args?: string[]
@@ -20,6 +21,7 @@ export interface McpServerEntry {
   prompts?: boolean
   resources?: boolean
   enabled?: boolean
+  raw_config?: Record<string, unknown>
 }
 
 export interface McpToolEntry {
@@ -36,6 +38,7 @@ export interface McpActionResult {
 export interface McpListResponse extends McpActionResult {
   servers: McpServerEntry[]
   total_tools: number
+  partial?: boolean
 }
 
 export interface McpAddResponse extends McpActionResult {

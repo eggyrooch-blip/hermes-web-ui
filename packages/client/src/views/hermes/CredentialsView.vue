@@ -112,6 +112,8 @@ async function startCredential(entry: SkillCredentialEntry) {
         window.location.assign(result.verification_uri)
       }
       void pollCredentialAfterOAuth(entry.id)
+      message.success(result.user_code ? `${entry.title}: ${result.user_code}` : `${entry.title} 认证流程已启动`)
+      return
     }
     message.success(result.user_code ? `${entry.title}: ${result.user_code}` : `${entry.title} 认证流程已启动`)
     await loadCredentials()
@@ -152,7 +154,7 @@ onMounted(loadCredentials)
       <NButton size="small" quaternary :loading="loading" @click="loadCredentials">刷新</NButton>
     </header>
 
-    <NSpin :show="loading">
+    <NSpin :show="loading && !data">
       <div v-if="error" class="credentials-error">{{ error }}</div>
       <div v-else class="credentials-sections">
         <section v-for="group in credentialGroups" :key="group.id" class="credential-section" :data-credential-group="group.id">
@@ -186,7 +188,7 @@ onMounted(loadCredentials)
               </div>
               <NButton
                 size="small"
-                :loading="startingId === entry.id || oauthPollingId === entry.id"
+                :loading="startingId === entry.id"
                 :disabled="entry.status === 'missing'"
                 :data-credential-action="entry.id"
                 @click="startCredential(entry)"

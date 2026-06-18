@@ -232,7 +232,7 @@ describe('App Store', () => {
     expect(store.displayModelName('unknown', 'deepseek')).toBe('unknown')
   })
 
-  it('selects the browser active profile default instead of the aggregate response default', async () => {
+  it('selects the aggregate router default instead of a per-profile default', async () => {
     window.localStorage.setItem('hermes_active_profile_name', 'tester')
     mockSystemApi.fetchAvailableModels.mockResolvedValue({
       default: 'glm-5-turbo',
@@ -276,8 +276,8 @@ describe('App Store', () => {
 
     await store.loadModels()
 
-    expect(store.selectedModel).toBe('claude-opus-4-6')
-    expect(store.selectedProvider).toBe('custom:subrouter')
+    expect(store.selectedModel).toBe('glm-5-turbo')
+    expect(store.selectedProvider).toBe('custom:glm-coding-plan')
   })
 
   it('does not refetch available models within the cache window after an empty response', async () => {

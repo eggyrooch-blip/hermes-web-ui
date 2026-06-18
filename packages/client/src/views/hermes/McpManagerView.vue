@@ -8,6 +8,7 @@ import {
 } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import McpServerCard from '@/components/hermes/mcp/McpServerCard.vue'
+import { isStoredSuperAdmin } from '@/api/client'
 import {
   fetchMcpServers, fetchMcpTools, mcpServerAdd, mcpServerRemove,
   mcpServerUpdate, mcpServerTest, mcpReload,
@@ -16,6 +17,7 @@ import {
 
 const { t } = useI18n()
 const message = useMessage()
+const canManageMcp = computed(() => isStoredSuperAdmin())
 
 const servers = ref<McpServerInfo[]>([])
 const loading = ref(false)
@@ -215,7 +217,7 @@ async function loadServers() {
     toolsByServer.value = nextToolsByServer
     // Auto-retry with exponential backoff if enabled servers are still disconnected
     const hasPending = servers.value.some(s => s.raw_config.enabled !== false && !s.connected)
-    if (hasPending && _autoRetryCount < MAX_AUTO_RETRIES) {
+    if (canManageMcp.value && hasPending && _autoRetryCount < MAX_AUTO_RETRIES) {
       const delay = BASE_RETRY_DELAY * Math.pow(2, _autoRetryCount) // 2s, 4s, 8s, 16s, 32s
       _autoRetryCount++
       scheduleReload(delay)
@@ -230,6 +232,7 @@ async function loadServers() {
 }
 
 async function handleReload(server?: string) {
+  if (!canManageMcp.value) return
   try {
     const res = await mcpReload(server)
     if (res.ok) {
@@ -250,6 +253,7 @@ async function handleReload(server?: string) {
 }
 
 function openAddModal() {
+  if (!canManageMcp.value) return
   modalMode.value = 'add'
   editingName.value = ''
   jsonText.value = ''
@@ -259,6 +263,7 @@ function openAddModal() {
 }
 
 function openEditModal(server: McpServerInfo) {
+  if (!canManageMcp.value) return
   modalMode.value = 'edit'
   editingName.value = server.name
   const serverConfig = { [server.name]: server.raw_config }
@@ -270,6 +275,7 @@ function openEditModal(server: McpServerInfo) {
 }
 
 async function saveServer() {
+  if (!canManageMcp.value) return
   if (formatTimer) { clearTimeout(formatTimer); formatTimer = null }
   const { servers: parsed, error: validationErr } = parseAndValidate(jsonText.value)
   if (validationErr) {
@@ -328,6 +334,7 @@ async function saveServer() {
 }
 
 async function handleRemove(server: McpServerInfo) {
+  if (!canManageMcp.value) return
   try {
     const res = await mcpServerRemove(server.name)
     if (res.ok) {
@@ -344,6 +351,7 @@ async function handleRemove(server: McpServerInfo) {
 }
 
 async function handleToggleEnabled(server: McpServerInfo) {
+  if (!canManageMcp.value) return
   const newValue = !server.raw_config.enabled
   try {
     const config = { ...server.raw_config, enabled: newValue }
@@ -363,6 +371,7 @@ async function handleToggleEnabled(server: McpServerInfo) {
 }
 
 async function handleTest(server: McpServerInfo) {
+  if (!canManageMcp.value) return
   try {
     const res = await mcpServerTest(server.name)
     if (res.ok && res.tools) {
@@ -379,6 +388,7 @@ async function handleTest(server: McpServerInfo) {
 void loadServers()
 
 function openToolsModal(server: McpServerInfo) {
+  if (!canManageMcp.value) return
   toolsModalServer.value = server
   // Load mode from config
   const tools = server.raw_config.tools
@@ -457,6 +467,7 @@ function clearSelectedTools() {
 }
 
 async function saveToolsVisibility() {
+  if (!canManageMcp.value) return
   const server = toolsModalServer.value
   if (!server) return
 
@@ -534,10 +545,10 @@ async function saveToolsVisibility() {
             class="search-input"
           />
           <div class="btn-group">
-            <NButton size="small" type="primary" @click="handleReload()">
+            <NButton v-if="canManageMcp" size="small" type="primary" @click="handleReload()">
               {{ t('mcp.reloadAll') }}
             </NButton>
-            <NButton type="primary" size="small" @click="openAddModal">
+            <NButton v-if="canManageMcp" type="primary" size="small" @click="openAddModal">
               {{ t('mcp.addServer') }}
             </NButton>
           </div>
@@ -549,6 +560,7 @@ async function saveToolsVisibility() {
             :key="server.name"
             :server="server"
             :tools-by-server="toolsByServer"
+            :can-manage="canManageMcp"
             @edit="openEditModal"
             @test="handleTest"
             @reload="handleReload"

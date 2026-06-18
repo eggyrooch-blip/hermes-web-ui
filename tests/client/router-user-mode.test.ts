@@ -52,11 +52,9 @@ describe('router route metadata + auth gating', () => {
     'hermes.logs',
     'hermes.devices',
     'hermes.models',
-    'hermes.plugins',
     'hermes.codingAgents',
     'hermes.performance',
     'hermes.versionPreview',
-    'hermes.mcp',
   ])('gates %s behind super-admin', async (routeName) => {
     const router = (await import('@/router')).default
 
@@ -77,6 +75,15 @@ describe('router route metadata + auth gating', () => {
 
     expect(route?.path).toBe('/hermes/connectors')
     expect(router.resolve('/hermes/credentials').matched.at(-1)?.name).toBe('hermes.connectors')
+  })
+
+  it.each([
+    'hermes.plugins',
+    'hermes.mcp',
+  ])('keeps %s available as an authenticated user tool route', async (routeName) => {
+    const router = (await import('@/router')).default
+
+    expect(router.getRoutes().find(route => route.name === routeName)?.meta.requiresSuperAdmin).toBeUndefined()
   })
 
   it('allows an authenticated user onto a protected, non-admin route', async () => {
@@ -176,11 +183,9 @@ describe('router route metadata + auth gating', () => {
     '/hermes/logs',
     '/hermes/devices',
     '/hermes/models',
-    '/hermes/plugins',
     '/hermes/coding-agents',
     '/hermes/performance',
     '/hermes/version-preview',
-    '/hermes/mcp',
   ])('keeps a non-admin user off %s', async (path) => {
     localStorage.setItem('hermes_api_key', USER_TOKEN)
     const router = (await import('@/router')).default
@@ -189,6 +194,19 @@ describe('router route metadata + auth gating', () => {
     await router.isReady()
 
     expect(router.currentRoute.value.name).toBe('hermes.chat')
+  })
+
+  it.each([
+    ['/hermes/plugins', 'hermes.plugins'],
+    ['/hermes/mcp', 'hermes.mcp'],
+  ])('lets a non-admin user reach %s', async (path, routeName) => {
+    localStorage.setItem('hermes_api_key', USER_TOKEN)
+    const router = (await import('@/router')).default
+
+    await router.push(path)
+    await router.isReady()
+
+    expect(router.currentRoute.value.name).toBe(routeName)
   })
 
   it.each([

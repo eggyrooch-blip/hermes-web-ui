@@ -1,7 +1,13 @@
+import { existsSync, readFileSync } from 'fs'
+import { join } from 'path'
+import YAML from 'js-yaml'
 import { AgentBridgeClient } from './agent-bridge/client'
-import type { McpActionResponse } from './mcp-types'
+import { getActiveProfileDir, getProfileDir } from './hermes-profile'
+import type { McpActionResponse, McpListResponse, McpServerEntry } from './mcp-types'
 
 export type { McpServerEntry, McpActionResponse } from './mcp-types'
+
+const MCP_LIST_BRIDGE_TIMEOUT_MS = 1200
 
 let bridgeClient: AgentBridgeClient | null = null
 
@@ -10,6 +16,61 @@ export function getBridgeClient(): AgentBridgeClient {
     bridgeClient = new AgentBridgeClient()
   }
   return bridgeClient
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function readMcpConfig(profile?: string): Record<string, unknown> {
+  const profileDir = profile ? getProfileDir(profile) : getActiveProfileDir()
+  const configPath = join(profileDir, 'config.yaml')
+  if (!existsSync(configPath)) return {}
+  const parsed = YAML.load(readFileSync(configPath, 'utf-8'), { json: true })
+  return isRecord(parsed) ? parsed : {}
+}
+
+function buildStaticServerEntry(name: string, config: Record<string, unknown>): McpServerEntry {
+  const transport = typeof config.url === 'string' && config.url.trim() ? 'http' : 'stdio'
+  return {
+    name,
+    transport,
+    connected: false,
+    tools: 0,
+    tools_registered: 0,
+    tool_names: [],
+    tool_names_registered: [],
+    tool_details: [],
+    raw_config: config,
+  }
+}
+
+export function readMcpConfigSnapshot(profile?: string, error = 'MCP bridge inventory is still loading'): McpListResponse {
+  try {
+    const config = readMcpConfig(profile)
+    const mcpServers = isRecord(config.mcp_servers) ? config.mcp_servers : {}
+    const servers = Object.entries(mcpServers)
+      .filter((entry): entry is [string, Record<string, unknown>] => isRecord(entry[1]))
+      .map(([name, serverConfig]) => buildStaticServerEntry(name, serverConfig))
+
+    return { ok: true, partial: true, servers, total_tools: 0, error }
+  } catch (err: any) {
+    return {
+      ok: true,
+      partial: true,
+      servers: [],
+      total_tools: 0,
+      error: err?.message || error,
+    }
+  }
+}
+
+export async function listMcpServers(profile?: string): Promise<McpListResponse> {
+  const live = bridgeMcpAction('mcp_list', {}, profile) as Promise<McpListResponse>
+  const fallback = new Promise<McpListResponse>(resolve => {
+    setTimeout(() => resolve(readMcpConfigSnapshot(profile)), MCP_LIST_BRIDGE_TIMEOUT_MS)
+  })
+  return Promise.race([live, fallback])
 }
 
 /**

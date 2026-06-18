@@ -27,9 +27,14 @@ const profilesStoreMock = vi.hoisted(() => ({
   updateAvatar: vi.fn(),
   deleteAvatar: vi.fn(),
 }))
+const isStoredSuperAdminMock = vi.hoisted(() => vi.fn(() => false))
 
 vi.mock('@/stores/hermes/profiles', () => ({
   useProfilesStore: () => profilesStoreMock,
+}))
+
+vi.mock('@/api/client', () => ({
+  isStoredSuperAdmin: isStoredSuperAdminMock,
 }))
 
 // The upstream component pulls runtime status + restart helpers from the api module
@@ -115,6 +120,7 @@ describe('ProfileSelector', () => {
     ]
     profilesStoreMock.activeProfileName = 'feishu_user_a'
     profilesStoreMock.activeProfile = { name: 'feishu_user_a', active: true, model: '', gateway: '', alias: '', kind: 'user', avatar: { type: 'generated', seed: 'current-seed' } }
+    isStoredSuperAdminMock.mockReturnValue(false)
   })
 
   it('shows the active profile avatar beside the upstream selector', () => {
@@ -151,6 +157,17 @@ describe('ProfileSelector', () => {
     await findButtonByText(wrapper, 'Reset')!.trigger('click')
 
     expect(profilesStoreMock.deleteAvatar).toHaveBeenCalledWith('feishu_user_a')
+  })
+
+  it('hides runtime restart controls from ordinary Feishu users', async () => {
+    const wrapper = mount(ProfileSelector)
+
+    await wrapper.find('.profile-display').trigger('click')
+
+    expect(wrapper.text()).toContain('Customize Avatar')
+    expect(wrapper.text()).toContain('Switch Profile')
+    expect(wrapper.text()).not.toContain('Restart Gateway')
+    expect(wrapper.text()).not.toContain('Restart Profile')
   })
 
   // DELETED (upstream rebaseline): "opens the upstream create profile modal from the

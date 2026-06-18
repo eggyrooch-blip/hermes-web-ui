@@ -281,7 +281,7 @@ function getModelGroupsForProfile(profile: string) {
   const profileModels = appStore.profileModelGroups.find(
     (entry) => entry.profile === profile,
   );
-  return profileModels?.groups || [];
+  return profileModels?.groups?.length ? profileModels.groups : appStore.modelGroups;
 }
 
 function isCodingAgentAuthProvider(provider?: string) {
@@ -302,15 +302,15 @@ function getDefaultModelForProfile(profile: string) {
   const profileModels = appStore.profileModelGroups.find(
     (entry) => entry.profile === profile,
   );
-  const defaultProvider = profileModels?.default_provider || "";
-  const defaultModel = profileModels?.default || "";
+  const defaultProvider = profileModels?.default_provider || appStore.selectedProvider || "";
+  const defaultModel = profileModels?.default || appStore.selectedModel || "";
   const providerGroup = defaultProvider
     ? groups.find((group) => group.provider === defaultProvider)
     : undefined;
   const fallbackGroup = providerGroup || groups.find((group) => group.models.length > 0);
   return {
     provider: fallbackGroup?.provider || "",
-    model: fallbackGroup?.models.includes(defaultModel)
+    model: fallbackGroup?.models.includes(defaultModel) || (appStore.customModels[defaultProvider] || []).includes(defaultModel)
       ? defaultModel
       : fallbackGroup?.models[0] || "",
   };

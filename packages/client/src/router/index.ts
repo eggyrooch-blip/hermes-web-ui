@@ -103,7 +103,6 @@ const router = createRouter({
       path: '/hermes/plugins',
       name: 'hermes.plugins',
       component: () => import('@/views/hermes/PluginsView.vue'),
-      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/memory',
@@ -164,7 +163,6 @@ const router = createRouter({
       path: '/hermes/mcp',
       name: 'hermes.mcp',
       component: () => import('@/views/hermes/McpManagerView.vue'),
-      meta: { requiresSuperAdmin: true },
     },
   ],
 })

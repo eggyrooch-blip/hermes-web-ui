@@ -20,7 +20,6 @@ import { canAccessProtectedRoutes } from '@/api/client'
 const WEB_UI_VERSION = __APP_VERSION__
 
 const SIDEBAR_COLLAPSED_KEY = 'hermes_sidebar_collapsed'
-const ACTIVE_PROFILE_STORAGE_KEY = 'hermes_active_profile_name'
 const MODELS_CACHE_TTL_MS = 30000
 
 export const useAppStore = defineStore('app', () => {
@@ -102,11 +101,7 @@ export const useAppStore = defineStore('app', () => {
       if (stillAvailable) return
     }
 
-    const activeProfileName = localStorage.getItem(ACTIVE_PROFILE_STORAGE_KEY) || ''
-    const activeProfileModels = activeProfileName
-      ? profileModelGroups.value.find(entry => entry.profile === activeProfileName)
-      : undefined
-    const defaultSource = activeProfileModels || res
+    const defaultSource = res
     const defaultGroups = defaultSource.groups || []
     const defaultModel = defaultSource.default || ''
     const defaultProvider = defaultSource.default_provider || ''
