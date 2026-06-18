@@ -193,8 +193,23 @@ export const useProfilesStore = defineStore('profiles', () => {
   }
 
   function setBoundProfile(name: string, user?: CurrentUser | null) {
-    activeProfileName.value = name
-    localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, name)
+    const storedName = activeProfileName.value || localStorage.getItem(ACTIVE_PROFILE_STORAGE_KEY)
+    const ownedProfiles = new Set<string>([name])
+    if (Array.isArray(user?.profiles)) {
+      user.profiles
+        .filter(profile => typeof profile === 'string' && profile.trim().length > 0)
+        .forEach(profile => ownedProfiles.add(profile))
+    }
+    const selectedName = storedName && ownedProfiles.has(storedName) ? storedName : name
+    activeProfileName.value = selectedName
+    localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, selectedName)
+    if (profiles.value.length > 0) {
+      profiles.value = profiles.value.map(profile => ({
+        ...profile,
+        active: profile.name === selectedName,
+      }))
+      activeProfile.value = profiles.value.find(profile => profile.name === selectedName) ?? null
+    }
     if (user !== undefined) {
       setCurrentUser(user)
     }

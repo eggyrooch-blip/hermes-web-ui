@@ -246,4 +246,25 @@ describe('Profiles Store', () => {
     expect(localStorage.getItem('hermes_active_profile_name')).toBe('sunke')
     expect(localStorage.getItem('hermes_current_user')).toContain('feishu-avatar.png')
   })
+
+  it('keeps an owned frontend profile selected when Feishu chrome refreshes the bound profile', () => {
+    localStorage.setItem('hermes_active_profile_name', 'group_agent_a')
+    const store = useProfilesStore()
+    const user = {
+      id: 7,
+      username: 'feishu:ou_test',
+      role: 'user',
+      status: 'active',
+      profile: 'feishu_user_a',
+      profiles: ['feishu_user_a', 'group_agent_a'],
+      name: '孙可',
+      avatarUrl: 'https://example.com/feishu-avatar.png',
+    }
+
+    store.setBoundProfile('feishu_user_a', user)
+
+    expect(store.currentUser).toEqual(user)
+    expect(store.activeProfileName).toBe('group_agent_a')
+    expect(localStorage.getItem('hermes_active_profile_name')).toBe('group_agent_a')
+  })
 })
