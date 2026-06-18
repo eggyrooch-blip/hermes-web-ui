@@ -239,8 +239,10 @@ router.beforeEach(async (to, _from, next) => {
 
   // All other pages require auth. Feishu OAuth uses an httpOnly cookie instead
   // of a JS-readable token, so do not gate protected routes on localStorage.
+  let discoveredServerSession = false
   if (!canAccessProtectedRoutes()) {
-    if (!(await discoverServerSessionMode())) {
+    discoveredServerSession = await discoverServerSessionMode()
+    if (!discoveredServerSession) {
       next({ name: 'login' })
       return
     }
@@ -253,6 +255,12 @@ router.beforeEach(async (to, _from, next) => {
 
   authNavigationReady.value = true
   if (to.meta.requiresSuperAdmin && !isStoredSuperAdmin()) {
+    routeContentReady.value = false
+    next({ name: 'hermes.chat' })
+    return
+  }
+
+  if (discoveredServerSession && isServerSessionAuthMode() && to.name === 'hermes.settings') {
     routeContentReady.value = false
     next({ name: 'hermes.chat' })
     return

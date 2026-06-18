@@ -131,6 +131,28 @@ describe('router route metadata + auth gating', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/auth/me', expect.objectContaining({ credentials: 'same-origin' }))
   })
 
+  it('uses chat as the default landing when fresh Feishu cookie mode reaches settings', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/auth/status') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ authMode: 'feishu-oauth-dev', plane: 'chat' }),
+        })
+      }
+      if (url === '/api/auth/me') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ user: { id: 1 } }) })
+      }
+      return Promise.resolve({ ok: false, status: 404 })
+    })
+    const router = (await import('@/router')).default
+
+    await router.push('/hermes/settings')
+    await router.isReady()
+
+    expect(router.currentRoute.value.name).toBe('hermes.chat')
+    expect(localStorage.getItem('hermes_auth_mode')).toBe('feishu-oauth-dev')
+  })
+
   it.each([
     'feishu-oauth-dev',
     'trusted-feishu',
