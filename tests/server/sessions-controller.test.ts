@@ -27,6 +27,8 @@ const loggerWarnMock = vi.fn()
 const getCompressionSnapshotMock = vi.fn()
 const listUserProfilesMock = vi.fn()
 const readConfigYamlForProfileMock = vi.fn()
+const getRequestProfileMock = vi.fn()
+const isChatPlaneRequestMock = vi.fn()
 const bridgeSwitchSessionModelMock = vi.fn()
 const bridgeGetRuntimeStateMock = vi.fn()
 const codingAgentRunManagerMock = vi.hoisted(() => ({
@@ -117,6 +119,11 @@ vi.mock('../../packages/server/src/services/config-helpers', () => ({
   readConfigYamlForProfile: readConfigYamlForProfileMock,
 }))
 
+vi.mock('../../packages/server/src/services/request-context', () => ({
+  getRequestProfile: getRequestProfileMock,
+  isChatPlaneRequest: isChatPlaneRequestMock,
+}))
+
 vi.mock('../../packages/server/src/services/agent-runner/coding-agent-run-manager', () => ({
   codingAgentRunManager: codingAgentRunManagerMock,
 }))
@@ -170,6 +177,10 @@ describe('session conversations controller', () => {
     listUserProfilesMock.mockReturnValue([])
     readConfigYamlForProfileMock.mockReset()
     readConfigYamlForProfileMock.mockResolvedValue({ model: { default: 'gpt-default', provider: 'openai' } })
+    getRequestProfileMock.mockReset()
+    getRequestProfileMock.mockReturnValue('default')
+    isChatPlaneRequestMock.mockReset()
+    isChatPlaneRequestMock.mockReturnValue(false)
     bridgeSwitchSessionModelMock.mockReset()
     bridgeGetRuntimeStateMock.mockReset()
     bridgeGetRuntimeStateMock.mockReturnValue({ ready: false, running: false, endpoint: 'ipc:///tmp/hermes-agent-bridge.sock' })
@@ -307,6 +318,55 @@ describe('session conversations controller', () => {
     await mod.list(ctx)
 
     expect(localListSessionsMock).toHaveBeenCalledWith('travel', undefined, 2000)
+  })
+
+  it('filters chat-plane sessions by an explicitly selected authorized frontend profile', async () => {
+    isChatPlaneRequestMock.mockReturnValue(true)
+    listUserProfilesMock.mockReturnValue([{ profile_name: '123' }])
+    localListSessionsMock.mockReturnValue([
+      { id: 'agent-session', profile: '123', source: 'cli' },
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: { profile: '123' },
+      state: {
+        user: {
+          id: 1,
+          role: 'admin',
+          profile: 'feishu_g41a5b5g',
+          profiles: ['123'],
+        },
+      },
+      body: null,
+    }
+    await mod.list(ctx)
+
+    expect(localListSessionsMock).toHaveBeenCalledWith('123', undefined, 2000)
+    expect(ctx.body.sessions).toEqual([expect.objectContaining({ id: 'agent-session', profile: '123' })])
+  })
+
+  it('does not silently fall back to the bound profile for an unauthorized chat-plane session filter', async () => {
+    isChatPlaneRequestMock.mockReturnValue(true)
+    listUserProfilesMock.mockReturnValue([{ profile_name: '123' }])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: { profile: 'secret' },
+      state: {
+        user: {
+          id: 1,
+          role: 'admin',
+          profile: 'feishu_g41a5b5g',
+          profiles: ['123'],
+        },
+      },
+      body: null,
+    }
+    await mod.list(ctx)
+
+    expect(localListSessionsMock).not.toHaveBeenCalled()
+    expect(ctx.body.sessions).toEqual([])
   })
 
   it('lists only global-agent sessions when requested by source', async () => {
