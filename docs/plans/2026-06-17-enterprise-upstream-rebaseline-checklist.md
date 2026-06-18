@@ -61,6 +61,10 @@ tenant boundary is stricter than upstream's local desktop/admin assumptions.
   Feishu avatar/name/profile card when present. The sidebar must still refresh
   `/api/auth/me` on mount so persisted user-card cache cannot outlive the
   current server session.
+- The `ProfileSelector` frontend-profile switch only changes browser-selected
+  active profile state and reloads model/UI data. It is not a runtime wake or
+  restart control, and ordinary users must not see that switch button; they only
+  see the profile bound by Feishu/trusted identity.
 - `feishu-oauth-dev` uses an httpOnly cookie, not a JS token. Route guards and
   client stores that need protected API access must use
   `canAccessProtectedRoutes()`, not `hasApiKey()`.

@@ -308,6 +308,7 @@ onMounted(() => {
                 {{ t('profiles.runtime.restartProfile') }}
               </NButton>
               <NButton
+                v-if="isSuperAdmin"
                 size="small"
                 type="primary"
                 :disabled="profile.name === displayName"

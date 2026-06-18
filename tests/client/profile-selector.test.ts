@@ -159,15 +159,27 @@ describe('ProfileSelector', () => {
     expect(profilesStoreMock.deleteAvatar).toHaveBeenCalledWith('feishu_user_a')
   })
 
-  it('hides runtime restart controls from ordinary Feishu users', async () => {
+  it('hides profile runtime and frontend switching controls from ordinary Feishu users', async () => {
+    const wrapper = mount(ProfileSelector)
+
+    await wrapper.find('.profile-display').trigger('click')
+
+    expect(wrapper.text()).toContain('Customize Avatar')
+    expect(wrapper.text()).not.toContain('Switch Profile')
+    expect(wrapper.text()).not.toContain('Restart Gateway')
+    expect(wrapper.text()).not.toContain('Restart Profile')
+  })
+
+  it('keeps profile runtime and frontend switching controls for super-admin users', async () => {
+    isStoredSuperAdminMock.mockReturnValue(true)
     const wrapper = mount(ProfileSelector)
 
     await wrapper.find('.profile-display').trigger('click')
 
     expect(wrapper.text()).toContain('Customize Avatar')
     expect(wrapper.text()).toContain('Switch Profile')
-    expect(wrapper.text()).not.toContain('Restart Gateway')
-    expect(wrapper.text()).not.toContain('Restart Profile')
+    expect(wrapper.text()).toContain('Restart Gateway')
+    expect(wrapper.text()).toContain('Restart Profile')
   })
 
   // DELETED (upstream rebaseline): "opens the upstream create profile modal from the
