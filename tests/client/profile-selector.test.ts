@@ -28,6 +28,7 @@ const profilesStoreMock = vi.hoisted(() => ({
   deleteAvatar: vi.fn(),
 }))
 const isStoredSuperAdminMock = vi.hoisted(() => vi.fn(() => false))
+const fetchProfileRuntimeStatusesWithMetaMock = vi.hoisted(() => vi.fn().mockResolvedValue({ profiles: [], refreshing: false }))
 
 vi.mock('@/stores/hermes/profiles', () => ({
   useProfilesStore: () => profilesStoreMock,
@@ -40,7 +41,7 @@ vi.mock('@/api/client', () => ({
 // The upstream component pulls runtime status + restart helpers from the api module
 // when the profile manager modal opens. Stub them so mount/open don't hit the network.
 vi.mock('@/api/hermes/profiles', () => ({
-  fetchProfileRuntimeStatusesWithMeta: vi.fn().mockResolvedValue({ profiles: [], refreshing: false }),
+  fetchProfileRuntimeStatusesWithMeta: fetchProfileRuntimeStatusesWithMetaMock,
   restartProfileGateway: vi.fn(),
   restartProfileRuntime: vi.fn(),
 }))
@@ -166,8 +167,11 @@ describe('ProfileSelector', () => {
 
     expect(wrapper.text()).toContain('Customize Avatar')
     expect(wrapper.text()).not.toContain('Switch Profile')
+    expect(wrapper.text()).not.toContain('Bridge')
+    expect(wrapper.text()).not.toContain('Gateway')
     expect(wrapper.text()).not.toContain('Restart Gateway')
     expect(wrapper.text()).not.toContain('Restart Profile')
+    expect(fetchProfileRuntimeStatusesWithMetaMock).not.toHaveBeenCalled()
   })
 
   it('keeps profile runtime and frontend switching controls for super-admin users', async () => {
@@ -178,8 +182,11 @@ describe('ProfileSelector', () => {
 
     expect(wrapper.text()).toContain('Customize Avatar')
     expect(wrapper.text()).toContain('Switch Profile')
+    expect(wrapper.text()).toContain('Bridge')
+    expect(wrapper.text()).toContain('Gateway')
     expect(wrapper.text()).toContain('Restart Gateway')
     expect(wrapper.text()).toContain('Restart Profile')
+    expect(fetchProfileRuntimeStatusesWithMetaMock).toHaveBeenCalled()
   })
 
   // DELETED (upstream rebaseline): "opens the upstream create profile modal from the

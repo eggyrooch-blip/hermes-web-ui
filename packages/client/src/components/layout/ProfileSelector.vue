@@ -45,6 +45,11 @@ function setProfileModalShow(show: boolean) {
 }
 
 async function loadRuntimeStatuses(options: { background?: boolean } = {}): Promise<boolean> {
+  if (!isSuperAdmin.value) {
+    runtimeStatuses.value = []
+    runtimeLoading.value = false
+    return false
+  }
   const token = ++runtimeRefreshToken
   if (!options.background) {
     runtimeLoading.value = runtimeStatuses.value.length === 0
@@ -66,13 +71,14 @@ async function loadRuntimeStatuses(options: { background?: boolean } = {}): Prom
 
 function openProfileModal() {
   setProfileModalShow(true)
+  if (!isSuperAdmin.value) return
   void loadRuntimeStatuses().then((refreshing) => {
     if (refreshing) scheduleRuntimeStatusPoll()
   })
 }
 
 function scheduleRuntimeStatusPoll(attempt = 0) {
-  if (attempt >= 12 || typeof window === 'undefined') return
+  if (!isSuperAdmin.value || attempt >= 12 || typeof window === 'undefined') return
   window.setTimeout(() => {
     if (!showProfileModal.value) return
     void loadRuntimeStatuses({ background: true }).then((refreshing) => {
@@ -257,7 +263,7 @@ onMounted(() => {
                   <span class="profile-runtime-name">{{ profile.name }}</span>
                   <span v-if="profile.name === displayName" class="active-badge">{{ t('profiles.runtime.activeTag') }}</span>
                 </div>
-                <div class="runtime-status-grid">
+                <div v-if="isSuperAdmin" class="runtime-status-grid">
                   <div class="runtime-row compact">
                     <span class="runtime-label">{{ t('profiles.runtime.bridgeWorker') }}</span>
                     <span class="runtime-value" :class="{ running: statusByProfile.get(profile.name)?.bridge.running }">
@@ -274,7 +280,7 @@ onMounted(() => {
                   </div>
                 </div>
                 <div
-                  v-if="!statusByProfile.get(profile.name)?.gateway.running && (statusByProfile.get(profile.name)?.gateway.diagnostics?.reason || statusByProfile.get(profile.name)?.gateway.error)"
+                  v-if="isSuperAdmin && !statusByProfile.get(profile.name)?.gateway.running && (statusByProfile.get(profile.name)?.gateway.diagnostics?.reason || statusByProfile.get(profile.name)?.gateway.error)"
                   class="runtime-detail"
                 >
                   {{ statusByProfile.get(profile.name)?.gateway.diagnostics?.reason || statusByProfile.get(profile.name)?.gateway.error }}
