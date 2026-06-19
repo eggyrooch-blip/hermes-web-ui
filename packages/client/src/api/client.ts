@@ -3,6 +3,7 @@ import router from '@/router'
 const DEFAULT_BASE_URL = ''
 const AUTH_MODE_STORAGE_KEY = 'hermes_auth_mode'
 const WEB_PLANE_STORAGE_KEY = 'hermes_web_plane'
+const ACTIVE_PROFILE_STORAGE_KEY = 'hermes_active_profile_name'
 
 function isDesktopShell(): boolean {
   return typeof window !== 'undefined' &&
@@ -30,6 +31,12 @@ export function setApiKey(key: string) {
 
 export function clearApiKey() {
   localStorage.removeItem('hermes_api_key')
+}
+
+function clearAuthSessionState() {
+  clearApiKey()
+  clearRuntimeMode()
+  localStorage.removeItem(ACTIVE_PROFILE_STORAGE_KEY)
 }
 
 export function hasApiKey(): boolean {
@@ -119,7 +126,7 @@ export function getStoredUsername(): string | null {
 }
 
 export function getActiveProfileName(): string | null {
-  return localStorage.getItem('hermes_active_profile_name')
+  return localStorage.getItem(ACTIVE_PROFILE_STORAGE_KEY)
 }
 
 function bodyHasProfileSelector(body: BodyInit | null | undefined): boolean {
@@ -225,8 +232,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     !path.startsWith('/v1/')
 
   if (res.status === 401 && isLocalBff && !skipAuthRedirect) {
-    clearApiKey()
-    clearRuntimeMode()
+    clearAuthSessionState()
     emitAuthNotice('expired')
     if (router.currentRoute.value.name !== 'login') {
       router.replace({ name: 'login' })
@@ -238,8 +244,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     const text = await res.text().catch(() => '')
     if (res.status === 403 && isLocalBff) {
       if (text.includes('User is disabled or does not exist')) {
-        clearApiKey()
-        clearRuntimeMode()
+        clearAuthSessionState()
         emitAuthNotice('expired')
         if (router.currentRoute.value.name !== 'login') {
           router.replace({ name: 'login' })
