@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-06-18
+updated: 2026-06-19
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
@@ -14,6 +14,35 @@ related:
 ---
 
 # hermes-web-ui 架构速查 — EKKO fork
+
+> [!info] 2026-06-19 main/GitHub — connector broker adapter is flag-gated
+> `connector-webui-broker` shipped to `main@66320eda` as a thin WebUI adapter
+> over the multitenancy Connector Registry. The browser-facing contract remains
+> `/api/auth/skill-credentials*` and `SkillCredentialEntry[]`; broker-native
+> connector fields are mapped/dropped before they reach the client.
+>
+> Flags are default OFF. `HERMES_WEBUI_CONNECTORS_USE_BROKER=1` makes
+> `/api/auth/skill-credentials` fetch from
+> `${HERMES_RUN_BROKER_URL}/api/run-broker/connectors`; when unset, the legacy
+> local collector is the source of truth. `HERMES_CONNECTOR_SHADOW_COMPARE=1`
+> runs a redacted local-vs-broker diff without changing the primary response.
+> `HERMES_CONNECTOR_KEP_CALLBACK_FORWARD=1` thin-forwards
+> `/api/auth/kep-cli/callback/:sid` to the Run Broker callback; OFF preserves
+> `completeKepCliAuthCallback()` as the rollback path.
+>
+> Failure boundary: broker 5xx, timeout, missing connector arrays, or malformed
+> connector rows must fail closed to the 5 canonical connector cards in `error`
+> state and must never synthesize `authenticated`. Shadow logs compare status,
+> required_by counts, and account-hint presence only; they must not log tokens,
+> env values, paths, or concrete account hints.
+>
+> Verification before finalize: focused
+> `tests/server/connector-registry-client.test.ts tests/server/skill-credentials.test.ts`
+> passed 40 tests; full `bun run test` passed 269 files / 1972 tests with 2
+> skipped; `pnpm run build` completed OpenAPI generation, vue-tsc, Vite build,
+> server tsc, and server bundle with exit 0. Production still requires the
+> standard pull/build/restart path and explicit flag enablement before this
+> adapter changes live behavior.
 
 > [!info] 2026-06-18 本机已验证 — upstream rebaseline 后企业入口收口
 > `sidebar-enterprise-chrome` 已在本机合入 main；运行代码变更截止 `d999692b`（继 `3275161e` 服务端显式 profile 过滤后，`1cda2536` 把聊天侧栏 profile 下拉改成同步 frontend active profile 的真实切换器，`d999692b` 稳定全量 Vitest gate），并已重建、重启本机 launchd `com.hermes.ekko-webui` 的 `dist/server/index.js`；生产尚未发布，GitHub 尚未 push/finalize。边界是 WebUI 适配层，不改 Hermes Agent，不把员工运维/升级入口暴露到普通用户。
