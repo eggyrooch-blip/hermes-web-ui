@@ -38,7 +38,7 @@ import { ensureHermesRunWorkspace } from './workspace'
 const BRIDGE_USAGE_FLUSH_DELAY_MS = 200
 const BRIDGE_TITLE_EVENT_POLL_INTERVAL_MS = 500
 const BRIDGE_TITLE_EVENT_POLL_TIMEOUT_MS = 45_000
-const BRIDGE_GOAL_EVALUATE_TIMEOUT_MS = 5_000
+const BRIDGE_GOAL_EVALUATE_TIMEOUT_MS = 120_000
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
