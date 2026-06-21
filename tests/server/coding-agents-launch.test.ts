@@ -363,6 +363,40 @@ describe('coding agent launch preparation', () => {
     expect(deepseekModel.model_messages.instructions_template).toContain('{{ base_instructions }}')
   })
 
+  it('defaults Codex providers without an api mode to Chat Completions', async () => {
+    makeHome()
+    const launch = await prepareCodingAgentLaunch('codex', {
+      profile: 'default',
+      provider: 'xiaomi',
+      model: 'mimo-v2.5-pro',
+      baseUrl: 'https://api.xiaomimimo.com/v1',
+      apiKey: 'sk-upstream',
+    })
+    const config = readFileSync(join(launch.rootDir, 'config.toml'), 'utf-8')
+    const routeKey = config.match(/\/api\/codex-proxy\/([^/]+)\/v1/)?.[1] || ''
+    const token = config.match(/experimental_bearer_token = "([^"]+)"/)?.[1] || ''
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      id: 'chatcmpl_test',
+      choices: [{
+        finish_reason: 'stop',
+        message: { role: 'assistant', content: 'ok' },
+      }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const ctx = makeProxyContext(routeKey, token, {
+      max_output_tokens: 16,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+    })
+
+    await codexProxyResponses(ctx)
+
+    expect(fetchMock).toHaveBeenCalledWith('https://api.xiaomimimo.com/v1/chat/completions', expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ Authorization: 'Bearer sk-upstream' }),
+    }))
+  })
+
   it('points Codex Responses providers at the local Responses proxy for stream capture', async () => {
     const home = makeHome()
 
