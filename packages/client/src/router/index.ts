@@ -38,11 +38,13 @@ const router = createRouter({
       path: '/hermes/global-agent',
       name: 'hermes.globalAgent',
       component: () => import('@/views/hermes/GlobalAgentView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/global-agent/session/:sessionId',
       name: 'hermes.globalAgentSession',
       component: () => import('@/views/hermes/GlobalAgentView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/jobs',

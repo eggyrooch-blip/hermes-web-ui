@@ -882,7 +882,7 @@ export const useChatStore = defineStore('chat', () => {
     apiKey?: string
     apiMode?: 'chat_completions' | 'codex_responses' | 'anthropic_messages'
   } = {}): Session {
-    const source = runtimeMode.value === 'global_agent' ? 'global_agent' : options.source || 'cli'
+    const source = options.source || (runtimeMode.value === 'global_agent' ? 'global_agent' : 'cli')
     const codingAgentId = options.codingAgentId || (options.agent === 'codex' ? 'codex' : options.agent === 'claude' ? 'claude-code' : undefined)
     const codingAgentMode = codingAgentId ? (options.codingAgentMode || 'scoped') : undefined
     const session: Session = {
@@ -1148,7 +1148,7 @@ export const useChatStore = defineStore('chat', () => {
     apiMode?: 'chat_completions' | 'codex_responses' | 'anthropic_messages'
   } = {}): Session {
     const appStore = useAppStore()
-    const storageSource = runtimeMode.value === 'global_agent' ? 'global_agent' : options.source || 'cli'
+    const storageSource = options.source || (runtimeMode.value === 'global_agent' ? 'global_agent' : 'cli')
     const codingAgentId = options.codingAgentId || (options.agent === 'codex' ? 'codex' : options.agent === 'claude' ? 'claude-code' : undefined)
     const isGlobalCodingAgent = Boolean(codingAgentId) && options.codingAgentMode === 'global'
     const session = createSession({

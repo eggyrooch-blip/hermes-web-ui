@@ -495,8 +495,11 @@ async function createNewChatSession(options: {
 }) {
   const session = chatStore.newChat(options);
   const profile = session.profile || options.profile;
+  const routeName = options.source === "global_agent" || (!options.source && chatStore.runtimeMode === "global_agent")
+    ? "hermes.globalAgentSession"
+    : "hermes.session";
   await router.push({
-    name: chatStore.runtimeMode === "global_agent" ? "hermes.globalAgentSession" : "hermes.session",
+    name: routeName,
     params: { sessionId: session.id },
     query: profile ? { profile } : undefined,
   });
@@ -581,7 +584,9 @@ async function confirmNewChat() {
   }
 
   const group = selectedNewChatProviderGroup.value;
-  const source = newChatAgent.value === "hermes" ? "cli" : "coding_agent";
+  const source = newChatAgent.value === "hermes"
+    ? (chatStore.runtimeMode === "global_agent" ? "global_agent" : "cli")
+    : "coding_agent";
   const isGlobalCodingAgent = source === "coding_agent" && newChatAgentMode.value === "global";
   const agent = newChatAgent.value === "codex"
     ? "codex"

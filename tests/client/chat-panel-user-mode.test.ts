@@ -241,6 +241,7 @@ describe('ChatPanel user-mode gateway state', () => {
     chatStoreMock.activeSession = null
     chatStoreMock.activeSessionId = null
     chatStoreMock.isStreaming = false
+    chatStoreMock.runtimeMode = 'agent'
     profilesStoreMock.currentUser = null
     profilesStoreMock.activeProfileName = 'user_a'
     routerPushMock.mockClear()
@@ -411,6 +412,7 @@ describe('ChatPanel user-mode gateway state', () => {
   })
 
   it('creates ordinary user chats directly on the active profile without the advanced drawer', async () => {
+    chatStoreMock.runtimeMode = 'global_agent'
     profilesStoreMock.profiles = [{ name: 'user_a' }]
     appStoreMock.profileModelGroups = [{
       profile: 'user_a',
@@ -439,6 +441,7 @@ describe('ChatPanel user-mode gateway state', () => {
       workspace: null,
     }))
     expect(routerPushMock).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'hermes.session',
       params: { sessionId: 'new-session' },
       query: { profile: 'user_a' },
     }))

@@ -96,6 +96,20 @@ describe('chat store user-mode model selection', () => {
   // so the cases are deleted rather than rewritten. The isUserModeMock setup
   // is retained only because other suites import the same mock shape.
 
+  it('respects an explicit cli source even when ambient runtime mode is global agent', () => {
+    const store = useChatStore()
+    try {
+      store.setRuntimeMode('global_agent')
+
+      const session = store.newChat({ source: 'cli', profile: 'user_a' })
+
+      expect(session.source).toBe('cli')
+      expect(session.profile).toBe('user_a')
+    } finally {
+      store.setRuntimeMode('default')
+    }
+  })
+
   it('stores tool completed output on the visible tool message', async () => {
     const store = useChatStore()
     store.newChat()

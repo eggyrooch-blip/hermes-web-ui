@@ -20,6 +20,9 @@ vi.mock('@/views/hermes/PluginsView.vue', () => ({
 vi.mock('@/views/hermes/McpManagerView.vue', () => ({
   default: { template: '<div data-test="mcp-view" />' },
 }))
+vi.mock('@/views/hermes/GlobalAgentView.vue', () => ({
+  default: { template: '<div data-test="global-agent-view" />' },
+}))
 
 const fetchMock = vi.hoisted(() => vi.fn())
 
@@ -68,6 +71,8 @@ describe('router route metadata + auth gating', () => {
     'hermes.codingAgents',
     'hermes.performance',
     'hermes.versionPreview',
+    'hermes.globalAgent',
+    'hermes.globalAgentSession',
   ])('gates %s behind super-admin', async (routeName) => {
     const router = (await import('@/router')).default
 
@@ -235,6 +240,8 @@ describe('router route metadata + auth gating', () => {
     '/hermes/coding-agents',
     '/hermes/performance',
     '/hermes/version-preview',
+    '/hermes/global-agent',
+    '/hermes/global-agent/session/session-1',
   ])('keeps a non-admin user off %s', async (path) => {
     localStorage.setItem('hermes_api_key', USER_TOKEN)
     const router = (await import('@/router')).default
@@ -285,6 +292,7 @@ describe('router route metadata + auth gating', () => {
   it.each([
     ['/hermes/plugins', 'hermes.plugins'],
     ['/hermes/mcp', 'hermes.mcp'],
+    ['/hermes/global-agent', 'hermes.globalAgent'],
   ])('lets a super-admin reach %s', async (path, routeName) => {
     localStorage.setItem('hermes_api_key', SUPER_ADMIN_TOKEN)
     const router = (await import('@/router')).default

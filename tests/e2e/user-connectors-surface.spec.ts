@@ -26,6 +26,9 @@ test('ordinary users only see connectors and no technical sidebar controls', asy
 
   await page.goto('/#/hermes/mcp')
   await expect(page).toHaveURL(/#\/hermes\/connectors$/)
+
+  await page.goto('/#/hermes/global-agent')
+  await expect(page).toHaveURL(/#\/hermes\/chat$/)
 })
 
 test('ordinary users create chats without the advanced agent and workspace drawer', async ({ page }) => {
