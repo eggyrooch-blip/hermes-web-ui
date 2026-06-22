@@ -212,6 +212,35 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
       return
     }
 
+    if (pathname === '/api/auth/skill-credentials') {
+      await route.fulfill(jsonResponse({
+        profile_name: activeProfileName,
+        credentials: [
+          {
+            id: 'lark-cli',
+            title: 'Lark CLI',
+            provider: 'Feishu',
+            installed: true,
+            status: 'needs_auth',
+            detail: 'Connect Feishu capabilities',
+            required_by: ['lark-cli'],
+            action: { kind: 'feishu_device_flow', label: 'Connect' },
+          },
+        ],
+      }))
+      return
+    }
+
+    if (pathname === '/api/hermes/plugins') {
+      await route.fulfill(jsonResponse({ plugins: [], warnings: [], metadata: { projectPluginsEnabled: true } }))
+      return
+    }
+
+    if (pathname === '/api/hermes/mcp/servers') {
+      await route.fulfill(jsonResponse({ ok: true, servers: [], total_tools: 0, partial: false }))
+      return
+    }
+
     if (pathname === '/api/hermes/profiles') {
       await route.fulfill(jsonResponse({
         profiles: [
