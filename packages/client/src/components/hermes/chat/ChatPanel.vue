@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { renameSession, setSessionWorkspace, batchDeleteSessions, exportSession } from "@/api/hermes/sessions";
 import type { AvailableModelGroup } from "@/api/hermes/system";
-import { fetchCodingAgentsStatus, type CodingAgentId } from "@/api/coding-agents";
+import {
+  fetchCodingAgentsStatus,
+  inferCodingAgentApiMode,
+  normalizeCodingAgentApiMode,
+  type CodingAgentApiMode,
+  type CodingAgentId,
+} from "@/api/coding-agents";
 import { useChatStore, type Session } from "@/stores/hermes/chat";
 import { useAppStore } from "@/stores/hermes/app";
 import { useProfilesStore } from "@/stores/hermes/profiles";
@@ -254,10 +260,6 @@ const activeSessionModelLabel = computed(() => {
   if (!session?.model) return t("models.selectModel");
   return appStore.displayModelName(session.model, session.provider);
 });
-
-const isActiveSessionCodingAgent = computed(() =>
-  chatStore.activeSession?.source === "coding_agent",
-);
 
 const headerTitle = computed(() =>
   currentMode.value === "live"
@@ -778,7 +780,7 @@ const contextMenuOptions = computed(() => {
   { label: t("chat.rename"), key: "rename" },
   { label: t("chat.setWorkspace"), key: "workspace" }]
 
-  if (contextSession.value?.source === "cli") {
+  if (contextSession.value?.source === "cli" || contextSession.value?.source === "coding_agent") {
     options.push({ label: t("chat.setModel"), key: "model" })
   }
 
@@ -931,6 +933,7 @@ async function handleWorkspaceConfirm() {
 }
 
 const showSessionModelModal = ref(false);
+const showSessionModelModeModal = ref(false);
 const sessionModelSessionId = ref<string | null>(null);
 const sessionModelSearch = ref("");
 const sessionModelCollapsedGroups = ref<Record<string, boolean>>({});
@@ -938,14 +941,30 @@ const sessionModelValue = ref("");
 const sessionModelProvider = ref("");
 const sessionModelCustomInput = ref("");
 const sessionModelCustomProvider = ref("");
+const sessionModelApiMode = ref<CodingAgentApiMode>("codex_responses");
+const pendingSessionModelSwitch = ref<{ model: string; provider: string } | null>(null);
 
 const sessionModelProfile = computed<string | null>(() => {
   const session = chatStore.sessions.find((s) => s.id === sessionModelSessionId.value);
   return session?.profile || null;
 });
 
+const sessionModelSession = computed(() =>
+  chatStore.sessions.find((s) => s.id === sessionModelSessionId.value) ||
+  (chatStore.activeSession?.id === sessionModelSessionId.value ? chatStore.activeSession : undefined),
+);
+
+const isSessionModelScopedCodingAgent = computed(() =>
+  sessionModelSession.value?.source === "coding_agent" &&
+  sessionModelSession.value?.codingAgentMode !== "global",
+);
+
 const sessionModelBaseGroups = computed(() =>
-  sessionModelProfile.value ? getModelGroupsForProfile(sessionModelProfile.value) : [],
+  sessionModelProfile.value
+    ? getModelGroupsForProfile(sessionModelProfile.value).filter((group) => (
+        !isSessionModelScopedCodingAgent.value || !isCodingAgentAuthProvider(group.provider)
+      ))
+    : [],
 );
 
 const sessionModelProviderOptions = computed(() =>
@@ -985,12 +1004,20 @@ async function openSessionModelModal(sessionId: string) {
   const session =
     chatStore.sessions.find((s) => s.id === sessionId) ||
     (chatStore.activeSession?.id === sessionId ? chatStore.activeSession : undefined);
-  const defaults = session?.profile
-    ? getDefaultModelForProfile(session.profile)
-    : { provider: "", model: "" };
   sessionModelSessionId.value = sessionId;
-  sessionModelValue.value = session?.model || defaults.model || "";
-  sessionModelProvider.value = session?.provider || defaults.provider || "";
+  const groups = sessionModelBaseGroups.value;
+  const providerGroup = session?.provider
+    ? groups.find((group) => group.provider === session.provider)
+    : undefined;
+  const fallbackGroup = providerGroup || groups.find((group) => group.models.length > 0);
+  const defaults = {
+    provider: fallbackGroup?.provider || "",
+    model: fallbackGroup?.models.includes(session?.model || "")
+      ? session?.model || ""
+      : fallbackGroup?.models[0] || "",
+  };
+  sessionModelValue.value = providerGroup ? session?.model || defaults.model || "" : defaults.model || "";
+  sessionModelProvider.value = providerGroup ? session?.provider || "" : defaults.provider || "";
   sessionModelCustomProvider.value = sessionModelProvider.value;
   sessionModelSearch.value = "";
   sessionModelCustomInput.value = "";
@@ -1004,7 +1031,6 @@ function handleHeaderModelClick() {
     void handleNewChatPrimary();
     return;
   }
-  if (isActiveSessionCodingAgent.value) return;
   openSessionModelModal(sessionId);
 }
 
@@ -1028,18 +1054,53 @@ function sessionModelAlias(model: string, provider: string) {
   return appStore.getModelAlias(model, provider);
 }
 
-async function selectSessionModel(model: string, provider: string) {
-  const meta = sessionModelBaseGroups.value.find((group) => group.provider === provider)?.model_meta?.[model];
-  if (meta?.disabled || !sessionModelSessionId.value) return;
-  const ok = await chatStore.switchSessionModel(model, provider, sessionModelSessionId.value);
+function defaultSessionModelApiMode(provider: string): CodingAgentApiMode {
+  const group = sessionModelBaseGroups.value.find((item) => item.provider === provider);
+  const providerKey = String(group?.provider || provider || "").toLowerCase();
+  const baseUrl = String(group?.base_url || "").toLowerCase();
+  return normalizeCodingAgentApiMode(
+    group?.api_mode,
+    inferCodingAgentApiMode(providerKey, baseUrl),
+  );
+}
+
+async function applySessionModelSwitch(model: string, provider: string, apiMode?: CodingAgentApiMode) {
+  if (!sessionModelSessionId.value) return;
+  const ok = await chatStore.switchSessionModel(model, provider, sessionModelSessionId.value, apiMode);
   if (ok) {
     sessionModelValue.value = model;
     sessionModelProvider.value = provider;
+    if (apiMode) sessionModelApiMode.value = apiMode;
+    pendingSessionModelSwitch.value = null;
+    showSessionModelModeModal.value = false;
     showSessionModelModal.value = false;
     message.success(t("chat.modelSet"));
   } else {
     message.error(t("chat.modelSetFailed"));
   }
+}
+
+async function selectSessionModel(model: string, provider: string) {
+  const meta = sessionModelBaseGroups.value.find((group) => group.provider === provider)?.model_meta?.[model];
+  if (meta?.disabled || !sessionModelSessionId.value) return;
+  if (isSessionModelScopedCodingAgent.value) {
+    pendingSessionModelSwitch.value = { model, provider };
+    sessionModelApiMode.value = defaultSessionModelApiMode(provider);
+    showSessionModelModeModal.value = true;
+    return;
+  }
+  await applySessionModelSwitch(model, provider);
+}
+
+async function confirmSessionModelMode() {
+  const pending = pendingSessionModelSwitch.value;
+  if (!pending) return;
+  await applySessionModelSwitch(pending.model, pending.provider, sessionModelApiMode.value);
+}
+
+function cancelSessionModelMode() {
+  pendingSessionModelSwitch.value = null;
+  showSessionModelModeModal.value = false;
 }
 
 async function handleSessionModelCustomSubmit() {
@@ -1403,6 +1464,27 @@ async function handleSessionModelCustomSubmit() {
       </div>
     </NModal>
 
+    <NModal
+      v-model:show="showSessionModelModeModal"
+      preset="dialog"
+      :title="t('codingAgents.protocolScope')"
+      :mask-closable="true"
+      style="width: min(420px, calc(100vw - 32px))"
+    >
+      <NSelect
+        v-model:value="sessionModelApiMode"
+        :options="newChatApiModeOptions"
+      />
+      <template #action>
+        <NButton size="small" @click="cancelSessionModelMode">
+          {{ t('common.cancel') }}
+        </NButton>
+        <NButton size="small" type="primary" @click="confirmSessionModelMode">
+          {{ t('common.confirm') }}
+        </NButton>
+      </template>
+    </NModal>
+
     <NDrawer
       v-model:show="showNewChatModal"
       class="new-chat-drawer"
@@ -1626,7 +1708,6 @@ async function handleSessionModelCustomSubmit() {
             </NTooltip>
             <NButton
               class="header-model-button"
-              :class="{ 'header-model-button--readonly': isActiveSessionCodingAgent }"
               size="small"
               :circle="isMobile"
               :title="activeSessionModelLabel"
@@ -2339,15 +2420,6 @@ async function handleSessionModelCustomSubmit() {
 
 .header-model-button {
   max-width: 220px;
-}
-
-.header-model-button--readonly {
-  cursor: default;
-}
-
-.header-model-button--readonly :deep(.n-button__content),
-.header-model-button--readonly :deep(.n-button__icon) {
-  cursor: default;
 }
 
 .header-model-button :deep(.n-button__content) {

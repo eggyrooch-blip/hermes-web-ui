@@ -28,6 +28,7 @@ import { authenticateUserToken, isAuthEnabled, type AuthenticatedUser } from '..
 import { userCanAccessProfile } from '../../../db/hermes/users-store'
 import { config } from '../../../config'
 import { BrokerRunController } from '../broker-controller'
+import { ensureHermesRunWorkspace } from './workspace'
 
 export type { ContentBlock } from './types'
 
@@ -436,7 +437,7 @@ export class ChatRunSocket {
         : getSystemPrompt()
       if (data.session_id) {
         const sessionRow = getSession(data.session_id)
-        const workspace = sessionRow?.workspace || String(data.workspace || '').trim()
+        const workspace = await ensureHermesRunWorkspace(profile, sessionRow?.workspace || data.workspace)
         if (workspace) {
           const workspaceCtx = `[Current working directory: ${workspace}]`
           fullInstructions = `\n${workspaceCtx}\n${fullInstructions}`
