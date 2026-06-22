@@ -452,6 +452,44 @@ describe('ChatPanel user-mode gateway state', () => {
     expect(wrapper.text()).not.toContain('codingAgents.protocolScope')
   })
 
+  it('uses the current sidebar provider and model when creating ordinary user chats', async () => {
+    chatStoreMock.runtimeMode = 'global_agent'
+    profilesStoreMock.activeProfileName = 'user_a'
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    appStoreMock.selectedProvider = 'custom:litellm-sre'
+    appStoreMock.selectedModel = 'custom:litellm-sre/tencent-sonnet-4-6'
+    appStoreMock.profileModelGroups = [{
+      profile: 'user_a',
+      groups: [
+        { provider: 'openai', label: 'OpenAI', models: ['gpt-4.1'] },
+        { provider: 'custom:litellm-sre', label: 'LiteLLM SRE', models: ['custom:litellm-sre/tencent-sonnet-4-6'] },
+      ],
+      default_provider: 'openai',
+      default: 'gpt-4.1',
+    }]
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    await wrapper.get('.page-sidebar-nav-stub').trigger('click')
+    await flushPromises()
+
+    expect(chatStoreMock.newChat).toHaveBeenCalledWith(expect.objectContaining({
+      profile: 'user_a',
+      provider: 'custom:litellm-sre',
+      model: 'custom:litellm-sre/tencent-sonnet-4-6',
+      source: 'cli',
+      agent: 'hermes',
+      workspace: null,
+    }))
+    expect(wrapper.find('.folder-picker-stub').exists()).toBe(false)
+  })
+
   it('does not pair a custom selected model with an unrelated fallback provider for new chats', async () => {
     isStoredSuperAdminMock.mockReturnValue(true)
     profilesStoreMock.profiles = [{ name: 'user_a' }]

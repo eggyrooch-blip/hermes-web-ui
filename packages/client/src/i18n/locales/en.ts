@@ -1916,6 +1916,7 @@ export default {
     addAgent: 'Add Agent',
     selectProfile: 'Select a profile',
     agentAdded: 'Agent added',
+    selectRoomFirst: 'Please select a room first',
     agentAlreadyInRoom: 'Agent already in this room',
     agentAddFailedCount: '{count} agent(s) were not added: {details}',
     noAgents: 'No agents in this room',

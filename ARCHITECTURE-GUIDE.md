@@ -15,6 +15,11 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
+> [!info] 2026-06-22 本机 worktree — selective upstream bugfix harvest
+> `upstream-bugfix-harvest` 只吸收上游低风险 bugfix，不改变普通用户连接器/插件/MCP 的产品边界，也不发布生产。已纳入的上游点包括：CJK 长串 token 计数防卡死、`run.failed` 不覆盖已有长 assistant 正文、session messages 空值保护、config backup fallback、大静态资源不动态 Brotli、stale token 登录锁恢复、群聊 `firstSeenAt` 稳定排序、未选 room 添加 agent 的前端提示、skill detail 文件列表高度限制。
+>
+> 两个冲突点按本 fork 手工合并：普通用户新建 Hermes 会话在当前 active profile 下优先沿用侧栏已选 provider/model，仍不打开高级 drawer；chat/group-chat 上传失败时用 `responseErrorMessage()` 展示后端 JSON/text 错误详情。明确不吸收管理员侧/MCP/插件/技能 runtime 大改、MCU/ESP32、语音、Windows desktop updater 等上游功能块。当前验证进度：手工红绿用例已覆盖新会话模型与上传错误；focused `chat-panel/http-error/chat-store-error-handling/group-chat/context-compressor/sessions/safe-file-store/login-limiter/static-compression` 为 9 files / 95 passed。最终还需 `npm run build`、ftask review/ship、重启本机 `8648` 与浏览器 chat-pane 验证后才能说本机 main 生效。
+
 > [!info] 2026-06-22 本机 main 已合入并重启 — 普通用户集成入口收口到「连接器」
 > `user-connectors-surface` 已通过 ftask ship 合入本机 `main`，并重建/重启 `com.hermes.ekko-webui` 到 `127.0.0.1:8648`；仍未 push/finalize、未发布生产，等待本机验证。前端产品面现在把 `/hermes/connectors` 作为普通用户唯一集成入口，`/hermes/credentials` 继续只是兼容 alias；侧栏普通用户保留 Agent > 连接器，不再显示 Plugins/MCP 所在的工具组。
 >

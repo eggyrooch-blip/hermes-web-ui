@@ -1938,6 +1938,7 @@ export default {
     addAgent: 'エージェントを追加',
     selectProfile: 'プロファイルを選択',
     agentAdded: 'エージェントが追加されました',
+    selectRoomFirst: '最初にルームを選択してください',
     agentAlreadyInRoom: 'このエージェントは既にルームにいます',
     agentAddFailedCount: '{count} 件のエージェントを追加できませんでした: {details}',
     noAgents: 'このルームにエージェントはいません',

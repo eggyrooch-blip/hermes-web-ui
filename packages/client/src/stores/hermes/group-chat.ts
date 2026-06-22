@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { getActiveProfileName, getApiKey, getStoredUsername } from '@/api/client'
 import { fetchCurrentUser } from '@/api/auth'
 import { getDownloadUrl } from '@/api/hermes/download'
+import { responseErrorMessage } from '@/utils/http-error'
 import type { Attachment, ContentBlock } from './chat'
 import {
     connectGroupChat,
@@ -41,7 +42,7 @@ async function uploadGroupFiles(attachments: Attachment[]): Promise<{ name: stri
         body: formData,
         headers,
     })
-    if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
+    if (!res.ok) throw new Error(await responseErrorMessage(res, 'Upload failed'))
     const data = await res.json() as { files: { name: string; path: string }[] }
     return data.files
 }
@@ -110,6 +111,7 @@ function mergeFinalMessage(existing: ChatMessage | null, msg: ChatMessage): Chat
         reasoning: hasText(msg.reasoning) ? msg.reasoning : existing?.reasoning ?? msg.reasoning ?? null,
         reasoning_content: hasText(msg.reasoning_content) ? msg.reasoning_content : existing?.reasoning_content ?? msg.reasoning_content ?? null,
         isStreaming: false,
+        firstSeenAt: existing?.firstSeenAt ?? msg.firstSeenAt,
         attachments: existing?.attachments || msg.attachments,
     }
 }
@@ -284,7 +286,7 @@ const currentUserAvatar = ref('')
     }
 
     // ─── Computed ───────────────────────────────────────────
-    const sortedMessages = computed(() => mapGroupMessages([...messages.value].sort((a, b) => a.timestamp - b.timestamp)))
+    const sortedMessages = computed(() => mapGroupMessages([...messages.value].sort((a, b) => (a.firstSeenAt ?? a.timestamp) - (b.firstSeenAt ?? b.timestamp))))
 
     const memberNames = computed(() => {
         return members.value.map(m => m.name)
@@ -374,6 +376,7 @@ const currentUserAvatar = ref('')
                 !m.tool_calls?.length
             ))
             msg.isStreaming = true
+            msg.firstSeenAt = msg.firstSeenAt ?? msg.timestamp ?? Date.now()
             const idx = messages.value.findIndex(m => m.id === msg.id)
             if (idx >= 0) {
                 const existing = messages.value[idx]

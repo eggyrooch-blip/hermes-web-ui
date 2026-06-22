@@ -10,6 +10,7 @@ import { useSettingsStore } from './settings'
 import { primeCompletionSound, playCompletionSound } from '@/utils/completion-sound'
 import { showCompletionNotification } from '@/utils/completion-notification'
 import { detectThinkingBoundary } from '@/utils/thinking-parser'
+import { responseErrorMessage } from '@/utils/http-error'
 
 // Re-export ContentBlock for convenience
 export type ContentBlock = ContentBlockImport
@@ -174,7 +175,7 @@ async function uploadFiles(attachments: Attachment[]): Promise<{ name: string; p
     body: formData,
     headers,
   })
-  if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
+  if (!res.ok) throw new Error(await responseErrorMessage(res, 'Upload failed'))
   const data = await res.json() as { files: { name: string; path: string }[] }
   return data.files
 }
@@ -1317,13 +1318,24 @@ export const useChatStore = defineStore('chat', () => {
     const msgs = getSessionMsgs(sessionId)
     const last = msgs[msgs.length - 1]
     if (last?.isStreaming) {
-      updateMessage(sessionId, last.id, {
-        role: 'assistant',
-        content,
-        isStreaming: false,
-        systemType: 'error',
-      })
-      return
+      // If the streaming message already has substantial content (the assistant
+      // produced a meaningful reply before the error), don't overwrite it —
+      // just close the stream and append a separate error message. Only
+      // overwrite when the message is still empty or trivially short, meaning
+      // the run failed before producing useful output.
+      const hasSubstantialContent = (last.content || '').trim().length > 100
+      if (hasSubstantialContent) {
+        updateMessage(sessionId, last.id, { isStreaming: false })
+        // fall through to append a separate error message
+      } else {
+        updateMessage(sessionId, last.id, {
+          role: 'assistant',
+          content,
+          isStreaming: false,
+          systemType: 'error',
+        })
+        return
+      }
     }
     if (last?.role === 'assistant' && last.systemType === 'error' && last.content === content) return
     addMessage(sessionId, {

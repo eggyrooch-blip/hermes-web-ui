@@ -321,6 +321,23 @@ function getSelectableModelGroupsForProfile(profile: string) {
 
 function getDefaultModelForProfile(profile: string) {
   const groups = getSelectableModelGroupsForProfile(profile);
+  const activeProfileName = profilesStore.activeProfileName || "default";
+  const selectedProvider = appStore.selectedProvider || "";
+  const selectedModel = appStore.selectedModel || "";
+  const selectedGroup = selectedProvider
+    ? groups.find((group) => group.provider === selectedProvider)
+    : undefined;
+  const selectedGroupCustomModels = selectedGroup ? appStore.customModels[selectedGroup.provider] || [] : [];
+  if (
+    profile === activeProfileName &&
+    selectedGroup &&
+    (selectedGroup.models.includes(selectedModel) || selectedGroupCustomModels.includes(selectedModel))
+  ) {
+    return {
+      provider: selectedProvider,
+      model: selectedModel,
+    };
+  }
   const profileModels = appStore.profileModelGroups.find(
     (entry) => entry.profile === profile,
   );
