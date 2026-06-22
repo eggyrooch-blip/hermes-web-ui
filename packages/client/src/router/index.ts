@@ -103,6 +103,7 @@ const router = createRouter({
       path: '/hermes/plugins',
       name: 'hermes.plugins',
       component: () => import('@/views/hermes/PluginsView.vue'),
+      meta: { requiresSuperAdmin: true, nonAdminRedirect: 'hermes.connectors' },
     },
     {
       path: '/hermes/memory',
@@ -163,6 +164,7 @@ const router = createRouter({
       path: '/hermes/mcp',
       name: 'hermes.mcp',
       component: () => import('@/views/hermes/McpManagerView.vue'),
+      meta: { requiresSuperAdmin: true, nonAdminRedirect: 'hermes.connectors' },
     },
   ],
 })
@@ -232,6 +234,14 @@ export function freshServerSettingsLandingRedirect(discoveredServerSession: bool
   return null
 }
 
+function nonAdminRedirectTarget(to: { meta: Record<string | number | symbol, unknown> }) {
+  const redirect = to.meta.nonAdminRedirect
+  if (typeof redirect === 'string' && redirect.trim()) {
+    return { name: redirect.trim() }
+  }
+  return { name: 'hermes.chat' }
+}
+
 router.beforeEach(async (to, _from, next) => {
   // Public pages don't need auth
   if (to.meta.public) {
@@ -263,7 +273,7 @@ router.beforeEach(async (to, _from, next) => {
   authNavigationReady.value = true
   if (to.meta.requiresSuperAdmin && !isStoredSuperAdmin()) {
     routeContentReady.value = false
-    next({ name: 'hermes.chat' })
+    next(nonAdminRedirectTarget(to))
     return
   }
 

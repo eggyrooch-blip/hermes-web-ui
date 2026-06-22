@@ -22,6 +22,15 @@ const selectedKey = computed(() => {
   return route.name as string;
 });
 const isSuperAdmin = computed(() => isStoredSuperAdmin());
+const showToolsGroup = computed(() => {
+  return isSuperAdmin.value && (
+    hasRoute('hermes.plugins') ||
+    hasRoute('hermes.mcp') ||
+    hasRoute('hermes.codingAgents') ||
+    hasRoute('hermes.versionPreview') ||
+    hasRoute('hermes.devices')
+  );
+});
 const currentUsername = computed(() => getStoredUsername());
 const currentUser = computed(() => profilesStore.currentUser);
 const displayName = computed(() =>
@@ -228,7 +237,7 @@ onMounted(() => {
       </div>
 
       <!-- Tools -->
-      <div class="nav-group">
+      <div v-if="showToolsGroup" class="nav-group">
         <div class="nav-group-label" @click="toggleGroup('tools')">
           <span>{{ groupLabel("Tools") }}</span>
           <svg class="nav-group-arrow" :class="{ collapsed: isGroupCollapsed('tools') }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -236,14 +245,14 @@ onMounted(() => {
           </svg>
         </div>
         <div v-show="!isGroupCollapsed('tools')" class="nav-group-items">
-          <RouteLinkItem v-if="hasRoute('hermes.plugins')" class="nav-item" :to="{ name: 'hermes.plugins' }" :active="selectedKey === 'hermes.plugins'">
+          <RouteLinkItem v-if="isSuperAdmin && hasRoute('hermes.plugins')" class="nav-item" :to="{ name: 'hermes.plugins' }" :active="selectedKey === 'hermes.plugins'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2.1-2.1a4 4 0 0 1-5.3 5.3l-7.8 7.8a2.1 2.1 0 0 1-3-3l7.8-7.8a4 4 0 0 1 5.3-5.3l-2.1 2.1z" />
               <path d="M5 19l1-1" />
             </svg>
             <span>{{ t("sidebar.plugins") }}</span>
           </RouteLinkItem>
-          <RouteLinkItem v-if="hasRoute('hermes.mcp')" class="nav-item" :to="{ name: 'hermes.mcp' }" :active="selectedKey === 'hermes.mcp'">
+          <RouteLinkItem v-if="isSuperAdmin && hasRoute('hermes.mcp')" class="nav-item" :to="{ name: 'hermes.mcp' }" :active="selectedKey === 'hermes.mcp'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M4 7V4h16v3" />
               <path d="M9 20h6" />

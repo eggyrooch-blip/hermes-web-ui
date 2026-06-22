@@ -14,6 +14,12 @@ vi.mock('@/views/hermes/ChatView.vue', () => ({
 vi.mock('@/views/hermes/SettingsView.vue', () => ({
   default: { template: '<div data-test="settings-view" />' },
 }))
+vi.mock('@/views/hermes/PluginsView.vue', () => ({
+  default: { template: '<div data-test="plugins-view" />' },
+}))
+vi.mock('@/views/hermes/McpManagerView.vue', () => ({
+  default: { template: '<div data-test="mcp-view" />' },
+}))
 
 const fetchMock = vi.hoisted(() => vi.fn())
 
@@ -87,10 +93,12 @@ describe('router route metadata + auth gating', () => {
   it.each([
     'hermes.plugins',
     'hermes.mcp',
-  ])('keeps %s available as an authenticated user tool route', async (routeName) => {
+  ])('gates %s behind super-admin and redirects users to connectors', async (routeName) => {
     const router = (await import('@/router')).default
 
-    expect(router.getRoutes().find(route => route.name === routeName)?.meta.requiresSuperAdmin).toBeUndefined()
+    const route = router.getRoutes().find(route => route.name === routeName)
+    expect(route?.meta.requiresSuperAdmin).toBe(true)
+    expect(route?.meta.nonAdminRedirect).toBe('hermes.connectors')
   })
 
   it('allows an authenticated user onto a protected, non-admin route', async () => {
@@ -238,16 +246,16 @@ describe('router route metadata + auth gating', () => {
   })
 
   it.each([
-    ['/hermes/plugins', 'hermes.plugins'],
-    ['/hermes/mcp', 'hermes.mcp'],
-  ])('lets a non-admin user reach %s', async (path, routeName) => {
+    '/hermes/plugins',
+    '/hermes/mcp',
+  ])('redirects a non-admin user from %s to connectors', async (path) => {
     localStorage.setItem('hermes_api_key', USER_TOKEN)
     const router = (await import('@/router')).default
 
     await router.push(path)
     await router.isReady()
 
-    expect(router.currentRoute.value.name).toBe(routeName)
+    expect(router.currentRoute.value.name).toBe('hermes.connectors')
   })
 
   it.each([
@@ -272,5 +280,18 @@ describe('router route metadata + auth gating', () => {
     await router.isReady()
 
     expect(router.currentRoute.value.name).toBe('hermes.profiles')
+  })
+
+  it.each([
+    ['/hermes/plugins', 'hermes.plugins'],
+    ['/hermes/mcp', 'hermes.mcp'],
+  ])('lets a super-admin reach %s', async (path, routeName) => {
+    localStorage.setItem('hermes_api_key', SUPER_ADMIN_TOKEN)
+    const router = (await import('@/router')).default
+
+    await router.push(path)
+    await router.isReady()
+
+    expect(router.currentRoute.value.name).toBe(routeName)
   })
 })

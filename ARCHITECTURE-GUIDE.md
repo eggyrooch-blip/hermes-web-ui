@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-06-19
+updated: 2026-06-22
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
@@ -14,6 +14,13 @@ related:
 ---
 
 # hermes-web-ui 架构速查 — EKKO fork
+
+> [!info] 2026-06-22 worktree — 普通用户集成入口收口到「连接器」
+> `user-connectors-surface` 尚未合入 main、未 push、未发布生产。前端产品面现在把 `/hermes/connectors` 作为普通用户唯一集成入口，`/hermes/credentials` 继续只是兼容 alias；侧栏普通用户保留 Agent > 连接器，不再显示 Plugins/MCP 所在的工具组。
+>
+> Plugins 与 MCP 改为 super-admin 技术 inventory：普通用户直达 `/#/hermes/plugins` 或 `/#/hermes/mcp` 时由 router guard 重定向到 `hermes.connectors`，不会先渲染 inventory；super-admin 访问 Plugins/MCP、Coding Agents、Devices 等技术入口的行为保持不变。本轮不改变后端 chat-plane API allowlist，既有只读/脱敏/403 仍作为防御层，但不再把 Plugins/MCP 暴露成普通用户产品页。
+>
+> 验证：`tests/client/router-user-mode.test.ts tests/client/sidebar-search.test.ts` 为 44 passed；`npm run build` 完成 OpenAPI generation、`vue-tsc -b`、Vite build、server `tsc` 与 bundle，exit 0。
 
 > [!info] 2026-06-19 main/GitHub — connector broker adapter is flag-gated
 > `connector-webui-broker` shipped to `main@66320eda` as a thin WebUI adapter
@@ -57,9 +64,9 @@ related:
 >
 > App startup 不能再把 `app.mount('#app')` 阻塞在 `router.isReady()` 后，否则 fresh Feishu cookie 首屏会被 ChatView/Monaco 大 chunk 卡在空白 `.boot-fallback`。当前边界是：先 mount shell；router 用 `authNavigationReady` 表示可显示安全企业 chrome，用 `routeContentReady` 表示可显示 route content。普通用户 direct 到 super-admin route 时可以先看到安全 chrome，但 router-view 必须隐藏到安全 chat redirect 完成；未登录 direct 到受保护 route 时不能在跳 Feishu 登录前渲染受保护 chrome/content。
 >
-> 连接器页沿用旧 Credentials 能力并更名为「连接器」：路由为 `/hermes/connectors`，保留 `/hermes/credentials` alias；底层 API 仍是 `/api/auth/skill-credentials*`。`lark-cli` 授权通过 multitenancy Run Broker UAT/session endpoint，`bind-token` 只转发给 Run Broker 按 profile 存储，WebUI 不落 token。`lark-cli`、`keep-record`、`kep-cli` 是企业内部核心连接器，前端分组保持在 Internal systems；GitLab 等其它凭证留在 Other credentials。Skills 页面和 profile-local skill editor 不能在跨版本时丢掉：`PUT /api/hermes/skills/file` 只允许当前 request profile 下真实本地 skill 文件写入，external dirs、hub/builtin、托管 symlink 和 symlink 子目录逃逸都只读；普通员工不能加载 upstream skill recommendation Markdown 或外部推荐链接面板，避免把外部 skill 市场/推广面带进企业员工态。Plugins 与 MCP inventory 属于工具可见性，普通员工可以只读查看；插件 path/CLI/metadata/requiresEnv/warnings、MCP raw_config command/env/headers/error、MCP tools schema、MCP add/edit/remove/reload/test/toggle/tools visibility 等 host 操作或 host-sensitive 字段必须 super-admin-only。`/api/hermes/plugins`、`/api/hermes/mcp/servers` 在 chat-plane 下只读放行，`/api/hermes/mcp/tools` 与 MCP mutation 继续 403。MCP 列表接口若 bridge 慢于短超时，可先返回 profile `config.yaml` 的静态快照，避免员工页面长时间空白 spinner；前端只对 `partial=true` 的安全只读列表做一次延迟刷新，后端晚到的 live bridge 结果进入短缓存后可展示真实 tool tags，不触发 reload/test/tools schema 或任何 host mutation。普通员工不对 disconnected MCP 自动指数重试。聊天斜杠命令里的 `/reload-mcp` 属于 host maintenance，普通员工不显示，chat-plane 后端即使收到也拒绝执行。
+> 连接器页沿用旧 Credentials 能力并更名为「连接器」：路由为 `/hermes/connectors`，保留 `/hermes/credentials` alias；底层 API 仍是 `/api/auth/skill-credentials*`。`lark-cli` 授权通过 multitenancy Run Broker UAT/session endpoint，`bind-token` 只转发给 Run Broker 按 profile 存储，WebUI 不落 token。`lark-cli`、`keep-record`、`kep-cli` 是企业内部核心连接器，前端分组保持在 Internal systems；GitLab 等其它凭证留在 Other credentials。Skills 页面和 profile-local skill editor 不能在跨版本时丢掉：`PUT /api/hermes/skills/file` 只允许当前 request profile 下真实本地 skill 文件写入，external dirs、hub/builtin、托管 symlink 和 symlink 子目录逃逸都只读；普通员工不能加载 upstream skill recommendation Markdown 或外部推荐链接面板，避免把外部 skill 市场/推广面带进企业员工态。Plugins 与 MCP inventory 属于 super-admin 技术面，不再作为普通员工产品页暴露；普通员工侧栏只保留连接器，直达 `/hermes/plugins` 或 `/hermes/mcp` 会回到 `/hermes/connectors`。插件 path/CLI/metadata/requiresEnv/warnings、MCP raw_config command/env/headers/error、MCP tools schema、MCP add/edit/remove/reload/test/toggle/tools visibility 等 host 操作或 host-sensitive 字段必须 super-admin-only。后端 chat-plane 只读/脱敏/403 边界仍保留为防御层：`/api/hermes/plugins`、`/api/hermes/mcp/servers` 可保持只读放行，`/api/hermes/mcp/tools` 与 MCP mutation 继续 403。聊天斜杠命令里的 `/reload-mcp` 属于 host maintenance，普通员工不显示，chat-plane 后端即使收到也拒绝执行。
 >
-> 本机验收证据：`/health` 在 Feishu/chat-plane 下不返回 `webui_latest` / `webui_update_available`；`/api/auth/me` 返回普通员工 Feishu 昵称、头像、profile；`/api/hermes/available-models` 的默认模型来自 router/global aggregate（当前为 `custom:litellm-sre/tencent-sonnet-4-6`），聊天模型按钮不再显示 `—`；`/api/hermes/plugins` 普通员工只读可见且无 path/metadata 泄露；`/api/hermes/mcp/servers` 首屏约 1.2s 可返回静态 partial，随后 live 缓存返回 16 个 tool tags；`/api/hermes/mcp/tools` 与 MCP reload 对普通员工 403。Playwright DOM smoke 覆盖聊天页无升级/版本/重启/语言切换推广、Feishu 头像渲染、Tools 无 mutation 控件且 console error 为 0；profile/session focused tests 覆盖 frontend profile 默认 session filter、route profile query、侧栏 session link/query、旧 tab title mock、聊天侧栏从 `feishu_g41a5b5g` active session 切到 `123` 时同步 `profilesStore.switchProfile()` 并清空旧会话，以及 chat-plane 显式 `?profile=123` 不再回退到 `feishu_g41a5b5g` 的服务端回归。2026-06-18 本机 full `bun run test` 268 files / 1961 passed / 2 skipped，ftask TEST gate passed，focused capture 11 files / 146 tests passed，`pnpm run build` passed；live API smoke 显示 `profile=123` 返回 0 条且不含 `feishu_g41a5b5g`，`profile=feishu_g41a5b5g` 才返回 `hello`；Playwright profile-switch smoke 打开 `hello` 后切到 `123`，URL 回到 `#/hermes/chat`、下拉显示 `123`、侧栏无 `feishu_g41a5b5g` 行、console error 0。
+> 本机验收证据：`/health` 在 Feishu/chat-plane 下不返回 `webui_latest` / `webui_update_available`；`/api/auth/me` 返回普通员工 Feishu 昵称、头像、profile；`/api/hermes/available-models` 的默认模型来自 router/global aggregate（当前为 `custom:litellm-sre/tencent-sonnet-4-6`），聊天模型按钮不再显示 `—`；2026-06-22 worktree 后普通用户不再进入 Plugins/MCP 页面，直达 `/hermes/plugins`/`/hermes/mcp` 回到连接器，后端 `/api/hermes/mcp/tools` 与 MCP reload 对普通员工仍 403。Playwright DOM smoke 覆盖聊天页无升级/版本/重启/语言切换推广、Feishu 头像渲染、Tools 技术组不可见且 console error 为 0；profile/session focused tests 覆盖 frontend profile 默认 session filter、route profile query、侧栏 session link/query、旧 tab title mock、聊天侧栏从 `feishu_g41a5b5g` active session 切到 `123` 时同步 `profilesStore.switchProfile()` 并清空旧会话，以及 chat-plane 显式 `?profile=123` 不再回退到 `feishu_g41a5b5g` 的服务端回归。2026-06-18 本机 full `bun run test` 268 files / 1961 passed / 2 skipped，ftask TEST gate passed，focused capture 11 files / 146 tests passed，`pnpm run build` passed；live API smoke 显示 `profile=123` 返回 0 条且不含 `feishu_g41a5b5g`，`profile=feishu_g41a5b5g` 才返回 `hello`；Playwright profile-switch smoke 打开 `hello` 后切到 `123`，URL 回到 `#/hermes/chat`、下拉显示 `123`、侧栏无 `feishu_g41a5b5g` 行、console error 0。
 >
 > 下次跨版本更新前先对照 `docs/plans/2026-06-17-enterprise-upstream-rebaseline-checklist.md`，再吸收 upstream UI/route 变更。
 

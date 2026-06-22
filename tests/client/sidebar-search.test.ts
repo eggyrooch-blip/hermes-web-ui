@@ -173,8 +173,8 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.text()).not.toContain('sidebar.logs')
     expect(wrapper.text()).not.toContain('sidebar.devices')
     expect(wrapper.text()).not.toContain('sidebar.models')
-    expect(wrapper.text()).toContain('sidebar.mcp')
-    expect(wrapper.text()).toContain('sidebar.plugins')
+    expect(wrapper.text()).not.toContain('sidebar.mcp')
+    expect(wrapper.text()).not.toContain('sidebar.plugins')
     expect(wrapper.text()).not.toContain('sidebar.codingAgents')
     expect(wrapper.text()).toContain('sidebar.connectors')
     expect(wrapper.find('.status-indicator').exists()).toBe(false)
@@ -206,9 +206,31 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.text()).not.toContain('sidebar.logs')
     expect(wrapper.text()).not.toContain('sidebar.devices')
     expect(wrapper.text()).not.toContain('sidebar.models')
-    expect(wrapper.text()).toContain('sidebar.mcp')
-    expect(wrapper.text()).toContain('sidebar.plugins')
+    expect(wrapper.text()).not.toContain('sidebar.mcp')
+    expect(wrapper.text()).not.toContain('sidebar.plugins')
     expect(wrapper.text()).not.toContain('sidebar.codingAgents')
+    expect(wrapper.text()).toContain('sidebar.connectors')
+  })
+
+  it('keeps plugin and MCP technical nav available for super-admins', () => {
+    localStorage.setItem('hermes_api_key', makeToken({ username: 'sunke', role: 'super_admin' }))
+
+    const wrapper = mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+          NButton: true,
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('sidebar.plugins')
+    expect(wrapper.text()).toContain('sidebar.mcp')
+    expect(wrapper.text()).toContain('sidebar.codingAgents')
+    expect(wrapper.text()).toContain('sidebar.devices')
     expect(wrapper.text()).toContain('sidebar.connectors')
   })
 
@@ -325,7 +347,6 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.findAll('.nav-group-label span').map(node => node.text())).toEqual([
       'sidebar.groupAgentShort',
       'sidebar.groupMonitoringShort',
-      'sidebar.groupToolsShort',
       'sidebar.groupSystemShort',
     ])
 
