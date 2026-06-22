@@ -18,7 +18,7 @@ related:
 > [!info] 2026-06-22 worktree — 普通用户集成入口收口到「连接器」
 > `user-connectors-surface` 尚未合入 main、未 push、未发布生产。前端产品面现在把 `/hermes/connectors` 作为普通用户唯一集成入口，`/hermes/credentials` 继续只是兼容 alias；侧栏普通用户保留 Agent > 连接器，不再显示 Plugins/MCP 所在的工具组。
 >
-> Plugins 与 MCP 改为 super-admin 技术 inventory：普通用户直达 `/#/hermes/plugins` 或 `/#/hermes/mcp` 时由 router guard 重定向到 `hermes.connectors`，不会先渲染 inventory；super-admin 访问 Plugins/MCP、Coding Agents、Devices 等技术入口的行为保持不变。本轮不改变后端 chat-plane API allowlist，既有只读/脱敏/403 仍作为防御层，但不再把 Plugins/MCP 暴露成普通用户产品页。
+> Plugins 与 MCP 改为 super-admin 技术 inventory：普通用户直达 `/#/hermes/plugins` 或 `/#/hermes/mcp` 时由 router guard 重定向到 `hermes.connectors`，不会先渲染 inventory；super-admin 访问 Plugins/MCP、Coding Agents、Devices 等技术入口的行为保持不变。侧栏底部的语言/主题快捷切换也只给 super-admin，避免普通用户看到 Comic/Dark 这类维护型外观按钮。本轮不改变后端 chat-plane API allowlist，既有只读/脱敏/403 仍作为防御层，但不再把 Plugins/MCP 暴露成普通用户产品页。
 >
 > 验证：`tests/client/router-user-mode.test.ts tests/client/sidebar-search.test.ts` 为 44 passed；`npm run build` 完成 OpenAPI generation、`vue-tsc -b`、Vite build、server `tsc` 与 bundle，exit 0。
 

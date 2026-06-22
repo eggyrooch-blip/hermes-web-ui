@@ -361,7 +361,7 @@ onMounted(() => {
       </button>
       <div class="status-row">
         <LanguageSwitch v-if="isSuperAdmin" />
-        <ThemeSwitch />
+        <ThemeSwitch v-if="isSuperAdmin" />
       </div>
     </div>
 

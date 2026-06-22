@@ -177,6 +177,7 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.text()).not.toContain('sidebar.plugins')
     expect(wrapper.text()).not.toContain('sidebar.codingAgents')
     expect(wrapper.text()).toContain('sidebar.connectors')
+    expect(wrapper.findComponent({ name: 'ThemeSwitch' }).exists()).toBe(false)
     expect(wrapper.find('.status-indicator').exists()).toBe(false)
     expect(wrapper.find('.version-info').exists()).toBe(false)
     expect(wrapper.find('.update-btn').exists()).toBe(false)
@@ -210,6 +211,7 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.text()).not.toContain('sidebar.plugins')
     expect(wrapper.text()).not.toContain('sidebar.codingAgents')
     expect(wrapper.text()).toContain('sidebar.connectors')
+    expect(wrapper.findComponent({ name: 'ThemeSwitch' }).exists()).toBe(false)
   })
 
   it('keeps plugin and MCP technical nav available for super-admins', () => {
@@ -232,6 +234,7 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.text()).toContain('sidebar.codingAgents')
     expect(wrapper.text()).toContain('sidebar.devices')
     expect(wrapper.text()).toContain('sidebar.connectors')
+    expect(wrapper.findComponent({ name: 'ThemeSwitch' }).exists()).toBe(true)
   })
 
   it('renders the Feishu authenticated user card with the Feishu avatar', () => {
