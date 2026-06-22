@@ -50,3 +50,13 @@ CLAUDE.md
 # Client source map artifacts
 packages/client/src/**/*.js
 .hermes/
+.ace-tool/
+.claude/
+.omc/
+.playwright-cli/
+.tmp/
+Plans/
+
+# ftask: per-slug runtime files (env + sim artifacts) — never committed
+.ftask/*/.env
+.ftask/*/sim_artifacts/

@@ -572,11 +572,13 @@ Test files live in `tests/client/` and `tests/server/`. Configuration is in root
 # Agent rules — hermes-web-ui (managed by ftask)
 
 - This repo is part of sunke's agent-OS. Agents NEVER run git directly here — use `bun ~/.claude/PAI/TOOLS/ftask.ts`.
-- Base branch: `main`. Feature work happens in a `ftask new <slug>` worktree, never on `main` directly.
-- Test gate: `ftask ship` runs `bun run test` (auto-detected) in the rebased worktree and BLOCKS the merge if it fails.
+- Base branch: `main`. WORKTREE MODE: the main checkout stays PERMANENTLY on `main` — it is sunke's verification environment, NEVER switch its branch or write to it. `ftask new <slug>` gives each task its own worktree at `hermes-web-ui.tasks/<slug>`; do ALL work there. Parallel agents = parallel worktrees, zero contention.
+- Test gate: `ftask ship` runs `bun run test` (auto-detected) in the rebased tree and BLOCKS the merge if it fails.
+- Ship semantics: `ftask ship` merges into `main` then STOPS — sunke verifies in his local environment on `main` (worktree mode: the main checkout already shows the merge, zero switching); only after his OK run `ftask postship <slug> --finalize` (push + remove worktree + delete branch). NOT OK → `ftask revert <slug>`.
+- Code questions (where is X / who calls X / what breaks if I change X): this repo has a `.codegraph/` index — use the `codegraph_*` MCP tools (explore/callers/callees/impact) FIRST instead of grep/Read sweeps; cross-repo queries take a `projectPath` arg. Human-readable architecture map: vault `AgentOS/<repo>/GRAPH.md`.
 - When you fix a bug found while troubleshooting (a 排障), add a regression test that FAILS without the fix BEFORE `ftask ship`, and record the root cause as one line under "Known gotchas" below.
 - Global protocol: `~/.claude/CLAUDE.md` (Claude) and `~/.codex/AGENTS.md` (Codex) — "AGENT-OS" section. User cheatsheet: `~/code/AGENT-OS.md`.
 
 ## Known gotchas
-- WebUI MarkdownRenderer used plain markdown-it without a math renderer, so `$...$` / `$$...$$` LaTeX in research answers displayed raw until KaTeX support was added.
+- (root causes from 排障 sessions accrue here so the same bug is never debugged twice)
 <!-- /ftask:managed -->
