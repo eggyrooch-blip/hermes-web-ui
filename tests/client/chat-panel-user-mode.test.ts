@@ -247,7 +247,10 @@ describe('ChatPanel user-mode gateway state', () => {
     routerReplaceMock.mockClear()
     routerResolveMock.mockClear()
     vi.clearAllMocks()
+    chatStoreMock.newChat.mockReturnValue({ id: 'new-session', profile: 'user_a' })
     chatStoreMock.loadSessions.mockResolvedValue(undefined)
+    appStoreMock.loadModels.mockResolvedValue(undefined)
+    profilesStoreMock.fetchProfiles.mockResolvedValue(undefined)
     profilesStoreMock.switchProfile.mockResolvedValue(true)
     localStorage.clear()
     window.matchMedia = vi.fn().mockReturnValue({
@@ -407,7 +410,7 @@ describe('ChatPanel user-mode gateway state', () => {
     expect(routerReplaceMock).toHaveBeenCalledWith({ name: 'hermes.chat' })
   })
 
-  it('does not offer coding-agent sessions to non-admin users', async () => {
+  it('creates ordinary user chats directly on the active profile without the advanced drawer', async () => {
     profilesStoreMock.profiles = [{ name: 'user_a' }]
     appStoreMock.profileModelGroups = [{
       profile: 'user_a',
@@ -425,8 +428,21 @@ describe('ChatPanel user-mode gateway state', () => {
     })
 
     await wrapper.get('.page-sidebar-nav-stub').trigger('click')
+    await flushPromises()
 
-    expect(wrapper.text()).toContain('Hermes')
+    expect(chatStoreMock.newChat).toHaveBeenCalledWith(expect.objectContaining({
+      profile: 'user_a',
+      provider: 'openai',
+      model: 'gpt-4.1',
+      source: 'cli',
+      agent: 'hermes',
+      workspace: null,
+    }))
+    expect(routerPushMock).toHaveBeenCalledWith(expect.objectContaining({
+      params: { sessionId: 'new-session' },
+      query: { profile: 'user_a' },
+    }))
+    expect(wrapper.find('.folder-picker-stub').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('Claude Code')
     expect(wrapper.text()).not.toContain('Codex')
     expect(wrapper.text()).not.toContain('codingAgents.launchModeScope')
@@ -434,6 +450,7 @@ describe('ChatPanel user-mode gateway state', () => {
   })
 
   it('does not pair a custom selected model with an unrelated fallback provider for new chats', async () => {
+    isStoredSuperAdminMock.mockReturnValue(true)
     profilesStoreMock.profiles = [{ name: 'user_a' }]
     appStoreMock.modelGroups = [{
       provider: 'anthropic',

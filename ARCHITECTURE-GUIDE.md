@@ -18,9 +18,9 @@ related:
 > [!info] 2026-06-22 本机 main 已合入并重启 — 普通用户集成入口收口到「连接器」
 > `user-connectors-surface` 已通过 ftask ship 合入本机 `main`，并重建/重启 `com.hermes.ekko-webui` 到 `127.0.0.1:8648`；仍未 push/finalize、未发布生产，等待本机验证。前端产品面现在把 `/hermes/connectors` 作为普通用户唯一集成入口，`/hermes/credentials` 继续只是兼容 alias；侧栏普通用户保留 Agent > 连接器，不再显示 Plugins/MCP 所在的工具组。
 >
-> Plugins 与 MCP 改为 super-admin 技术 inventory：普通用户直达 `/#/hermes/plugins` 或 `/#/hermes/mcp` 时由 router guard 重定向到 `hermes.connectors`，不会先渲染 inventory；super-admin 访问 Plugins/MCP、Coding Agents、Devices 等技术入口的行为保持不变。侧栏底部的语言/主题快捷切换也只给 super-admin，避免普通用户看到 Comic/Dark 这类维护型外观按钮。本轮不改变后端 chat-plane API allowlist，既有只读/脱敏/403 仍作为防御层，但不再把 Plugins/MCP 暴露成普通用户产品页。
+> Plugins 与 MCP 改为 super-admin 技术 inventory：普通用户直达 `/#/hermes/plugins` 或 `/#/hermes/mcp` 时由 router guard 重定向到 `hermes.connectors`，不会先渲染 inventory；super-admin 访问 Plugins/MCP、Coding Agents、Devices 等技术入口的行为保持不变。侧栏底部的语言/主题快捷切换也只给 super-admin，避免普通用户看到 Comic/Dark 这类维护型外观按钮。普通用户点击 New Chat/新建会话直接创建当前授权 profile 的 Hermes 会话，不再打开 Agent/User/Provider/模型/Workspace 高级 drawer，也不触发 host workspace folder API；super-admin 仍保留该高级 drawer。本轮不改变后端 chat-plane API allowlist，既有只读/脱敏/403 仍作为防御层，但不再把 Plugins/MCP 暴露成普通用户产品页。
 >
-> 验证：`tests/client/router-user-mode.test.ts tests/client/sidebar-search.test.ts` 为 44 passed；Playwright `tests/e2e/user-connectors-surface.spec.ts` 为 2 passed；`npm run build` 完成 OpenAPI generation、`vue-tsc -b`、Vite build、server `tsc` 与 bundle，exit 0；ftask TEST/LEAK/GRAPH/MERGE gates passed；`127.0.0.1:8648/health` OK。
+> 验证：`tests/client/chat-panel-user-mode.test.ts tests/client/router-user-mode.test.ts tests/client/sidebar-search.test.ts` 为 53 passed；Playwright `tests/e2e/user-connectors-surface.spec.ts` 为 3 passed；`npm run build` 完成 OpenAPI generation、`vue-tsc -b`、Vite build、server `tsc` 与 bundle，exit 0；ftask TEST/LEAK/GRAPH/MERGE gates passed；`127.0.0.1:8648/health` OK。
 
 > [!info] 2026-06-19 main/GitHub — connector broker adapter is flag-gated
 > `connector-webui-broker` shipped to `main@66320eda` as a thin WebUI adapter
@@ -54,7 +54,7 @@ related:
 > [!info] 2026-06-18 本机已验证 — upstream rebaseline 后企业入口收口
 > `sidebar-enterprise-chrome` 已在本机合入 main；运行代码变更截止 `d999692b`（继 `3275161e` 服务端显式 profile 过滤后，`1cda2536` 把聊天侧栏 profile 下拉改成同步 frontend active profile 的真实切换器，`d999692b` 稳定全量 Vitest gate），并已重建、重启本机 launchd `com.hermes.ekko-webui` 的 `dist/server/index.js`；生产尚未发布，GitHub 尚未 push/finalize。边界是 WebUI 适配层，不改 Hermes Agent，不把员工运维/升级入口暴露到普通用户。
 >
-> 员工侧栏必须隐藏 upstream 自助升级/版本推广 UI：`升级版本 v...`、`Studio v...`、版本管理、更新日志、GitHub/Website/API Relay 外链都不能从 `AppSidebar` 或聊天 `PageSidebarNav` 渲染。普通用户也不能看到或直达日志、频道、设备、模型 provider 管理、Coding Agents 本机安装/配置面；这些路由都要 `requiresSuperAdmin`，侧栏用同一角色判断隐藏。聊天里的模型选择器是使用面，保留；`ModelsView` 是 provider/cache 管理面，收回。模型选择器读取 `/api/hermes/available-models` 的 aggregate/router 默认值和全局 `modelGroups`，不要再按浏览器 active profile 选单独 profile 的模型源。Chat 新建会话里的 Claude Code/Codex 入口同属本机 coding-agent 维护/执行面，普通员工只保留 Hermes。
+> 员工侧栏必须隐藏 upstream 自助升级/版本推广 UI：`升级版本 v...`、`Studio v...`、版本管理、更新日志、GitHub/Website/API Relay 外链都不能从 `AppSidebar` 或聊天 `PageSidebarNav` 渲染。普通用户也不能看到或直达日志、频道、设备、模型 provider 管理、Coding Agents 本机安装/配置面；这些路由都要 `requiresSuperAdmin`，侧栏用同一角色判断隐藏。聊天里的模型选择器是使用面，保留；`ModelsView` 是 provider/cache 管理面，收回。模型选择器读取 `/api/hermes/available-models` 的 aggregate/router 默认值和全局 `modelGroups`，不要再按浏览器 active profile 选单独 profile 的模型源。Chat 新建会话里的 Claude Code/Codex 入口同属本机 coding-agent 维护/执行面，普通员工只保留 Hermes；普通员工 New Chat 是一键 profile-scoped Hermes 会话，不挂载 workspace folder picker。
 >
 > Settings 的普通用户面只保留 `display`、`session`、`privacy`。`account`、`users`、`agent`、`memory`、`compression`、`models`、`voice` 都属于运维/全局配置面，必须 super-admin-only；尤其不能让 Feishu 员工改 WebUI username/password、锁定 IP、gateway 自动启动、agent/provider/voice 配置。服务端必须和 UI 同步收口：chat-plane 即使开启 `HERMES_CHAT_PLANE_ALLOW_SETTINGS=1`，`/api/hermes/config` 也只能读写 `display`、`session_reset`、`privacy`，`agent`、`memory`、`approvals` 等隐藏段直接 403。
 >

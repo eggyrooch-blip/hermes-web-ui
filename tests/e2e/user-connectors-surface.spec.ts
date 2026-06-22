@@ -28,6 +28,25 @@ test('ordinary users only see connectors and no technical sidebar controls', asy
   await expect(page).toHaveURL(/#\/hermes\/connectors$/)
 })
 
+test('ordinary users create chats without the advanced agent and workspace drawer', async ({ page }) => {
+  await authenticate(page, USER_ACCESS_KEY, 'research')
+  const api = await mockHermesApi(page)
+
+  await page.goto('/#/hermes/chat')
+  await page
+    .locator('.page-sidebar-nav .page-sidebar-tab')
+    .filter({ hasText: 'New Chat' })
+    .click()
+
+  await expect(page).toHaveURL(/#\/hermes\/session\/[^?]+\?profile=research$/)
+  await expect(page.locator('.new-chat-drawer')).toHaveCount(0)
+  await expect(page.locator('.n-drawer-body-content-wrapper')).toHaveCount(0)
+  await expect(page.getByText('You do not have permission')).toHaveCount(0)
+  await expect(page.getByText('你没有权限访问该资源')).toHaveCount(0)
+  expect(api.requests.some((request) => request.pathname === '/api/hermes/workspace/folders')).toBe(false)
+  expect(api.unexpectedRequests).toEqual([])
+})
+
 test('super-admins keep access to technical inventory and sidebar controls', async ({ page }) => {
   await authenticate(page, TEST_ACCESS_KEY, 'research')
   await mockHermesApi(page)

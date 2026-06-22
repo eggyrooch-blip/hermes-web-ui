@@ -455,27 +455,94 @@ watch(isSuperAdmin, (canUseHostAgents) => {
   }
 }, { immediate: true });
 
-async function openNewChatModal() {
+function resetNewChatInteractionState() {
   isBatchMode.value = false;
   selectedSessionKeys.value.clear();
   showBatchDeleteConfirm.value = false;
+}
+
+function resolveDefaultNewChatProfile() {
+  const profileNames = new Set(profilesStore.profiles.map((profile) => profile.name));
+  const activeName = profilesStore.activeProfileName || "";
+  if (activeName && (profileNames.size === 0 || profileNames.has(activeName))) return activeName;
+  return (
+    profilesStore.profiles.find((profile) => profile.active)?.name ||
+    profilesStore.currentUser?.profile ||
+    profilesStore.profiles[0]?.name ||
+    "default"
+  );
+}
+
+async function ensureNewChatDefaultsLoaded() {
+  if (profilesStore.profiles.length === 0) await profilesStore.fetchProfiles();
+  if (appStore.modelGroups.length === 0 && appStore.profileModelGroups.length === 0) {
+    await appStore.loadModels();
+  }
+}
+
+async function createNewChatSession(options: {
+  profile?: string;
+  provider?: string;
+  model?: string;
+  source?: "api_server" | "cli" | "coding_agent" | "global_agent";
+  agent?: "hermes" | "claude" | "codex";
+  codingAgentId?: "claude-code" | "codex";
+  codingAgentMode?: "global" | "scoped";
+  workspace?: string | null;
+  baseUrl?: string;
+  apiKey?: string;
+  apiMode?: "chat_completions" | "codex_responses" | "anthropic_messages";
+}) {
+  const session = chatStore.newChat(options);
+  const profile = session.profile || options.profile;
+  await router.push({
+    name: chatStore.runtimeMode === "global_agent" ? "hermes.globalAgentSession" : "hermes.session",
+    params: { sessionId: session.id },
+    query: profile ? { profile } : undefined,
+  });
+  return session;
+}
+
+async function createDefaultUserChat() {
+  resetNewChatInteractionState();
+  newChatLoading.value = true;
+  try {
+    await ensureNewChatDefaultsLoaded();
+    const profile = resolveDefaultNewChatProfile();
+    const defaults = getDefaultModelForProfile(profile);
+    await createNewChatSession({
+      profile,
+      provider: defaults.provider || undefined,
+      model: defaults.model || undefined,
+      source: "cli",
+      agent: "hermes",
+      workspace: null,
+    });
+  } finally {
+    newChatLoading.value = false;
+  }
+}
+
+async function openNewChatModal() {
+  resetNewChatInteractionState();
   showNewChatModal.value = true;
   newChatLoading.value = true;
   try {
-    if (profilesStore.profiles.length === 0) await profilesStore.fetchProfiles();
-    if (appStore.modelGroups.length === 0 && appStore.profileModelGroups.length === 0) {
-      await appStore.loadModels();
-    }
+    await ensureNewChatDefaultsLoaded();
     newChatWorkspace.value = "";
-    newChatProfile.value =
-      profilesStore.activeProfileName ||
-      profilesStore.profiles.find((profile) => profile.active)?.name ||
-      profilesStore.profiles[0]?.name ||
-      "default";
+    newChatProfile.value = resolveDefaultNewChatProfile();
     syncNewChatModelSelection();
   } finally {
     newChatLoading.value = false;
   }
+}
+
+async function handleNewChatPrimary() {
+  if (isSuperAdmin.value) {
+    await openNewChatModal();
+    return;
+  }
+  await createDefaultUserChat();
 }
 
 function handleNewChatProfileChange(value: string) {
@@ -521,7 +588,7 @@ async function confirmNewChat() {
     : newChatAgent.value === "claude-code"
       ? "claude"
       : "hermes";
-  const session = chatStore.newChat({
+  await createNewChatSession({
     profile: newChatProfile.value,
     provider: isGlobalCodingAgent ? undefined : newChatProvider.value,
     model: isGlobalCodingAgent ? undefined : newChatModel.value,
@@ -533,11 +600,6 @@ async function confirmNewChat() {
     baseUrl: source === "coding_agent" && !isGlobalCodingAgent ? group?.base_url || newChatBaseUrl.value.trim() || undefined : undefined,
     apiKey: source === "coding_agent" && !isGlobalCodingAgent ? group?.api_key || newChatApiKey.value.trim() || undefined : undefined,
     apiMode: source === "coding_agent" && !isGlobalCodingAgent ? newChatApiMode.value : undefined,
-  });
-  await router.push({
-    name: chatStore.runtimeMode === "global_agent" ? "hermes.globalAgentSession" : "hermes.session",
-    params: { sessionId: session.id },
-    query: session.profile ? { profile: session.profile } : undefined,
   });
   showNewChatModal.value = false;
 }
@@ -917,7 +979,7 @@ async function openSessionModelModal(sessionId: string) {
 function handleHeaderModelClick() {
   const sessionId = chatStore.activeSession?.id;
   if (!sessionId) {
-    openNewChatModal();
+    void handleNewChatPrimary();
     return;
   }
   if (isActiveSessionCodingAgent.value) return;
@@ -983,7 +1045,7 @@ async function handleSessionModelCustomSubmit() {
         <PageSidebarNav
           :active="chatStore.runtimeMode === 'global_agent' ? 'global' : 'chat'"
           :primary-label="t('chat.newChat')"
-          @primary="openNewChatModal"
+          @primary="handleNewChatPrimary"
         />
         <div class="session-list-toolbar">
           <NSelect
