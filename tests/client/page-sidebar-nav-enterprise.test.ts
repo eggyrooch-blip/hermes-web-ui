@@ -42,6 +42,26 @@ describe('PageSidebarNav enterprise chrome', () => {
     expect(wrapper.text()).not.toContain('sidebar.apiRelay')
   })
 
+  it('renders the local Hermes logo above the new chat action', async () => {
+    const wrapper = mount(PageSidebarNav, {
+      props: {
+        active: 'chat',
+        primaryLabel: 'chat.newChat',
+      },
+    })
+
+    const logo = wrapper.find('.page-sidebar-logo')
+    expect(logo.exists()).toBe(true)
+    expect(logo.text()).toContain('Hermes')
+    expect(logo.find('img').attributes('src')).toBe('/logo.png')
+    expect(logo.find('img').attributes('alt')).toBe('Hermes')
+    expect(wrapper.find('.page-sidebar-tabs').element.firstElementChild).toBe(logo.element)
+
+    await logo.trigger('click')
+
+    expect(pushMock).toHaveBeenCalledWith({ name: 'hermes.chat' })
+  })
+
   it('shows expert and automation directly in the home page sidebar before history', () => {
     const wrapper = mount(PageSidebarNav, {
       props: {

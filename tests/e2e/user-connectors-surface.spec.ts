@@ -80,6 +80,20 @@ test('ordinary users open expert and automation directly from the home sidebar',
 
   const pageSidebar = page.locator('.page-sidebar-nav')
   await expect(pageSidebar).toBeVisible()
+  const homeLogoLink = pageSidebar.locator('.page-sidebar-logo')
+  await expect(homeLogoLink).toBeVisible()
+  await expect(homeLogoLink).toContainText('Hermes')
+  await expect(homeLogoLink.locator('img')).toHaveAttribute('src', '/logo.png')
+
+  const navLabels = await pageSidebar.evaluate(element =>
+    Array.from(element.querySelectorAll('.page-sidebar-tabs > *')).map(node => ({
+      className: node.className,
+      text: node.textContent?.trim() || '',
+    })),
+  )
+  expect(navLabels[0]).toEqual(expect.objectContaining({ text: 'Hermes' }))
+  expect(navLabels[1]).toEqual(expect.objectContaining({ text: 'New Chat' }))
+
   const sidebarBottom = page.locator('.page-sidebar-bottom')
   await expect(sidebarBottom.locator('.sidebar-user')).toBeVisible()
   await expect(sidebarBottom.locator('.page-sidebar-menu-btn')).toHaveCount(0)

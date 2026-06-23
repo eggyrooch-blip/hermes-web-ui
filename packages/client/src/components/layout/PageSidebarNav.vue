@@ -31,6 +31,10 @@ function openChat() {
   void router.push({ name: 'hermes.chat' })
 }
 
+function openBrandChat() {
+  void router.push({ name: 'hermes.chat' })
+}
+
 function openHistory() {
   if (props.active === 'history') {
     void router.push({ name: 'hermes.chat' })
@@ -57,6 +61,10 @@ function openGroupChat() {
 <template>
   <div class="page-sidebar-nav">
     <div class="page-sidebar-tabs" role="tablist" aria-label="Chat actions">
+      <button class="page-sidebar-logo" type="button" @click="openBrandChat">
+        <img :src="'/logo.png'" alt="Hermes" draggable="false">
+        <span>Hermes</span>
+      </button>
       <button
         class="page-sidebar-tab"
         type="button"
@@ -208,6 +216,48 @@ function openGroupChat() {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.page-sidebar-logo {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  margin-bottom: 6px;
+  border: none;
+  border-radius: $radius-sm;
+  background: transparent;
+  color: $text-primary;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
+  transition:
+    background-color $transition-fast,
+    color $transition-fast;
+
+  &:hover {
+    background: rgba(var(--accent-primary-rgb), 0.06);
+  }
+
+  img {
+    width: 24px;
+    height: 24px;
+    flex: 0 0 24px;
+    border-radius: 6px;
+    object-fit: contain;
+  }
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 .page-sidebar-tab {
