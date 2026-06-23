@@ -51,4 +51,23 @@ describe('ProfileAvatar', () => {
     expect(wrapper.find('img.profile-avatar-image').attributes('src')).toBe('https://example.com/group-avatar.png')
     expect(wrapper.find('.profile-avatar-svg').exists()).toBe(false)
   })
+
+  it('falls back to the generated avatar when a URL-backed image fails to load', async () => {
+    const ProfileAvatar = (await import('@/components/hermes/profiles/ProfileAvatar.vue')).default
+
+    const wrapper = mount(ProfileAvatar, {
+      props: {
+        name: 'feishu_group_a',
+        avatar: {
+          type: 'url',
+          url: 'https://example.com/expired-avatar.png',
+        },
+      },
+    })
+
+    await wrapper.find('img.profile-avatar-image').trigger('error')
+
+    expect(wrapper.find('img.profile-avatar-image').exists()).toBe(false)
+    expect(wrapper.find('.profile-avatar-svg').html()).toContain('data-seed="feishu_group_a"')
+  })
 })

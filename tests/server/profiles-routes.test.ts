@@ -487,6 +487,144 @@ describe('Profile Routes', () => {
       expect(JSON.stringify(ctx.body)).not.toContain('tenant-token')
     })
 
+    it('falls back to no explicit avatar when Feishu Open Platform chat avatar lookup fails', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-feishu-group-avatar-fail-'))
+      const webUiHome = await mkdtemp(join(tmpdir(), 'hermes-web-ui-avatar-'))
+      tempHomes.push(hermesHome, webUiHome)
+      process.env.HERMES_HOME = hermesHome
+      process.env.HERMES_WEB_UI_HOME = webUiHome
+      const profileDir = join(hermesHome, 'profiles', 'feishu_group_lookup_fail')
+      await mkdir(profileDir, { recursive: true })
+      await writeFile(join(hermesHome, 'active_profile'), 'feishu_group_lookup_fail\n', 'utf-8')
+      await writeFile(join(profileDir, 'group_profile.json'), JSON.stringify({
+        kind: 'group',
+        chat_id: 'oc_group_lookup_fail',
+      }), 'utf-8')
+      await writeFile(join(profileDir, 'config.yaml'), [
+        'model:',
+        '  default: group-model',
+        'platforms:',
+        '  feishu:',
+        '    enabled: true',
+        '    extra:',
+        '      app_id: cli_fake_fail_app',
+        '      app_secret: fake-fail-secret',
+        '',
+      ].join('\n'), 'utf-8')
+      usersStoreMocks.listUserProfiles.mockReturnValue([
+        { user_id: 7, profile_name: 'feishu_group_lookup_fail', is_default: 1, created_at: 1 },
+      ])
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url.includes('/open-apis/auth/v3/tenant_access_token/internal')) {
+          return new Response(JSON.stringify({
+            code: 0,
+            tenant_access_token: 'tenant-token-fail',
+            expire: 7200,
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        if (url.includes('/open-apis/im/v1/chats/oc_group_lookup_fail')) {
+          return new Response(JSON.stringify({
+            code: 230001,
+            msg: 'chat not found',
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        throw new Error(`unexpected fetch ${url}`)
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      vi.mocked(hermesCli.listProfiles).mockRejectedValue(new Error('slow profile list should not run'))
+      const { list } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = {
+        state: {
+          user: {
+            id: 7,
+            role: 'admin',
+            openid: 'ou_user_a',
+            profile: 'feishu_user_a',
+            profiles: ['feishu_group_lookup_fail'],
+          },
+          profile: { name: 'feishu_group_lookup_fail' },
+        },
+        get: vi.fn(() => ''),
+        status: 200,
+        body: undefined,
+      }
+
+      await list(ctx)
+      await list(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body.profiles[0].avatar).toBeNull()
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(JSON.stringify(ctx.body)).not.toContain('fake-fail-secret')
+      expect(JSON.stringify(ctx.body)).not.toContain('tenant-token-fail')
+    })
+
+    it('keeps a custom avatar ahead of Feishu group avatar lookup', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-custom-avatar-priority-'))
+      const webUiHome = await mkdtemp(join(tmpdir(), 'hermes-web-ui-avatar-'))
+      tempHomes.push(hermesHome, webUiHome)
+      process.env.HERMES_HOME = hermesHome
+      process.env.HERMES_WEB_UI_HOME = webUiHome
+      const profileName = 'feishu_group_custom_avatar'
+      const profileDir = join(hermesHome, 'profiles', profileName)
+      await mkdir(profileDir, { recursive: true })
+      await writeFile(join(hermesHome, 'active_profile'), `${profileName}\n`, 'utf-8')
+      await writeFile(join(profileDir, 'group_profile.json'), JSON.stringify({
+        kind: 'group',
+        chat_id: 'oc_group_custom_avatar',
+      }), 'utf-8')
+      await writeFile(join(profileDir, 'config.yaml'), [
+        'model:',
+        '  default: group-model',
+        'platforms:',
+        '  feishu:',
+        '    enabled: true',
+        '    extra:',
+        '      app_id: cli_fake_custom_app',
+        '      app_secret: fake-custom-secret',
+        '',
+      ].join('\n'), 'utf-8')
+      const metadataDir = join(webUiHome, 'profile-metadata', Buffer.from(profileName, 'utf-8').toString('base64url'))
+      await mkdir(metadataDir, { recursive: true })
+      await writeFile(join(metadataDir, 'avatar.json'), JSON.stringify({
+        type: 'generated',
+        seed: 'custom-seed',
+        updatedAt: 123,
+      }), 'utf-8')
+      usersStoreMocks.listUserProfiles.mockReturnValue([
+        { user_id: 7, profile_name: profileName, is_default: 1, created_at: 1 },
+      ])
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+      vi.mocked(hermesCli.listProfiles).mockRejectedValue(new Error('slow profile list should not run'))
+      const { list } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = {
+        state: {
+          user: {
+            id: 7,
+            role: 'admin',
+            openid: 'ou_user_a',
+            profile: 'feishu_user_a',
+            profiles: [profileName],
+          },
+          profile: { name: profileName },
+        },
+        get: vi.fn(() => ''),
+        status: 200,
+        body: undefined,
+      }
+
+      await list(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body.profiles[0].avatar).toEqual({
+        type: 'generated',
+        seed: 'custom-seed',
+        updatedAt: 123,
+      })
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
     it('stores generated avatar metadata under the Web UI home', async () => {
       const webUiHome = await mkdtemp(join(tmpdir(), 'hermes-web-ui-avatar-'))
       tempHomes.push(webUiHome)

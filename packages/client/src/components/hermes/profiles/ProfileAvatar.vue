@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import multiavatar from '@multiavatar/multiavatar'
 import type { ProfileAvatar } from '@/api/hermes/profiles'
 
@@ -18,6 +18,11 @@ const imageSrc = computed(() => {
   if (props.avatar?.type === 'url' && props.avatar.url) return props.avatar.url
   return ''
 })
+const imageBroken = ref(false)
+watch(imageSrc, () => {
+  imageBroken.value = false
+})
+const showImage = computed(() => !!imageSrc.value && !imageBroken.value)
 const style = computed(() => ({
   width: `${props.size}px`,
   height: `${props.size}px`,
@@ -28,11 +33,12 @@ const style = computed(() => ({
 <template>
   <span class="profile-avatar-view" :style="style">
     <img
-      v-if="imageSrc"
+      v-if="showImage"
       class="profile-avatar-image"
       :src="imageSrc"
       alt=""
       draggable="false"
+      @error="imageBroken = true"
     >
     <span v-else class="profile-avatar-svg" v-html="generatedSvg" />
   </span>

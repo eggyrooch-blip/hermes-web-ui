@@ -250,6 +250,10 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
 }
 
+function isHttpUrl(value: unknown): value is string {
+  return isNonEmptyString(value) && /^https?:\/\//i.test(value.trim())
+}
+
 function readJsonObject(path: string): Record<string, any> | null {
   if (!existsSync(path)) return null
   try {
@@ -295,7 +299,7 @@ function inferFeishuUserAvatar(ctx: any, profile: ProfileAvatarSubject): Profile
   const user = ctx.state?.user
   const avatarUrl = String(user?.avatarUrl || '').trim()
   const userProfile = String(user?.profile || '').trim()
-  if (!avatarUrl || !userProfile || profile.name !== userProfile) return null
+  if (!isHttpUrl(avatarUrl) || !userProfile || profile.name !== userProfile) return null
   return { type: 'url', url: avatarUrl, source: 'feishu_user' }
 }
 
@@ -363,7 +367,7 @@ async function fetchFeishuGroupAvatarUrl(chatId: string, credentials: FeishuAppC
   const code = Number(payload.code ?? 0)
   if (code !== 0) throw new Error(`chat info request failed with code ${code}`)
   const avatar = payload.data?.avatar
-  return isNonEmptyString(avatar) ? avatar.trim() : null
+  return isHttpUrl(avatar) ? avatar.trim() : null
 }
 
 async function inferFeishuGroupAvatar(profile: ProfileAvatarSubject): Promise<ProfileAvatarResponse | null> {
@@ -373,7 +377,7 @@ async function inferFeishuGroupAvatar(profile: ProfileAvatarSubject): Promise<Pr
 
   for (const key of ['avatar_url', 'avatarUrl', 'avatar']) {
     const value = marker?.[key]
-    if (isNonEmptyString(value) && /^https?:\/\//i.test(value.trim())) {
+    if (isHttpUrl(value)) {
       return { type: 'url', url: value.trim(), source: 'feishu_group' }
     }
   }
