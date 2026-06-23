@@ -335,6 +335,36 @@ describe('ChatPanel user-mode gateway state', () => {
     expect(wrapper.text()).not.toContain('chat.openHistory')
   })
 
+  it('renders the Feishu user card at the chat sidebar bottom with an icon-only settings action', async () => {
+    profilesStoreMock.currentUser = {
+      name: '孙可',
+      profile: 'feishu_g41a5b5g',
+      avatarUrl: 'https://example.com/avatar.png',
+    }
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    const bottom = wrapper.get('.page-sidebar-bottom')
+    const userCard = bottom.get('.sidebar-user')
+    expect(userCard.text()).toContain('孙可')
+    expect(userCard.text()).toContain('feishu_g41a5b5g')
+    expect(userCard.text()).toContain('sidebar.connected')
+    expect(userCard.get('img.user-avatar').attributes('src')).toBe('https://example.com/avatar.png')
+    expect(bottom.find('.page-sidebar-menu-btn').exists()).toBe(false)
+
+    const settingsButton = userCard.get('.card-settings-button')
+    expect(settingsButton.text().trim()).toBe('')
+    await settingsButton.trigger('click')
+
+    expect(routerPushMock).toHaveBeenCalledWith({ name: 'hermes.settings' })
+  })
+
   it('keeps the session profile in sidebar links and navigation', async () => {
     chatStoreMock.sessions = [{
       id: 'session-feishu',

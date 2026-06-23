@@ -10,6 +10,7 @@ import ModelSelector from "@/components/layout/ModelSelector.vue";
 import ProfileSelector from "@/components/layout/ProfileSelector.vue";
 import LanguageSwitch from "@/components/layout/LanguageSwitch.vue";
 import ThemeSwitch from "@/components/layout/ThemeSwitch.vue";
+import SidebarUserCard from "@/components/layout/SidebarUserCard.vue";
 import { fetchCurrentUser } from "@/api/auth";
 import { getStoredUsername, isStoredSuperAdmin } from "@/api/client";
 
@@ -40,25 +41,6 @@ const showToolsGroup = computed(() => {
 });
 const currentUsername = computed(() => getStoredUsername());
 const currentUser = computed(() => profilesStore.currentUser);
-const displayName = computed(() =>
-  currentUser.value?.name ||
-  currentUser.value?.username ||
-  currentUsername.value ||
-  ''
-);
-const displayProfile = computed(() =>
-  currentUser.value?.profile ||
-  profilesStore.activeProfileName ||
-  ''
-);
-const showProfile = computed(() => {
-  const profile = displayProfile.value.trim();
-  return profile.length > 0 && profile !== displayName.value.trim();
-});
-const displayInitial = computed(() => {
-  const source = displayName.value.trim() || 'H';
-  return source.slice(0, 1).toLocaleUpperCase();
-});
 const isVersionPreview = import.meta.env.VITE_HERMES_PREVIEW === '1';
 
 function hasRoute(name: string): boolean {
@@ -339,32 +321,15 @@ onMounted(() => {
     <ModelSelector />
 
     <div class="sidebar-footer">
-      <div v-if="currentUser" class="sidebar-user">
-        <div class="user-avatar-wrap">
-          <img
-            v-if="currentUser.avatarUrl"
-            class="user-avatar"
-            :src="currentUser.avatarUrl"
-            :alt="displayName"
-          />
-          <div v-else class="user-avatar user-avatar-fallback">{{ displayInitial }}</div>
-          <span class="user-status-dot" :class="{ connected: appStore.connected }"></span>
-        </div>
-        <div class="user-meta">
-          <span class="user-name" :title="displayName">{{ displayName }}</span>
-          <span v-if="showProfile" class="user-profile" :title="displayProfile">{{ displayProfile }}</span>
-          <span class="user-connection" :class="{ connected: appStore.connected }">
-            {{ appStore.connected ? t("sidebar.connected") : t("sidebar.disconnected") }}
-          </span>
-        </div>
-        <button class="card-logout-button" :title="t('sidebar.logout')" @click="handleLogout">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-            <polyline points="16 17 21 12 16 7" />
-            <line x1="21" y1="12" x2="9" y2="12" />
-          </svg>
-        </button>
-      </div>
+      <SidebarUserCard
+        v-if="currentUser"
+        :user="currentUser"
+        :connected="appStore.connected"
+        :profile-fallback="profilesStore.activeProfileName"
+        :username-fallback="currentUsername"
+        action="logout"
+        @action="handleLogout"
+      />
       <button v-else class="nav-item logout-item" @click="handleLogout">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -538,104 +503,6 @@ onMounted(() => {
   gap: 4px;
 }
 
-.sidebar-user {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  padding: 8px 10px;
-  border-radius: $radius-sm;
-  background: rgba(var(--accent-primary-rgb), 0.06);
-}
-
-.user-avatar-wrap {
-  position: relative;
-  width: 32px;
-  height: 32px;
-  flex: 0 0 32px;
-}
-
-.user-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  object-fit: cover;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(var(--accent-primary-rgb), 0.12);
-  color: $accent-primary;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.user-status-dot {
-  position: absolute;
-  right: -1px;
-  bottom: -1px;
-  width: 9px;
-  height: 9px;
-  border: 2px solid $bg-sidebar;
-  border-radius: 50%;
-  background: $error;
-
-  &.connected {
-    background: $success;
-  }
-}
-
-.user-meta {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.user-name,
-.user-profile {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.user-name {
-  color: $text-primary;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.user-profile,
-.user-connection {
-  color: $text-muted;
-  font-size: 11px;
-}
-
-.user-connection.connected {
-  color: $success;
-}
-
-.card-logout-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: $radius-sm;
-  color: $text-muted;
-  background: transparent;
-  cursor: pointer;
-  flex: 0 0 28px;
-  transition: all $transition-fast;
-
-  &:hover {
-    color: $error;
-    background: rgba(var(--error-rgb), 0.08);
-  }
-}
-
 .logout-item {
   color: $text-secondary;
 
@@ -757,8 +624,8 @@ onMounted(() => {
     background: transparent;
   }
 
-  .user-meta,
-  .card-logout-button,
+  :deep(.user-meta),
+  :deep(.card-logout-button),
   .status-row {
     display: none;
   }

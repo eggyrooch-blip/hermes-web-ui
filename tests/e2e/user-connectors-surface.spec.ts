@@ -63,6 +63,13 @@ test('ordinary users open expert and automation directly from the app sidebar', 
 
   const pageSidebar = page.locator('.page-sidebar-nav')
   await expect(pageSidebar).toBeVisible()
+  const sidebarBottom = page.locator('.page-sidebar-bottom')
+  await expect(sidebarBottom.locator('.sidebar-user')).toBeVisible()
+  await expect(sidebarBottom.locator('.page-sidebar-menu-btn')).toHaveCount(0)
+  await sidebarBottom.locator('.card-settings-button').click()
+  await expect(page).toHaveURL(/#\/hermes\/settings$/)
+  await page.goto('/#/hermes/chat')
+
   await expect(pageSidebar.getByText('Expert', { exact: true })).toHaveCount(0)
   await expect(pageSidebar.getByText('Automation', { exact: true })).toHaveCount(0)
   await expect(page.getByText('History', { exact: true })).toBeVisible()
