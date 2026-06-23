@@ -103,6 +103,11 @@ onMounted(() => {
 <template>
   <aside class="sidebar" :class="{ open: appStore.sidebarOpen, collapsed: appStore.sidebarCollapsed }" @click="handleSidebarClick">
     <nav class="sidebar-nav">
+      <RouteLinkItem class="sidebar-logo" :to="{ name: 'hermes.chat' }" :active="selectedKey === 'hermes.chat'">
+        <img :src="'/logo.png'" alt="Hermes" draggable="false">
+        <span>Hermes</span>
+      </RouteLinkItem>
+
       <!-- Agent -->
       <div class="nav-group">
         <div class="nav-group-label" @click="toggleGroup('agent')">
@@ -364,7 +369,7 @@ onMounted(() => {
 .sidebar-nav {
   flex: 1;
   display: flex;
-  padding-top: 8px;
+  padding-top: 4px;
   flex-direction: column;
   gap: 6px;
   overflow-y: auto;
@@ -373,6 +378,28 @@ onMounted(() => {
 
   &::-webkit-scrollbar {
     display: none;
+  }
+}
+
+.sidebar-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  margin-bottom: 4px;
+  padding: 8px 10px;
+  border-radius: $radius-sm;
+  color: $text-primary;
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+
+  img {
+    width: 24px;
+    height: 24px;
+    flex: 0 0 24px;
+    border-radius: 6px;
+    object-fit: contain;
   }
 }
 
@@ -541,6 +568,15 @@ onMounted(() => {
     width: 100%;
     flex: 0 0 auto;
     padding: 10px 4px;
+  }
+
+  .sidebar-logo {
+    justify-content: center;
+    padding: 8px 0;
+
+    span {
+      display: none;
+    }
   }
 
   .nav-group-label {

@@ -146,6 +146,26 @@ describe('AppSidebar navigation', () => {
     vi.unstubAllGlobals()
   })
 
+  it('renders a local logo asset in the sidebar brand link', () => {
+    const wrapper = mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+          NButton: true,
+        },
+      },
+    })
+
+    const logoLink = wrapper.find('.sidebar-logo')
+    expect(logoLink.exists()).toBe(true)
+    expect(logoLink.text()).toContain('Hermes')
+    expect(logoLink.find('img').attributes('src')).toBe('/logo.png')
+    expect(logoLink.find('img').attributes('alt')).toBe('Hermes')
+  })
+
   it('keeps page-sidebar-only actions out of the app sidebar', () => {
     mockAppStore.serverVersion = '0.6.15'
     mockAppStore.latestVersion = '0.6.17'
