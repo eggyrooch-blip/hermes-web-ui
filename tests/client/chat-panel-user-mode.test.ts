@@ -13,6 +13,11 @@ const routerResolveMock = vi.hoisted(() => vi.fn((to: any) => {
   const profile = to?.query?.profile ? `?profile=${encodeURIComponent(to.query.profile)}` : ''
   return { href: `#/hermes/session/${sessionId}${profile}` }
 }))
+const routeMock = vi.hoisted(() => ({
+  name: 'hermes.chat',
+  params: {} as Record<string, unknown>,
+  query: {} as Record<string, unknown>,
+}))
 
 const chatStoreMock = vi.hoisted(() => ({
   sessions: [] as Array<Record<string, any>>,
@@ -102,7 +107,7 @@ vi.mock('@/api/coding-agents', () => ({
 }))
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ name: 'hermes.chat', params: {}, query: {} }),
+  useRoute: () => routeMock,
   useRouter: () => ({ push: routerPushMock, replace: routerReplaceMock, resolve: routerResolveMock }),
 }))
 
@@ -219,9 +224,23 @@ vi.mock('@/components/hermes/chat/TerminalPanel.vue', () => ({
 
 vi.mock('@/components/layout/PageSidebarNav.vue', () => ({
   default: {
-    props: ['primaryLabel'],
+    props: ['primaryLabel', 'active'],
     emits: ['primary'],
-    template: '<button class="page-sidebar-nav-stub" @click="$emit(\'primary\')">{{ primaryLabel }}</button>',
+    template: '<button class="page-sidebar-nav-stub" :data-active="active" @click="$emit(\'primary\')">{{ primaryLabel }}</button>',
+  },
+}))
+
+vi.mock('@/views/hermes/ExpertView.vue', () => ({
+  default: {
+    props: ['embedded'],
+    template: '<section class="expert-view-stub" :data-embedded="embedded">Expert Surface</section>',
+  },
+}))
+
+vi.mock('@/views/hermes/JobsView.vue', () => ({
+  default: {
+    props: ['embedded'],
+    template: '<section class="jobs-view-stub" :data-embedded="embedded">Automation Surface</section>',
   },
 }))
 
@@ -242,6 +261,9 @@ describe('ChatPanel user-mode gateway state', () => {
     chatStoreMock.activeSessionId = null
     chatStoreMock.isStreaming = false
     chatStoreMock.runtimeMode = 'agent'
+    routeMock.name = 'hermes.chat'
+    routeMock.params = {}
+    routeMock.query = {}
     profilesStoreMock.currentUser = null
     profilesStoreMock.activeProfileName = 'user_a'
     routerPushMock.mockClear()
@@ -333,6 +355,44 @@ describe('ChatPanel user-mode gateway state', () => {
     expect(wrapper.find('.session-scope-note').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('chat.sessionScopeHint')
     expect(wrapper.text()).not.toContain('chat.openHistory')
+  })
+
+  it('renders the expert surface in the chat main area without the chat composer', () => {
+    routeMock.query = { surface: 'expert' }
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    expect(wrapper.get('.page-sidebar-nav-stub').attributes('data-active')).toBe('expert')
+    expect(wrapper.get('.chat-surface-host').text()).toContain('Expert Surface')
+    expect(wrapper.find('.expert-view-stub').attributes()).toHaveProperty('data-embedded')
+    expect(wrapper.find('.message-list-stub').exists()).toBe(false)
+    expect(wrapper.find('.chat-input-stub').exists()).toBe(false)
+    expect(wrapper.text()).toContain('sidebar.expert')
+  })
+
+  it('renders the automation surface in the chat main area without the chat composer', () => {
+    routeMock.query = { surface: 'automation' }
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    expect(wrapper.get('.page-sidebar-nav-stub').attributes('data-active')).toBe('automation')
+    expect(wrapper.get('.chat-surface-host').text()).toContain('Automation Surface')
+    expect(wrapper.find('.jobs-view-stub').attributes()).toHaveProperty('data-embedded')
+    expect(wrapper.find('.message-list-stub').exists()).toBe(false)
+    expect(wrapper.find('.chat-input-stub').exists()).toBe(false)
+    expect(wrapper.text()).toContain('jobs.title')
   })
 
   it('renders the Feishu user card at the chat sidebar bottom with an icon-only settings action', async () => {

@@ -9,6 +9,9 @@ import { useJobsStore } from '@/stores/hermes/jobs'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 
 const { t } = useI18n()
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), {
+  embedded: false,
+})
 const jobsStore = useJobsStore()
 const profilesStore = useProfilesStore()
 const showModal = ref(false)
@@ -91,9 +94,9 @@ function arrowIcon(field: 'time' | 'name'): string {
 </script>
 
 <template>
-  <div class="jobs-view">
-    <header class="page-header">
-      <h2 class="header-title">{{ t('jobs.title') }}</h2>
+  <div class="jobs-view" :class="{ 'is-embedded': props.embedded }">
+    <header class="page-header" :class="{ 'page-header--embedded': props.embedded }">
+      <h2 v-if="!props.embedded" class="header-title">{{ t('jobs.title') }}</h2>
       <div class="header-actions">
         <div class="sort-toggle">
           <NTooltip>
@@ -171,6 +174,16 @@ function arrowIcon(field: 'time' | 'name'): string {
   height: calc(100 * var(--vh));
   display: flex;
   flex-direction: column;
+}
+
+.jobs-view.is-embedded {
+  height: 100%;
+}
+
+.page-header--embedded {
+  justify-content: flex-end;
+  padding-top: 12px;
+  padding-bottom: 12px;
 }
 
 .jobs-split {

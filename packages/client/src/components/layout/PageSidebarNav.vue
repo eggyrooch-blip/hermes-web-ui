@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useSessionSearch } from '@/composables/useSessionSearch'
 
-type ActiveSection = 'chat' | 'history' | 'group' | 'global'
+type ActiveSection = 'chat' | 'history' | 'group' | 'global' | 'expert' | 'automation'
 
 const props = defineProps<{
   active: ActiveSection
@@ -40,11 +40,11 @@ function openHistory() {
 }
 
 function openExpert() {
-  void router.push({ name: 'hermes.expert' })
+  void router.push({ name: 'hermes.chat', query: { surface: 'expert' } })
 }
 
 function openAutomation() {
-  void router.push({ name: 'hermes.jobs' })
+  void router.push({ name: 'hermes.chat', query: { surface: 'automation' } })
 }
 
 function openGroupChat() {
@@ -89,7 +89,12 @@ function openGroupChat() {
         </svg>
         <span>{{ t('sidebar.search') }}</span>
       </button>
-      <button class="page-sidebar-tab" type="button" @click="openExpert">
+      <button
+        class="page-sidebar-tab"
+        :class="{ active: active === 'expert' }"
+        type="button"
+        @click="openExpert"
+      >
         <svg
           width="15"
           height="15"
@@ -106,7 +111,12 @@ function openGroupChat() {
         </svg>
         <span>{{ t('sidebar.expert') }}</span>
       </button>
-      <button class="page-sidebar-tab" type="button" @click="openAutomation">
+      <button
+        class="page-sidebar-tab"
+        :class="{ active: active === 'automation' }"
+        type="button"
+        @click="openAutomation"
+      >
         <svg
           width="15"
           height="15"
@@ -163,10 +173,10 @@ function openGroupChat() {
     <div v-if="showModeSwitch" class="conversation-switch" role="tablist" aria-label="Conversation type">
       <button
         class="conversation-switch-tab"
-        :class="{ active: active === 'chat' || active === 'history' }"
+        :class="{ active: active === 'chat' || active === 'history' || active === 'expert' || active === 'automation' }"
         type="button"
         role="tab"
-        :aria-selected="active === 'chat' || active === 'history'"
+        :aria-selected="active === 'chat' || active === 'history' || active === 'expert' || active === 'automation'"
         @click="openChat"
       >
         {{ t('sidebar.singleChat') }}

@@ -75,9 +75,11 @@ describe('PageSidebarNav enterprise chrome', () => {
     await wrapper.findAll('.page-sidebar-tab')[3].trigger('click')
     await wrapper.findAll('.page-sidebar-tab')[4].trigger('click')
 
-    expect(pushMock).toHaveBeenCalledWith({ name: 'hermes.expert' })
-    expect(pushMock).toHaveBeenCalledWith({ name: 'hermes.jobs' })
+    expect(pushMock).toHaveBeenCalledWith({ name: 'hermes.chat', query: { surface: 'expert' } })
+    expect(pushMock).toHaveBeenCalledWith({ name: 'hermes.chat', query: { surface: 'automation' } })
     expect(pushMock).toHaveBeenCalledWith({ name: 'hermes.history' })
+    expect(pushMock).not.toHaveBeenCalledWith({ name: 'hermes.expert' })
+    expect(pushMock).not.toHaveBeenCalledWith({ name: 'hermes.jobs' })
     expect(pushMock).not.toHaveBeenCalledWith({ name: 'hermes.settings' })
   })
 })

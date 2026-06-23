@@ -80,19 +80,23 @@ test('ordinary users open expert and automation directly from the home sidebar',
   expect(labels.slice(0, 5)).toEqual(['New Chat', 'Search', 'Expert', 'Automation', 'History'])
 
   await pageSidebar.getByRole('button', { name: /^Expert$/ }).click()
-  await expect(page).toHaveURL(/#\/hermes\/expert$/)
+  await expect(page).toHaveURL(/#\/hermes\/chat\?surface=expert$/)
+  await expect(page.locator('.page-sidebar-nav')).toBeVisible()
+  await expect(page.locator('aside.sidebar')).toHaveCount(0)
   await expect(page.getByRole('tab', { name: /^Skills$/ })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Skills' })).toBeVisible()
   await expect(page.getByText('Research helper')).toBeVisible()
 
   await page.getByRole('tab', { name: /^Connectors$/ }).click()
-  await expect(page).toHaveURL(/#\/hermes\/expert\?tab=connectors$/)
+  await expect(page).toHaveURL(/#\/hermes\/chat\?surface=expert&tab=connectors$/)
   await expect(page.getByText('Lark CLI')).toBeVisible()
 
   await page.goto('/#/hermes/chat')
   await page.locator('.page-sidebar-nav').getByRole('button', { name: /^Automation$/ }).click()
-  await expect(page).toHaveURL(/#\/hermes\/jobs$/)
-  await expect(page.getByRole('heading', { name: 'Automation' })).toBeVisible()
+  await expect(page).toHaveURL(/#\/hermes\/chat\?surface=automation$/)
+  await expect(page.locator('.page-sidebar-nav')).toBeVisible()
+  await expect(page.locator('aside.sidebar')).toHaveCount(0)
+  await expect(page.locator('.header-session-title')).toHaveText('Automation')
   await expect(page.getByText('Nightly Smoke')).toBeVisible()
 
   expect(api.requests.some(request =>

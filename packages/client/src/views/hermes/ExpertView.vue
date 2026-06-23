@@ -10,6 +10,9 @@ type ExpertTab = 'skills' | 'connectors'
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), {
+  embedded: false,
+})
 const activeTab = ref<ExpertTab>('skills')
 
 const tabs = computed<Array<{ key: ExpertTab; label: string }>>(() => [
@@ -54,7 +57,7 @@ watch(() => route.query.tab, (tab) => {
 </script>
 
 <template>
-  <div class="expert-view">
+  <div class="expert-view" :class="{ 'is-embedded': props.embedded }">
     <nav class="expert-tabs-bar" role="tablist" :aria-label="t('sidebar.expert')">
       <button
         v-for="tab in tabs"
@@ -85,6 +88,10 @@ watch(() => route.query.tab, (tab) => {
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+
+.expert-view.is-embedded {
+  height: 100%;
 }
 
 .expert-tabs-bar {

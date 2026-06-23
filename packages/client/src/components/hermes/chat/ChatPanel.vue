@@ -28,7 +28,7 @@ import {
   type DropdownOption,
 } from "naive-ui";
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { copyToClipboard } from "@/utils/clipboard";
 import FolderPicker from "./FolderPicker.vue";
@@ -41,12 +41,15 @@ import FilesPanel from "./FilesPanel.vue";
 import TerminalPanel from "./TerminalPanel.vue";
 import PageSidebarNav from "@/components/layout/PageSidebarNav.vue";
 import SidebarUserCard from "@/components/layout/SidebarUserCard.vue";
+import ExpertView from "@/views/hermes/ExpertView.vue";
+import JobsView from "@/views/hermes/JobsView.vue";
 import { isStoredSuperAdmin } from "@/api/client";
 
 const chatStore = useChatStore();
 const appStore = useAppStore();
 const profilesStore = useProfilesStore();
 const sessionBrowserPrefsStore = useSessionBrowserPrefsStore();
+const route = useRoute();
 const router = useRouter();
 const message = useMessage();
 const { t } = useI18n();
@@ -86,6 +89,16 @@ const isMobile = ref(false);
 const toolPanelStyle = computed(() => ({
   width: isMobile.value ? "100%" : `${toolPanelWidth.value}px`,
 }));
+type ChatSidebarSurface = "expert" | "automation";
+const chatSidebarSurface = computed<ChatSidebarSurface | null>(() => {
+  const surface = route.query.surface;
+  if (surface === "expert" || surface === "automation") return surface;
+  return null;
+});
+const pageSidebarActive = computed(() =>
+  chatSidebarSurface.value ||
+  (chatStore.runtimeMode === "global_agent" ? "global" : "chat"),
+);
 
 function sessionHref(sessionId: string, profile?: string | null) {
   return router.resolve({
@@ -298,6 +311,10 @@ const activeSessionModelLabel = computed(() => {
 const headerTitle = computed(() =>
   currentMode.value === "live"
     ? t("chat.liveSessions")
+    : chatSidebarSurface.value === "expert"
+      ? t("sidebar.expert")
+      : chatSidebarSurface.value === "automation"
+        ? t("jobs.title")
     : activeSessionTitle.value,
 );
 
@@ -1160,7 +1177,7 @@ async function handleSessionModelCustomSubmit() {
     >
       <div v-if="showSessions" class="page-sidebar-top">
         <PageSidebarNav
-          :active="chatStore.runtimeMode === 'global_agent' ? 'global' : 'chat'"
+          :active="pageSidebarActive"
           :primary-label="t('chat.newChat')"
           @primary="handleNewChatPrimary"
         />
@@ -1652,7 +1669,7 @@ async function handleSessionModelCustomSubmit() {
         </div>
         <div class="header-actions">
           <!-- chat/live mode toggle hidden -->
-          <template v-if="currentMode === 'chat'">
+          <template v-if="currentMode === 'chat' && !chatSidebarSurface">
             <NTooltip v-if="isSuperAdmin" trigger="hover">
               <template #trigger>
                 <NButton
@@ -1768,18 +1785,26 @@ async function handleSessionModelCustomSubmit() {
       </header>
 
       <template v-if="currentMode === 'chat'">
-        <div ref="chatContentWrapperRef" class="chat-content-wrapper">
-          <div class="chat-main-content">
+        <div
+          ref="chatContentWrapperRef"
+          class="chat-content-wrapper"
+          :class="{ 'chat-content-wrapper--surface': !!chatSidebarSurface }"
+        >
+          <div v-if="chatSidebarSurface" class="chat-surface-host">
+            <ExpertView v-if="chatSidebarSurface === 'expert'" embedded />
+            <JobsView v-else embedded />
+          </div>
+          <div v-else class="chat-main-content">
             <MessageList ref="messageListRef" />
             <ChatInput />
           </div>
           <OutlinePanel
-            v-if="showOutline"
+            v-if="showOutline && !chatSidebarSurface"
             :messages="chatStore.messages"
             @navigate="handleOutlineNavigate"
           />
           <aside
-            v-if="showToolPanel"
+            v-if="showToolPanel && !chatSidebarSurface"
             class="chat-tool-panel"
             :style="toolPanelStyle"
           >
@@ -2394,6 +2419,22 @@ async function handleSessionModelCustomSubmit() {
   position: relative;
   min-width: 0;
   max-width: 100%;
+}
+
+.chat-content-wrapper--surface {
+  background: $bg-primary;
+}
+
+.chat-surface-host {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-surface-host > * {
+  height: 100%;
+  min-height: 0;
 }
 
 .chat-main-content {
