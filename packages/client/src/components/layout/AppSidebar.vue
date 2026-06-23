@@ -139,10 +139,9 @@ onMounted(() => {
         <div v-show="!isGroupCollapsed('agent')" class="nav-group-items">
           <RouteLinkItem class="nav-item" :to="{ name: 'hermes.expert' }" :active="isExpertSelected">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
-              <path d="M12 12l8-4.5" />
-              <path d="M12 12v9" />
-              <path d="M12 12L4 7.5" />
+              <circle cx="12" cy="8" r="3.5" />
+              <path d="M5 21a7 7 0 0 1 14 0" />
+              <path d="m15.5 13.5 1.8 1.8 3.2-3.6" />
             </svg>
             <span>{{ t("sidebar.expert") }}</span>
           </RouteLinkItem>

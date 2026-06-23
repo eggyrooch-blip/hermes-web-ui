@@ -42,7 +42,7 @@ describe('PageSidebarNav enterprise chrome', () => {
     expect(wrapper.text()).not.toContain('sidebar.apiRelay')
   })
 
-  it('places expert and automation above history in the main page sidebar', () => {
+  it('keeps expert and automation out of the chat page sidebar', () => {
     const wrapper = mount(PageSidebarNav, {
       props: {
         active: 'chat',
@@ -57,13 +57,11 @@ describe('PageSidebarNav enterprise chrome', () => {
     expect(labels).toEqual([
       'chat.newChat',
       'sidebar.search',
-      'sidebar.expert',
-      'sidebar.jobs',
       'sidebar.history',
     ])
   })
 
-  it('routes expert and automation actions from the main page sidebar', async () => {
+  it('does not route expert or automation actions from the chat page sidebar', async () => {
     const wrapper = mount(PageSidebarNav, {
       props: {
         active: 'chat',
@@ -71,11 +69,10 @@ describe('PageSidebarNav enterprise chrome', () => {
       },
     })
 
-    const buttons = wrapper.findAll('.page-sidebar-tab')
-    await buttons[2].trigger('click')
-    await buttons[3].trigger('click')
+    await wrapper.findAll('.page-sidebar-tab')[2].trigger('click')
 
-    expect(pushMock).toHaveBeenNthCalledWith(1, { name: 'hermes.expert' })
-    expect(pushMock).toHaveBeenNthCalledWith(2, { name: 'hermes.jobs' })
+    expect(pushMock).toHaveBeenCalledWith({ name: 'hermes.history' })
+    expect(pushMock).not.toHaveBeenCalledWith({ name: 'hermes.expert' })
+    expect(pushMock).not.toHaveBeenCalledWith({ name: 'hermes.jobs' })
   })
 })

@@ -55,7 +55,7 @@ test('ordinary users create chats without the advanced agent and workspace drawe
   expect(api.unexpectedRequests).toEqual([])
 })
 
-test('ordinary users see expert and automation in the main chat sidebar', async ({ page }) => {
+test('ordinary users open expert and automation directly from the app sidebar', async ({ page }) => {
   await authenticate(page, USER_ACCESS_KEY, 'research')
   const api = await mockHermesApi(page)
 
@@ -63,18 +63,18 @@ test('ordinary users see expert and automation in the main chat sidebar', async 
 
   const pageSidebar = page.locator('.page-sidebar-nav')
   await expect(pageSidebar).toBeVisible()
-  const expertAction = page.getByText('Expert', { exact: true })
-  const automationAction = page.getByText('Automation', { exact: true })
-  await expect(expertAction).toBeVisible()
-  await expect(automationAction).toBeVisible()
+  await expect(pageSidebar.getByText('Expert', { exact: true })).toHaveCount(0)
+  await expect(pageSidebar.getByText('Automation', { exact: true })).toHaveCount(0)
   await expect(page.getByText('History', { exact: true })).toBeVisible()
 
   const labels = await pageSidebar.evaluate(element =>
     Array.from(element.querySelectorAll('.page-sidebar-tab span')).map(node => node.textContent?.trim() || ''),
   )
-  expect(labels.slice(0, 5)).toEqual(['New Chat', 'Search', 'Expert', 'Automation', 'History'])
+  expect(labels.slice(0, 3)).toEqual(['New Chat', 'Search', 'History'])
 
-  await expertAction.click()
+  await page.goto('/#/hermes/connectors')
+  const sidebar = page.locator('aside.sidebar')
+  await sidebar.getByRole('link', { name: /^Expert$/ }).click()
   await expect(page).toHaveURL(/#\/hermes\/expert$/)
   await expect(page.getByRole('tab', { name: /^Skills$/ })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Skills' })).toBeVisible()
@@ -84,8 +84,7 @@ test('ordinary users see expert and automation in the main chat sidebar', async 
   await expect(page).toHaveURL(/#\/hermes\/expert\?tab=connectors$/)
   await expect(page.getByText('Lark CLI')).toBeVisible()
 
-  await page.goto('/#/hermes/chat')
-  await automationAction.click()
+  await sidebar.getByRole('link', { name: /^Automation$/ }).click()
   await expect(page).toHaveURL(/#\/hermes\/jobs$/)
   await expect(page.getByRole('heading', { name: 'Automation' })).toBeVisible()
   await expect(page.getByText('Nightly Smoke')).toBeVisible()
@@ -114,8 +113,9 @@ test('expert and automation surfaces follow the selected frontend profile', asyn
   await page.reload()
   await expect(page.getByTestId('profile-selector-select')).toContainText('default')
 
-  const pageSidebar = page.locator('.page-sidebar-nav')
-  await page.getByText('Expert', { exact: true }).click()
+  await page.goto('/#/hermes/connectors')
+  const sidebar = page.locator('aside.sidebar')
+  await sidebar.getByRole('link', { name: /^Expert$/ }).click()
   await expect(page).toHaveURL(/#\/hermes\/expert$/)
   await expect(page.getByText('Research helper')).toBeVisible()
 
@@ -125,8 +125,7 @@ test('expert and automation surfaces follow the selected frontend profile', asyn
   await page.goto('/#/hermes/expert?tab=connectors&profile=research')
   await expect(page.getByText('Lark CLI')).toBeVisible()
 
-  await page.goto('/#/hermes/chat')
-  await page.getByText('Automation', { exact: true }).click()
+  await sidebar.getByRole('link', { name: /^Automation$/ }).click()
   await expect(page.getByRole('heading', { name: 'Automation' })).toBeVisible()
 
   expect(api.requests.some(request =>

@@ -186,6 +186,29 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.find('.sidebar-return-tab').exists()).toBe(true)
   })
 
+  it('uses a person badge icon for the expert direct nav item', () => {
+    const wrapper = mount(AppSidebar, {
+      global: {
+        stubs: {
+          ProfileSelector: true,
+          ModelSelector: true,
+          LanguageSwitch: true,
+          ThemeSwitch: true,
+          NButton: true,
+        },
+      },
+    })
+
+    const expertItem = wrapper
+      .findAll('.route-link-item')
+      .find(item => item.text().includes('sidebar.expert'))
+
+    expect(expertItem).toBeTruthy()
+    expect(expertItem?.html()).not.toContain('M12 3l8 4.5')
+    expect(expertItem?.find('circle[cx="12"][cy="8"]').exists()).toBe(true)
+    expect(expertItem?.findAll('path').map(path => path.attributes('d'))).toContain('M5 21a7 7 0 0 1 14 0')
+  })
+
   it.each([
     'feishu-oauth-dev',
     'trusted-feishu',
