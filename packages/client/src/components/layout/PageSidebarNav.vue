@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useSessionSearch } from '@/composables/useSessionSearch'
 
-type ActiveSection = 'chat' | 'history' | 'group' | 'global' | 'expert' | 'automation'
+type ActiveSection = 'chat' | 'history' | 'group' | 'global'
 
 const props = defineProps<{
   active: ActiveSection
@@ -40,12 +40,10 @@ function openHistory() {
 }
 
 function openExpert() {
-  if (props.active === 'expert') return
   void router.push({ name: 'hermes.expert' })
 }
 
 function openAutomation() {
-  if (props.active === 'automation') return
   void router.push({ name: 'hermes.jobs' })
 }
 
@@ -93,7 +91,6 @@ function openGroupChat() {
       </button>
       <button
         class="page-sidebar-tab"
-        :class="{ active: active === 'expert' }"
         type="button"
         @click="openExpert"
       >
@@ -116,7 +113,6 @@ function openGroupChat() {
       </button>
       <button
         class="page-sidebar-tab"
-        :class="{ active: active === 'automation' }"
         type="button"
         @click="openAutomation"
       >

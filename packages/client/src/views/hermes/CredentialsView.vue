@@ -11,6 +11,9 @@ const message = useMessage()
 const { t } = useI18n()
 const route = useRoute()
 const profilesStore = useProfilesStore()
+defineProps<{
+  embedded?: boolean
+}>()
 const loading = ref(false)
 const startingId = ref('')
 const completingId = ref('')
@@ -167,7 +170,7 @@ watch(requestedProfile, async (profile, previous) => {
 </script>
 
 <template>
-  <div class="credentials-view">
+  <div class="credentials-view" :class="{ 'is-embedded': embedded }">
     <header class="page-header">
       <h2 class="header-title">{{ t('sidebar.connectors') }}</h2>
       <NButton size="small" quaternary :loading="loading" @click="loadCredentials">刷新</NButton>
@@ -248,6 +251,11 @@ watch(requestedProfile, async (profile, previous) => {
   height: calc(100 * var(--vh));
   display: flex;
   flex-direction: column;
+
+  &.is-embedded {
+    height: 100%;
+    min-height: 0;
+  }
 }
 
 .page-header {

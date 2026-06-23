@@ -71,8 +71,8 @@ watch(() => route.query.tab, (tab) => {
     </nav>
 
     <section class="expert-panel" role="tabpanel">
-      <SkillsView v-if="activeTab === 'skills'" />
-      <CredentialsView v-else />
+      <SkillsView v-if="activeTab === 'skills'" embedded />
+      <CredentialsView v-else embedded />
     </section>
   </div>
 </template>
@@ -131,7 +131,6 @@ watch(() => route.query.tab, (tab) => {
 
 :deep(.skills-view),
 :deep(.credentials-view) {
-  height: 100%;
   min-height: 0;
 }
 

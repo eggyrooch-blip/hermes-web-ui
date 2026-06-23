@@ -17,6 +17,9 @@ type SourceFilter = SkillSource | 'modified'
 
 const { t, locale } = useI18n()
 const profilesStore = useProfilesStore()
+defineProps<{
+  embedded?: boolean
+}>()
 const categories = ref<SkillCategory[]>([])
 const archived = ref<SkillInfo[]>([])
 const loading = ref(false)
@@ -185,7 +188,7 @@ function handlePinToggled(name: string, pinned: boolean) {
 </script>
 
 <template>
-  <div class="skills-view">
+  <div class="skills-view" :class="{ 'is-embedded': embedded }">
     <header class="page-header">
       <div style="display: flex; align-items: center; gap: 8px;">
         <h2 class="header-title">{{ t('skills.title') }}</h2>
@@ -342,6 +345,11 @@ function handlePinToggled(name: string, pinned: boolean) {
   height: calc(100 * var(--vh));
   display: flex;
   flex-direction: column;
+
+  &.is-embedded {
+    height: 100%;
+    min-height: 0;
+  }
 }
 
 .source-legend {
