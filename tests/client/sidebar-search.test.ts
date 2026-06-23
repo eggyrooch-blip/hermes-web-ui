@@ -176,8 +176,9 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.text()).not.toContain('sidebar.mcp')
     expect(wrapper.text()).not.toContain('sidebar.plugins')
     expect(wrapper.text()).not.toContain('sidebar.codingAgents')
-    expect(wrapper.text()).toContain('sidebar.expert')
-    expect(wrapper.text()).toContain('sidebar.jobs')
+    expect(wrapper.text()).toContain('sidebar.files')
+    expect(wrapper.text()).not.toContain('sidebar.expert')
+    expect(wrapper.text()).not.toContain('sidebar.jobs')
     expect(wrapper.text()).not.toContain('sidebar.connectors')
     expect(wrapper.findComponent({ name: 'ThemeSwitch' }).exists()).toBe(false)
     expect(wrapper.find('.status-indicator').exists()).toBe(false)
@@ -186,7 +187,7 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.find('.sidebar-return-tab').exists()).toBe(true)
   })
 
-  it('uses a person badge icon for the expert direct nav item', () => {
+  it('uses a folder icon for the files nav item', () => {
     const wrapper = mount(AppSidebar, {
       global: {
         stubs: {
@@ -199,14 +200,12 @@ describe('AppSidebar navigation', () => {
       },
     })
 
-    const expertItem = wrapper
+    const filesItem = wrapper
       .findAll('.route-link-item')
-      .find(item => item.text().includes('sidebar.expert'))
+      .find(item => item.text().includes('sidebar.files'))
 
-    expect(expertItem).toBeTruthy()
-    expect(expertItem?.html()).not.toContain('M12 3l8 4.5')
-    expect(expertItem?.find('circle[cx="12"][cy="8"]').exists()).toBe(true)
-    expect(expertItem?.findAll('path').map(path => path.attributes('d'))).toContain('M5 21a7 7 0 0 1 14 0')
+    expect(filesItem).toBeTruthy()
+    expect(filesItem?.findAll('path').map(path => path.attributes('d'))).toContain('M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z')
   })
 
   it.each([
@@ -235,8 +234,9 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.text()).not.toContain('sidebar.mcp')
     expect(wrapper.text()).not.toContain('sidebar.plugins')
     expect(wrapper.text()).not.toContain('sidebar.codingAgents')
-    expect(wrapper.text()).toContain('sidebar.expert')
-    expect(wrapper.text()).toContain('sidebar.jobs')
+    expect(wrapper.text()).toContain('sidebar.files')
+    expect(wrapper.text()).not.toContain('sidebar.expert')
+    expect(wrapper.text()).not.toContain('sidebar.jobs')
     expect(wrapper.text()).not.toContain('sidebar.connectors')
     expect(wrapper.findComponent({ name: 'ThemeSwitch' }).exists()).toBe(false)
   })
@@ -260,7 +260,9 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.text()).toContain('sidebar.mcp')
     expect(wrapper.text()).toContain('sidebar.codingAgents')
     expect(wrapper.text()).toContain('sidebar.devices')
-    expect(wrapper.text()).toContain('sidebar.expert')
+    expect(wrapper.text()).toContain('sidebar.files')
+    expect(wrapper.text()).not.toContain('sidebar.expert')
+    expect(wrapper.text()).not.toContain('sidebar.jobs')
     expect(wrapper.text()).toContain('sidebar.connectors')
     expect(wrapper.findComponent({ name: 'ThemeSwitch' }).exists()).toBe(true)
   })
