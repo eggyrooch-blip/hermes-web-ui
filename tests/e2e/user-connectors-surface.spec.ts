@@ -71,7 +71,8 @@ test('ordinary users see expert and automation in the main chat sidebar', async 
 
   await expertAction.click()
   await expect(page).toHaveURL(/#\/hermes\/expert$/)
-  await expect(page.getByRole('heading', { name: 'Expert' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: /^Skills$/ })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Skills' })).toBeVisible()
   await expect(page.getByText('Research helper')).toBeVisible()
 
   await page.getByRole('tab', { name: /^Connectors$/ }).click()

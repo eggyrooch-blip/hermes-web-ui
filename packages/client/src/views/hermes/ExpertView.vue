@@ -55,26 +55,25 @@ watch(() => route.query.tab, (tab) => {
 
 <template>
   <div class="expert-view">
-    <header class="page-header expert-header">
-      <h2 class="header-title">{{ t('sidebar.expert') }}</h2>
-      <div class="expert-tabs" role="tablist" :aria-label="t('sidebar.expert')">
-        <button
-          v-for="tab in tabs"
-          :key="tab.key"
-          class="expert-tab"
-          :class="{ active: activeTab === tab.key }"
-          type="button"
-          role="tab"
-          :aria-selected="activeTab === tab.key"
-          @click="selectTab(tab.key)"
-        >
-          {{ tab.label }}
-        </button>
-      </div>
-    </header>
+    <nav class="expert-tabs-bar" role="tablist" :aria-label="t('sidebar.expert')">
+      <button
+        v-for="tab in tabs"
+        :key="tab.key"
+        class="expert-tab"
+        :class="{ active: activeTab === tab.key }"
+        type="button"
+        role="tab"
+        :aria-selected="activeTab === tab.key"
+        @click="selectTab(tab.key)"
+      >
+        {{ tab.label }}
+      </button>
+    </nav>
 
-    <SkillsView v-if="activeTab === 'skills'" />
-    <CredentialsView v-else />
+    <section class="expert-panel" role="tabpanel">
+      <SkillsView v-if="activeTab === 'skills'" />
+      <CredentialsView v-else />
+    </section>
   </div>
 </template>
 
@@ -88,22 +87,20 @@ watch(() => route.query.tab, (tab) => {
   min-height: 0;
 }
 
-.expert-header {
-  gap: 16px;
-}
-
-.expert-tabs {
-  display: inline-grid;
+.expert-tabs-bar {
+  flex: 0 0 auto;
+  min-height: 44px;
+  display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 2px;
   padding: 2px;
-  border-radius: $radius-sm;
-  background: rgba(var(--accent-primary-rgb), 0.05);
+  align-items: center;
+  border-bottom: 1px solid $border-color;
+  background: $bg-primary;
 }
 
 .expert-tab {
-  min-width: 88px;
-  height: 28px;
+  height: 32px;
   border: none;
   border-radius: 5px;
   background: transparent;
@@ -123,6 +120,28 @@ watch(() => route.query.tab, (tab) => {
     background: $bg-card;
     color: $text-primary;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  }
+}
+
+.expert-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+:deep(.skills-view),
+:deep(.credentials-view) {
+  height: 100%;
+  min-height: 0;
+}
+
+@media (min-width: 768px) {
+  .expert-tabs-bar {
+    width: fit-content;
+    min-width: 240px;
+    margin: 6px 0 0 24px;
+    border: 1px solid $border-color;
+    border-radius: $radius-sm;
   }
 }
 </style>
