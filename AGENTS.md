@@ -64,4 +64,5 @@ constraint directly.
 
 ## Known gotchas
 - (root causes from 排障 sessions accrue here so the same bug is never debugged twice)
+- 2026-06-23：WebUI chat-plane 上传图片会落在 routed profile 的 `workspace/uploads`；Run Broker `content` 不能把 ContentBlock 直接 JSON.stringify，否则 multitenancy AIAgent 只会看到普通 JSON 文本并让工具去错误目录按 basename 搜图。broker 当前用户消息必须提供 `/workspace/uploads/...` 语义的工具路径。
 <!-- /ftask:managed -->

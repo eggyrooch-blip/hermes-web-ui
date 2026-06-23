@@ -136,6 +136,23 @@ describe('run-chat broker compatibility module', () => {
     expect(first.idempotency_key).not.toBe(second.idempotency_key)
   })
 
+  it('sends image uploads to the broker as workspace-readable tool context', async () => {
+    const request = await buildRunBrokerRequest({
+      input: [
+        { type: 'text', text: '讲一讲这张图片' },
+        { type: 'image', name: 'receipt.png', path: 'uploads/receipt.png', media_type: 'image/png' },
+      ],
+      profile: 'feishu_user_a',
+      appendInputToMessages: false,
+    })
+
+    expect(request.content).toContain('讲一讲这张图片')
+    expect(request.content).toContain('[Attached image: receipt.png]')
+    expect(request.content).toContain('Local image path for tools: /workspace/uploads/receipt.png')
+    expect(request.content).not.toContain('"type":"image"')
+    expect(request.messages).toEqual([])
+  })
+
   it('rewrites profile-local skill slash commands before sending WebUI broker runs', async () => {
     const profileDir = makeProfile()
     const request = await buildRunBrokerRequest({

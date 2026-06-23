@@ -11,6 +11,35 @@ export function contentBlocksToString(input: string | ContentBlock[]): string {
   return JSON.stringify(input)
 }
 
+export function contentBlocksToBrokerText(input: string | ContentBlock[]): string {
+  if (typeof input === 'string') return input
+  const parts: string[] = []
+  for (const block of input) {
+    if (block.type === 'text') {
+      parts.push(block.text || '')
+    } else if (block.type === 'image') {
+      const name = block.name || block.path
+      parts.push(`[Attached image: ${name}]\nLocal image path for tools: ${workspaceToolPath(block.path)}`)
+    } else if (block.type === 'file') {
+      const name = block.name || block.path
+      parts.push(`[Attached file: ${name}]\nLocal file path for tools: ${workspaceToolPath(block.path)}`)
+    }
+  }
+  return parts.filter(Boolean).join('\n')
+}
+
+function workspaceToolPath(filePath: string): string {
+  const normalized = String(filePath || '').replace(/\\/g, '/')
+  if (!normalized) return normalized
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(normalized)) return normalized
+  if (normalized === '/workspace' || normalized.startsWith('/workspace/')) return normalized
+  if (normalized.startsWith('workspace/')) return `/${normalized}`
+  const workspaceIndex = normalized.indexOf('/workspace/')
+  if (workspaceIndex >= 0) return normalized.slice(workspaceIndex)
+  if (!normalized.startsWith('/')) return `/workspace/${normalized.replace(/^\.?\//, '')}`
+  return normalized
+}
+
 /**
  * Extract text content from ContentBlock[] for title preview
  */

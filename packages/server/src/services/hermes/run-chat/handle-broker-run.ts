@@ -7,7 +7,7 @@ import { getSystemPrompt } from '../../../lib/llm-prompt'
 import { getSession } from '../../../db/hermes/session-store'
 import { config } from '../../../config'
 import { getProfileDir } from '../hermes-profile'
-import { buildBrokerMessagesForSession, contentBlocksToString } from './content-blocks'
+import { buildBrokerMessagesForSession, contentBlocksToBrokerText } from './content-blocks'
 import { readSseFrames } from './sse-utils'
 import type { ContentBlock, ResponseRunState, SessionMessage, SessionState } from './types'
 
@@ -101,7 +101,7 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
     appendInputToMessages = true,
   } = options
   const userKey = ownerOpenId?.trim() || profile
-  let content = contentBlocksToString(input).trim()
+  let content = contentBlocksToBrokerText(input).trim()
   const skillRuntime = options.profileDir ? buildProfileSkillRuntimeContext(options.profileDir, content, sessionId) : null
   if (skillRuntime?.content) content = skillRuntime.content
   const metadata: Record<string, any> = {
