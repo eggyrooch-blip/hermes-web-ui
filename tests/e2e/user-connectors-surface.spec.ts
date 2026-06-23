@@ -9,25 +9,32 @@ const USER_ACCESS_KEY = [
   'playwright-signature',
 ].join('.')
 
-test('ordinary users only see connectors and no technical sidebar controls', async ({ page }) => {
+test('ordinary users see files in the app sidebar and no technical sidebar controls', async ({ page }) => {
   await authenticate(page, USER_ACCESS_KEY, 'research')
   await mockHermesApi(page)
 
-  await page.goto('/#/hermes/plugins')
-
-  await expect(page).toHaveURL(/#\/hermes\/connectors$/)
-  await expect(page.getByRole('heading', { name: 'Connectors' })).toBeVisible()
-  await expect(page.getByText('Lark CLI')).toBeVisible()
+  await page.goto('/#/hermes/settings')
+  await expect(page).toHaveURL(/#\/hermes\/settings$/)
 
   const sidebar = page.locator('aside.sidebar')
-  await expect(sidebar.getByRole('link', { name: /^Expert$/ })).toBeVisible()
-  await expect(sidebar.getByRole('link', { name: /^Automation$/ })).toBeVisible()
+  await expect(sidebar.getByRole('link', { name: /^Files$/ })).toBeVisible()
+  await expect(sidebar.getByRole('link', { name: /^Expert$/ })).toHaveCount(0)
+  await expect(sidebar.getByRole('link', { name: /^Automation$/ })).toHaveCount(0)
   await expect(sidebar.getByRole('link', { name: /^Skills$/ })).toHaveCount(0)
   await expect(sidebar.getByRole('link', { name: /^Connectors$/ })).toHaveCount(0)
   await expect(sidebar.getByRole('link', { name: /^Plugins$/ })).toHaveCount(0)
   await expect(sidebar.getByRole('link', { name: /^MCP$/ })).toHaveCount(0)
   await expect(page.locator('button[title="Comic style"]')).toHaveCount(0)
   await expect(page.locator('button[title="Dark mode"]')).toHaveCount(0)
+
+  await sidebar.getByRole('link', { name: /^Files$/ }).click()
+  await expect(page).toHaveURL(/#\/hermes\/files$/)
+  await expect(page.getByRole('button', { name: /^New File$/ })).toBeVisible()
+
+  await page.goto('/#/hermes/plugins')
+  await expect(page).toHaveURL(/#\/hermes\/connectors$/)
+  await expect(page.getByRole('heading', { name: 'Connectors' })).toBeVisible()
+  await expect(page.getByText('Lark CLI')).toBeVisible()
 
   await page.goto('/#/hermes/mcp')
   await expect(page).toHaveURL(/#\/hermes\/connectors$/)
@@ -123,20 +130,18 @@ test('expert and automation surfaces follow the selected frontend profile', asyn
   await page.reload()
   await expect(page.getByTestId('profile-selector-select')).toContainText('default')
 
-  await page.goto('/#/hermes/connectors')
-  const sidebar = page.locator('aside.sidebar')
-  await sidebar.getByRole('link', { name: /^Expert$/ }).click()
-  await expect(page).toHaveURL(/#\/hermes\/expert$/)
+  const pageSidebar = page.locator('.page-sidebar-nav')
+  await pageSidebar.getByRole('button', { name: /^Expert$/ }).click()
+  await expect(page).toHaveURL(/#\/hermes\/chat\?surface=expert$/)
   await expect(page.getByText('Research helper')).toBeVisible()
 
   await page.getByRole('tab', { name: /^Connectors$/ }).click()
   await expect(page.getByText('Lark CLI')).toBeVisible()
 
-  await page.goto('/#/hermes/expert?tab=connectors&profile=research')
-  await expect(page.getByText('Lark CLI')).toBeVisible()
-
-  await sidebar.getByRole('link', { name: /^Automation$/ }).click()
-  await expect(page.getByRole('heading', { name: 'Automation' })).toBeVisible()
+  await page.goto('/#/hermes/chat')
+  await pageSidebar.getByRole('button', { name: /^Automation$/ }).click()
+  await expect(page).toHaveURL(/#\/hermes\/chat\?surface=automation$/)
+  await expect(page.locator('.header-session-title')).toHaveText('Automation')
 
   expect(api.requests.some(request =>
     request.pathname === '/api/hermes/skills' &&
@@ -161,6 +166,9 @@ test('super-admins keep access to technical inventory and sidebar controls', asy
 
   await expect(page).toHaveURL(/#\/hermes\/plugins$/)
   const sidebar = page.locator('aside.sidebar')
+  await expect(sidebar.getByRole('link', { name: /^Files$/ })).toBeVisible()
+  await expect(sidebar.getByRole('link', { name: /^Expert$/ })).toHaveCount(0)
+  await expect(sidebar.getByRole('link', { name: /^Automation$/ })).toHaveCount(0)
   await expect(sidebar.getByRole('link', { name: /^Plugins$/ })).toBeVisible()
   await expect(sidebar.getByRole('link', { name: /^MCP$/ })).toBeVisible()
   await expect(page.locator('button[title="Comic style"]')).toBeVisible()
