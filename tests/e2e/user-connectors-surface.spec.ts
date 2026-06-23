@@ -27,6 +27,16 @@ test('ordinary users see files in the app sidebar and no technical sidebar contr
   await expect(page.locator('button[title="Comic style"]')).toHaveCount(0)
   await expect(page.locator('button[title="Dark mode"]')).toHaveCount(0)
 
+  const logoLink = sidebar.locator('.sidebar-logo')
+  await expect(logoLink).toBeVisible()
+  await expect(logoLink).toContainText('Hermes')
+  await expect(logoLink.locator('img')).toHaveAttribute('src', '/logo.png')
+  await logoLink.click()
+  await expect(page).toHaveURL(/#\/hermes\/chat$/)
+
+  await page.goto('/#/hermes/settings')
+  await expect(page).toHaveURL(/#\/hermes\/settings$/)
+
   await sidebar.getByRole('link', { name: /^Files$/ }).click()
   await expect(page).toHaveURL(/#\/hermes\/files$/)
   await expect(page.getByRole('button', { name: /^New File$/ })).toBeVisible()
