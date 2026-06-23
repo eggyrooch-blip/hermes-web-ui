@@ -51,6 +51,9 @@ vi.mock('naive-ui', () => ({
     props: ['show'],
     template: '<div><slot /></div>',
   },
+  NTooltip: {
+    template: '<span class="n-tooltip"><slot name="trigger" /><slot /></span>',
+  },
 }))
 
 vi.mock('@/components/hermes/jobs/JobsPanel.vue', () => ({

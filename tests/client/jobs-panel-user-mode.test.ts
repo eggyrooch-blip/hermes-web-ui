@@ -34,12 +34,18 @@ vi.mock('naive-ui', () => ({
 }))
 
 vi.mock('@/components/hermes/jobs/JobCard.vue', () => ({
-  default: { props: ['job', 'selected'], template: '<article class="job-card-stub" />' },
+  default: { props: ['job', 'selected'], template: '<article class="job-card-stub" :data-job-id="job.id">{{ job.name }}</article>' },
 }))
 
 import JobsPanel from '@/components/hermes/jobs/JobsPanel.vue'
 
 describe('JobsPanel user-mode gateway state', () => {
+  const panelProps = {
+    selectedJobId: null,
+    sortBy: 'name' as const,
+    sortAsc: true,
+  }
+
   beforeEach(() => {
     jobsStoreMock.jobs = []
     jobsStoreMock.loading = false
@@ -52,7 +58,7 @@ describe('JobsPanel user-mode gateway state', () => {
     jobsStoreMock.gatewayUnavailable = true
 
     const wrapper = mount(JobsPanel, {
-      props: { selectedJobId: null },
+      props: panelProps,
     })
 
     expect(wrapper.find('.wake-gateway-button').exists()).toBe(false)
@@ -62,7 +68,7 @@ describe('JobsPanel user-mode gateway state', () => {
     jobsStoreMock.gatewayUnavailable = false
 
     const wrapper = mount(JobsPanel, {
-      props: { selectedJobId: null },
+      props: panelProps,
     })
 
     expect(wrapper.find('.sleep-gateway-button').exists()).toBe(false)
@@ -73,9 +79,27 @@ describe('JobsPanel user-mode gateway state', () => {
     isUserModeMock.mockReturnValue(false)
 
     const wrapper = mount(JobsPanel, {
-      props: { selectedJobId: null },
+      props: panelProps,
     })
 
     expect(wrapper.find('.sleep-gateway-button').exists()).toBe(false)
+  })
+
+  it('sorts jobs by name and creation order according to props', async () => {
+    jobsStoreMock.jobs = [
+      { id: '1', job_id: '1', name: 'beta' },
+      { id: '2', job_id: '2', name: 'alpha' },
+      { id: '3', job_id: '3', name: 'gamma' },
+    ]
+
+    const wrapper = mount(JobsPanel, {
+      props: panelProps,
+    })
+
+    expect(wrapper.findAll('.job-card-stub').map(card => card.text())).toEqual(['alpha', 'beta', 'gamma'])
+
+    await wrapper.setProps({ sortBy: 'time', sortAsc: false })
+
+    expect(wrapper.findAll('.job-card-stub').map(card => card.text())).toEqual(['gamma', 'alpha', 'beta'])
   })
 })
