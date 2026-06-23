@@ -16,7 +16,7 @@ related:
 # hermes-web-ui 架构速查 — EKKO fork
 
 > [!info] 2026-06-23 本机 main 已合入，等待 sunke 验证 — 登录后主界面新增“专家/自动化”直达入口，生产未发布
-> `webui-expert-automation-nav` 调整 Feishu/WebUI 普通用户登录后的主界面产品入口：`专家` 与 `自动化` 是 AppSidebar 的 Agent 分组直达入口，`专家` 位于 `自动化` 上方；聊天窄侧栏保持 `新建对话 / 搜索 / 历史`，不再放 `专家/自动化` 中转按钮，避免从 chat 页面跳到设置式页面。chat 窄侧栏底部原独立“设置”按钮位置改为飞书用户卡片，显示姓名、profile、连接状态，设置入口变成卡片内齿轮 icon；该卡片与 AppSidebar 复用 `SidebarUserCard`。`专家` 图标改成人像徽章；原 Jobs 产品文案更名为 Automation/自动化，但保留 `/hermes/jobs` route、store 和后端 API 名称，避免扩大后端迁移面。
+> `webui-expert-automation-nav` 调整 Feishu/WebUI 普通用户登录后的主界面产品入口：chat/home 窄侧栏直接显示 `新建对话 / 搜索 / 专家 / 自动化 / 历史`，`专家` 位于 `自动化` 上方，`自动化` 位于 `历史` 上方；点击 `专家` 直达 `/hermes/expert`，点击 `自动化` 直达 `/hermes/jobs`，不是 Settings 中转。`专家` 与 `自动化` 也保留为 AppSidebar 的 Agent 分组直达入口，便于非 chat 页面继续配置。chat 窄侧栏底部原独立“设置”按钮位置改为飞书用户卡片，显示姓名、profile、连接状态，设置入口变成卡片内齿轮 icon；该卡片与 AppSidebar 复用 `SidebarUserCard`。`专家` 图标改成人像徽章；原 Jobs 产品文案更名为 Automation/自动化，但保留 `/hermes/jobs` route、store 和后端 API 名称，避免扩大后端迁移面。
 >
 > 新增 `/hermes/expert` 普通认证路由，默认显示 profile-local Skills，并提供连接器 tab，底层仍复用 `SkillsView` 与 `CredentialsView`；`/hermes/skills`、`/hermes/connectors` 和 `/hermes/credentials` 旧链接继续可访问。Skills、专家页内连接器、自动化都必须跟随 `ProfileSelector` 的 frontend active profile：Skills 显式请求 `/api/hermes/skills?profile=<active>`，专家页内连接器请求 `/api/auth/skill-credentials?profile=<active>` 并忽略 stale route `profile` query；独立 `/hermes/connectors?profile=...` 仍保留显式 profile 兼容。Jobs 继续依赖 request helper 注入 `X-Hermes-Profile` 并在 active profile 变化时重新加载。Plugins/MCP/Coding Agents 仍是 super-admin-only，不进入专家页。
 >

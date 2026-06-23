@@ -39,6 +39,14 @@ function openHistory() {
   void router.push({ name: 'hermes.history' })
 }
 
+function openExpert() {
+  void router.push({ name: 'hermes.expert' })
+}
+
+function openAutomation() {
+  void router.push({ name: 'hermes.jobs' })
+}
+
 function openGroupChat() {
   if (props.active === 'group') return
   void router.push({ name: 'hermes.groupChat' })
@@ -80,6 +88,41 @@ function openGroupChat() {
           <path d="m20 20-3.5-3.5" />
         </svg>
         <span>{{ t('sidebar.search') }}</span>
+      </button>
+      <button class="page-sidebar-tab" type="button" @click="openExpert">
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <circle cx="12" cy="8" r="3.5" />
+          <path d="M5 21a7 7 0 0 1 14 0" />
+          <path d="m15.5 13.5 1.6 1.6 3.1-3.3" />
+        </svg>
+        <span>{{ t('sidebar.expert') }}</span>
+      </button>
+      <button class="page-sidebar-tab" type="button" @click="openAutomation">
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M4 6h16" />
+          <path d="M4 12h16" />
+          <path d="M4 18h10" />
+          <path d="m17 15 3 3-3 3" />
+        </svg>
+        <span>{{ t('sidebar.jobs') }}</span>
       </button>
       <button
         class="page-sidebar-tab"

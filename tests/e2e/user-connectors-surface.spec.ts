@@ -55,7 +55,7 @@ test('ordinary users create chats without the advanced agent and workspace drawe
   expect(api.unexpectedRequests).toEqual([])
 })
 
-test('ordinary users open expert and automation directly from the app sidebar', async ({ page }) => {
+test('ordinary users open expert and automation directly from the home sidebar', async ({ page }) => {
   await authenticate(page, USER_ACCESS_KEY, 'research')
   const api = await mockHermesApi(page)
 
@@ -70,18 +70,16 @@ test('ordinary users open expert and automation directly from the app sidebar', 
   await expect(page).toHaveURL(/#\/hermes\/settings$/)
   await page.goto('/#/hermes/chat')
 
-  await expect(pageSidebar.getByText('Expert', { exact: true })).toHaveCount(0)
-  await expect(pageSidebar.getByText('Automation', { exact: true })).toHaveCount(0)
+  await expect(pageSidebar.getByText('Expert', { exact: true })).toBeVisible()
+  await expect(pageSidebar.getByText('Automation', { exact: true })).toBeVisible()
   await expect(page.getByText('History', { exact: true })).toBeVisible()
 
   const labels = await pageSidebar.evaluate(element =>
     Array.from(element.querySelectorAll('.page-sidebar-tab span')).map(node => node.textContent?.trim() || ''),
   )
-  expect(labels.slice(0, 3)).toEqual(['New Chat', 'Search', 'History'])
+  expect(labels.slice(0, 5)).toEqual(['New Chat', 'Search', 'Expert', 'Automation', 'History'])
 
-  await page.goto('/#/hermes/connectors')
-  const sidebar = page.locator('aside.sidebar')
-  await sidebar.getByRole('link', { name: /^Expert$/ }).click()
+  await pageSidebar.getByRole('button', { name: /^Expert$/ }).click()
   await expect(page).toHaveURL(/#\/hermes\/expert$/)
   await expect(page.getByRole('tab', { name: /^Skills$/ })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Skills' })).toBeVisible()
@@ -91,7 +89,8 @@ test('ordinary users open expert and automation directly from the app sidebar', 
   await expect(page).toHaveURL(/#\/hermes\/expert\?tab=connectors$/)
   await expect(page.getByText('Lark CLI')).toBeVisible()
 
-  await sidebar.getByRole('link', { name: /^Automation$/ }).click()
+  await page.goto('/#/hermes/chat')
+  await page.locator('.page-sidebar-nav').getByRole('button', { name: /^Automation$/ }).click()
   await expect(page).toHaveURL(/#\/hermes\/jobs$/)
   await expect(page.getByRole('heading', { name: 'Automation' })).toBeVisible()
   await expect(page.getByText('Nightly Smoke')).toBeVisible()
