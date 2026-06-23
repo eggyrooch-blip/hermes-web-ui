@@ -11,9 +11,13 @@ const message = useMessage()
 const { t } = useI18n()
 const route = useRoute()
 const profilesStore = useProfilesStore()
-defineProps<{
+const props = withDefaults(defineProps<{
   embedded?: boolean
-}>()
+  preferActiveProfile?: boolean
+}>(), {
+  embedded: false,
+  preferActiveProfile: false,
+})
 const loading = ref(false)
 const startingId = ref('')
 const completingId = ref('')
@@ -30,7 +34,10 @@ const oauthPollingId = ref('')
 
 const credentials = computed(() => data.value?.credentials || [])
 const routeProfile = computed(() => typeof route.query.profile === 'string' ? route.query.profile.trim() : '')
-const requestedProfile = computed(() => routeProfile.value || profilesStore.activeProfileName || '')
+const requestedProfile = computed(() => {
+  const activeProfile = profilesStore.activeProfileName || ''
+  return props.preferActiveProfile ? activeProfile : routeProfile.value || activeProfile
+})
 let profileWatchReady = false
 const internalCredentialIds = new Set(['lark-cli', 'feishu-project', 'keep-record', 'kep-cli'])
 const credentialGroups = computed(() => {
@@ -170,7 +177,7 @@ watch(requestedProfile, async (profile, previous) => {
 </script>
 
 <template>
-  <div class="credentials-view" :class="{ 'is-embedded': embedded }">
+  <div class="credentials-view" :class="{ 'is-embedded': props.embedded }">
     <header class="page-header">
       <h2 class="header-title">{{ t('sidebar.connectors') }}</h2>
       <NButton size="small" quaternary :loading="loading" @click="loadCredentials">刷新</NButton>

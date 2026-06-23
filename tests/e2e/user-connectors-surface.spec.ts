@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test'
 import { authenticate, mockHermesApi, TEST_ACCESS_KEY } from './fixtures'
 
+test.describe.configure({ mode: 'serial' })
+
 const USER_ACCESS_KEY = [
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
   'eyJzdWIiOiIyIiwidXNlcm5hbWUiOiJlbXBsb3llZSIsInJvbGUiOiJhZG1pbiIsInR5cGUiOiJhY2Nlc3MiLCJhdWQiOiJoZXJtZXMtd2ViLXVpIiwiaWF0IjoxNzYwMDAwMDAwLCJleHAiOjQxMDI0NDQ4MDB9',
@@ -18,7 +20,10 @@ test('ordinary users only see connectors and no technical sidebar controls', asy
   await expect(page.getByText('Lark CLI')).toBeVisible()
 
   const sidebar = page.locator('aside.sidebar')
-  await expect(sidebar.getByRole('link', { name: /^Connectors$/ })).toBeVisible()
+  await expect(sidebar.getByRole('link', { name: /^Expert$/ })).toBeVisible()
+  await expect(sidebar.getByRole('link', { name: /^Automation$/ })).toBeVisible()
+  await expect(sidebar.getByRole('link', { name: /^Skills$/ })).toHaveCount(0)
+  await expect(sidebar.getByRole('link', { name: /^Connectors$/ })).toHaveCount(0)
   await expect(sidebar.getByRole('link', { name: /^Plugins$/ })).toHaveCount(0)
   await expect(sidebar.getByRole('link', { name: /^MCP$/ })).toHaveCount(0)
   await expect(page.locator('button[title="Comic style"]')).toHaveCount(0)
@@ -105,9 +110,8 @@ test('expert and automation surfaces follow the selected frontend profile', asyn
   const api = await mockHermesApi(page)
 
   await page.goto('/#/hermes/chat')
-  await page.getByTestId('profile-selector-select').click()
-  const defaultProfileRow = page.locator('.profile-runtime-item').filter({ hasText: 'default' })
-  await defaultProfileRow.getByRole('button', { name: /^Switch Frontend Profile$/ }).click()
+  await page.evaluate(() => window.localStorage.setItem('hermes_active_profile_name', 'default'))
+  await page.reload()
   await expect(page.getByTestId('profile-selector-select')).toContainText('default')
 
   const pageSidebar = page.locator('.page-sidebar-nav')
@@ -116,6 +120,9 @@ test('expert and automation surfaces follow the selected frontend profile', asyn
   await expect(page.getByText('Research helper')).toBeVisible()
 
   await page.getByRole('tab', { name: /^Connectors$/ }).click()
+  await expect(page.getByText('Lark CLI')).toBeVisible()
+
+  await page.goto('/#/hermes/expert?tab=connectors&profile=research')
   await expect(page.getByText('Lark CLI')).toBeVisible()
 
   await page.goto('/#/hermes/chat')

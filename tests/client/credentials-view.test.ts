@@ -5,6 +5,7 @@ import { mount } from '@vue/test-utils'
 const fetchSkillCredentialsMock = vi.hoisted(() => vi.fn())
 const startSkillCredentialAuthMock = vi.hoisted(() => vi.fn())
 const completeSkillCredentialAuthMock = vi.hoisted(() => vi.fn())
+const routeQuery = vi.hoisted(() => ({} as Record<string, string>))
 
 vi.mock('@/api/skillCredentials', () => ({
   completeSkillCredentialAuth: completeSkillCredentialAuthMock,
@@ -23,7 +24,7 @@ vi.mock('vue-i18n', () => ({
 }))
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ query: {} }),
+  useRoute: () => ({ query: routeQuery }),
 }))
 
 vi.mock('@/stores/hermes/profiles', () => ({
@@ -62,6 +63,7 @@ vi.mock('naive-ui', async () => {
 describe('CredentialsView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    for (const key of Object.keys(routeQuery)) delete routeQuery[key]
     fetchSkillCredentialsMock.mockResolvedValue({
       profile_name: 'feishu_user_a',
       credentials: [
@@ -164,6 +166,29 @@ describe('CredentialsView', () => {
     const html = wrapper.html()
     expect(html).not.toContain('keep-secret-token')
     expect(html).not.toContain('gitlab-secret-token')
+  })
+
+  it('keeps explicit route profile support on the standalone connectors route', async () => {
+    routeQuery.profile = 'route_profile'
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(fetchSkillCredentialsMock).toHaveBeenCalledWith('route_profile')
+  })
+
+  it('prefers the active profile when embedded in Expert', async () => {
+    routeQuery.profile = 'stale_route_profile'
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    mount(CredentialsView, {
+      props: {
+        embedded: true,
+        preferActiveProfile: true,
+      },
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(fetchSkillCredentialsMock).toHaveBeenCalledWith('feishu_g41a5b5g')
   })
 
   it('keeps dense required-skill lists from stretching sibling credential cards', async () => {

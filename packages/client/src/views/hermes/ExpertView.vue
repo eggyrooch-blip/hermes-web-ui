@@ -72,7 +72,7 @@ watch(() => route.query.tab, (tab) => {
 
     <section class="expert-panel" role="tabpanel">
       <SkillsView v-if="activeTab === 'skills'" embedded />
-      <CredentialsView v-else embedded />
+      <CredentialsView v-else embedded prefer-active-profile />
     </section>
   </div>
 </template>
