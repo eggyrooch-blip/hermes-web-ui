@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-06-22
+updated: 2026-06-23
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
@@ -15,12 +15,12 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
-> [!info] 2026-06-23 本机 worktree — 登录后主界面新增“专家/自动化”入口，生产未发布
+> [!info] 2026-06-23 本机 main 已合入，等待 sunke 验证 — 登录后主界面新增“专家/自动化”入口，生产未发布
 > `webui-expert-automation-nav` 调整 Feishu/WebUI 普通用户登录后的主界面产品入口：聊天窄侧栏现在在 `新建对话 / 搜索 / 历史` 之间插入 `专家` 与 `自动化`，顺序为 `新建对话 / 搜索 / 专家 / 自动化 / 历史`；原 Jobs 产品文案更名为 Automation/自动化，但保留 `/hermes/jobs` route、store 和后端 API 名称，避免扩大后端迁移面。
 >
-> 新增 `/hermes/expert` 普通认证路由，默认显示 profile-local Skills，并提供连接器 tab，底层仍复用 `SkillsView` 与 `CredentialsView`；`/hermes/skills`、`/hermes/connectors` 和 `/hermes/credentials` 旧链接继续可访问。Skills、连接器、自动化都必须跟随 `ProfileSelector` 的 frontend active profile：Skills 显式请求 `/api/hermes/skills?profile=<active>`，连接器请求 `/api/auth/skill-credentials?profile=<active>`，Jobs 继续依赖 request helper 注入 `X-Hermes-Profile` 并在 active profile 变化时重新加载。Plugins/MCP/Coding Agents 仍是 super-admin-only，不进入专家页。
+> 新增 `/hermes/expert` 普通认证路由，默认显示 profile-local Skills，并提供连接器 tab，底层仍复用 `SkillsView` 与 `CredentialsView`；`/hermes/skills`、`/hermes/connectors` 和 `/hermes/credentials` 旧链接继续可访问。Skills、专家页内连接器、自动化都必须跟随 `ProfileSelector` 的 frontend active profile：Skills 显式请求 `/api/hermes/skills?profile=<active>`，专家页内连接器请求 `/api/auth/skill-credentials?profile=<active>` 并忽略 stale route `profile` query；独立 `/hermes/connectors?profile=...` 仍保留显式 profile 兼容。Jobs 继续依赖 request helper 注入 `X-Hermes-Profile` 并在 active profile 变化时重新加载。Plugins/MCP/Coding Agents 仍是 super-admin-only，不进入专家页。
 >
-> 当前仅在 worktree 实现并通过 focused Vitest 与 Playwright mocked e2e；尚未 ftask ship 到本机 main，未重建/重启本机 `8648`，未 push/finalize，生产没有变化。
+> 当前已通过 ftask ship 合入本机 `main`，push/finalize/worktree 删除等待 sunke 在 main checkout 验证；未重建/重启本机 `8648`，未 push GitHub，未发布生产。验证：focused Vitest 7 files / 69 tests passed；Playwright mocked e2e `tests/e2e/user-connectors-surface.spec.ts` 5 passed；`npm run build` passed；ftask TEST/LEAK/GRAPH/MERGE passed；Claude review pass。
 
 > [!info] 2026-06-22 本机 worktree — selective upstream bugfix harvest
 > `upstream-bugfix-harvest` 只吸收上游低风险 bugfix，不改变普通用户连接器/插件/MCP 的产品边界，也不发布生产。已纳入的上游点包括：CJK 长串 token 计数防卡死、`run.failed` 不覆盖已有长 assistant 正文、session messages 空值保护、config backup fallback、大静态资源不动态 Brotli、stale token 登录锁恢复、群聊 `firstSeenAt` 稳定排序、未选 room 添加 agent 的前端提示、skill detail 文件列表高度限制。
