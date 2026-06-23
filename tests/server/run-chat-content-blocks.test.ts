@@ -69,7 +69,8 @@ describe('run chat content blocks', () => {
       content: [
         '继续分析这张图',
         '[Attached image: receipt.png]',
-        'Local image path for tools: /workspace/uploads/receipt.png',
+        'Local image path for tools: uploads/receipt.png',
+        'If analyzing this image, call vision_analyze with image_url "uploads/receipt.png" directly. Do not use delegate_task for image recognition.',
       ].join('\n'),
     }])
   })

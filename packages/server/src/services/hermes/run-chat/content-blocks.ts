@@ -19,24 +19,30 @@ export function contentBlocksToBrokerText(input: string | ContentBlock[]): strin
       parts.push(block.text || '')
     } else if (block.type === 'image') {
       const name = block.name || block.path
-      parts.push(`[Attached image: ${name}]\nLocal image path for tools: ${workspaceToolPath(block.path)}`)
+      const toolPath = localToolPath(block.path)
+      parts.push([
+        `[Attached image: ${name}]`,
+        `Local image path for tools: ${toolPath}`,
+        `If analyzing this image, call vision_analyze with image_url ${JSON.stringify(toolPath)} directly. Do not use delegate_task for image recognition.`,
+      ].join('\n'))
     } else if (block.type === 'file') {
       const name = block.name || block.path
-      parts.push(`[Attached file: ${name}]\nLocal file path for tools: ${workspaceToolPath(block.path)}`)
+      parts.push(`[Attached file: ${name}]\nLocal file path for tools: ${localToolPath(block.path)}`)
     }
   }
   return parts.filter(Boolean).join('\n')
 }
 
-function workspaceToolPath(filePath: string): string {
+function localToolPath(filePath: string): string {
   const normalized = String(filePath || '').replace(/\\/g, '/')
   if (!normalized) return normalized
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(normalized)) return normalized
-  if (normalized === '/workspace' || normalized.startsWith('/workspace/')) return normalized
-  if (normalized.startsWith('workspace/')) return `/${normalized}`
+  if (normalized === '/workspace' || normalized === 'workspace') return '.'
+  if (normalized.startsWith('/workspace/')) return normalized.slice('/workspace/'.length)
+  if (normalized.startsWith('workspace/')) return normalized.slice('workspace/'.length)
   const workspaceIndex = normalized.indexOf('/workspace/')
-  if (workspaceIndex >= 0) return normalized.slice(workspaceIndex)
-  if (!normalized.startsWith('/')) return `/workspace/${normalized.replace(/^\.?\//, '')}`
+  if (workspaceIndex >= 0) return normalized.slice(workspaceIndex + '/workspace/'.length)
+  if (!normalized.startsWith('/')) return normalized.replace(/^\.?\//, '')
   return normalized
 }
 

@@ -148,7 +148,10 @@ describe('run-chat broker compatibility module', () => {
 
     expect(request.content).toContain('讲一讲这张图片')
     expect(request.content).toContain('[Attached image: receipt.png]')
-    expect(request.content).toContain('Local image path for tools: /workspace/uploads/receipt.png')
+    expect(request.content).toContain('Local image path for tools: uploads/receipt.png')
+    expect(request.content).toContain('call vision_analyze with image_url "uploads/receipt.png" directly')
+    expect(request.content).toContain('Do not use delegate_task for image recognition.')
+    expect(request.content).not.toContain('/workspace/uploads/receipt.png')
     expect(request.content).not.toContain('"type":"image"')
     expect(request.messages).toEqual([])
   })
