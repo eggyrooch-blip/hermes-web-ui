@@ -1,5 +1,6 @@
 import { request, getApiKey, getBaseUrlValue } from '../client'
-import type { ProviderApiMode } from './system'
+
+export type ProviderApiMode = 'chat_completions' | 'codex_responses' | 'anthropic_messages'
 
 export interface SessionSummary {
   id: string
