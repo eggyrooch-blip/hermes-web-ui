@@ -184,7 +184,8 @@ export default {
     search: '搜索',
     apiRelay: '饲料',
     history: '历史',
-    jobs: '任务',
+    jobs: '自动化',
+    expert: '专家',
     kanban: '看板',
     models: '模型',
     profiles: '用户',
@@ -401,6 +402,14 @@ export default {
   },
 
   // 对话
+
+  expert: {
+    tabs: {
+      skills: 'Skills',
+      connectors: '连接器',
+    },
+  },
+
   chat: {
     contextRemaining: '剩余',
     contextClickToEdit: '点击编辑上下文长度',
@@ -739,10 +748,10 @@ export default {
 
   // 定时任务
   jobs: {
-    title: '定时任务',
-    createJob: '创建任务',
-    editJob: '编辑任务',
-    noJobs: '暂无定时任务，创建一个开始吧。',
+    title: '自动化',
+    createJob: '创建自动化',
+    editJob: '编辑自动化',
+    noJobs: '暂无自动化，创建一个开始吧。',
     sortBy: '排序',
     sortByName: '名称排序',
     sortByTime: '时间排序',
@@ -751,7 +760,7 @@ export default {
     sortAsc: '升序',
     sortDesc: '降序',
     name: '名称',
-    namePlaceholder: '任务名称',
+    namePlaceholder: '自动化名称',
     schedule: '调度表达式 (Cron)',
     schedulePlaceholder: '例如 0 9 * * *',
     quickPresets: '快速预设',
@@ -773,16 +782,16 @@ export default {
     repeatCount: '重复次数（可选）',
     modelPlaceholder: 'Default model',
     repeatPlaceholder: '留空表示无限重复',
-    jobCreated: '任务已创建',
-    jobUpdated: '任务已更新',
+    jobCreated: '自动化已创建',
+    jobUpdated: '自动化已更新',
     nameRequired: '名称为必填项',
     scheduleRequired: '调度表达式为必填项',
-    loadFailed: '加载任务失败',
-    jobPaused: '任务已暂停',
-    jobResumed: '任务已恢复',
-    jobTriggered: '任务已触发',
+    loadFailed: '加载自动化失败',
+    jobPaused: '自动化已暂停',
+    jobResumed: '自动化已恢复',
+    jobTriggered: '自动化已触发',
     modelUpdated: 'Model updated',
-    jobDeleted: '任务已删除',
+    jobDeleted: '自动化已删除',
     status: {
       running: '运行中',
       paused: '已暂停',
@@ -799,9 +808,9 @@ export default {
     },
     action: {
       pause: '暂停',
-      pauseJob: '暂停任务',
+      pauseJob: '暂停自动化',
       resume: '恢复',
-      resumeJob: '恢复任务',
+      resumeJob: '恢复自动化',
       runNow: '立即运行',
       triggerImmediately: '立即触发',
     },

@@ -96,6 +96,11 @@ const router = createRouter({
       component: () => import('@/views/hermes/SkillsView.vue'),
     },
     {
+      path: '/hermes/expert',
+      name: 'hermes.expert',
+      component: () => import('@/views/hermes/ExpertView.vue'),
+    },
+    {
       path: '/hermes/connectors',
       alias: '/hermes/credentials',
       name: 'hermes.connectors',

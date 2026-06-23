@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { NButton, NModal, NSpin, useMessage } from 'naive-ui'
 import { completeSkillCredentialAuth, fetchSkillCredentials, startSkillCredentialAuth } from '@/api/skillCredentials'
 import type { SkillCredentialEntry, SkillCredentialsResponse } from '@/api/skillCredentials'
+import { useProfilesStore } from '@/stores/hermes/profiles'
 
 const message = useMessage()
 const { t } = useI18n()
 const route = useRoute()
+const profilesStore = useProfilesStore()
 const loading = ref(false)
 const startingId = ref('')
 const completingId = ref('')
@@ -24,7 +26,9 @@ const qrDialog = ref<{
 const oauthPollingId = ref('')
 
 const credentials = computed(() => data.value?.credentials || [])
-const requestedProfile = computed(() => typeof route.query.profile === 'string' ? route.query.profile.trim() : '')
+const routeProfile = computed(() => typeof route.query.profile === 'string' ? route.query.profile.trim() : '')
+const requestedProfile = computed(() => routeProfile.value || profilesStore.activeProfileName || '')
+let profileWatchReady = false
 const internalCredentialIds = new Set(['lark-cli', 'feishu-project', 'keep-record', 'kep-cli'])
 const credentialGroups = computed(() => {
   const internal = credentials.value.filter(entry => internalCredentialIds.has(entry.id))
@@ -53,11 +57,18 @@ async function loadCredentials() {
   loading.value = true
   error.value = ''
   try {
+    await ensureProfileSelection()
     await refreshCredentials()
   } catch (err: any) {
     error.value = err?.message || '连接器状态加载失败'
   } finally {
     loading.value = false
+  }
+}
+
+async function ensureProfileSelection() {
+  if (!requestedProfile.value && (!profilesStore.activeProfileName || profilesStore.profiles.length === 0)) {
+    await profilesStore.fetchProfiles()
   }
 }
 
@@ -144,7 +155,15 @@ function closeQrDialog() {
   qrDialog.value = null
 }
 
-onMounted(loadCredentials)
+onMounted(async () => {
+  await loadCredentials()
+  profileWatchReady = true
+})
+
+watch(requestedProfile, async (profile, previous) => {
+  if (!profileWatchReady || profile === previous) return
+  await loadCredentials()
+})
 </script>
 
 <template>

@@ -33,8 +33,10 @@ const pendingWriteCount = ref(0)
 const writeApprovalSupported = ref(true)
 const isSuperAdmin = computed(() => isStoredSuperAdmin())
 const showHostSkillActions = computed(() => isSuperAdmin.value)
+const activeProfileName = computed(() => profilesStore.activeProfileName || '')
 let mobileQuery: MediaQueryList | null = null
 let recommendationsRequestSeq = 0
+let profileWatchReady = false
 
 const recommendationsPath = computed(() => {
   return String(locale.value).startsWith('zh')
@@ -59,9 +61,13 @@ onMounted(() => {
   mobileQuery = window.matchMedia('(max-width: 768px)')
   handleMobileChange(mobileQuery)
   mobileQuery.addEventListener('change', handleMobileChange)
-  loadSkills()
+  void Promise.all([
+    loadSkills(),
+    loadPendingWriteCount(),
+  ]).finally(() => {
+    profileWatchReady = true
+  })
   loadRecommendations()
-  loadPendingWriteCount()
 })
 
 onUnmounted(() => {
@@ -74,7 +80,7 @@ async function loadSkills() {
     if (!profilesStore.activeProfileName || profilesStore.profiles.length === 0) {
       await profilesStore.fetchProfiles()
     }
-    const data = await fetchSkills()
+    const data = await fetchSkills(activeProfileName.value || undefined)
     categories.value = data.categories
     archived.value = data.archived
   } catch (err: any) {
@@ -109,6 +115,16 @@ async function loadRecommendations() {
 }
 
 watch(recommendationsPath, loadRecommendations)
+
+watch(activeProfileName, async (profile, previous) => {
+  if (!profileWatchReady || !profile || profile === previous) return
+  selectedCategory.value = ''
+  selectedSkill.value = ''
+  await Promise.all([
+    loadSkills(),
+    loadPendingWriteCount(),
+  ])
+})
 
 async function loadPendingWriteCount() {
   try {

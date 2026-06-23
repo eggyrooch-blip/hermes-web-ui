@@ -77,6 +77,7 @@ describe('SkillsView enterprise surface gating', () => {
     const wrapper = mount(SkillsView)
     await flushPromises()
 
+    expect(mockFetchSkills).toHaveBeenCalledWith('feishu_g41a5b5g')
     expect(wrapper.text()).toContain('Pending 0')
     expect(wrapper.text()).not.toContain('skills.import')
     expect(wrapper.text()).not.toContain('skills.externalDirs.manage')

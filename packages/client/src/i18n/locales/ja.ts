@@ -184,7 +184,8 @@ export default {
     search: '検索',
     apiRelay: 'APIリレー',
     history: '履歴',
-    jobs: 'ジョブ',
+    jobs: '自動化',
+    expert: 'エキスパート',
     models: 'モデル',
     profiles: 'プロファイル',
     plugins: 'プラグイン',
@@ -401,6 +402,14 @@ export default {
   },
 
   // チャット
+
+  expert: {
+    tabs: {
+      skills: 'Skills',
+      connectors: 'Connectors',
+    },
+  },
+
   chat: {
     contextRemaining: '残り',
     contextClickToEdit: 'クリックしてコンテキスト長を編集',
@@ -606,7 +615,7 @@ export default {
 
   // スケジュールジョブ
   jobs: {
-    title: 'スケジュールジョブ',
+    title: '自動化',
     createJob: 'ジョブを作成',
     editJob: 'ジョブを編集',
     noJobs: 'スケジュールジョブがありません。作成して始めましょう。',

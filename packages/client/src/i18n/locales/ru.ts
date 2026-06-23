@@ -110,7 +110,8 @@ export default {
     search: 'Поиск',
     apiRelay: 'Ретранслятор API',
     history: 'История',
-    jobs: 'Задачи',
+    jobs: 'Автоматизация',
+    expert: 'Эксперт',
     kanban: 'Канбан',
     models: 'Модели',
     profiles: 'Пользователи',
@@ -327,6 +328,12 @@ export default {
     files: 'Рабочая область',
   },
 
+  expert: {
+    tabs: {
+      skills: 'Skills',
+      connectors: 'Connectors',
+    },
+  },
 
   chat: {
     contextRemaining: 'Осталось',
@@ -645,7 +652,7 @@ export default {
 
 
   jobs: {
-    title: 'Периодические задачи',
+    title: 'Автоматизация',
     createJob: 'Создать задачу',
     editJob: 'Редактировать задачу',
     noJobs: 'Нет периодических задач. Создайте первую.',

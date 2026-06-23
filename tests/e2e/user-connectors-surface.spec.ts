@@ -50,6 +50,92 @@ test('ordinary users create chats without the advanced agent and workspace drawe
   expect(api.unexpectedRequests).toEqual([])
 })
 
+test('ordinary users see expert and automation in the main chat sidebar', async ({ page }) => {
+  await authenticate(page, USER_ACCESS_KEY, 'research')
+  const api = await mockHermesApi(page)
+
+  await page.goto('/#/hermes/chat')
+
+  const pageSidebar = page.locator('.page-sidebar-nav')
+  await expect(pageSidebar).toBeVisible()
+  const expertAction = page.getByText('Expert', { exact: true })
+  const automationAction = page.getByText('Automation', { exact: true })
+  await expect(expertAction).toBeVisible()
+  await expect(automationAction).toBeVisible()
+  await expect(page.getByText('History', { exact: true })).toBeVisible()
+
+  const labels = await pageSidebar.evaluate(element =>
+    Array.from(element.querySelectorAll('.page-sidebar-tab span')).map(node => node.textContent?.trim() || ''),
+  )
+  expect(labels.slice(0, 5)).toEqual(['New Chat', 'Search', 'Expert', 'Automation', 'History'])
+
+  await expertAction.click()
+  await expect(page).toHaveURL(/#\/hermes\/expert$/)
+  await expect(page.getByRole('heading', { name: 'Expert' })).toBeVisible()
+  await expect(page.getByText('Research helper')).toBeVisible()
+
+  await page.getByRole('tab', { name: /^Connectors$/ }).click()
+  await expect(page).toHaveURL(/#\/hermes\/expert\?tab=connectors$/)
+  await expect(page.getByText('Lark CLI')).toBeVisible()
+
+  await page.goto('/#/hermes/chat')
+  await automationAction.click()
+  await expect(page).toHaveURL(/#\/hermes\/jobs$/)
+  await expect(page.getByRole('heading', { name: 'Automation' })).toBeVisible()
+  await expect(page.getByText('Nightly Smoke')).toBeVisible()
+
+  expect(api.requests.some(request =>
+    request.pathname === '/api/hermes/skills' &&
+    request.search === '?profile=research'
+  )).toBe(true)
+  expect(api.requests.some(request =>
+    request.pathname === '/api/auth/skill-credentials' &&
+    request.search === '?profile=research'
+  )).toBe(true)
+  expect(api.requests.some(request =>
+    request.pathname === '/api/hermes/jobs' &&
+    request.headers['x-hermes-profile'] === 'research'
+  )).toBe(true)
+  expect(api.unexpectedRequests).toEqual([])
+})
+
+test('expert and automation surfaces follow the selected frontend profile', async ({ page }) => {
+  await authenticate(page, USER_ACCESS_KEY, 'research')
+  const api = await mockHermesApi(page)
+
+  await page.goto('/#/hermes/chat')
+  await page.getByTestId('profile-selector-select').click()
+  const defaultProfileRow = page.locator('.profile-runtime-item').filter({ hasText: 'default' })
+  await defaultProfileRow.getByRole('button', { name: /^Switch Frontend Profile$/ }).click()
+  await expect(page.getByTestId('profile-selector-select')).toContainText('default')
+
+  const pageSidebar = page.locator('.page-sidebar-nav')
+  await page.getByText('Expert', { exact: true }).click()
+  await expect(page).toHaveURL(/#\/hermes\/expert$/)
+  await expect(page.getByText('Research helper')).toBeVisible()
+
+  await page.getByRole('tab', { name: /^Connectors$/ }).click()
+  await expect(page.getByText('Lark CLI')).toBeVisible()
+
+  await page.goto('/#/hermes/chat')
+  await page.getByText('Automation', { exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Automation' })).toBeVisible()
+
+  expect(api.requests.some(request =>
+    request.pathname === '/api/hermes/skills' &&
+    request.search === '?profile=default'
+  )).toBe(true)
+  expect(api.requests.some(request =>
+    request.pathname === '/api/auth/skill-credentials' &&
+    request.search === '?profile=default'
+  )).toBe(true)
+  expect(api.requests.some(request =>
+    request.pathname === '/api/hermes/jobs' &&
+    request.headers['x-hermes-profile'] === 'default'
+  )).toBe(true)
+  expect(api.unexpectedRequests).toEqual([])
+})
+
 test('super-admins keep access to technical inventory and sidebar controls', async ({ page }) => {
   await authenticate(page, TEST_ACCESS_KEY, 'research')
   await mockHermesApi(page)

@@ -231,6 +231,36 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
       return
     }
 
+    if (pathname === '/api/hermes/skills') {
+      await route.fulfill(jsonResponse({
+        categories: [
+          {
+            name: 'local',
+            description: 'Local skills',
+            skills: [
+              {
+                name: 'research-helper',
+                description: 'Research helper',
+                source: 'local',
+                enabled: true,
+              },
+            ],
+          },
+        ],
+        archived: [],
+      }))
+      return
+    }
+
+    if (pathname === '/api/hermes/write-gate/pending') {
+      await route.fulfill(jsonResponse({
+        records: [],
+        counts: { memory: 0, skills: 0 },
+        supported: true,
+      }))
+      return
+    }
+
     if (pathname === '/api/hermes/plugins') {
       await route.fulfill(jsonResponse({ plugins: [], warnings: [], metadata: { projectPluginsEnabled: true } }))
       return

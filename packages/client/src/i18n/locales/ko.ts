@@ -184,7 +184,8 @@ export default {
     search: '검색',
     apiRelay: 'API 릴레이',
     history: '기록',
-    jobs: '예약 작업',
+    jobs: '자동화',
+    expert: '전문가',
     models: '모델',
     profiles: '프로필',
     plugins: '플러그인',
@@ -401,6 +402,14 @@ export default {
   },
 
   // 채팅
+
+  expert: {
+    tabs: {
+      skills: 'Skills',
+      connectors: 'Connectors',
+    },
+  },
+
   chat: {
     contextRemaining: '남음',
     contextClickToEdit: '클릭하여 컨텍스트 길이 편집',
@@ -606,7 +615,7 @@ export default {
 
   // 예약 작업
   jobs: {
-    title: '예약 작업',
+    title: '자동화',
     createJob: '작업 생성',
     editJob: '작업 편집',
     noJobs: '예약된 작업이 없습니다. 새로 만들어 시작하세요.',

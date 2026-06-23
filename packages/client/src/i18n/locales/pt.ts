@@ -184,7 +184,8 @@ export default {
     search: 'Pesquisar',
     apiRelay: 'API Relay',
     history: 'Historico',
-    jobs: 'Tarefas agendadas',
+    jobs: 'Automacao',
+    expert: 'Especialista',
     models: 'Modelos',
     profiles: 'Perfis',
     plugins: 'Plugins',
@@ -401,6 +402,14 @@ export default {
   },
 
   // Chat
+
+  expert: {
+    tabs: {
+      skills: 'Skills',
+      connectors: 'Connectors',
+    },
+  },
+
   chat: {
     contextRemaining: 'restante',
     contextClickToEdit: 'Clique para editar o tamanho do contexto',
@@ -606,7 +615,7 @@ export default {
 
   // Jobs
   jobs: {
-    title: 'Tarefas agendadas',
+    title: 'Automacao',
     createJob: 'Criar tarefa',
     editJob: 'Editar tarefa',
     noJobs: 'Nenhuma tarefa agendada ainda. Crie uma para comecar.',

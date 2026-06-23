@@ -184,7 +184,8 @@ export default {
     search: 'Search',
     apiRelay: 'API Relay',
     history: 'History',
-    jobs: 'Jobs',
+    jobs: 'Automation',
+    expert: 'Expert',
     kanban: 'Kanban',
     models: 'Models',
     profiles: 'Profiles',
@@ -401,6 +402,14 @@ export default {
   },
 
   // Chat
+
+  expert: {
+    tabs: {
+      skills: 'Skills',
+      connectors: 'Connectors',
+    },
+  },
+
   chat: {
     contextRemaining: 'remaining',
     contextClickToEdit: 'Click to edit context length',
@@ -739,10 +748,10 @@ export default {
 
   // Jobs
   jobs: {
-    title: 'Scheduled Jobs',
-    createJob: 'Create Job',
-    editJob: 'Edit Job',
-    noJobs: 'No scheduled jobs yet. Create one to get started.',
+    title: 'Automation',
+    createJob: 'Create Automation',
+    editJob: 'Edit Automation',
+    noJobs: 'No automations yet. Create one to get started.',
     sortBy: 'Sort',
     sortByName: 'Name Sort',
     sortByTime: 'Time Sort',
@@ -751,7 +760,7 @@ export default {
     sortAsc: 'Ascending',
     sortDesc: 'Descending',
     name: 'Name',
-    namePlaceholder: 'Job name',
+    namePlaceholder: 'Automation name',
     schedule: 'Schedule (Cron Expression)',
     schedulePlaceholder: 'e.g. 0 9 * * *',
     quickPresets: 'Quick Presets',
@@ -773,16 +782,16 @@ export default {
     repeatCount: 'Repeat Count (optional)',
     modelPlaceholder: 'Default model',
     repeatPlaceholder: 'Leave empty for infinite',
-    jobCreated: 'Job created',
-    jobUpdated: 'Job updated',
+    jobCreated: 'Automation created',
+    jobUpdated: 'Automation updated',
     nameRequired: 'Name is required',
     scheduleRequired: 'Schedule is required',
-    loadFailed: 'Failed to load job',
-    jobPaused: 'Job paused',
-    jobResumed: 'Job resumed',
-    jobTriggered: 'Job triggered',
+    loadFailed: 'Failed to load automation',
+    jobPaused: 'Automation paused',
+    jobResumed: 'Automation resumed',
+    jobTriggered: 'Automation triggered',
     modelUpdated: 'Model updated',
-    jobDeleted: 'Job deleted',
+    jobDeleted: 'Automation deleted',
     status: {
       running: 'Running',
       paused: 'Paused',
@@ -799,9 +808,9 @@ export default {
     },
     action: {
       pause: 'Pause',
-      pauseJob: 'Pause job',
+      pauseJob: 'Pause automation',
       resume: 'Resume',
-      resumeJob: 'Resume job',
+      resumeJob: 'Resume automation',
       runNow: 'Run Now',
       triggerImmediately: 'Trigger immediately',
     },

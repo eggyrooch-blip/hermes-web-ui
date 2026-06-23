@@ -26,6 +26,14 @@ vi.mock('vue-router', () => ({
   useRoute: () => ({ query: {} }),
 }))
 
+vi.mock('@/stores/hermes/profiles', () => ({
+  useProfilesStore: () => ({
+    activeProfileName: 'feishu_g41a5b5g',
+    profiles: [{ name: 'feishu_g41a5b5g' }],
+    fetchProfiles: vi.fn(),
+  }),
+}))
+
 vi.mock('naive-ui', async () => {
   const actual = await vi.importActual<any>('naive-ui')
   return {
@@ -126,7 +134,7 @@ describe('CredentialsView', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     await wrapper.vm.$nextTick()
 
-    expect(fetchSkillCredentialsMock).toHaveBeenCalledOnce()
+    expect(fetchSkillCredentialsMock).toHaveBeenCalledWith('feishu_g41a5b5g')
     expect(wrapper.find('.header-title').text()).toBe('Connectors')
     expect(wrapper.findAll('.credential-card')).toHaveLength(5)
     expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('Internal systems')
@@ -176,7 +184,7 @@ describe('CredentialsView', () => {
 
     await wrapper.find('[data-credential-action="lark-cli"]').trigger('click')
 
-    expect(startSkillCredentialAuthMock).toHaveBeenCalledWith('lark-cli', '')
+    expect(startSkillCredentialAuthMock).toHaveBeenCalledWith('lark-cli', 'feishu_g41a5b5g')
   })
 
   it('opens the OAuth authorization URL returned by kep-cli start', async () => {
@@ -196,7 +204,7 @@ describe('CredentialsView', () => {
     await wrapper.find('[data-credential-action="kep-cli"]').trigger('click')
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(startSkillCredentialAuthMock).toHaveBeenCalledWith('kep-cli', '')
+    expect(startSkillCredentialAuthMock).toHaveBeenCalledWith('kep-cli', 'feishu_g41a5b5g')
     expect(openSpy).toHaveBeenCalledWith('about:blank', '_blank')
     expect(authWindow.opener).toBe(null)
     expect(authWindow.location.href).toBe('https://auth.example.com/?response_url=http://localhost:52237&oauth2=1')
@@ -241,7 +249,7 @@ describe('CredentialsView', () => {
     await wrapper.find('[data-credential-action="feishu-project"]').trigger('click')
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(startSkillCredentialAuthMock).toHaveBeenCalledWith('feishu-project', '')
+    expect(startSkillCredentialAuthMock).toHaveBeenCalledWith('feishu-project', 'feishu_g41a5b5g')
     expect(openSpy).toHaveBeenCalledWith('about:blank', '_blank')
     expect(authWindow.opener).toBe(null)
     expect(authWindow.location.href).toBe('https://project.feishu.cn/oauth/device?user_code=ABCD-1234')
@@ -270,6 +278,6 @@ describe('CredentialsView', () => {
 
     await wrapper.findAll('button').at(-1)!.trigger('click')
 
-    expect(completeSkillCredentialAuthMock).toHaveBeenCalledWith('keep-record', 'qr-1', '')
+    expect(completeSkillCredentialAuthMock).toHaveBeenCalledWith('keep-record', 'qr-1', 'feishu_g41a5b5g')
   })
 })

@@ -95,6 +95,14 @@ describe('router route metadata + auth gating', () => {
     expect(router.resolve('/hermes/credentials').matched.at(-1)?.name).toBe('hermes.connectors')
   })
 
+  it('registers the expert route as an ordinary authenticated product surface', async () => {
+    const router = (await import('@/router')).default
+    const route = router.getRoutes().find(route => route.name === 'hermes.expert')
+
+    expect(route?.path).toBe('/hermes/expert')
+    expect(route?.meta.requiresSuperAdmin).toBeUndefined()
+  })
+
   it.each([
     'hermes.plugins',
     'hermes.mcp',

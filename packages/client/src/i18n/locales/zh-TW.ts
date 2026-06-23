@@ -184,7 +184,8 @@ export default {
     search: '搜尋',
     apiRelay: '中轉站',
     history: '歷史',
-    jobs: '任務',
+    jobs: '自動化',
+    expert: '專家',
     kanban: '看板',
     models: '模型',
     profiles: '使用者',
@@ -401,6 +402,14 @@ export default {
   },
 
   // 對話
+
+  expert: {
+    tabs: {
+      skills: 'Skills',
+      connectors: '連接器',
+    },
+  },
+
   chat: {
     contextRemaining: '剩餘',
     contextClickToEdit: '點擊編輯上下文長度',
@@ -739,7 +748,7 @@ export default {
 
   // 排程任務
   jobs: {
-    title: '排程任務',
+    title: '自動化',
     createJob: '建立任務',
     editJob: '編輯任務',
     noJobs: '目前無排程任務，建立一個開始吧。',

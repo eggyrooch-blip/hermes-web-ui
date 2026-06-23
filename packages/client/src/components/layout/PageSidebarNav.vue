@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useSessionSearch } from '@/composables/useSessionSearch'
 
-type ActiveSection = 'chat' | 'history' | 'group' | 'global'
+type ActiveSection = 'chat' | 'history' | 'group' | 'global' | 'expert' | 'automation'
 
 const props = defineProps<{
   active: ActiveSection
@@ -37,6 +37,16 @@ function openHistory() {
     return
   }
   void router.push({ name: 'hermes.history' })
+}
+
+function openExpert() {
+  if (props.active === 'expert') return
+  void router.push({ name: 'hermes.expert' })
+}
+
+function openAutomation() {
+  if (props.active === 'automation') return
+  void router.push({ name: 'hermes.jobs' })
 }
 
 function openGroupChat() {
@@ -83,6 +93,54 @@ function openGroupChat() {
       </button>
       <button
         class="page-sidebar-tab"
+        :class="{ active: active === 'expert' }"
+        type="button"
+        @click="openExpert"
+      >
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
+          <path d="M12 12l8-4.5" />
+          <path d="M12 12v9" />
+          <path d="M12 12L4 7.5" />
+        </svg>
+        <span>{{ t('sidebar.expert') }}</span>
+      </button>
+      <button
+        class="page-sidebar-tab"
+        :class="{ active: active === 'automation' }"
+        type="button"
+        @click="openAutomation"
+      >
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M4 4h16v5H4z" />
+          <path d="M4 15h7v5H4z" />
+          <path d="M16 15h4v5h-4z" />
+          <path d="M8 9v6" />
+          <path d="M18 9v6" />
+        </svg>
+        <span>{{ t('sidebar.jobs') }}</span>
+      </button>
+      <button
+        class="page-sidebar-tab"
+        :class="{ active: active === 'history' }"
         type="button"
         @click="openHistory"
       >

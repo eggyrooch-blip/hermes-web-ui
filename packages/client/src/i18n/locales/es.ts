@@ -184,7 +184,8 @@ export default {
     search: 'Buscar',
     apiRelay: 'API Relay',
     history: 'Historial',
-    jobs: 'Tareas programadas',
+    jobs: 'Automatizacion',
+    expert: 'Experto',
     models: 'Modelos',
     profiles: 'Perfiles',
     plugins: 'Plugins',
@@ -401,6 +402,14 @@ export default {
   },
 
   // Chat
+
+  expert: {
+    tabs: {
+      skills: 'Skills',
+      connectors: 'Connectors',
+    },
+  },
+
   chat: {
     contextRemaining: 'restante',
     contextClickToEdit: 'Haz clic para editar la longitud del contexto',
@@ -606,7 +615,7 @@ export default {
 
   // Jobs
   jobs: {
-    title: 'Tareas programadas',
+    title: 'Automatizacion',
     createJob: 'Crear tarea',
     editJob: 'Editar tarea',
     noJobs: 'No hay tareas programadas aun. Crea una para comenzar.',
