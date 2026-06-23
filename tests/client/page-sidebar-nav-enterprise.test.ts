@@ -65,6 +65,20 @@ describe('PageSidebarNav enterprise chrome', () => {
     expect(pushMock).toHaveBeenCalledWith({ name: 'hermes.chat' })
   })
 
+  it('keeps the local Hermes logo on reused narrow sidebar variants', () => {
+    const wrapper = mount(PageSidebarNav, {
+      props: {
+        active: 'group',
+        primaryLabel: 'chat.newChat',
+      },
+    })
+
+    const logo = wrapper.find('.page-sidebar-logo')
+    expect(logo.exists()).toBe(true)
+    expect(logo.attributes('href')).toBe('/#/hermes/chat')
+    expect(wrapper.find('.page-sidebar-tabs').element.firstElementChild).toBe(logo.element)
+  })
+
   it('shows expert and automation directly in the home page sidebar before history', () => {
     const wrapper = mount(PageSidebarNav, {
       props: {
