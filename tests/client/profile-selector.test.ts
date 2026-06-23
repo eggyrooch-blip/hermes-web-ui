@@ -134,6 +134,25 @@ describe('ProfileSelector', () => {
     expect(wrapper.find('.profile-name').text()).toBe('feishu_user_a')
   })
 
+  it('shows a Feishu URL avatar beside the active profile selector', () => {
+    profilesStoreMock.profiles = [
+      {
+        name: 'feishu_user_a',
+        active: true,
+        model: '',
+        gateway: '',
+        alias: '',
+        kind: 'user',
+        avatar: { type: 'url', url: 'https://example.com/feishu-avatar.png' },
+      },
+    ]
+    profilesStoreMock.activeProfile = profilesStoreMock.profiles[0]
+    const wrapper = mount(ProfileSelector)
+
+    expect(wrapper.find('.profile-display img.profile-avatar-image').attributes('src')).toBe('https://example.com/feishu-avatar.png')
+    expect(wrapper.find('.profile-display .profile-avatar-svg').exists()).toBe(false)
+  })
+
   it('randomizes the active profile avatar through the owner-scoped profile store', async () => {
     profilesStoreMock.updateAvatar.mockResolvedValue({ type: 'generated', seed: 'new-seed' })
     const wrapper = mount(ProfileSelector)

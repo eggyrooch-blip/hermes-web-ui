@@ -34,4 +34,21 @@ describe('ProfileAvatar', () => {
     expect(wrapper.find('img.profile-avatar-image').attributes('src')).toBe('data:image/png;base64,abc')
     expect(wrapper.find('.profile-avatar-svg').exists()).toBe(false)
   })
+
+  it('renders a URL-backed avatar without exposing generated SVG markup', async () => {
+    const ProfileAvatar = (await import('@/components/hermes/profiles/ProfileAvatar.vue')).default
+
+    const wrapper = mount(ProfileAvatar, {
+      props: {
+        name: 'feishu_group_a',
+        avatar: {
+          type: 'url',
+          url: 'https://example.com/group-avatar.png',
+        },
+      },
+    })
+
+    expect(wrapper.find('img.profile-avatar-image').attributes('src')).toBe('https://example.com/group-avatar.png')
+    expect(wrapper.find('.profile-avatar-svg').exists()).toBe(false)
+  })
 })

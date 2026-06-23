@@ -21,9 +21,11 @@ export interface HermesProfileDetail {
 }
 
 export interface ProfileAvatar {
-  type: 'generated' | 'image'
+  type: 'generated' | 'image' | 'url'
   seed?: string
   dataUrl?: string
+  url?: string
+  source?: 'feishu_user' | 'feishu_group'
   updatedAt?: number
 }
 

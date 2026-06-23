@@ -13,6 +13,11 @@ const props = withDefaults(defineProps<{
 
 const fallbackSeed = computed(() => props.name || 'default')
 const generatedSvg = computed(() => multiavatar(props.avatar?.seed || fallbackSeed.value))
+const imageSrc = computed(() => {
+  if (props.avatar?.type === 'image' && props.avatar.dataUrl) return props.avatar.dataUrl
+  if (props.avatar?.type === 'url' && props.avatar.url) return props.avatar.url
+  return ''
+})
 const style = computed(() => ({
   width: `${props.size}px`,
   height: `${props.size}px`,
@@ -23,9 +28,9 @@ const style = computed(() => ({
 <template>
   <span class="profile-avatar-view" :style="style">
     <img
-      v-if="avatar?.type === 'image' && avatar.dataUrl"
+      v-if="imageSrc"
       class="profile-avatar-image"
-      :src="avatar.dataUrl"
+      :src="imageSrc"
       alt=""
       draggable="false"
     >

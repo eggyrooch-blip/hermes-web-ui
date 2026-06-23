@@ -2,6 +2,7 @@ import { createReadStream, existsSync, readFileSync, readdirSync, renameSync, rm
 import { mkdir, writeFile } from 'fs/promises'
 import { basename, join } from 'path'
 import { tmpdir } from 'os'
+import YAML from 'js-yaml'
 import { config, getWebUiHome } from '../../config'
 import * as hermesCli from '../../services/hermes/hermes-cli'
 import { SessionDeleter } from '../../services/hermes/session-deleter'
@@ -31,10 +32,27 @@ interface ProfileAvatarMeta {
 }
 
 interface ProfileAvatarResponse {
-  type: 'generated' | 'image'
+  type: 'generated' | 'image' | 'url'
   seed?: string
   dataUrl?: string
+  url?: string
+  source?: 'feishu_user' | 'feishu_group'
   updatedAt?: number
+}
+
+interface FeishuAppCredentials {
+  appId: string
+  appSecret: string
+}
+
+type FeishuTenantTokenCacheEntry = {
+  token: string
+  expiresAt: number
+}
+
+type FeishuGroupAvatarCacheEntry = {
+  avatar: ProfileAvatarResponse | null
+  expiresAt: number
 }
 
 type RuntimeStatus = Awaited<ReturnType<typeof buildRuntimeStatus>>
@@ -47,6 +65,13 @@ interface RuntimeStatusCacheEntry {
 const runtimeStatusCache = new Map<string, RuntimeStatusCacheEntry>()
 let runtimeStatusRefreshPromise: Promise<void> | null = null
 let runtimeStatusMinimumFreshAt = 0
+
+const FEISHU_OPEN_PLATFORM_BASE_URL = 'https://open.feishu.cn'
+const FEISHU_REQUEST_TIMEOUT_MS = 3000
+const FEISHU_GROUP_AVATAR_CACHE_TTL_MS = 10 * 60 * 1000
+const FEISHU_GROUP_AVATAR_FAILURE_TTL_MS = 60 * 1000
+const feishuTenantTokenCache = new Map<string, FeishuTenantTokenCacheEntry>()
+const feishuGroupAvatarCache = new Map<string, FeishuGroupAvatarCacheEntry>()
 
 const RESERVED_PROFILE_NAMES = new Set([
   'hermes', 'default', 'test', 'tmp', 'root', 'sudo',
@@ -217,6 +242,25 @@ function profileAvatarImagePath(name: string, file = 'avatar.bin'): string {
   return join(profileMetadataDir(name), file)
 }
 
+function profileDir(name: string): string {
+  return name === 'default' ? detectHermesRootHome() : join(detectHermesRootHome(), 'profiles', name)
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function readJsonObject(path: string): Record<string, any> | null {
+  if (!existsSync(path)) return null
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8'))
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, any> : null
+  } catch (err) {
+    logger.warn(err, '[profiles] failed to read JSON metadata at %s', basename(path))
+    return null
+  }
+}
+
 function readProfileAvatar(name: string): ProfileAvatarResponse | null {
   const metaPath = profileAvatarMetaPath(name)
   if (!existsSync(metaPath)) return null
@@ -245,11 +289,135 @@ function readProfileAvatar(name: string): ProfileAvatarResponse | null {
   return null
 }
 
-function attachProfileAvatars<T extends HermesProfile>(profiles: T[]): Array<T & { avatar: ProfileAvatarResponse | null }> {
-  return profiles.map(profile => ({
+type ProfileAvatarSubject = Pick<HermesProfile, 'name'>
+
+function inferFeishuUserAvatar(ctx: any, profile: ProfileAvatarSubject): ProfileAvatarResponse | null {
+  const user = ctx.state?.user
+  const avatarUrl = String(user?.avatarUrl || '').trim()
+  const userProfile = String(user?.profile || '').trim()
+  if (!avatarUrl || !userProfile || profile.name !== userProfile) return null
+  return { type: 'url', url: avatarUrl, source: 'feishu_user' }
+}
+
+function readGroupProfileMetadata(profileName: string): Record<string, any> | null {
+  return readJsonObject(join(profileDir(profileName), 'group_profile.json'))
+}
+
+function readFeishuCredentials(profileName: string): FeishuAppCredentials | null {
+  const configPath = join(profileDir(profileName), 'config.yaml')
+  if (!existsSync(configPath)) return null
+  try {
+    const parsed = YAML.load(readFileSync(configPath, 'utf-8'), { json: true }) as Record<string, any> | null
+    const feishuConfig = parsed?.platforms?.feishu || {}
+    const extra = feishuConfig.extra || {}
+    const appId = String(extra.app_id || feishuConfig.app_id || '').trim()
+    const appSecret = String(extra.app_secret || feishuConfig.app_secret || '').trim()
+    if (!appId || !appSecret) return null
+    return { appId, appSecret }
+  } catch (err) {
+    logger.warn(err, '[profiles] failed to read Feishu app config for profile "%s"', profileName)
+    return null
+  }
+}
+
+function makeOpenPlatformSignal(): AbortSignal | undefined {
+  return typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+    ? AbortSignal.timeout(FEISHU_REQUEST_TIMEOUT_MS)
+    : undefined
+}
+
+async function mintFeishuTenantToken(credentials: FeishuAppCredentials): Promise<string> {
+  const cached = feishuTenantTokenCache.get(credentials.appId)
+  const now = Date.now()
+  if (cached && cached.expiresAt > now) return cached.token
+
+  const res = await fetch(`${FEISHU_OPEN_PLATFORM_BASE_URL}/open-apis/auth/v3/tenant_access_token/internal`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ app_id: credentials.appId, app_secret: credentials.appSecret }),
+    signal: makeOpenPlatformSignal(),
+  })
+  if (!res.ok) throw new Error(`tenant token request failed with HTTP ${res.status}`)
+  const payload = await res.json() as Record<string, any>
+  const code = Number(payload.code ?? 0)
+  if (code !== 0) throw new Error(`tenant token request failed with code ${code}`)
+  const token = String(payload.tenant_access_token || payload.app_access_token || '').trim()
+  if (!token) throw new Error('tenant token response missing token')
+  const expireSeconds = Number(payload.expire || 3600)
+  feishuTenantTokenCache.set(credentials.appId, {
+    token,
+    expiresAt: now + Math.max((expireSeconds - 300) * 1000, 60_000),
+  })
+  return token
+}
+
+async function fetchFeishuGroupAvatarUrl(chatId: string, credentials: FeishuAppCredentials): Promise<string | null> {
+  const token = await mintFeishuTenantToken(credentials)
+  const res = await fetch(`${FEISHU_OPEN_PLATFORM_BASE_URL}/open-apis/im/v1/chats/${encodeURIComponent(chatId)}?user_id_type=open_id`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+    signal: makeOpenPlatformSignal(),
+  })
+  if (!res.ok) throw new Error(`chat info request failed with HTTP ${res.status}`)
+  const payload = await res.json() as Record<string, any>
+  const code = Number(payload.code ?? 0)
+  if (code !== 0) throw new Error(`chat info request failed with code ${code}`)
+  const avatar = payload.data?.avatar
+  return isNonEmptyString(avatar) ? avatar.trim() : null
+}
+
+async function inferFeishuGroupAvatar(profile: ProfileAvatarSubject): Promise<ProfileAvatarResponse | null> {
+  const marker = readGroupProfileMetadata(profile.name)
+  const chatId = String(marker?.chat_id || '').trim()
+  if (!chatId) return null
+
+  for (const key of ['avatar_url', 'avatarUrl', 'avatar']) {
+    const value = marker?.[key]
+    if (isNonEmptyString(value) && /^https?:\/\//i.test(value.trim())) {
+      return { type: 'url', url: value.trim(), source: 'feishu_group' }
+    }
+  }
+
+  const cacheKey = `${profile.name}|${chatId}`
+  const now = Date.now()
+  const cached = feishuGroupAvatarCache.get(cacheKey)
+  if (cached && cached.expiresAt > now) return cached.avatar
+
+  const credentials = readFeishuCredentials(profile.name)
+  if (!credentials) {
+    feishuGroupAvatarCache.set(cacheKey, { avatar: null, expiresAt: now + FEISHU_GROUP_AVATAR_FAILURE_TTL_MS })
+    return null
+  }
+
+  try {
+    const avatarUrl = await fetchFeishuGroupAvatarUrl(chatId, credentials)
+    const avatar = avatarUrl ? { type: 'url' as const, url: avatarUrl, source: 'feishu_group' as const } : null
+    feishuGroupAvatarCache.set(cacheKey, {
+      avatar,
+      expiresAt: now + (avatar ? FEISHU_GROUP_AVATAR_CACHE_TTL_MS : FEISHU_GROUP_AVATAR_FAILURE_TTL_MS),
+    })
+    return avatar
+  } catch (err: any) {
+    logger.warn({ profile: profile.name, error: err?.message || String(err) }, '[profiles] failed to fetch Feishu group avatar from Open Platform')
+    feishuGroupAvatarCache.set(cacheKey, { avatar: null, expiresAt: now + FEISHU_GROUP_AVATAR_FAILURE_TTL_MS })
+    return null
+  }
+}
+
+async function resolveProfileAvatar(ctx: any, profile: ProfileAvatarSubject): Promise<ProfileAvatarResponse | null> {
+  const customAvatar = readProfileAvatar(profile.name)
+  if (customAvatar) return customAvatar
+  return inferFeishuUserAvatar(ctx, profile) || await inferFeishuGroupAvatar(profile)
+}
+
+async function attachProfileAvatarsForContext<T extends HermesProfile>(
+  ctx: any,
+  profiles: T[],
+): Promise<Array<T & { avatar: ProfileAvatarResponse | null }>> {
+  return Promise.all(profiles.map(async profile => ({
     ...profile,
-    avatar: readProfileAvatar(profile.name),
-  }))
+    avatar: await resolveProfileAvatar(ctx, profile),
+  })))
 }
 
 function parseAvatarDataUrl(dataUrl: string): { mime: string; buffer: Buffer } {
@@ -421,7 +589,7 @@ export async function list(ctx: any) {
       p.active = (p.name === activeProfileName)
     })
 
-    ctx.body = { profiles: attachProfileAvatars(profiles) }
+    ctx.body = { profiles: await attachProfileAvatarsForContext(ctx, profiles) }
   } catch (err: any) {
     ctx.status = 500
     ctx.body = { error: err.message }
@@ -523,7 +691,7 @@ export async function get(ctx: any) {
   if (denyProfile(ctx, name)) return
   try {
     const profile = await hermesCli.getProfile(name)
-    ctx.body = { profile: { ...profile, avatar: readProfileAvatar(profile.name) } }
+    ctx.body = { profile: { ...profile, avatar: await resolveProfileAvatar(ctx, profile) } }
   } catch (err: any) {
     ctx.status = err.message.includes('not found') ? 404 : 500
     ctx.body = { error: err.message }
