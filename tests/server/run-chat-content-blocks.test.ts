@@ -2,7 +2,11 @@ import { mkdtemp, rm, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { convertContentBlocks, convertContentBlocksForAgent } from '../../packages/server/src/services/hermes/run-chat/content-blocks'
+import {
+  buildBrokerMessagesForSession,
+  convertContentBlocks,
+  convertContentBlocksForAgent,
+} from '../../packages/server/src/services/hermes/run-chat/content-blocks'
 
 let tempDir = ''
 
@@ -48,5 +52,25 @@ describe('run chat content blocks', () => {
     })
     expect(parts[2].type).toBe('image_url')
     expect(parts[2].image_url?.url).toMatch(/^data:image\/png;base64,/)
+  })
+
+  it('replays stored image uploads as workspace-readable broker history', () => {
+    const storedBlocks = JSON.stringify([
+      { type: 'text', text: '继续分析这张图' },
+      { type: 'image', name: 'receipt.png', path: 'uploads/receipt.png', media_type: 'image/png' },
+    ])
+
+    const messages = buildBrokerMessagesForSession([
+      { id: 1, session_id: 's1', role: 'user', content: storedBlocks, timestamp: 1 },
+    ])
+
+    expect(messages).toEqual([{
+      role: 'user',
+      content: [
+        '继续分析这张图',
+        '[Attached image: receipt.png]',
+        'Local image path for tools: /workspace/uploads/receipt.png',
+      ].join('\n'),
+    }])
   })
 })

@@ -58,6 +58,18 @@ export function isContentBlockArray(input: any): input is ContentBlock[] {
   return Array.isArray(input) && input.length > 0 && ('type' in input[0])
 }
 
+function brokerContentForStoredMessage(content: unknown): string {
+  if (isContentBlockArray(content)) return contentBlocksToBrokerText(content)
+  const text = typeof content === 'string' ? content : String(content || '')
+  if (!text.trim().startsWith('[')) return text
+  try {
+    const parsed = JSON.parse(text)
+    return isContentBlockArray(parsed) ? contentBlocksToBrokerText(parsed) : text
+  } catch {
+    return text
+  }
+}
+
 /**
  * Convert ContentBlock[] to multimodal format for /v1/responses API.
  */
@@ -135,7 +147,7 @@ export function buildBrokerMessagesForSession(messages: SessionMessage[]): Array
   const brokerMessages: Array<Record<string, any>> = []
   for (const message of messages) {
     const role = message.role
-    const content = typeof message.content === 'string' ? message.content : String(message.content || '')
+    const content = brokerContentForStoredMessage(message.content)
     if (role === 'user') {
       if (content.trim()) brokerMessages.push({ role: 'user', content })
       continue
