@@ -84,6 +84,8 @@ test('ordinary users open expert and automation directly from the home sidebar',
   await expect(homeLogoLink).toBeVisible()
   await expect(homeLogoLink).toContainText('Hermes')
   await expect(homeLogoLink.locator('img')).toHaveAttribute('src', '/logo.png')
+  await expect(homeLogoLink).toHaveAttribute('href', '/#/hermes/chat')
+  await expect(pageSidebar.locator('.page-sidebar-tabs')).not.toHaveAttribute('role', 'tablist')
 
   const navLabels = await pageSidebar.evaluate(element =>
     Array.from(element.querySelectorAll('.page-sidebar-tabs > *')).map(node => ({

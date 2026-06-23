@@ -60,11 +60,11 @@ function openGroupChat() {
 
 <template>
   <div class="page-sidebar-nav">
-    <div class="page-sidebar-tabs" role="tablist" aria-label="Chat actions">
-      <button class="page-sidebar-logo" type="button" @click="openBrandChat">
+    <nav class="page-sidebar-tabs" aria-label="Chat actions">
+      <a class="page-sidebar-logo" href="/#/hermes/chat" @click.prevent="openBrandChat">
         <img :src="'/logo.png'" alt="Hermes" draggable="false">
         <span>Hermes</span>
-      </button>
+      </a>
       <button
         class="page-sidebar-tab"
         type="button"
@@ -177,7 +177,7 @@ function openGroupChat() {
         </svg>
         <span>{{ historyButtonLabel }}</span>
       </button>
-    </div>
+    </nav>
     <div v-if="showModeSwitch" class="conversation-switch" role="tablist" aria-label="Conversation type">
       <button
         class="conversation-switch-tab"
@@ -227,6 +227,7 @@ function openGroupChat() {
   border-radius: $radius-sm;
   background: transparent;
   color: $text-primary;
+  text-decoration: none;
   display: inline-flex;
   align-items: center;
   justify-content: flex-start;

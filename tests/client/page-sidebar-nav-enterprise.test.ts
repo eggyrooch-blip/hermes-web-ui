@@ -52,9 +52,12 @@ describe('PageSidebarNav enterprise chrome', () => {
 
     const logo = wrapper.find('.page-sidebar-logo')
     expect(logo.exists()).toBe(true)
+    expect(logo.element.tagName).toBe('A')
+    expect(logo.attributes('href')).toBe('/#/hermes/chat')
     expect(logo.text()).toContain('Hermes')
     expect(logo.find('img').attributes('src')).toBe('/logo.png')
     expect(logo.find('img').attributes('alt')).toBe('Hermes')
+    expect(wrapper.find('.page-sidebar-tabs').attributes('role')).toBeUndefined()
     expect(wrapper.find('.page-sidebar-tabs').element.firstElementChild).toBe(logo.element)
 
     await logo.trigger('click')
