@@ -82,7 +82,7 @@ describe('ProfileCard sharing', () => {
 
   it('loads share members from the BFF for owner agent profiles', async () => {
     fetchAgentSharesMock.mockResolvedValue([
-      { agent_id: 'agent-owned', grantee_open_id: 'ou_reader', role: 'viewer', status: 'active' },
+      { agent_id: 'agent-owned', grantee_open_id: 'ou_reader', role: 'viewer', status: 'active', principal: undefined },
     ])
     const wrapper = mount(ProfileCard, {
       props: {
@@ -104,6 +104,7 @@ describe('ProfileCard sharing', () => {
     expect(fetchAgentSharesMock).toHaveBeenCalledWith('agent-owned')
     expect(wrapper.text()).toContain('ou_reader')
     expect(wrapper.text()).toContain('viewer')
+    expect(wrapper.find('img.share-principal-avatar').exists()).toBe(false)
   })
 
   it('allows shared managers to open agent member management', async () => {
@@ -145,7 +146,7 @@ describe('ProfileCard sharing', () => {
         principal: {
           provider: 'feishu',
           display_name: 'Editor User',
-          avatar_url: 'https://example.test/editor.png',
+          avatar_url: 'https://s3-imfile.feishucdn.com/editor.png',
           email: 'editor@example.test',
           user_id: 'u_editor',
         },
@@ -170,7 +171,7 @@ describe('ProfileCard sharing', () => {
     expect(wrapper.text()).toContain('Editor User')
     expect(wrapper.text()).toContain('editor@example.test')
     expect(wrapper.text()).not.toContain('principal:prn_editor')
-    expect(wrapper.find('img.share-principal-avatar').attributes('src')).toBe('https://example.test/editor.png')
+    expect(wrapper.find('img.share-principal-avatar').attributes('src')).toBe('https://s3-imfile.feishucdn.com/editor.png')
 
     const input = wrapper.find('input')
     await input.setValue('new-editor@example.test')
@@ -189,5 +190,43 @@ describe('ProfileCard sharing', () => {
     await revokeButton!.trigger('click')
 
     expect(revokeAgentShareMock).toHaveBeenCalledWith('agent-owned', 'shr_editor')
+  })
+
+  it('does not render untrusted principal avatar URLs', async () => {
+    fetchAgentSharesMock.mockResolvedValue([
+      {
+        agent_id: 'agent-owned',
+        share_id: 'shr_tracker',
+        grantee_open_id: 'principal:prn_tracker',
+        grantee_principal_id: 'prn_tracker',
+        role: 'viewer',
+        status: 'active',
+        principal: {
+          provider: 'feishu',
+          display_name: 'Tracker User',
+          avatar_url: 'https://tracker.example.com/pixel.png',
+          email: 'tracker@example.test',
+          user_id: 'u_tracker',
+        },
+      },
+    ])
+    const wrapper = mount(ProfileCard, {
+      props: {
+        profile: {
+          name: 'owned_agent_profile',
+          active: false,
+          model: '',
+          alias: '',
+          kind: 'agent',
+          agentId: 'agent-owned',
+        },
+      },
+    })
+
+    const shareButton = wrapper.findAll('button').find(button => button.text().includes('Share'))
+    await shareButton!.trigger('click')
+
+    expect(wrapper.text()).toContain('Tracker User')
+    expect(wrapper.find('img.share-principal-avatar').exists()).toBe(false)
   })
 })

@@ -163,6 +163,7 @@ async function handleRevokeShare(share: AgentShare) {
 
 function granteeLookupFromInput(value: string): AgentShareGrantee {
   return {
+    // Agent sharing currently supports Feishu principals only. Add a provider picker when more providers ship.
     provider: 'feishu',
     type: value.includes('@') ? 'email' : 'user_id',
     value,
@@ -183,7 +184,32 @@ function shareSecondaryLabel(share: AgentShare): string {
 }
 
 function shareAvatarUrl(share: AgentShare): string {
-  return share.principal?.avatar_url || ''
+  return safeShareAvatarUrl(share.principal?.avatar_url)
+}
+
+function safeShareAvatarUrl(value?: string): string {
+  const raw = value?.trim()
+  if (!raw) return ''
+  const sameOrigin = typeof window === 'undefined' ? '' : window.location.origin
+  const trustedHostSuffixes = [
+    'feishucdn.com',
+    'feishu.cn',
+    'larksuitecdn.com',
+    'larksuite.com',
+  ]
+
+  try {
+    const url = new URL(raw, sameOrigin || undefined)
+    if (sameOrigin && url.origin === sameOrigin) return url.href
+    if (url.protocol !== 'https:') return ''
+    const host = url.hostname.toLowerCase()
+    if (trustedHostSuffixes.some(suffix => host === suffix || host.endsWith(`.${suffix}`))) {
+      return url.href
+    }
+  } catch {
+    return ''
+  }
+  return ''
 }
 </script>
 
