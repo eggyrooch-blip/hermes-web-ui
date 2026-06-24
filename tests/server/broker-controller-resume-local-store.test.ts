@@ -176,4 +176,30 @@ describe('BrokerRunController local session resume', () => {
       expect.objectContaining({ content: 'profile scoped question' }),
     ]))
   })
+
+  it('calculates usage from the matching WebUI local-store session after a broker follow-up', async () => {
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    const emit = vi.fn()
+    const state = {
+      messages: [],
+      isWorking: false,
+      events: [],
+      queue: [],
+      profile: 'feishu_g41a5b5g',
+    }
+
+    const usage = await (controller as any).calcAndUpdateUsage('local-session', state, emit)
+
+    expect(getSessionDetailMock).toHaveBeenCalledWith('local-session')
+    expect(getSessionDetailFromDbMock).not.toHaveBeenCalled()
+    expect(getSessionDetailFromDbWithProfileMock).not.toHaveBeenCalled()
+    expect(usage.inputTokens).toBeGreaterThan(0)
+    expect(usage.outputTokens).toBeGreaterThan(0)
+    expect(emit).toHaveBeenCalledWith('usage.updated', expect.objectContaining({
+      session_id: 'local-session',
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+    }))
+  })
 })

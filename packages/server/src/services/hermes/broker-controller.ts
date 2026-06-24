@@ -952,15 +952,20 @@ export class BrokerRunController {
       socket.id, sid, state.isWorking, state.messages.length)
   }
 
+  private async getSessionDetailForProfile(sid: string, profile?: string) {
+    const localDetail = getSessionDetail(sid)
+    const localProfile = localDetail?.profile || 'default'
+    if (localDetail && (!profile || localProfile === profile)) {
+      return localDetail
+    }
+    return profile
+      ? await getSessionDetailFromDbWithProfile(sid, profile)
+      : await getSessionDetailFromDb(sid)
+  }
+
   private async loadSessionStateFromDb(sid: string, profile?: string): Promise<SessionState> {
     try {
-      const localDetail = getSessionDetail(sid)
-      const localProfile = localDetail?.profile || 'default'
-      const detail = localDetail && (!profile || localProfile === profile)
-        ? localDetail
-        : profile
-          ? await getSessionDetailFromDbWithProfile(sid, profile)
-          : await getSessionDetailFromDb(sid)
+      const detail = await this.getSessionDetailForProfile(sid, profile)
       const messages = detail?.messages ? this.handleMessage(detail.messages, sid) : []
 
       let inputTokens: number
@@ -1402,15 +1407,15 @@ export class BrokerRunController {
         void this.syncFromHermes(socket, sessionId, hermesSessionId, profile, { maxAttempts: 10, delayMs: 500 })
       }
       state.responseRun = undefined
-      state.profile = undefined
       updateSessionStats(sessionId)
       const emit = (event: string, payload: any) => {
         this.nsp.to(`session:${sessionId}`).emit(event, { ...payload, session_id: sessionId })
       }
-      await this.calcAndUpdateUsage(sessionId, state, emit)
+      await this.calcAndUpdateUsage(sessionId, state, emit, profile)
       if (_info.event === 'run.completed') {
         await this.maybeEvaluateGoalAfterRun(socket, sessionId, profile, _info.final_response)
       }
+      state.profile = undefined
     }
   }
 
@@ -1501,10 +1506,10 @@ export class BrokerRunController {
    * @returns { inputTokens, outputTokens } for the caller to use
    */
   private async calcAndUpdateUsage(
-    sid: string, state: SessionState, emit: (event: string, payload: any) => void,
+    sid: string, state: SessionState, emit: (event: string, payload: any) => void, profile?: string,
   ): Promise<{ inputTokens: number; outputTokens: number }> {
     try {
-      const detail = await getSessionDetailFromDb(sid)
+      const detail = await this.getSessionDetailForProfile(sid, profile || state.profile)
       const msgs = detail?.messages
         ?.filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool') || []
 
