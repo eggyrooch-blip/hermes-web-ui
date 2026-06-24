@@ -224,23 +224,33 @@ const isBridgeSession = computed(() => chatStore.activeSession?.source === 'cli'
 const skillSlashCommands = ref<SlashCommandOption[]>([])
 let slashCommandsLoadedFor = ''
 let slashCommandsRequest: Promise<void> | null = null
+let slashCommandsRequestKey = ''
 function currentSlashProfile() {
   return chatStore.activeSession?.profile || profilesStore.activeProfileName || ''
 }
 async function loadSlashCommands() {
   const key = currentSlashProfile()
-  if (slashCommandsLoadedFor === key || slashCommandsRequest) return slashCommandsRequest
+  if (slashCommandsLoadedFor === key) return
+  // an in-flight request for the SAME profile can be shared; one for a different
+  // profile must not satisfy this load (multi-tenant: never serve another profile's list).
+  if (slashCommandsRequest && slashCommandsRequestKey === key) return slashCommandsRequest
+  slashCommandsRequestKey = key
   slashCommandsRequest = (async () => {
     try {
       const res = await fetchSlashCommands(key || undefined)
       if (currentSlashProfile() !== key) return
-      skillSlashCommands.value = (res.commands || []).map((c: SlashCommand) => ({
-        key: `slash:${c.slash}`,
-        name: c.name,
-        args: '',
-        description: c.description || c.title || c.name,
-        insertText: c.name,
-      }))
+      const builtinNames = new Set(bridgeCommands.value.map(c => c.name))
+      skillSlashCommands.value = (res.commands || [])
+        // the server already prepends LOCAL_COMMANDS (e.g. /clear); the client owns the
+        // built-ins, so drop server-side locals + anything that collides with a built-in.
+        .filter((c: SlashCommand) => c.source !== 'local' && !builtinNames.has(c.name))
+        .map((c: SlashCommand) => ({
+          key: `slash:${c.slash}`,
+          name: c.name,
+          args: '',
+          description: c.description || c.title || c.name,
+          insertText: c.name,
+        }))
       slashCommandsLoadedFor = key
     } catch {
       if (currentSlashProfile() !== key) return
@@ -424,6 +434,10 @@ watch(
   () => {
     skillsLoadedKey = ''
     skillCategories.value = []
+    // drop the previous profile's slash commands so the picker never shows another
+    // profile's list; they reload on the next `/` for the now-current profile.
+    skillSlashCommands.value = []
+    slashCommandsLoadedFor = ''
   },
 )
 

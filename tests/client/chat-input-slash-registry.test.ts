@@ -120,6 +120,8 @@ describe('ChatInput slash registry', () => {
     fetchSlashCommandsMock.mockResolvedValue({
       ok: true,
       commands: [
+        // the server prepends LOCAL_COMMANDS (e.g. /clear, source:'local') — must NOT duplicate the client built-in
+        { name: 'clear', slash: '/clear', title: 'clear', description: 'local clear', source: 'local', type: 'local', category: '' },
         { name: 'strategy', slash: '/strategy', title: '投放策略', description: 'strategy alias', source: 'skill-alias', type: 'skill', category: '' },
         { name: 'kep-trevi-strategy-recommend', slash: '/kep-trevi-strategy-recommend', title: '策略', description: 'skill', source: 'skill', type: 'skill', category: '' },
       ],
@@ -143,6 +145,45 @@ describe('ChatInput slash registry', () => {
     expect(fetchSlashCommandsMock).toHaveBeenCalledWith('owner_sync_profile')
     expect(findCommandItem(wrapper, 'strategy')).toBeTruthy()
     expect(findCommandItem(wrapper, 'kep-trevi-strategy-recommend')).toBeTruthy()
+  })
+
+  it('does not add a duplicate /clear when the server returns it as a local command', async () => {
+    const wrapper = shallowMount(ChatInput)
+    const textarea = wrapper.find('textarea')
+
+    await textarea.setValue('/clear')
+    await textarea.trigger('input')
+    await flushPromises()
+
+    // built-ins already define exactly two /clear variants (clear, clear --history).
+    // the server's source:'local' /clear must be filtered out → still exactly 2, not 3.
+    const clearRows = wrapper.findAll('.slash-command-item').filter((item: any) =>
+      item.find('.slash-command-name').text() === '/clear')
+    expect(clearRows.length).toBe(2)
+    expect(wrapper.text()).not.toContain('local clear')  // the server-local row is gone
+  })
+
+  it('clears the previous profile slash commands when the profile changes', async () => {
+    const wrapper = shallowMount(ChatInput)
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('/')
+    await textarea.trigger('input')
+    await flushPromises()
+    expect(findCommandItem(wrapper, 'strategy')).toBeTruthy()
+
+    // switch profile → backend now returns a different profile's commands
+    fetchSlashCommandsMock.mockResolvedValue({
+      ok: true,
+      commands: [{ name: 'other-cmd', slash: '/other-cmd', title: 'o', description: 'o', source: 'skill', type: 'skill', category: '' }],
+    })
+    chatStoreMock.activeSession = { id: 's9', source: 'cli', profile: 'other_profile' } as any
+    await flushPromises()
+    await textarea.setValue('/')
+    await textarea.trigger('input')
+    await flushPromises()
+    // old profile's /strategy must be gone; new profile's command present
+    expect(findCommandItem(wrapper, 'strategy')).toBeFalsy()
+    expect(findCommandItem(wrapper, 'other-cmd')).toBeTruthy()
   })
 
   it('shows skill commands for non-CLI (web) sessions too', async () => {
