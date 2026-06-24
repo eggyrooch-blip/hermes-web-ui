@@ -290,6 +290,36 @@ describe('ProfileSelector', () => {
     expect(wrapper.text()).toContain('viewer')
   })
 
+  it('opens agent sharing from the ordinary selector for shared manager profiles', async () => {
+    fetchAgentSharesMock.mockResolvedValue([
+      { agent_id: 'agent-managed', grantee_open_id: 'ou_reader', role: 'viewer', status: 'active' },
+    ])
+    profilesStoreMock.profiles = [
+      {
+        name: 'managed_agent_profile',
+        active: true,
+        model: '',
+        gateway: '',
+        alias: '',
+        kind: 'agent',
+        agentId: 'agent-managed',
+        shareRole: 'manager',
+        ownerOpenId: 'ou_owner',
+      },
+    ]
+    profilesStoreMock.activeProfileName = 'managed_agent_profile'
+    profilesStoreMock.activeProfile = profilesStoreMock.profiles[0]
+    const wrapper = mount(ProfileSelector)
+
+    await wrapper.find('.profile-display').trigger('click')
+    const shareButton = wrapper.findAll('button').find(button => button.text().includes('Share'))
+
+    expect(shareButton).toBeTruthy()
+    await shareButton!.trigger('click')
+    expect(fetchAgentSharesMock).toHaveBeenCalledWith('agent-managed')
+    expect(wrapper.text()).toContain('ou_reader')
+  })
+
   it('does not expose agent sharing controls for shared viewer/editor profiles', async () => {
     profilesStoreMock.profiles = [
       {
