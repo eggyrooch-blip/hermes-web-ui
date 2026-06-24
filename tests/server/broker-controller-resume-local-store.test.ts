@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const getSessionDetailMock = vi.hoisted(() => vi.fn())
 const getSessionDetailFromDbMock = vi.hoisted(() => vi.fn())
+const getSessionDetailFromDbWithProfileMock = vi.hoisted(() => vi.fn())
 const getCompressionSnapshotMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
@@ -14,6 +15,7 @@ vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
 
 vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
   getSessionDetailFromDb: getSessionDetailFromDbMock,
+  getSessionDetailFromDbWithProfile: getSessionDetailFromDbWithProfileMock,
 }))
 
 vi.mock('../../packages/server/src/db/hermes/compression-snapshot', () => ({
@@ -91,6 +93,7 @@ describe('BrokerRunController local session resume', () => {
     vi.clearAllMocks()
     getCompressionSnapshotMock.mockReturnValue(null)
     getSessionDetailFromDbMock.mockResolvedValue(null)
+    getSessionDetailFromDbWithProfileMock.mockResolvedValue(null)
     getSessionDetailMock.mockReturnValue({
       id: 'local-session',
       profile: 'feishu_g41a5b5g',
@@ -106,15 +109,40 @@ describe('BrokerRunController local session resume', () => {
     const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
     const controller = new BrokerRunController()
 
-    const state = await (controller as any).loadSessionStateFromDb('local-session')
+    const state = await (controller as any).loadSessionStateFromDb('local-session', 'feishu_g41a5b5g')
 
     expect(getSessionDetailMock).toHaveBeenCalledWith('local-session')
     expect(getSessionDetailFromDbMock).not.toHaveBeenCalled()
+    expect(getSessionDetailFromDbWithProfileMock).not.toHaveBeenCalled()
     expect(state.messages).toMatchObject([
       { role: 'user', content: '历史问题' },
       { role: 'assistant', content: '历史回答' },
     ])
     expect(state.inputTokens).toBeGreaterThan(0)
     expect(state.outputTokens).toBeGreaterThan(0)
+  })
+
+  it('does not hydrate a local-store session that belongs to a different profile', async () => {
+    getSessionDetailFromDbWithProfileMock.mockResolvedValue({
+      id: 'local-session',
+      profile: 'other_profile',
+      source: 'cli',
+      messages: [
+        { id: 3, session_id: 'local-session', role: 'user', content: 'profile scoped question', timestamp: 3 },
+      ],
+    })
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+
+    const state = await (controller as any).loadSessionStateFromDb('local-session', 'other_profile')
+
+    expect(getSessionDetailMock).toHaveBeenCalledWith('local-session')
+    expect(getSessionDetailFromDbWithProfileMock).toHaveBeenCalledWith('local-session', 'other_profile')
+    expect(state.messages).toMatchObject([
+      { role: 'user', content: 'profile scoped question' },
+    ])
+    expect(state.messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: '历史问题' }),
+    ]))
   })
 })

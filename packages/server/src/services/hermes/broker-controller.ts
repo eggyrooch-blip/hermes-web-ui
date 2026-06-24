@@ -21,7 +21,7 @@ import {
   addMessage,
   updateSessionStats,
 } from '../../db/hermes/session-store'
-import { getSessionDetailFromDb } from '../../db/hermes/sessions-db'
+import { getSessionDetailFromDb, getSessionDetailFromDbWithProfile } from '../../db/hermes/sessions-db'
 import { getModelContextLength } from './model-context'
 import { ChatContextCompressor, countTokens, SUMMARY_PREFIX } from '../../lib/context-compressor'
 import { getCompressionSnapshot } from '../../db/hermes/compression-snapshot'
@@ -736,7 +736,7 @@ export class BrokerRunController {
       const sid = data.session_id
       const room = `session:${sid}`
       socket.join(room)
-      this.resumeSession(socket, sid)
+      this.resumeSession(socket, sid, profile)
     })
 
     socket.on('abort', (data: { session_id?: string }) => {
@@ -913,10 +913,10 @@ export class BrokerRunController {
     }
     return _messages
   }
-  private async resumeSession(socket: Socket, sid: string) {
+  private async resumeSession(socket: Socket, sid: string, profile?: string) {
     let state = this.sessionMap.get(sid)
     if (!state) {
-      state = await this.loadSessionStateFromDb(sid)
+      state = await this.loadSessionStateFromDb(sid, profile)
       this.sessionMap.set(sid, state)
     }
     socket.emit('resumed', {
@@ -934,9 +934,15 @@ export class BrokerRunController {
       socket.id, sid, state.isWorking, state.messages.length)
   }
 
-  private async loadSessionStateFromDb(sid: string): Promise<SessionState> {
+  private async loadSessionStateFromDb(sid: string, profile?: string): Promise<SessionState> {
     try {
-      const detail = getSessionDetail(sid) || await getSessionDetailFromDb(sid)
+      const localDetail = getSessionDetail(sid)
+      const localProfile = localDetail?.profile || 'default'
+      const detail = localDetail && (!profile || localProfile === profile)
+        ? localDetail
+        : profile
+          ? await getSessionDetailFromDbWithProfile(sid, profile)
+          : await getSessionDetailFromDb(sid)
       const messages = detail?.messages ? this.handleMessage(detail.messages, sid) : []
 
       let inputTokens: number
@@ -995,7 +1001,7 @@ export class BrokerRunController {
       let state = this.sessionMap.get(session_id)
       if (!state) {
         state = getSession(session_id)
-          ? await this.loadSessionStateFromDb(session_id)
+          ? await this.loadSessionStateFromDb(session_id, profile)
           : { messages: [], isWorking: false, events: [], queue: [] }
         this.sessionMap.set(session_id, state)
       }
