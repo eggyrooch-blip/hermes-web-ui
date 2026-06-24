@@ -15,6 +15,9 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 function candidateMultitenancyDbs(): string[] {
+    const explicit = process.env.HERMES_MULTITENANCY_DB?.trim()
+    if (explicit) return [resolve(explicit)]
+
     const configured = config.multitenancyDb
     const base = resolve(homedir(), '.hermes')
     return Array.from(new Set([
@@ -212,6 +215,7 @@ export function registerOwnedProfile(openid: string, profileName: string, upstre
             try {
                 const columns = new Set((db.prepare('PRAGMA table_info(multitenancy_routing)').all() as Array<{ name: string }>).map(column => column.name))
                 if (!columns.has('user_id') || !columns.has('profile_name') || !columns.has('open_id')) continue
+                if (!columns.has('owner_open_id')) continue
 
                 const now = Date.now()
                 const userId = `webui:${normalizedOpenid}:${normalizedProfileName}`

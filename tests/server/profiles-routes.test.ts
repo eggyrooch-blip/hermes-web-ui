@@ -487,6 +487,7 @@ describe('Profile Routes', () => {
         await writeFile(join(profileDir, 'config.yaml'), 'model:\n  default: web-agent-model\n', 'utf-8')
         return `Profile ${name} created`
       })
+      vi.mocked(hermesCli.deleteProfile).mockResolvedValue(true)
       vi.doMock('../../packages/server/src/services/hermes/agent-ownership', () => ({
         listOwnedProfileMetadata: vi.fn(() => new Map()),
         registerOwnedProfile: vi.fn(() => false),
@@ -512,6 +513,7 @@ describe('Profile Routes', () => {
       await create(ctx)
 
       expect(hermesCli.createProfile).toHaveBeenCalledWith('unregistered_agent', false)
+      expect(hermesCli.deleteProfile).toHaveBeenCalledWith('unregistered_agent')
       expect(ctx.status).toBe(500)
       expect(ctx.body).toEqual({ error: 'Failed to register created profile ownership' })
     })

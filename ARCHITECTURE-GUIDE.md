@@ -15,7 +15,14 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
-> [!info] 2026-06-24 worktree — Agent share ACL WebUI adapter
+> [!info] 2026-06-24 本机 main 已合入，等待 sunke 验证 — WebUI 普通用户新建智能体恢复，生产未发布
+> `webui-create-agent-restore` restores the upstream create-agent path without reopening the super-admin-only `/hermes/profiles` page to ordinary Feishu users. `ProfileSelector.vue` now exposes the existing create modal from the user selector, so an authenticated chat-plane user can create a custom agent/profile from the normal profile switcher.
+>
+> Chat-plane profile creation remains tenant-scoped: when `config.webPlane === 'chat'` and the request has a Feishu `openid`, `create()` forces `clone=false` because the current CLI clone API can only clone from the active/admin profile and would otherwise copy provider credentials. After `hermesCli.createProfile()` succeeds, `registerOwnedProfile(openid, name, user.profile)` is mandatory; if owner registration fails, WebUI calls `deleteProfile(name)` as rollback and returns `500 Failed to register created profile ownership`. `registerOwnedProfile()` now requires a routing schema that can persist `owner_open_id`, so legacy schemas fail closed instead of creating rows that the owner cannot list or select.
+>
+> Profile authorization uses the same allowed set for list and switch: `allowedProfileNamesForUser()` includes the bound profile, explicit `user.profiles`, local `user_profiles`, and owner-scoped `listOwnedProfileMetadata(openid)` rows. This makes WebUI-created agents appear in `/api/hermes/profiles` and pass `canAccessProfile()` for the creator while preserving multitenancy isolation. Verification: TDD red/green for registration failure rollback and legacy-schema fail-closed; related Vitest 5 files / 67 passed; full `npm run test` 285 files / 2098 passed / 2 skipped; `npm run build` passed; ftask SIM trace valid. Production is not published.
+
+> [!info] 2026-06-24 本机 main 已合入，等待 sunke 验证 — Agent share ACL WebUI adapter，生产未发布
 > `agent-sharing-acl` adds the WebUI side of agent sharing. The browser never calls the multitenancy Run Broker directly: server routes under `/api/hermes/agents/*/shares` proxy to `/api/run-broker/agents/*/shares` with the authenticated Feishu actor in `X-Hermes-Owner-Open-Id` and optional broker bearer key. The Run Broker remains the source of truth for owner/manager/share-role decisions.
 >
 > Profile listing now appends broker-shared agents and merges owner agent metadata from the multitenancy routing DB. The client persists a shared selection as both `hermes_active_profile_name` and `hermes_active_agent_id`; chat-run sockets, session collection requests, and `/api/hermes/config` include `X-Hermes-Agent-Id`. Server session collection resolves the actor's role through the Run Broker: viewer/editor see only sessions whose `user_id` matches their Feishu open_id; manager/owner see all WebUI sessions for that agent. Shared profile metadata editing stays hidden in the selector/card UI.

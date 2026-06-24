@@ -756,6 +756,11 @@ export async function create(ctx: any) {
         }
       } catch (err: any) {
         logger.error(err, 'Failed to register owned profile "%s" for openid', name)
+        try {
+          await hermesCli.deleteProfile(name)
+        } catch (cleanupErr: any) {
+          logger.warn(cleanupErr, 'Failed to roll back unregistered profile "%s"', name)
+        }
         throw new Error('Failed to register created profile ownership')
       }
     }

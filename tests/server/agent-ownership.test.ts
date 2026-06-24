@@ -6,24 +6,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const originalEnv = process.env
 const roots: string[] = []
 
-function createRoutingDb(options: { withKind?: boolean; withProvenance?: boolean } = {}) {
+function createRoutingDb(options: { withKind?: boolean; withProvenance?: boolean; withOwner?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'hermes-agent-ownership-'))
   roots.push(dir)
   const dbPath = join(dir, 'multitenancy.db')
   const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite')
+  const withOwner = options.withOwner !== false
   const db = new DatabaseSync(dbPath)
-  db.exec(`
-    CREATE TABLE multitenancy_routing (
-      user_id TEXT PRIMARY KEY NOT NULL,
-      profile_name TEXT NOT NULL,
-      open_id TEXT NOT NULL,
-      active INTEGER NOT NULL DEFAULT 1,
-      owner_open_id TEXT
-      ${options.withKind ? ", kind TEXT" : ""}
-      ${options.withProvenance ? ", provenance TEXT" : ""}
-      ${options.withKind ? ", display_label TEXT, agent_id TEXT" : ""}
-    );
-  `)
+  const columns = [
+    'user_id TEXT PRIMARY KEY NOT NULL',
+    'profile_name TEXT NOT NULL',
+    'open_id TEXT NOT NULL',
+    'active INTEGER NOT NULL DEFAULT 1',
+    ...(withOwner ? ['owner_open_id TEXT'] : []),
+    ...(options.withKind ? ['kind TEXT'] : []),
+    ...(options.withProvenance ? ['provenance TEXT'] : []),
+    ...(options.withKind ? ['display_label TEXT', 'agent_id TEXT'] : []),
+  ]
+  db.exec(`CREATE TABLE multitenancy_routing (${columns.join(', ')});`)
   return { db, dbPath }
 }
 
@@ -127,6 +127,17 @@ describe('agent ownership helpers', () => {
       ownerOpenId: 'ou_user_a',
       agentId: 'webui:ou_user_a:coder',
     })
+  })
+
+  it('does not register webui-agent rows when the schema cannot persist owner_open_id', async () => {
+    const { db, dbPath } = createRoutingDb({ withOwner: false, withKind: true, withProvenance: true })
+    db.close()
+
+    const { ownerOwnsProfile, listOwnedProfileMetadata, registerOwnedProfile } = await loadOwnership(dbPath)
+
+    expect(registerOwnedProfile('ou_user_a', 'legacy_agent', 'feishu_user_a')).toBe(false)
+    expect(ownerOwnsProfile('ou_user_a', 'legacy_agent')).toBe(false)
+    expect(listOwnedProfileMetadata('ou_user_a').has('legacy_agent')).toBe(false)
   })
 
   it('keeps migrated sync user rows with null kind visible', async () => {
