@@ -197,6 +197,40 @@ describe('session conversations controller', () => {
     vi.unstubAllGlobals()
   })
 
+  function stubSharedAgentRole(role: 'viewer' | 'editor' | 'manager') {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    const fetchMock = vi.fn(async (url: string, options: any) => {
+      expect(url).toBe('http://broker.test/api/run-broker/agents/shared')
+      expect(options.headers['X-Hermes-Owner-Open-Id']).toMatch(/^ou_/)
+      return new Response(JSON.stringify({
+        agents: [{ agent_id: 'agent-shared', role }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  function sharedAgentSession(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'shared-session',
+      profile: 'owner_profile',
+      source: 'api_server',
+      agent: 'agent-shared',
+      user_id: 'ou_teammate',
+      ...overrides,
+    }
+  }
+
+  function sharedAgentCtx(openid: string, extra: Record<string, unknown> = {}) {
+    return {
+      state: {
+        user: { id: 9, role: 'admin', openid, profile: `feishu_${openid}` },
+      },
+      body: null,
+      ...extra,
+    }
+  }
+
   it('lists conversations from the local session store', async () => {
     localListSessionsMock.mockReturnValue([{
       id: 'local-conversation',
@@ -389,6 +423,76 @@ describe('session conversations controller', () => {
     })
   })
 
+  it('promotes an owner or manager only when the share probe returns an explicit actor role', async () => {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'http://broker.test/api/run-broker/agents/shared') {
+        return new Response(JSON.stringify({ agents: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url === 'http://broker.test/api/run-broker/agents/agent-shared/shares') {
+        return new Response(JSON.stringify({ actor_role: 'manager', shares: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response('{}', { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    localListSessionsByAgentMock.mockReturnValue([
+      { id: 'manager-session', profile: 'owner_profile', source: 'api_server', agent: 'agent-shared', user_id: 'ou_manager' },
+      { id: 'teammate-session', profile: 'owner_profile', source: 'api_server', agent: 'agent-shared', user_id: 'ou_teammate' },
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: {},
+      get: (name: string) => name.toLowerCase() === 'x-hermes-agent-id' ? 'agent-shared' : '',
+      state: {
+        user: { id: 3, role: 'admin', openid: 'ou_manager', profile: 'feishu_manager' },
+      },
+      body: null,
+    }
+    await mod.list(ctx)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(localListSessionsByAgentMock).toHaveBeenCalledWith('agent-shared', {
+      userId: undefined,
+      source: undefined,
+      limit: 2000,
+    })
+    expect(ctx.body.sessions.map((session: any) => session.id)).toEqual(['manager-session', 'teammate-session'])
+  })
+
+  it('does not promote a share probe that is readable but lacks an explicit manager role', async () => {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'http://broker.test/api/run-broker/agents/shared') {
+        return new Response(JSON.stringify({ agents: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url === 'http://broker.test/api/run-broker/agents/agent-shared/shares') {
+        return new Response(JSON.stringify({ shares: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response('{}', { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: {},
+      get: (name: string) => name.toLowerCase() === 'x-hermes-agent-id' ? 'agent-shared' : '',
+      state: {
+        user: { id: 3, role: 'admin', openid: 'ou_manager', profile: 'feishu_manager' },
+      },
+      body: null,
+    }
+    await mod.list(ctx)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(localListSessionsByAgentMock).not.toHaveBeenCalled()
+    expect(ctx.body.sessions).toEqual([])
+    expect(loggerWarnMock).toHaveBeenCalledWith(
+      { agentId: 'agent-shared', actorRole: '' },
+      '[sessions] Run Broker share manager probe returned no manager role',
+    )
+  })
+
   it('lists all agent sessions for a shared manager agent', async () => {
     process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
     const fetchMock = vi.fn(async (url: string) => {
@@ -420,6 +524,127 @@ describe('session conversations controller', () => {
       limit: 2000,
     })
     expect(ctx.body.sessions.map((session: any) => session.id)).toEqual(['manager-session', 'teammate-session'])
+  })
+
+  it('rejects a shared viewer reading a teammate session by id', async () => {
+    stubSharedAgentRole('viewer')
+    localGetSessionDetailMock.mockReturnValue(sharedAgentSession({
+      id: 'teammate-session',
+      messages: [{ id: 1, session_id: 'teammate-session', role: 'user', content: 'secret', timestamp: 1 }],
+    }))
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = sharedAgentCtx('ou_viewer', {
+      params: { id: 'teammate-session' },
+      query: { humanOnly: 'false' },
+    })
+    await mod.getConversationMessages(ctx)
+
+    expect(ctx.status).toBe(403)
+    expect(ctx.body).toEqual({ error: 'Profile "owner_profile" is not available for this user' })
+  })
+
+  it('lets a shared viewer rename their own shared-agent session', async () => {
+    stubSharedAgentRole('viewer')
+    getSessionMock.mockReturnValue(sharedAgentSession({
+      id: 'own-session',
+      user_id: 'ou_viewer',
+    }))
+    localRenameSessionMock.mockReturnValue(true)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = sharedAgentCtx('ou_viewer', {
+      params: { id: 'own-session' },
+      request: { body: { title: '  My shared run  ' } },
+    })
+    await mod.rename(ctx)
+
+    expect(localRenameSessionMock).toHaveBeenCalledWith('own-session', 'My shared run')
+    expect(ctx.body).toEqual({ ok: true })
+  })
+
+  it('rejects a shared viewer mutating a teammate session by id', async () => {
+    stubSharedAgentRole('viewer')
+    getSessionMock.mockReturnValue(sharedAgentSession({ id: 'teammate-session' }))
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const renameCtx: any = sharedAgentCtx('ou_viewer', {
+      params: { id: 'teammate-session' },
+      request: { body: { title: 'Nope' } },
+    })
+    await mod.rename(renameCtx)
+
+    expect(renameCtx.status).toBe(403)
+    expect(localRenameSessionMock).not.toHaveBeenCalled()
+
+    const modelCtx: any = sharedAgentCtx('ou_viewer', {
+      params: { id: 'teammate-session' },
+      request: { body: { model: 'gpt-5', provider: 'openai' } },
+    })
+    await mod.setModel(modelCtx)
+
+    expect(modelCtx.status).toBe(403)
+    expect(localUpdateSessionMock).not.toHaveBeenCalled()
+  })
+
+  it('lets a shared manager update teammate session metadata', async () => {
+    stubSharedAgentRole('manager')
+    getSessionMock.mockReturnValue(sharedAgentSession({ id: 'teammate-session' }))
+    localRenameSessionMock.mockReturnValue(true)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const renameCtx: any = sharedAgentCtx('ou_manager', {
+      params: { id: 'teammate-session' },
+      request: { body: { title: '  Reviewed  ' } },
+    })
+    await mod.rename(renameCtx)
+
+    const workspaceCtx: any = sharedAgentCtx('ou_manager', {
+      params: { id: 'teammate-session' },
+      request: { body: { workspace: '/tmp/project' } },
+    })
+    await mod.setWorkspace(workspaceCtx)
+
+    const modelCtx: any = sharedAgentCtx('ou_manager', {
+      params: { id: 'teammate-session' },
+      request: { body: { model: 'gpt-5.1', provider: 'openai' } },
+    })
+    await mod.setModel(modelCtx)
+
+    expect(localRenameSessionMock).toHaveBeenCalledWith('teammate-session', 'Reviewed')
+    expect(localUpdateSessionMock).toHaveBeenCalledWith('teammate-session', { workspace: '/tmp/project' })
+    expect(localUpdateSessionMock).toHaveBeenCalledWith('teammate-session', {
+      model: 'gpt-5.1',
+      provider: 'openai',
+      workspace: '/tmp/hermes-test/owner_profile/workspace',
+    })
+    expect(renameCtx.body).toEqual({ ok: true })
+    expect(workspaceCtx.body).toEqual({ ok: true })
+    expect(modelCtx.body).toEqual({ ok: true })
+  })
+
+  it('lets a shared manager delete teammate sessions', async () => {
+    stubSharedAgentRole('manager')
+    getSessionMock.mockReturnValue(sharedAgentSession({ id: 'teammate-session', profile: 'travel' }))
+    getExactSessionDetailFromDbWithProfileMock.mockResolvedValue({ id: 'teammate-session', messages: [] })
+    deleteHermesSessionForProfileMock.mockResolvedValue(true)
+    localDeleteSessionMock.mockReturnValue(true)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const removeCtx: any = sharedAgentCtx('ou_manager', {
+      params: { id: 'teammate-session' },
+    })
+    await mod.remove(removeCtx)
+
+    const batchCtx: any = sharedAgentCtx('ou_manager', {
+      request: { body: { sessions: [{ id: 'teammate-session', profile: 'travel' }] } },
+    })
+    await mod.batchRemove(batchCtx)
+
+    expect(deleteHermesSessionForProfileMock).toHaveBeenCalledWith('teammate-session', 'travel')
+    expect(localDeleteSessionMock).toHaveBeenCalledWith('teammate-session')
+    expect(removeCtx.body).toMatchObject({ ok: true, deleted: true })
+    expect(batchCtx.body).toMatchObject({ ok: true, deleted: 1, failed: 0 })
   })
 
   it('filters the single-chat session list when profile is explicitly provided', async () => {

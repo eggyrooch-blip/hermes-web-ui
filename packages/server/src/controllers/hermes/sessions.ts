@@ -154,7 +154,13 @@ async function resolveSharedAgentRole(ctx: any, agentId: string): Promise<string
       method: 'GET',
       headers: brokerHeaders(ctx),
     })
-    if (managerRes.ok) return 'manager'
+    if (managerRes.ok) {
+      const payload = await managerRes.json().catch(() => ({})) as Record<string, unknown>
+      const actorRole = String(payload.actor_role || '').trim()
+      if (actorRole === 'owner' || actorRole === 'manager') return 'manager'
+      logger.warn({ agentId, actorRole }, '[sessions] Run Broker share manager probe returned no manager role')
+      return null
+    }
     if (managerRes.status !== 403 && managerRes.status !== 404) {
       logger.warn({ status: managerRes.status, agentId }, '[sessions] Run Broker share manager probe failed')
     }
@@ -185,8 +191,12 @@ async function canAccessSharedAgentSession(ctx: any, session: any | null | undef
   return String(session?.user_id || '').trim() === scope.userId
 }
 
+async function canAccessSessionAsync(ctx: any, session: any | null | undefined): Promise<boolean> {
+  return !session || canAccessProfile(ctx, session.profile) || await canAccessSharedAgentSession(ctx, session)
+}
+
 async function denySessionAccessAsync(ctx: any, session: any | null | undefined): Promise<boolean> {
-  if (!session || canAccessProfile(ctx, session.profile) || await canAccessSharedAgentSession(ctx, session)) return false
+  if (await canAccessSessionAsync(ctx, session)) return false
   ctx.status = 403
   ctx.body = { error: `Profile "${session.profile || 'default'}" is not available for this user` }
   return true
@@ -775,7 +785,7 @@ export async function importHermesSession(ctx: any) {
 export async function remove(ctx: any) {
   const sessionId = ctx.params.id
   const existing = localGetSession(sessionId)
-  if (denySessionAccess(ctx, existing)) return
+  if (await denySessionAccessAsync(ctx, existing)) return
   const hermesProfile = requestedProfile(ctx) || existing?.profile || getActiveProfileName()
   const codingAgentSession = isCodingAgentSession(existing)
   if (codingAgentSession) codingAgentRunManager.stop(sessionId, { reportClosed: false })
@@ -836,14 +846,15 @@ export async function batchRemove(ctx: any) {
     const { id } = target
     const existing = localGetSession(id)
     const targetProfile = target.profile || existing?.profile
-    if (targetProfile && !canAccessProfile(ctx, targetProfile)) {
+    if (existing) {
+      if (!(await canAccessSessionAsync(ctx, existing))) {
+        results.failed++
+        results.errors.push({ id, error: `Profile "${existing.profile || 'default'}" is not available for this user` })
+        continue
+      }
+    } else if (targetProfile && !canAccessProfile(ctx, targetProfile)) {
       results.failed++
       results.errors.push({ id, error: `Profile "${targetProfile || 'default'}" is not available for this user` })
-      continue
-    }
-    if (!targetProfile && existing && !canAccessProfile(ctx, existing.profile)) {
-      results.failed++
-      results.errors.push({ id, error: `Profile "${existing.profile || 'default'}" is not available for this user` })
       continue
     }
 
@@ -909,7 +920,7 @@ export async function rename(ctx: any) {
     return
   }
   const existing = localGetSession(ctx.params.id)
-  if (denySessionAccess(ctx, existing)) return
+  if (await denySessionAccessAsync(ctx, existing)) return
   const ok = localRenameSession(ctx.params.id, title.trim())
   if (!ok) {
     ctx.status = 500
@@ -929,7 +940,7 @@ export async function setWorkspace(ctx: any) {
   const { updateSession, getSession, createSession } = await import('../../db/hermes/session-store')
   const id = ctx.params.id
   const existing = getSession(id)
-  if (denySessionAccess(ctx, existing)) return
+  if (await denySessionAccessAsync(ctx, existing)) return
   if (!existing) {
     const newProfile = isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : (requestedProfile(ctx) || 'default')
     createSession({ id, profile: newProfile, title: '' })
@@ -953,7 +964,7 @@ export async function setModel(ctx: any) {
   const { updateSession, getSession, createSession } = await import('../../db/hermes/session-store')
   const id = ctx.params.id
   const existing = getSession(id)
-  if (denySessionAccess(ctx, existing)) return
+  if (await denySessionAccessAsync(ctx, existing)) return
   const profile = existing?.profile
     || (isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : requestedProfile(ctx))
     || 'default'
