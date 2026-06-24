@@ -4,6 +4,7 @@ import { NButton, NInput, NModal, NSelect, NTag, NSpin, useMessage, useDialog } 
 import type { HermesProfile, HermesProfileDetail } from '@/api/hermes/profiles'
 import { fetchAgentShares, grantAgentShare, revokeAgentShare, type AgentShare, type AgentShareGrantee, type AgentShareRole } from '@/api/hermes/agents'
 import { useProfilesStore } from '@/stores/hermes/profiles'
+import { safeShareAvatarUrl } from '@/utils/hermes/share-identity'
 import { useI18n } from 'vue-i18n'
 import ProfileAvatar from './ProfileAvatar.vue'
 
@@ -180,36 +181,12 @@ function shareDisplayName(share: AgentShare): string {
 
 function shareSecondaryLabel(share: AgentShare): string {
   if (!share.principal) return ''
-  return share.principal.email || share.principal.user_id || ''
+  const primary = shareDisplayName(share)
+  return [share.principal.email, share.principal.user_id].find(value => value && value !== primary) || ''
 }
 
 function shareAvatarUrl(share: AgentShare): string {
   return safeShareAvatarUrl(share.principal?.avatar_url)
-}
-
-function safeShareAvatarUrl(value?: string): string {
-  const raw = value?.trim()
-  if (!raw) return ''
-  const sameOrigin = typeof window === 'undefined' ? '' : window.location.origin
-  const trustedHostSuffixes = [
-    'feishucdn.com',
-    'feishu.cn',
-    'larksuitecdn.com',
-    'larksuite.com',
-  ]
-
-  try {
-    const url = new URL(raw, sameOrigin || undefined)
-    if (sameOrigin && url.origin === sameOrigin) return url.href
-    if (url.protocol !== 'https:') return ''
-    const host = url.hostname.toLowerCase()
-    if (trustedHostSuffixes.some(suffix => host === suffix || host.endsWith(`.${suffix}`))) {
-      return url.href
-    }
-  } catch {
-    return ''
-  }
-  return ''
 }
 </script>
 

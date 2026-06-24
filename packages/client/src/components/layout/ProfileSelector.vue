@@ -15,6 +15,7 @@ import ProfileAvatarView from '@/components/hermes/profiles/ProfileAvatar.vue'
 import ProfileCreateModal from '@/components/hermes/profiles/ProfileCreateModal.vue'
 import { useI18n } from 'vue-i18n'
 import { isStoredSuperAdmin } from '@/api/client'
+import { safeShareAvatarUrl } from '@/utils/hermes/share-identity'
 
 const emit = defineEmits<{
   'modal-show-change': [show: boolean]
@@ -205,36 +206,12 @@ function shareDisplayName(share: AgentShare): string {
 
 function shareSecondaryLabel(share: AgentShare): string {
   if (!share.principal) return ''
-  return share.principal.email || share.principal.user_id || ''
+  const primary = shareDisplayName(share)
+  return [share.principal.email, share.principal.user_id].find(value => value && value !== primary) || ''
 }
 
 function shareAvatarUrl(share: AgentShare): string {
   return safeShareAvatarUrl(share.principal?.avatar_url)
-}
-
-function safeShareAvatarUrl(value?: string): string {
-  const raw = value?.trim()
-  if (!raw) return ''
-  const sameOrigin = typeof window === 'undefined' ? '' : window.location.origin
-  const trustedHostSuffixes = [
-    'feishucdn.com',
-    'feishu.cn',
-    'larksuitecdn.com',
-    'larksuite.com',
-  ]
-
-  try {
-    const url = new URL(raw, sameOrigin || undefined)
-    if (sameOrigin && url.origin === sameOrigin) return url.href
-    if (url.protocol !== 'https:') return ''
-    const host = url.hostname.toLowerCase()
-    if (trustedHostSuffixes.some(suffix => host === suffix || host.endsWith(`.${suffix}`))) {
-      return url.href
-    }
-  } catch {
-    return ''
-  }
-  return ''
 }
 
 function profileDisplayLabel(profile: HermesProfile): string {

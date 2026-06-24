@@ -1086,7 +1086,7 @@ export default {
       manage: 'Share',
       title: 'Agent sharing',
       empty: 'No shared members',
-      grantee: 'Feishu OpenID',
+      grantee: 'Email или Feishu user_id',
       role: 'Role',
       grant: 'Grant',
       revoke: 'Revoke',

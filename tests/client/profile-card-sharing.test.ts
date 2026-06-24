@@ -229,4 +229,40 @@ describe('ProfileCard sharing', () => {
     expect(wrapper.text()).toContain('Tracker User')
     expect(wrapper.find('img.share-principal-avatar').exists()).toBe(false)
   })
+
+  it('does not duplicate an email-only principal label', async () => {
+    fetchAgentSharesMock.mockResolvedValue([
+      {
+        agent_id: 'agent-owned',
+        share_id: 'shr_email_only',
+        grantee_open_id: 'principal:prn_email_only',
+        grantee_principal_id: 'prn_email_only',
+        role: 'viewer',
+        status: 'active',
+        principal: {
+          provider: 'feishu',
+          email: 'email-only@example.test',
+          user_id: 'u_email_only',
+        },
+      },
+    ])
+    const wrapper = mount(ProfileCard, {
+      props: {
+        profile: {
+          name: 'owned_agent_profile',
+          active: false,
+          model: '',
+          alias: '',
+          kind: 'agent',
+          agentId: 'agent-owned',
+        },
+      },
+    })
+
+    const shareButton = wrapper.findAll('button').find(button => button.text().includes('Share'))
+    await shareButton!.trigger('click')
+
+    expect(wrapper.find('.share-grantee-name').text()).toBe('email-only@example.test')
+    expect(wrapper.find('.share-grantee-secondary').text()).toBe('u_email_only')
+  })
 })
