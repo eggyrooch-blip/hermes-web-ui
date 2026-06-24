@@ -955,7 +955,7 @@ export class BrokerRunController {
   private async getSessionDetailForProfile(sid: string, profile?: string) {
     const localDetail = getSessionDetail(sid)
     const localProfile = localDetail?.profile || 'default'
-    if (localDetail && (!profile || localProfile === profile)) {
+    if (localDetail?.source === 'api_server' && (!profile || localProfile === profile)) {
       return localDetail
     }
     return profile

@@ -146,6 +146,38 @@ describe('BrokerRunController local session resume', () => {
     ]))
   })
 
+  it('falls back to profile state.db when the matching local-store row is not api_server', async () => {
+    getSessionDetailMock.mockReturnValue({
+      id: 'local-session',
+      profile: 'feishu_g41a5b5g',
+      source: 'cli',
+      messages: [
+        { id: 4, session_id: 'local-session', role: 'user', content: 'stale local cli copy', timestamp: 4 },
+      ],
+    })
+    getSessionDetailFromDbWithProfileMock.mockResolvedValue({
+      id: 'local-session',
+      profile: 'feishu_g41a5b5g',
+      source: 'cli',
+      messages: [
+        { id: 5, session_id: 'local-session', role: 'user', content: 'profile state db question', timestamp: 5 },
+      ],
+    })
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+
+    const state = await (controller as any).loadSessionStateFromDb('local-session', 'feishu_g41a5b5g')
+
+    expect(getSessionDetailMock).toHaveBeenCalledWith('local-session')
+    expect(getSessionDetailFromDbWithProfileMock).toHaveBeenCalledWith('local-session', 'feishu_g41a5b5g')
+    expect(state.messages).toMatchObject([
+      { role: 'user', content: 'profile state db question' },
+    ])
+    expect(state.messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: 'stale local cli copy' }),
+    ]))
+  })
+
   it('keeps resumed session cache scoped by profile for the same session id', async () => {
     getSessionDetailFromDbWithProfileMock.mockResolvedValue({
       id: 'local-session',
