@@ -352,6 +352,43 @@ describe('session conversations controller', () => {
     expect(ctx.body.sessions.map((session: any) => session.id)).toEqual(['own-session'])
   })
 
+  it('does not promote a shared viewer when the manager probe would be readable', async () => {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'http://broker.test/api/run-broker/agents/shared') {
+        return new Response(JSON.stringify({
+          agents: [{ agent_id: 'agent-shared', role: 'viewer' }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url === 'http://broker.test/api/run-broker/agents/agent-shared/shares') {
+        return new Response(JSON.stringify({ shares: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response('{}', { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    localListSessionsByAgentMock.mockReturnValue([
+      { id: 'own-session', profile: 'owner_profile', source: 'api_server', agent: 'agent-shared', user_id: 'ou_viewer' },
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: {},
+      get: (name: string) => name.toLowerCase() === 'x-hermes-agent-id' ? 'agent-shared' : '',
+      state: {
+        user: { id: 2, role: 'admin', openid: 'ou_viewer', profile: 'feishu_viewer' },
+      },
+      body: null,
+    }
+    await mod.list(ctx)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(localListSessionsByAgentMock).toHaveBeenCalledWith('agent-shared', {
+      userId: 'ou_viewer',
+      source: undefined,
+      limit: 2000,
+    })
+  })
+
   it('lists all agent sessions for a shared manager agent', async () => {
     process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
     const fetchMock = vi.fn(async (url: string) => {
