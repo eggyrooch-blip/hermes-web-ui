@@ -208,13 +208,6 @@ function filterByAllowedProfiles<T>(ctx: any, items: T[]): T[] {
   return items.filter(item => allowed.has(((item as any).profile as string | null | undefined) || 'default'))
 }
 
-function denySessionAccess(ctx: any, session: any | null | undefined): boolean {
-  if (!session || canAccessProfile(ctx, session.profile)) return false
-  ctx.status = 403
-  ctx.body = { error: `Profile "${session.profile || 'default'}" is not available for this user` }
-  return true
-}
-
 function isVisibleWebUiSessionSource(source?: string | null): boolean {
   return source === 'api_server' || source === 'cli' || source === 'coding_agent' || source === 'global_agent'
 }
