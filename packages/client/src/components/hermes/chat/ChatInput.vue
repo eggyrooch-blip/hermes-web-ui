@@ -225,6 +225,7 @@ const skillSlashCommands = ref<SlashCommandOption[]>([])
 let slashCommandsLoadedFor = ''
 let slashCommandsRequest: Promise<void> | null = null
 let slashCommandsRequestKey = ''
+let slashDismissed = false
 function currentSlashProfile() {
   return chatStore.activeSession?.profile || profilesStore.activeProfileName || ''
 }
@@ -460,9 +461,25 @@ function updateSlashState() {
     slashActive.value = false
     return
   }
+  slashDismissed = false  // genuine typing clears any prior Escape dismissal
   // lazy-load the profile's skill/slash commands on first `/` (fail-soft); the menu
   // is available to ALL sessions, not only CLI/bridge sessions.
-  void loadSlashCommands()
+  void loadSlashCommands().then(() => reevaluateSlashAfterLoad(beforeCursor))
+  slashQuery.value = beforeCursor.slice(1)
+  slashActiveIndex.value = 0
+  slashActive.value = filteredBridgeCommands.value.length > 0
+}
+
+// After the async command fetch resolves, reopen the dropdown if the user typed a
+// prefix that matches ONLY backend commands (no built-in) — without it, /strategy would
+// close the menu before its command loaded. Respects Escape and input changes.
+function reevaluateSlashAfterLoad(capturedBefore: string) {
+  if (slashDismissed || slashActive.value) return
+  const el = textareaRef.value
+  if (!el) return
+  const beforeCursor = inputText.value.slice(0, el.selectionStart)
+  if (beforeCursor !== capturedBefore) return  // user moved on
+  if (!beforeCursor.startsWith('/') || beforeCursor.includes(' ')) return
   slashQuery.value = beforeCursor.slice(1)
   slashActiveIndex.value = 0
   slashActive.value = filteredBridgeCommands.value.length > 0
@@ -858,6 +875,7 @@ function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       e.preventDefault()
       slashActive.value = false
+      slashDismissed = true  // don't let the async command load reopen it
       return
     }
   }

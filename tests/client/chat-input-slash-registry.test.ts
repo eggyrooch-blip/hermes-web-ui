@@ -186,6 +186,50 @@ describe('ChatInput slash registry', () => {
     expect(findCommandItem(wrapper, 'other-cmd')).toBeTruthy()
   })
 
+  it('opens the dropdown for a backend-only prefix once the async fetch resolves', async () => {
+    // fetch resolves on a deferred promise so we can type /strategy while it is pending
+    let resolveFetch: (v: any) => void = () => {}
+    fetchSlashCommandsMock.mockReturnValue(new Promise(r => { resolveFetch = r }))
+    const wrapper = shallowMount(ChatInput)
+    const textarea = wrapper.find('textarea')
+
+    await textarea.setValue('/strategy')   // matches NO built-in
+    await textarea.trigger('input')
+    await flushPromises()
+    expect(wrapper.find('.slash-command-dropdown').exists()).toBe(false)  // closed while pending
+
+    resolveFetch({ ok: true, commands: [
+      { name: 'strategy', slash: '/strategy', title: 's', description: 'strategy', source: 'skill-alias', type: 'skill', category: '' },
+    ] })
+    await flushPromises()
+    // dropdown reopens now that /strategy's command has loaded
+    expect(wrapper.find('.slash-command-dropdown').exists()).toBe(true)
+    expect(findCommandItem(wrapper, 'strategy')).toBeTruthy()
+  })
+
+  it('keeps the dropdown dismissed after Escape even when a pending fetch resolves', async () => {
+    // `/` shows built-ins (dropdown OPEN); Escape dismisses; the still-pending fetch
+    // must not reopen it.
+    let resolveFetch: (v: any) => void = () => {}
+    fetchSlashCommandsMock.mockReturnValue(new Promise(r => { resolveFetch = r }))
+    const wrapper = shallowMount(ChatInput)
+    const textarea = wrapper.find('textarea')
+
+    await textarea.setValue('/')
+    await textarea.trigger('input')
+    await flushPromises()
+    expect(wrapper.find('.slash-command-dropdown').exists()).toBe(true)  // open with built-ins
+    await textarea.trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(wrapper.find('.slash-command-dropdown').exists()).toBe(false)  // dismissed
+
+    resolveFetch({ ok: true, commands: [
+      { name: 'strategy', slash: '/strategy', title: 's', description: 'strategy', source: 'skill-alias', type: 'skill', category: '' },
+    ] })
+    await flushPromises()
+    expect(wrapper.find('.slash-command-dropdown').exists()).toBe(false)  // stays dismissed
+  })
+
   it('shows skill commands for non-CLI (web) sessions too', async () => {
     chatStoreMock.activeSession = { id: 's2', source: 'web', profile: 'owner_sync_profile' } as any
     const wrapper = shallowMount(ChatInput)
