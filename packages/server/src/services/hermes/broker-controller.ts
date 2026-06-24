@@ -936,7 +936,7 @@ export class BrokerRunController {
 
   private async loadSessionStateFromDb(sid: string): Promise<SessionState> {
     try {
-      const detail = await getSessionDetailFromDb(sid)
+      const detail = getSessionDetail(sid) || await getSessionDetailFromDb(sid)
       const messages = detail?.messages ? this.handleMessage(detail.messages, sid) : []
 
       let inputTokens: number
