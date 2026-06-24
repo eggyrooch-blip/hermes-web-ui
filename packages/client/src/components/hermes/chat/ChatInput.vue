@@ -6,6 +6,7 @@ import { useProfilesStore } from '@/stores/hermes/profiles'
 import { fetchContextLength } from '@/api/hermes/sessions'
 import { setModelContext } from '@/api/hermes/model-context'
 import { fetchSkills, type SkillCategory, type SkillInfo } from '@/api/hermes/skills'
+import { fetchSlashCommands, type SlashCommand } from '@/api/hermes/slash'
 import { isStoredSuperAdmin } from '@/api/client'
 import { NButton, NTooltip, NSwitch, NModal, NInputNumber, NPopselect, useMessage } from 'naive-ui'
 import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
@@ -215,6 +216,42 @@ const skillPickerLoading = ref(false)
 let skillsLoadedKey = ''
 let skillsLoadRequest: Promise<void> | null = null
 const isBridgeSession = computed(() => chatStore.activeSession?.source === 'cli')
+
+// Per-profile skill/slash commands from the backend (restored after the upstream
+// rebaseline dropped this). Powers the `/` picker for ALL sessions, and surfaces
+// each skill's self-declared short commands (e.g. /strategy). Fail-soft: errors
+// degrade to the built-in commands, never block the input box.
+const skillSlashCommands = ref<SlashCommandOption[]>([])
+let slashCommandsLoadedFor = ''
+let slashCommandsRequest: Promise<void> | null = null
+function currentSlashProfile() {
+  return chatStore.activeSession?.profile || profilesStore.activeProfileName || ''
+}
+async function loadSlashCommands() {
+  const key = currentSlashProfile()
+  if (slashCommandsLoadedFor === key || slashCommandsRequest) return slashCommandsRequest
+  slashCommandsRequest = (async () => {
+    try {
+      const res = await fetchSlashCommands(key || undefined)
+      if (currentSlashProfile() !== key) return
+      skillSlashCommands.value = (res.commands || []).map((c: SlashCommand) => ({
+        key: `slash:${c.slash}`,
+        name: c.name,
+        args: '',
+        description: c.description || c.title || c.name,
+        insertText: c.name,
+      }))
+      slashCommandsLoadedFor = key
+    } catch {
+      if (currentSlashProfile() !== key) return
+      skillSlashCommands.value = []
+      slashCommandsLoadedFor = key
+    } finally {
+      slashCommandsRequest = null
+    }
+  })()
+  return slashCommandsRequest
+}
 const skillPickerItems = computed(() => {
   const byName = new Map<string, SkillInfo>()
   for (const category of skillCategories.value) {
@@ -235,7 +272,8 @@ const skillPickerItems = computed(() => {
 })
 const filteredBridgeCommands = computed(() => {
   const query = slashQuery.value.toLowerCase()
-  return bridgeCommands.value.filter(command =>
+  const all = [...bridgeCommands.value, ...skillSlashCommands.value]
+  return all.filter(command =>
     command.name.includes(query)
     || command.insertText?.includes(query)
     || command.description.toLowerCase().includes(query),
@@ -400,10 +438,6 @@ function scrollCommandIntoView() {
 }
 
 function updateSlashState() {
-  if (!isBridgeSession.value) {
-    slashActive.value = false
-    return
-  }
   const el = textareaRef.value
   if (!el) return
   const cursorPos = el.selectionStart
@@ -412,6 +446,9 @@ function updateSlashState() {
     slashActive.value = false
     return
   }
+  // lazy-load the profile's skill/slash commands on first `/` (fail-soft); the menu
+  // is available to ALL sessions, not only CLI/bridge sessions.
+  void loadSlashCommands()
   slashQuery.value = beforeCursor.slice(1)
   slashActiveIndex.value = 0
   slashActive.value = filteredBridgeCommands.value.length > 0

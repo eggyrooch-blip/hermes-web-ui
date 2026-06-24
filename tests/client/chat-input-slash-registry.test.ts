@@ -3,15 +3,14 @@ import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { shallowMount, flushPromises } from '@vue/test-utils'
 
-// Upstream rebaseline note:
-// The fork's "owner-scoped slash registry" (server-driven /api/hermes/slash
-// commands rendered into [data-testid="slash-suggestion-*"]) was replaced by
-// upstream's client-side bridge-command registry. Slash suggestions now:
-//   - only render for bridge/CLI sessions (activeSession.source === 'cli'),
-//   - come from a hard-coded `bridgeCommands` list (no fetchSlashCommands call),
-//   - render as `.slash-command-item` rows inside `.slash-command-dropdown`,
-//   - and skills route through a separate `/skill` picker modal.
-// These tests verify that surviving behavior against the upstream DOM.
+// Slash registry behavior (RESTORED after the upstream rebaseline regressed it):
+//   - the `/` picker merges the in-component built-in `bridgeCommands` with the
+//     PER-PROFILE skill/slash commands fetched from /api/hermes/slash (incl. each
+//     skill's self-declared short commands, e.g. /strategy),
+//   - it renders for ALL sessions (not only CLI/bridge sessions),
+//   - rows render as `.slash-command-item` inside `.slash-command-dropdown`,
+//   - a failed fetch degrades to built-ins (fail-soft), never blocking input,
+//   - the separate `/skill` picker modal stays CLI-only (unchanged).
 
 const chatStoreMock = vi.hoisted(() => ({
   activeSession: { id: 's1', source: 'cli', profile: 'owner_sync_profile' } as any,
@@ -34,6 +33,7 @@ const profilesStoreMock = vi.hoisted(() => ({
 }))
 
 const fetchSkillsMock = vi.hoisted(() => vi.fn())
+const fetchSlashCommandsMock = vi.hoisted(() => vi.fn())
 const isStoredSuperAdminMock = vi.hoisted(() => vi.fn(() => false))
 
 vi.mock('@/stores/hermes/chat', () => ({
@@ -58,6 +58,10 @@ vi.mock('@/api/hermes/model-context', () => ({
 
 vi.mock('@/api/hermes/skills', () => ({
   fetchSkills: fetchSkillsMock,
+}))
+
+vi.mock('@/api/hermes/slash', () => ({
+  fetchSlashCommands: fetchSlashCommandsMock,
 }))
 
 vi.mock('@/api/client', () => ({
@@ -113,10 +117,17 @@ describe('ChatInput slash registry', () => {
     chatStoreMock.activeSession = { id: 's1', source: 'cli', profile: 'owner_sync_profile' }
     chatStoreMock.activeSessionId = 's1'
     fetchSkillsMock.mockResolvedValue({ categories: [] })
+    fetchSlashCommandsMock.mockResolvedValue({
+      ok: true,
+      commands: [
+        { name: 'strategy', slash: '/strategy', title: '投放策略', description: 'strategy alias', source: 'skill-alias', type: 'skill', category: '' },
+        { name: 'kep-trevi-strategy-recommend', slash: '/kep-trevi-strategy-recommend', title: '策略', description: 'skill', source: 'skill', type: 'skill', category: '' },
+      ],
+    })
     isStoredSuperAdminMock.mockReturnValue(false)
   })
 
-  it('renders client-side bridge slash suggestions when the user starts a command', async () => {
+  it('merges built-in commands with per-profile skill/slash commands from the backend', async () => {
     const wrapper = shallowMount(ChatInput)
     const textarea = wrapper.find('textarea')
 
@@ -124,10 +135,41 @@ describe('ChatInput slash registry', () => {
     await textarea.trigger('input')
     await flushPromises()
 
-    // Suggestions are sourced from the in-component bridgeCommands list, not a fetch.
     expect(wrapper.find('.slash-command-dropdown').exists()).toBe(true)
+    // built-ins still present
     expect(wrapper.text()).toContain('/clear')
     expect(wrapper.text()).toContain('/compress')
+    // backend per-profile commands merged in (incl. skill short alias /strategy)
+    expect(fetchSlashCommandsMock).toHaveBeenCalledWith('owner_sync_profile')
+    expect(findCommandItem(wrapper, 'strategy')).toBeTruthy()
+    expect(findCommandItem(wrapper, 'kep-trevi-strategy-recommend')).toBeTruthy()
+  })
+
+  it('shows skill commands for non-CLI (web) sessions too', async () => {
+    chatStoreMock.activeSession = { id: 's2', source: 'web', profile: 'owner_sync_profile' } as any
+    const wrapper = shallowMount(ChatInput)
+    const textarea = wrapper.find('textarea')
+
+    await textarea.setValue('/')
+    await textarea.trigger('input')
+    await flushPromises()
+
+    expect(wrapper.find('.slash-command-dropdown').exists()).toBe(true)
+    expect(findCommandItem(wrapper, 'strategy')).toBeTruthy()
+  })
+
+  it('degrades to built-in commands when the backend fetch fails (fail-soft)', async () => {
+    fetchSlashCommandsMock.mockRejectedValueOnce(new Error('boom'))
+    const wrapper = shallowMount(ChatInput)
+    const textarea = wrapper.find('textarea')
+
+    await textarea.setValue('/')
+    await textarea.trigger('input')
+    await flushPromises()
+
+    expect(wrapper.find('.slash-command-dropdown').exists()).toBe(true)
+    expect(findCommandItem(wrapper, 'clear')).toBeTruthy()  // built-ins survive
+    expect(findCommandItem(wrapper, 'strategy')).toBeFalsy()
   })
 
   it('does not expose host-maintenance MCP reload to ordinary users', async () => {
