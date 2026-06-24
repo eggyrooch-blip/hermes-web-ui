@@ -198,6 +198,35 @@ describe('ProfileSelector', () => {
     expect(fetchProfileRuntimeStatusesWithMetaMock).not.toHaveBeenCalled()
   })
 
+  it('shows shared agent labels and hides profile metadata controls for shared agents', async () => {
+    profilesStoreMock.profiles = [
+      { name: 'feishu_user_a', active: false, model: '', gateway: '', alias: '', kind: 'user', avatar: { type: 'generated', seed: 'current-seed' } },
+      {
+        name: 'owned_agent_profile',
+        active: true,
+        model: '',
+        gateway: '',
+        alias: '',
+        kind: 'agent',
+        agentId: 'agent-shared',
+        displayLabel: 'Shared analyst',
+        shareRole: 'editor',
+      },
+    ]
+    profilesStoreMock.activeProfileName = 'owned_agent_profile'
+    profilesStoreMock.activeProfile = profilesStoreMock.profiles[1]
+    const wrapper = mount(ProfileSelector)
+
+    expect(wrapper.find('.profile-name').text()).toBe('Shared analyst')
+
+    await wrapper.find('.profile-display').trigger('click')
+
+    expect(wrapper.text()).toContain('Shared analyst')
+    expect(wrapper.text()).toContain('editor')
+    expect(wrapper.text()).toContain('Switch Profile')
+    expect(wrapper.findAll('button').filter(button => button.text().includes('Customize Avatar')).length).toBe(1)
+  })
+
   it('keeps profile runtime and frontend switching controls for super-admin users', async () => {
     isStoredSuperAdminMock.mockReturnValue(true)
     const wrapper = mount(ProfileSelector)

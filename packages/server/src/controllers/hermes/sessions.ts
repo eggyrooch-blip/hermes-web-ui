@@ -2,7 +2,9 @@ import * as hermesCli from '../../services/hermes/hermes-cli'
 import { listSessionSummaries, getUsageStatsFromDb, getSessionDetailFromDb, getSessionDetailFromDbWithProfile, getSessionDetailPaginatedFromDbWithProfile, getExactSessionDetailFromDbWithProfile } from '../../db/hermes/sessions-db'
 import {
   listSessions as localListSessions,
+  listSessionsByAgent as localListSessionsByAgent,
   searchSessions as localSearchSessions,
+  searchSessionsByAgent as localSearchSessionsByAgent,
   getSession as localGetSession,
   getSessionDetail as localGetSessionDetail,
   deleteSession as localDeleteSession,
@@ -12,6 +14,7 @@ import {
   updateSession as localUpdateSession,
   updateSessionStats as localUpdateSessionStats,
 } from '../../db/hermes/session-store'
+import { config } from '../../config'
 import { ExportCompressor } from '../../lib/context-compressor/export-compressor'
 import { deleteUsage, getUsage, getUsageBatch } from '../../db/hermes/usage-store'
 import type { UsageStatsModelRow, UsageStatsDailyRow } from '../../db/hermes/usage-store'
@@ -105,6 +108,87 @@ function explicitSessionCollectionProfile(ctx: any): { profile?: string; denied:
   return canAccessProfile(ctx, profile)
     ? { profile, denied: false }
     : { profile, denied: true }
+}
+
+function actorOpenId(ctx: any): string {
+  const value = ctx.state?.user?.openid
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function requestedAgentId(ctx: any): string {
+  const header = typeof ctx.get === 'function' ? ctx.get('x-hermes-agent-id') : ''
+  const query = typeof ctx.query?.agent_id === 'string' ? ctx.query.agent_id : ''
+  return String(header || query || '').trim()
+}
+
+function brokerHeaders(ctx: any): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
+  const openid = actorOpenId(ctx)
+  if (openid) headers['X-Hermes-Owner-Open-Id'] = openid
+  return headers
+}
+
+async function resolveSharedAgentRole(ctx: any, agentId: string): Promise<string | null> {
+  const actor = actorOpenId(ctx)
+  if (!actor || !agentId || !config.runBrokerUrl) return null
+  const encodedAgentId = encodeURIComponent(agentId)
+  try {
+    const managerRes = await fetch(`${config.runBrokerUrl}/api/run-broker/agents/${encodedAgentId}/shares`, {
+      method: 'GET',
+      headers: brokerHeaders(ctx),
+    })
+    if (managerRes.ok) return 'manager'
+    if (managerRes.status !== 403 && managerRes.status !== 404) {
+      logger.warn({ status: managerRes.status, agentId }, '[sessions] Run Broker share manager probe failed')
+    }
+  } catch (err) {
+    logger.warn({ err, agentId }, '[sessions] Run Broker share manager probe failed')
+  }
+
+  try {
+    const sharedRes = await fetch(`${config.runBrokerUrl}/api/run-broker/agents/shared`, {
+      method: 'GET',
+      headers: brokerHeaders(ctx),
+    })
+    if (!sharedRes.ok) return null
+    const payload = await sharedRes.json().catch(() => ({})) as { agents?: Array<Record<string, unknown>> }
+    const agents = Array.isArray(payload.agents) ? payload.agents : []
+    const match = agents.find(agent => String(agent.agent_id || '').trim() === agentId)
+    const role = String(match?.role || '').trim()
+    return role === 'viewer' || role === 'editor' || role === 'manager' ? role : null
+  } catch (err) {
+    logger.warn({ err, agentId }, '[sessions] Run Broker shared-agent role lookup failed')
+    return null
+  }
+}
+
+async function sharedAgentSessionScope(ctx: any, agentId: string): Promise<{ agentId: string; userId?: string } | null> {
+  const normalizedAgentId = agentId.trim()
+  if (!normalizedAgentId) return null
+  const role = await resolveSharedAgentRole(ctx, normalizedAgentId)
+  if (!role) return null
+  const actor = actorOpenId(ctx)
+  return {
+    agentId: normalizedAgentId,
+    userId: role === 'manager' ? undefined : actor,
+  }
+}
+
+async function canAccessSharedAgentSession(ctx: any, session: any | null | undefined): Promise<boolean> {
+  const agentId = String(session?.agent || '').trim()
+  if (!agentId) return false
+  const scope = await sharedAgentSessionScope(ctx, agentId)
+  if (!scope) return false
+  if (!scope.userId) return true
+  return String(session?.user_id || '').trim() === scope.userId
+}
+
+async function denySessionAccessAsync(ctx: any, session: any | null | undefined): Promise<boolean> {
+  if (!session || canAccessProfile(ctx, session.profile) || await canAccessSharedAgentSession(ctx, session)) return false
+  ctx.status = 403
+  ctx.body = { error: `Profile "${session.profile || 'default'}" is not available for this user` }
+  return true
 }
 
 function filterByAllowedProfiles<T>(ctx: any, items: T[]): T[] {
@@ -314,6 +398,53 @@ function buildImportMessages(sessionId: string, messages: any[]): LocalImportMes
 export async function listConversations(ctx: any) {
   const source = (ctx.query.source as string) || undefined
   const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
+  const agentId = requestedAgentId(ctx)
+  if (agentId) {
+    const scope = await sharedAgentSessionScope(ctx, agentId)
+    if (!scope) {
+      ctx.body = { sessions: [] }
+      return
+    }
+    const sessions = localListSessionsByAgent(scope.agentId, {
+      userId: scope.userId,
+      source,
+      limit: limit && limit > 0 ? limit : 200,
+    })
+    const summaries: ConversationSummary[] = sessions
+      .filter(s => isRequestedSessionSource(source, s.source))
+      .map(s => ({
+        id: s.id,
+        profile: s.profile || null,
+        source: s.source,
+        agent: s.agent,
+        agent_mode: s.agent_mode,
+        agent_session_id: s.agent_session_id,
+        agent_native_session_id: s.agent_native_session_id,
+        model: s.model,
+        provider: s.provider,
+        title: s.title,
+        started_at: s.started_at,
+        ended_at: s.ended_at,
+        last_active: s.last_active,
+        message_count: s.message_count,
+        tool_call_count: s.tool_call_count,
+        input_tokens: s.input_tokens,
+        output_tokens: s.output_tokens,
+        cache_read_tokens: s.cache_read_tokens,
+        cache_write_tokens: s.cache_write_tokens,
+        reasoning_tokens: s.reasoning_tokens,
+        billing_provider: s.billing_provider,
+        estimated_cost_usd: s.estimated_cost_usd,
+        actual_cost_usd: s.actual_cost_usd,
+        cost_status: s.cost_status,
+        preview: s.preview,
+        workspace: s.workspace || null,
+        is_active: s.ended_at == null && (Date.now() / 1000 - s.last_active) <= 300,
+        thread_session_count: 1,
+      }))
+    ctx.body = { sessions: filterPendingDeletedConversationSummaries(summaries) }
+    return
+  }
 
   const resolved = explicitSessionCollectionProfile(ctx)
   if (resolved.denied) {
@@ -364,7 +495,7 @@ export async function getConversationMessages(ctx: any) {
     ctx.body = { error: 'Conversation not found' }
     return
   }
-  if (denySessionAccess(ctx, detail)) return
+  if (await denySessionAccessAsync(ctx, detail)) return
   const messages = (detail.messages || [])
     .filter(m => {
       if (humanOnly && m.role !== 'user' && m.role !== 'assistant') return false
@@ -389,6 +520,23 @@ export async function getConversationMessages(ctx: any) {
 export async function list(ctx: any) {
   const source = (ctx.query.source as string) || undefined
   const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
+  const agentId = requestedAgentId(ctx)
+  if (agentId) {
+    const scope = await sharedAgentSessionScope(ctx, agentId)
+    if (!scope) {
+      ctx.body = { sessions: [] }
+      return
+    }
+    const sessions = localListSessionsByAgent(scope.agentId, {
+      userId: scope.userId,
+      source,
+      limit: limit && limit > 0 ? limit : 2000,
+    })
+    ctx.body = {
+      sessions: filterPendingDeletedSessions(sessions.filter(s => isRequestedSessionSource(source, s.source))),
+    }
+    return
+  }
   const resolved = explicitSessionCollectionProfile(ctx)
   if (resolved.denied) {
     ctx.body = { sessions: [] }
@@ -435,6 +583,23 @@ export async function search(ctx: any) {
   const q = typeof ctx.query.q === 'string' ? ctx.query.q : ''
   const source = (ctx.query.source as string) || undefined
   const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
+  const agentId = requestedAgentId(ctx)
+  if (agentId) {
+    const scope = await sharedAgentSessionScope(ctx, agentId)
+    if (!scope) {
+      ctx.body = { results: [] }
+      return
+    }
+    const results = localSearchSessionsByAgent(scope.agentId, q, {
+      userId: scope.userId,
+      source,
+      limit: limit && limit > 0 ? limit : 20,
+    })
+    ctx.body = {
+      results: filterPendingDeletedSessions(results.filter(s => isRequestedSessionSource(source, s.source))),
+    }
+    return
+  }
   const resolved = explicitSessionCollectionProfile(ctx)
   if (resolved.denied) {
     ctx.body = { results: [] }
@@ -458,7 +623,7 @@ export async function get(ctx: any) {
     ctx.body = { error: 'Session not found' }
     return
   }
-  if (denySessionAccess(ctx, session)) return
+  if (await denySessionAccessAsync(ctx, session)) return
   ctx.body = { session }
 }
 
@@ -474,8 +639,12 @@ export async function getHermesSession(ctx: any) {
   // used by chat rendering and compression.
   const localSession = localGetSessionDetail(ctx.params.id)
   const localSessionProfile = (localSession?.profile || 'default') as string
-  if (localSession && isHermesHistorySessionSource(localSession.source) && (!profile || localSessionProfile === profile)) {
-    if (denySessionAccess(ctx, localSession)) return
+  if (
+    localSession &&
+    isHermesHistorySessionSource(localSession.source) &&
+    (!profile || localSessionProfile === profile || await canAccessSharedAgentSession(ctx, localSession))
+  ) {
+    if (await denySessionAccessAsync(ctx, localSession)) return
     ctx.body = { session: localSession }
     return
   }
@@ -487,7 +656,7 @@ export async function getHermesSession(ctx: any) {
       : await getSessionDetailFromDb(ctx.params.id)
     if (session && isHermesHistorySessionSource(session.source)) {
       const sessionWithProfile = profile ? { ...session, profile } : session
-      if (denySessionAccess(ctx, sessionWithProfile)) return
+      if (await denySessionAccessAsync(ctx, sessionWithProfile)) return
       ctx.body = { session: sessionWithProfile }
       return
     }
@@ -508,7 +677,7 @@ export async function getHermesSession(ctx: any) {
     ctx.body = { error: 'Session not found' }
     return
   }
-  if (denySessionAccess(ctx, session)) return
+  if (await denySessionAccessAsync(ctx, session)) return
   ctx.body = { session }
 }
 
@@ -722,7 +891,7 @@ export async function usageBatch(ctx: any) {
 
 export async function usageSingle(ctx: any) {
   const session = localGetSession(ctx.params.id)
-  if (denySessionAccess(ctx, session)) return
+  if (await denySessionAccessAsync(ctx, session)) return
   const result = getUsage(ctx.params.id)
   if (!result) {
     ctx.body = { input_tokens: 0, output_tokens: 0 }
@@ -1060,7 +1229,7 @@ export async function exportSession(ctx: any) {
     ctx.body = { error: 'Session not found' }
     return
   }
-  if (denySessionAccess(ctx, session)) return
+  if (await denySessionAccessAsync(ctx, session)) return
 
   const mode = (ctx.query.mode as string) || 'full'
   const ext = (ctx.query.ext as string) || (mode === 'compressed' ? 'txt' : 'json')
@@ -1132,7 +1301,12 @@ export async function getConversationMessagesPaginated(ctx: any) {
 
   const { getSessionDetailPaginated } = await import('../../db/hermes/session-store')
   const localResult = getSessionDetailPaginated(ctx.params.id, offset, limit)
-  const result = localResult && (!profile || localResult.session.profile === profile)
+  const useLocalResult = localResult && (
+    !profile ||
+    localResult.session.profile === profile ||
+    await canAccessSharedAgentSession(ctx, localResult.session)
+  )
+  const result = useLocalResult
     ? localResult
     : await getSessionDetailPaginatedFromDbWithProfile(ctx.params.id, profile || 'default', offset, limit)
 
@@ -1142,7 +1316,7 @@ export async function getConversationMessagesPaginated(ctx: any) {
     return
   }
   const session = { ...result.session, profile: (result.session as any).profile || profile || 'default' }
-  if (denySessionAccess(ctx, session)) return
+  if (await denySessionAccessAsync(ctx, session)) return
 
   ctx.body = {
     session: {

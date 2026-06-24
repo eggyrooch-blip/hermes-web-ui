@@ -15,6 +15,7 @@ import { codexProxyRoutes } from './codex-proxy'
 // Hermes route modules
 import { sessionRoutes } from './hermes/sessions'
 import { profileRoutes } from './hermes/profiles'
+import { agentRoutes } from './hermes/agents'
 import { skillRoutes } from './hermes/skills'
 import { pluginRoutes } from './hermes/plugins'
 import { memoryRoutes } from './hermes/memory'
@@ -71,6 +72,7 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(codingAgentRoutes.routes())
   app.use(sessionRoutes.routes())
   app.use(profileRoutes.routes())
+  app.use(agentRoutes.routes())
   app.use(skillRoutes.routes())
   app.use(pluginRoutes.routes())
   app.use(memoryRoutes.routes())

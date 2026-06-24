@@ -149,6 +149,7 @@ export function createSession(data: {
   agent_mode?: string
   agent_session_id?: string
   agent_native_session_id?: string
+  user_id?: string | null
   model?: string
   provider?: string
   title?: string
@@ -172,8 +173,8 @@ export function createSession(data: {
   }
   const db = getDb()!
   db.prepare(
-    `INSERT INTO ${SESSIONS_TABLE} (id, profile, source, agent, agent_mode, agent_session_id, agent_native_session_id, model, provider, title, started_at, last_active, workspace)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO ${SESSIONS_TABLE} (id, profile, source, agent, agent_mode, agent_session_id, agent_native_session_id, user_id, model, provider, title, started_at, last_active, workspace)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     data.id,
     data.profile || 'default',
@@ -182,6 +183,7 @@ export function createSession(data: {
     data.agent_mode || '',
     data.agent_session_id || '',
     data.agent_native_session_id || '',
+    data.user_id || null,
     data.model || '',
     data.provider || '',
     data.title || null,
@@ -294,6 +296,45 @@ export function listSessions(profile?: string, source?: string, limit = 2000): H
   return rows.map(mapSessionRow)
 }
 
+export function listSessionsByAgent(
+  agentId: string,
+  options: { userId?: string; source?: string; limit?: number } = {},
+): HermesSessionRow[] {
+  if (!isSqliteAvailable()) return []
+  const agentFilter = agentId.trim()
+  if (!agentFilter) return []
+  const userId = options.userId?.trim()
+  const limit = options.limit && options.limit > 0 ? options.limit : 2000
+  const db = getDb()!
+  const sql = `
+    SELECT
+      s.*,
+      COALESCE(
+        NULLIF(s.preview, ''),
+        (
+          SELECT SUBSTR(REPLACE(REPLACE(m.content, CHAR(10), ' '), CHAR(13), ' '), 1, 63)
+          FROM ${MESSAGES_TABLE} m
+          WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+          ORDER BY m.timestamp, m.id
+          LIMIT 1
+        ),
+        ''
+      ) AS preview
+    FROM ${SESSIONS_TABLE} s
+    WHERE s.agent = ?
+      ${userId ? 'AND s.user_id = ?' : ''}
+      ${options.source ? 'AND s.source = ?' : ''}
+    ORDER BY s.last_active DESC
+    LIMIT ?
+  `
+  const params: any[] = [agentFilter]
+  if (userId) params.push(userId)
+  if (options.source) params.push(options.source)
+  params.push(limit)
+  const rows = db.prepare(sql).all(...params) as Record<string, unknown>[]
+  return rows.map(mapSessionRow)
+}
+
 export function searchSessions(profile: string | null | undefined, query: string, limit = 20): HermesSessionSearchRow[] {
   if (!isSqliteAvailable()) return []
   const profileFilter = profile?.trim()
@@ -359,6 +400,77 @@ export function searchSessions(profile: string | null | undefined, query: string
       }
     }
 
+    return { ...session, snippet, matched_message_id }
+  })
+}
+
+export function searchSessionsByAgent(
+  agentId: string,
+  query: string,
+  options: { userId?: string; source?: string; limit?: number } = {},
+): HermesSessionSearchRow[] {
+  if (!isSqliteAvailable()) return []
+  const agentFilter = agentId.trim()
+  if (!agentFilter) return []
+  const userId = options.userId?.trim()
+  const limit = options.limit && options.limit > 0 ? options.limit : 20
+  const trimmed = query.trim()
+  if (!trimmed) {
+    return listSessionsByAgent(agentFilter, { userId, source: options.source, limit })
+      .map(s => ({ ...s, snippet: s.preview || '', matched_message_id: null }))
+  }
+  const db = getDb()!
+  const lowered = trimmed.toLowerCase()
+  const pattern = `%${lowered}%`
+  const sessionRows = db.prepare(
+    `SELECT * FROM ${SESSIONS_TABLE}
+     WHERE agent = ?
+       ${userId ? 'AND user_id = ?' : ''}
+       ${options.source ? 'AND source = ?' : ''}
+       AND (
+       LOWER(title) LIKE ? OR LOWER(preview) LIKE ?
+       OR id IN (SELECT DISTINCT session_id FROM ${MESSAGES_TABLE} WHERE LOWER(content) LIKE ? OR LOWER(COALESCE(tool_name, '')) LIKE ?)
+     )
+     ORDER BY last_active DESC LIMIT ?`,
+  ).all(...[
+    agentFilter,
+    ...(userId ? [userId] : []),
+    ...(options.source ? [options.source] : []),
+    pattern,
+    pattern,
+    pattern,
+    pattern,
+    limit,
+  ]) as Record<string, unknown>[]
+
+  if (sessionRows.length === 0) return []
+  const msgQuery = db.prepare(
+    `SELECT id, content, tool_name FROM ${MESSAGES_TABLE}
+     WHERE session_id = ? AND (LOWER(content) LIKE ? OR LOWER(COALESCE(tool_name, '')) LIKE ?)
+     ORDER BY timestamp, id LIMIT 1`,
+  )
+
+  return sessionRows.map(row => {
+    const session = mapSessionRow(row)
+    let snippet = ''
+    let matched_message_id: number | null = null
+    const titleLower = (session.title || '').toLowerCase()
+    const previewLower = (session.preview || '').toLowerCase()
+    const titleIdx = titleLower.indexOf(lowered)
+    const previewIdx = previewLower.indexOf(lowered)
+    if (titleIdx >= 0) {
+      snippet = session.title!.substring(Math.max(0, titleIdx - 20), titleIdx + lowered.length + 60)
+    } else if (previewIdx >= 0) {
+      snippet = session.preview.substring(Math.max(0, previewIdx - 20), previewIdx + lowered.length + 60)
+    } else {
+      const msg = msgQuery.get(session.id, pattern, pattern) as { id: number; content: string; tool_name: string | null } | undefined
+      if (msg) {
+        matched_message_id = msg.id
+        const contentLower = msg.content.toLowerCase()
+        const idx = contentLower.indexOf(lowered)
+        snippet = msg.content.substring(Math.max(0, idx - 20), idx + lowered.length + 60)
+      }
+    }
     return { ...session, snippet, matched_message_id }
   })
 }

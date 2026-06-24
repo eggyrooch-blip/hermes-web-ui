@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { NButton, NTag, NSpin, useMessage, useDialog } from 'naive-ui'
+import { NButton, NInput, NModal, NSelect, NTag, NSpin, useMessage, useDialog } from 'naive-ui'
 import type { HermesProfile, HermesProfileDetail } from '@/api/hermes/profiles'
+import { fetchAgentShares, grantAgentShare, revokeAgentShare, type AgentShare, type AgentShareRole } from '@/api/hermes/agents'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useI18n } from 'vue-i18n'
 import ProfileAvatar from './ProfileAvatar.vue'
@@ -19,8 +20,20 @@ const detailLoading = ref(false)
 const exporting = ref(false)
 const switching = ref(false)
 const detail = ref<HermesProfileDetail | null>(null)
+const shareModalVisible = ref(false)
+const shareLoading = ref(false)
+const shareSaving = ref(false)
+const shares = ref<AgentShare[]>([])
+const newGranteeOpenId = ref('')
+const newRole = ref<AgentShareRole>('viewer')
 
 const isDefault = computed(() => props.profile.name === 'default')
+const canManageShares = computed(() => !!props.profile.agentId && !props.profile.shareRole)
+const shareRoleOptions = [
+  { label: 'viewer', value: 'viewer' },
+  { label: 'editor', value: 'editor' },
+  { label: 'manager', value: 'manager' },
+]
 
 async function toggleDetail() {
   if (expanded.value) {
@@ -92,6 +105,57 @@ async function handleExport() {
     exporting.value = false
   }
 }
+
+async function loadShares() {
+  if (!props.profile.agentId) return
+  shareLoading.value = true
+  try {
+    shares.value = await fetchAgentShares(props.profile.agentId)
+  } catch (err: any) {
+    message.error(err?.message || t('profiles.share.loadFailed'))
+    shares.value = []
+  } finally {
+    shareLoading.value = false
+  }
+}
+
+async function openShareModal() {
+  if (!canManageShares.value) return
+  shareModalVisible.value = true
+  await loadShares()
+}
+
+async function handleGrantShare() {
+  if (!props.profile.agentId) return
+  const grantee = newGranteeOpenId.value.trim()
+  if (!grantee) return
+  shareSaving.value = true
+  try {
+    await grantAgentShare(props.profile.agentId, grantee, newRole.value)
+    newGranteeOpenId.value = ''
+    newRole.value = 'viewer'
+    await loadShares()
+    message.success(t('profiles.share.grantSuccess'))
+  } catch (err: any) {
+    message.error(err?.message || t('profiles.share.grantFailed'))
+  } finally {
+    shareSaving.value = false
+  }
+}
+
+async function handleRevokeShare(share: AgentShare) {
+  if (!props.profile.agentId) return
+  shareSaving.value = true
+  try {
+    await revokeAgentShare(props.profile.agentId, share.grantee_open_id)
+    shares.value = shares.value.filter(item => item.grantee_open_id !== share.grantee_open_id)
+    message.success(t('profiles.share.revokeSuccess'))
+  } catch (err: any) {
+    message.error(err?.message || t('profiles.share.revokeFailed'))
+  } finally {
+    shareSaving.value = false
+  }
+}
 </script>
 
 <template>
@@ -154,6 +218,15 @@ async function handleExport() {
 
     <div class="card-actions">
       <NButton
+        v-if="canManageShares"
+        size="tiny"
+        quaternary
+        type="primary"
+        @click="openShareModal"
+      >
+        {{ t('profiles.share.manage') }}
+      </NButton>
+      <NButton
         v-if="!profile.active"
         size="tiny"
         :loading="switching"
@@ -176,6 +249,44 @@ async function handleExport() {
         {{ t('profiles.export') }}
       </NButton>
     </div>
+
+    <NModal
+      v-model:show="shareModalVisible"
+      preset="card"
+      :bordered="false"
+      :style="{ width: '520px', maxWidth: 'calc(100vw - 32px)' }"
+    >
+      <template #header>
+        <div class="share-modal-title">{{ t('profiles.share.title') }}</div>
+      </template>
+      <NSpin :show="shareLoading" size="small">
+        <div class="share-list">
+          <div v-if="shares.length === 0" class="share-empty">{{ t('profiles.share.empty') }}</div>
+          <div v-for="share in shares" :key="share.grantee_open_id" class="share-row">
+            <code class="share-grantee">{{ share.grantee_open_id }}</code>
+            <NTag size="tiny" :bordered="false">{{ share.role }}</NTag>
+            <NButton size="tiny" quaternary :loading="shareSaving" @click="handleRevokeShare(share)">
+              {{ t('profiles.share.revoke') }}
+            </NButton>
+          </div>
+        </div>
+        <div class="share-form">
+          <NInput
+            v-model:value="newGranteeOpenId"
+            size="small"
+            :placeholder="t('profiles.share.grantee')"
+          />
+          <NSelect
+            v-model:value="newRole"
+            size="small"
+            :options="shareRoleOptions"
+          />
+          <NButton size="small" type="primary" :loading="shareSaving" @click="handleGrantShare">
+            {{ t('profiles.share.grant') }}
+          </NButton>
+        </div>
+      </NSpin>
+    </NModal>
   </div>
 </template>
 
@@ -298,5 +409,55 @@ async function handleExport() {
   border-top: 1px solid $border-light;
   padding-top: 10px;
   flex-wrap: wrap;
+}
+
+.share-modal-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: $text-primary;
+}
+
+.share-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 48px;
+}
+
+.share-empty {
+  color: $text-muted;
+  font-size: 13px;
+}
+
+.share-row,
+.share-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.share-row {
+  justify-content: space-between;
+  padding: 8px;
+  border: 1px solid $border-light;
+  border-radius: 8px;
+}
+
+.share-grantee {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.share-form {
+  margin-top: 12px;
+
+  :deep(.n-select) {
+    width: 116px;
+    flex: 0 0 116px;
+  }
 }
 </style>

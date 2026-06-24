@@ -112,6 +112,7 @@ export interface ResumeSessionPayload {
 let chatRunSocket: Socket | null = null
 let globalListenersRegistered = false
 let chatRunSocketProfile: string | null = null
+let chatRunSocketAgentId: string | null = null
 export type ChatRunTransport = 'chat-run' | 'global-agent'
 let chatRunSocketTransport: ChatRunTransport = 'chat-run'
 
@@ -597,12 +598,24 @@ export function getChatRunSocket(transport?: ChatRunTransport): Socket | null {
   return chatRunSocket
 }
 
+function readLocalStorageItem(key: string): string | null {
+  try {
+    return typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function'
+      ? localStorage.getItem(key)
+      : null
+  } catch {
+    return null
+  }
+}
+
 export function connectChatRun(requestedProfile?: string | null, transport: ChatRunTransport = 'chat-run'): Socket {
   const normalizedRequestedProfile = requestedProfile?.trim() || null
+  const activeAgentId = readLocalStorageItem('hermes_active_agent_id')?.trim() || null
   if (
     chatRunSocket?.connected &&
     chatRunSocketTransport === transport &&
-    (!normalizedRequestedProfile || chatRunSocketProfile === normalizedRequestedProfile)
+    (!normalizedRequestedProfile || chatRunSocketProfile === normalizedRequestedProfile) &&
+    chatRunSocketAgentId === activeAgentId
   ) {
     return chatRunSocket
   }
@@ -613,6 +626,7 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
     chatRunSocket.disconnect()
     globalListenersRegistered = false
     chatRunSocketProfile = null
+    chatRunSocketAgentId = null
   }
 
   const baseUrl = getBaseUrlValue()
@@ -631,12 +645,15 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
     profile = normalizedRequestedProfile || localStorage.getItem('hermes_active_profile_name') || 'default'
   }
   chatRunSocketProfile = profile
+  chatRunSocketAgentId = activeAgentId
   chatRunSocketTransport = transport
 
   const namespace = transport === 'global-agent' ? '/global-agent' : '/chat-run'
+  const query: Record<string, string> = { profile }
+  if (activeAgentId) query.agent_id = activeAgentId
   chatRunSocket = io(`${baseUrl}${namespace}`, {
     auth: { token },
-    query: { profile },
+    query,
     transports: ['websocket', 'polling'],
     reconnection: true,
     reconnectionAttempts: Infinity,
@@ -698,6 +715,7 @@ export function disconnectChatRun(): void {
     chatRunSocket.disconnect()
     chatRunSocket = null
     chatRunSocketProfile = null
+    chatRunSocketAgentId = null
     chatRunSocketTransport = 'chat-run'
     globalListenersRegistered = false
     sessionEventHandlers.clear()

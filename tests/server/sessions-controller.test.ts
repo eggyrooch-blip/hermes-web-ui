@@ -12,8 +12,10 @@ const getUsageStatsFromDbMock = vi.fn()
 const getSessionMock = vi.fn()
 const deleteHermesSessionForProfileMock = vi.fn()
 const localListSessionsMock = vi.fn()
+const localListSessionsByAgentMock = vi.fn()
 const localGetSessionDetailMock = vi.fn()
 const localSearchSessionsMock = vi.fn()
+const localSearchSessionsByAgentMock = vi.fn()
 const localDeleteSessionMock = vi.fn()
 const localRenameSessionMock = vi.fn()
 const localCreateSessionMock = vi.fn()
@@ -71,7 +73,9 @@ vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
 
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   listSessions: localListSessionsMock,
+  listSessionsByAgent: localListSessionsByAgentMock,
   searchSessions: localSearchSessionsMock,
+  searchSessionsByAgent: localSearchSessionsByAgentMock,
   getSessionDetail: localGetSessionDetailMock,
   deleteSession: localDeleteSessionMock,
   renameSession: localRenameSessionMock,
@@ -159,8 +163,10 @@ describe('session conversations controller', () => {
     getSessionMock.mockReset()
     deleteHermesSessionForProfileMock.mockReset()
     localListSessionsMock.mockReset()
+    localListSessionsByAgentMock.mockReset()
     localGetSessionDetailMock.mockReset()
     localSearchSessionsMock.mockReset()
+    localSearchSessionsByAgentMock.mockReset()
     localDeleteSessionMock.mockReset()
     localRenameSessionMock.mockReset()
     localCreateSessionMock.mockReset()
@@ -186,6 +192,9 @@ describe('session conversations controller', () => {
     bridgeGetRuntimeStateMock.mockReset()
     bridgeGetRuntimeStateMock.mockReturnValue({ ready: false, running: false, endpoint: 'ipc:///tmp/hermes-agent-bridge.sock' })
     codingAgentRunManagerMock.stop.mockReset()
+    delete process.env.HERMES_RUN_BROKER_URL
+    delete process.env.HERMES_RUN_BROKER_KEY
+    vi.unstubAllGlobals()
   })
 
   it('lists conversations from the local session store', async () => {
@@ -305,6 +314,75 @@ describe('session conversations controller', () => {
 
     expect(localListSessionsMock).toHaveBeenCalledWith(undefined, undefined, 2000)
     expect(ctx.body.sessions.map((session: any) => session.id)).toEqual(['default-session', 'travel-session'])
+  })
+
+  it('lists only the actor sessions for a shared viewer agent', async () => {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    process.env.HERMES_RUN_BROKER_KEY = 'broker-key'
+    const fetchMock = vi.fn(async (url: string, options: any) => {
+      expect(options.headers.Authorization).toBe('Bearer broker-key')
+      expect(options.headers['X-Hermes-Owner-Open-Id']).toBe('ou_viewer')
+      if (url.endsWith('/api/run-broker/agents/agent-shared/shares')) {
+        return new Response(JSON.stringify({ error: 'manager required' }), { status: 403, headers: { 'Content-Type': 'application/json' } })
+      }
+      expect(url).toBe('http://broker.test/api/run-broker/agents/shared')
+      return new Response(JSON.stringify({
+        agents: [{ agent_id: 'agent-shared', role: 'viewer' }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    localListSessionsByAgentMock.mockReturnValue([
+      { id: 'own-session', profile: 'owner_profile', source: 'api_server', agent: 'agent-shared', user_id: 'ou_viewer' },
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: {},
+      get: (name: string) => name.toLowerCase() === 'x-hermes-agent-id' ? 'agent-shared' : '',
+      state: {
+        user: { id: 2, role: 'admin', openid: 'ou_viewer', profile: 'feishu_viewer' },
+      },
+      body: null,
+    }
+    await mod.list(ctx)
+
+    expect(localListSessionsByAgentMock).toHaveBeenCalledWith('agent-shared', {
+      userId: 'ou_viewer',
+      source: undefined,
+      limit: 2000,
+    })
+    expect(ctx.body.sessions.map((session: any) => session.id)).toEqual(['own-session'])
+  })
+
+  it('lists all agent sessions for a shared manager agent', async () => {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toBe('http://broker.test/api/run-broker/agents/agent-shared/shares')
+      return new Response(JSON.stringify({ shares: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    localListSessionsByAgentMock.mockReturnValue([
+      { id: 'manager-session', profile: 'owner_profile', source: 'api_server', agent: 'agent-shared', user_id: 'ou_manager' },
+      { id: 'teammate-session', profile: 'owner_profile', source: 'api_server', agent: 'agent-shared', user_id: 'ou_teammate' },
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: {},
+      get: (name: string) => name.toLowerCase() === 'x-hermes-agent-id' ? 'agent-shared' : '',
+      state: {
+        user: { id: 3, role: 'admin', openid: 'ou_manager', profile: 'feishu_manager' },
+      },
+      body: null,
+    }
+    await mod.list(ctx)
+
+    expect(localListSessionsByAgentMock).toHaveBeenCalledWith('agent-shared', {
+      userId: undefined,
+      source: undefined,
+      limit: 2000,
+    })
+    expect(ctx.body.sessions.map((session: any) => session.id)).toEqual(['manager-session', 'teammate-session'])
   })
 
   it('filters the single-chat session list when profile is explicitly provided', async () => {

@@ -13,6 +13,7 @@ describe('session-sync', () => {
     vi.doMock('../../packages/server/src/db/index', () => ({
       getDb: () => db,
       getStoragePath: () => ':memory:',
+      isSqliteAvailable: () => true,
     }))
     vi.doMock('../../packages/server/src/db/hermes/sessions-db', () => ({
       listSessionSummaries: vi.fn().mockResolvedValue([]),
@@ -56,5 +57,23 @@ describe('session-sync', () => {
 
     const countAfter = db.prepare('SELECT COUNT(*) as count FROM sessions').get() as { count: number }
     expect(countAfter.count).toBe(0)
+  })
+
+  it('stores actor user_id when creating a WebUI agent session', async () => {
+    await initTestDb()
+    const { createSession, getSession } = await import('../../packages/server/src/db/hermes/session-store')
+
+    createSession({
+      id: 'shared-session-1',
+      profile: 'owned_agent_profile',
+      source: 'api_server',
+      agent: 'agent-shared',
+      user_id: 'ou_viewer',
+      title: 'shared run',
+    } as any)
+
+    const row = getSession('shared-session-1')
+    expect(row?.agent).toBe('agent-shared')
+    expect(row?.user_id).toBe('ou_viewer')
   })
 })

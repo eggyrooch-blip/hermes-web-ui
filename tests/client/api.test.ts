@@ -125,6 +125,18 @@ describe('API Client', () => {
       expect(options.headers['X-Hermes-Profile']).toBeUndefined()
     })
 
+    it('adds the active shared agent header to session collection requests', async () => {
+      localStorage.setItem('hermes_active_profile_name', 'owned_agent_profile')
+      localStorage.setItem('hermes_active_agent_id', 'agent-shared')
+      mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => ({ data: 1 }) })
+
+      await request('/api/hermes/sessions/conversations')
+
+      const [, options] = mockFetch.mock.calls[0]
+      expect(options.headers['X-Hermes-Profile']).toBeUndefined()
+      expect(options.headers['X-Hermes-Agent-Id']).toBe('agent-shared')
+    })
+
     it('does not add Authorization header when no token', async () => {
       mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => ({ data: 1 }) })
 
@@ -146,6 +158,7 @@ describe('API Client', () => {
       expect(localStorage.getItem('hermes_auth_mode')).toBeNull()
       expect(localStorage.getItem('hermes_web_plane')).toBeNull()
       expect(localStorage.getItem('hermes_active_profile_name')).toBeNull()
+      expect(localStorage.getItem('hermes_active_agent_id')).toBeNull()
       expect(router.replace).toHaveBeenCalledWith({ name: 'login' })
     })
 

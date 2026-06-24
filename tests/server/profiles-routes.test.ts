@@ -80,6 +80,9 @@ import * as hermesCli from '../../packages/server/src/services/hermes/hermes-cli
 describe('Profile Routes', () => {
   const originalHermesHome = process.env.HERMES_HOME
   const originalWebUiHome = process.env.HERMES_WEB_UI_HOME
+  const originalMultitenancyDb = process.env.HERMES_MULTITENANCY_DB
+  const originalRunBrokerUrl = process.env.HERMES_RUN_BROKER_URL
+  const originalRunBrokerKey = process.env.HERMES_RUN_BROKER_KEY
   const tempHomes: string[] = []
 
   beforeEach(() => {
@@ -97,6 +100,12 @@ describe('Profile Routes', () => {
     else process.env.HERMES_HOME = originalHermesHome
     if (originalWebUiHome === undefined) delete process.env.HERMES_WEB_UI_HOME
     else process.env.HERMES_WEB_UI_HOME = originalWebUiHome
+    if (originalMultitenancyDb === undefined) delete process.env.HERMES_MULTITENANCY_DB
+    else process.env.HERMES_MULTITENANCY_DB = originalMultitenancyDb
+    if (originalRunBrokerUrl === undefined) delete process.env.HERMES_RUN_BROKER_URL
+    else process.env.HERMES_RUN_BROKER_URL = originalRunBrokerUrl
+    if (originalRunBrokerKey === undefined) delete process.env.HERMES_RUN_BROKER_KEY
+    else process.env.HERMES_RUN_BROKER_KEY = originalRunBrokerKey
     await Promise.all(tempHomes.splice(0).map(dir => rm(dir, { recursive: true, force: true })))
   })
 
@@ -219,6 +228,116 @@ describe('Profile Routes', () => {
       expect(ctx.status).toBe(200)
       expect(ctx.body.profiles.map((profile: any) => profile.name)).toEqual(['feishu_user_a', 'group_agent_a'])
       expect(ctx.body.profiles.find((profile: any) => profile.name === 'group_agent_a')?.active).toBe(true)
+    })
+
+    it('appends broker shared agents for Feishu users without adding them to user_profiles', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-shared-agents-'))
+      tempHomes.push(hermesHome)
+      process.env.HERMES_HOME = hermesHome
+      process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+      process.env.HERMES_RUN_BROKER_KEY = 'broker-key'
+      await mkdir(join(hermesHome, 'profiles', 'feishu_user_a'), { recursive: true })
+      await writeFile(join(hermesHome, 'profiles', 'feishu_user_a', 'config.yaml'), 'model:\n  default: personal-model\n', 'utf-8')
+      await writeFile(join(hermesHome, 'active_profile'), 'feishu_user_a\n', 'utf-8')
+      usersStoreMocks.listUserProfiles.mockReturnValue([
+        { user_id: 7, profile_name: 'feishu_user_a', is_default: 1, created_at: 1 },
+      ])
+      vi.stubGlobal('fetch', vi.fn(async (url: string, options: any) => {
+        expect(url).toBe('http://broker.test/api/run-broker/agents/shared')
+        expect(options.headers.Authorization).toBe('Bearer broker-key')
+        expect(options.headers['X-Hermes-Owner-Open-Id']).toBe('ou_viewer')
+        return new Response(JSON.stringify({
+          agents: [{
+            agent_id: 'agent-shared',
+            profile_name: 'owned_agent_profile',
+            owner_open_id: 'ou_owner',
+            display_label: 'Shared analyst',
+            role: 'editor',
+          }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }))
+      vi.resetModules()
+      const { list } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = {
+        state: {
+          user: { id: 7, role: 'user', openid: 'ou_viewer' },
+          profile: { name: 'feishu_user_a' },
+        },
+        get: vi.fn(() => ''),
+        status: 200,
+        body: undefined,
+      }
+
+      await list(ctx)
+
+      expect(ctx.body.profiles.map((profile: any) => profile.name)).toEqual(['feishu_user_a', 'owned_agent_profile'])
+      expect(ctx.body.profiles[1]).toEqual(expect.objectContaining({
+        name: 'owned_agent_profile',
+        kind: 'agent',
+        agentId: 'agent-shared',
+        ownerOpenId: 'ou_owner',
+        shareRole: 'editor',
+        displayLabel: 'Shared analyst',
+      }))
+      expect(usersStoreMocks.listUserProfiles).toHaveBeenCalled()
+    })
+
+    it('merges owned agent metadata into the authorized profile list', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-owned-agent-'))
+      tempHomes.push(hermesHome)
+      process.env.HERMES_HOME = hermesHome
+      const dbPath = join(hermesHome, 'multitenancy.db')
+      process.env.HERMES_MULTITENANCY_DB = dbPath
+      await mkdir(join(hermesHome, 'profiles', 'owned_agent_profile'), { recursive: true })
+      await writeFile(join(hermesHome, 'profiles', 'owned_agent_profile', 'config.yaml'), 'model:\n  default: shared-model\n', 'utf-8')
+      await writeFile(join(hermesHome, 'active_profile'), 'owned_agent_profile\n', 'utf-8')
+      const { DatabaseSync } = await import('node:sqlite')
+      const db = new DatabaseSync(dbPath)
+      try {
+        db.exec(`
+          CREATE TABLE multitenancy_routing (
+            user_id TEXT PRIMARY KEY,
+            profile_name TEXT NOT NULL,
+            open_id TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            kind TEXT,
+            owner_open_id TEXT,
+            display_label TEXT,
+            agent_id TEXT
+          )
+        `)
+        db.prepare(`
+          INSERT INTO multitenancy_routing (user_id, profile_name, open_id, active, kind, owner_open_id, display_label, agent_id)
+          VALUES (?, ?, ?, 1, 'agent', ?, ?, ?)
+        `).run('webui:ou_owner:owned_agent_profile', 'owned_agent_profile', 'webui:ou_owner:owned_agent_profile', 'ou_owner', 'Owner agent', 'agent-owned')
+      } finally {
+        db.close()
+      }
+      usersStoreMocks.listUserProfiles.mockReturnValue([
+        { user_id: 7, profile_name: 'owned_agent_profile', is_default: 1, created_at: 1 },
+      ])
+      vi.mocked(hermesCli.listProfiles).mockRejectedValue(new Error('slow profile list should not run'))
+      vi.resetModules()
+      const { list } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = {
+        state: {
+          user: { id: 7, role: 'user', openid: 'ou_owner' },
+          profile: { name: 'owned_agent_profile' },
+        },
+        get: vi.fn(() => ''),
+        status: 200,
+        body: undefined,
+      }
+
+      await list(ctx)
+
+      expect(ctx.body.profiles[0]).toEqual(expect.objectContaining({
+        name: 'owned_agent_profile',
+        kind: 'agent',
+        agentId: 'agent-owned',
+        ownerOpenId: 'ou_owner',
+        displayLabel: 'Owner agent',
+      }))
     })
   })
 

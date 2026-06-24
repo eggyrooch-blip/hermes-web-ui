@@ -665,16 +665,21 @@ export class BrokerRunController {
       const requestedProfile = typeof socket.handshake.query?.profile === 'string'
         ? socket.handshake.query.profile.trim()
         : ''
+      const requestedAgentId = typeof socket.handshake.query?.agent_id === 'string'
+        ? socket.handshake.query.agent_id.trim()
+        : ''
       // Bridge the Feishu identity into the upstream user-store so socket.data.user
       // carries a real numeric `.id` + owned `profiles` (upstream isolation), while
       // retaining the WebUser fields the broker chat paths read. The local `user`
       // (WebUser) is kept intact for the profile/agentId resolution just below.
       socket.data.user = { ...user, ...ensureWebUserForFeishu(user.openid) }
-      const resolvedProfile = requestedProfile && requestedProfile !== user.profile && ownerOwnsProfile(user.openid, requestedProfile)
+      const resolvedProfile = requestedAgentId && requestedProfile
+        ? requestedProfile
+        : requestedProfile && requestedProfile !== user.profile && ownerOwnsProfile(user.openid, requestedProfile)
         ? requestedProfile
         : user.profile
       socket.data.profile = resolvedProfile
-      socket.data.agentId = resolveOwnedProfileAgentId(user.openid, resolvedProfile)
+      socket.data.agentId = requestedAgentId || resolveOwnedProfileAgentId(user.openid, resolvedProfile)
       return next()
     }
 
@@ -1056,7 +1061,14 @@ export class BrokerRunController {
         if (!getSession(session_id)) {
           const previewText = extractTextForPreview(input)
           const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
-          createSession({ id: session_id, profile, model, title: preview })
+          createSession({
+            id: session_id,
+            profile,
+            agent: (socket.data?.agentId as string | undefined)?.trim(),
+            user_id: String(socket.data?.user?.openid || socket.data?.user?.id || '') || null,
+            model,
+            title: preview,
+          })
         }
 
         // Write user message to local DB immediately
@@ -1114,6 +1126,7 @@ export class BrokerRunController {
       createSession({
         id: sessionId,
         profile: state.profile || 'default',
+        agent: '',
         title: firstUser.replace(/[\r\n]/g, ' ').slice(0, 100),
       })
     }

@@ -6,6 +6,11 @@ export interface HermesProfile {
   model: string
   gatewayStatus?: string
   alias: string
+  kind?: string
+  agentId?: string
+  ownerOpenId?: string
+  displayLabel?: string
+  shareRole?: 'viewer' | 'editor' | 'manager' | string
   avatar?: ProfileAvatar | null
 }
 

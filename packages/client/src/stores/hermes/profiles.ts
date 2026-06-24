@@ -6,6 +6,7 @@ import type { CurrentUser } from '@/api/auth'
 import { useAppStore } from './app'
 
 const ACTIVE_PROFILE_STORAGE_KEY = 'hermes_active_profile_name'
+const ACTIVE_AGENT_STORAGE_KEY = 'hermes_active_agent_id'
 const CURRENT_USER_STORAGE_KEY = 'hermes_current_user'
 
 function readStoredCurrentUser(): CurrentUser | null {
@@ -30,6 +31,21 @@ export const useProfilesStore = defineStore('profiles', () => {
   const loading = ref(false)
   const switching = ref(false)
 
+  function persistActiveSelection(profile: HermesProfile | null) {
+    if (!profile) {
+      localStorage.removeItem(ACTIVE_PROFILE_STORAGE_KEY)
+      localStorage.removeItem(ACTIVE_AGENT_STORAGE_KEY)
+      return
+    }
+    activeProfileName.value = profile.name
+    localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, profile.name)
+    if (profile.agentId && profile.shareRole) {
+      localStorage.setItem(ACTIVE_AGENT_STORAGE_KEY, profile.agentId)
+    } else {
+      localStorage.removeItem(ACTIVE_AGENT_STORAGE_KEY)
+    }
+  }
+
   async function fetchProfiles() {
     loading.value = true
     try {
@@ -38,8 +54,7 @@ export const useProfilesStore = defineStore('profiles', () => {
       let selected = profiles.value.find(p => p.name === storedName) ?? null
       if (!selected && profiles.value.length > 0) {
         selected = profiles.value[0]
-        activeProfileName.value = selected.name
-        localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, selected.name)
+        persistActiveSelection(selected)
       }
       profiles.value = profiles.value.map(profile => ({
         ...profile,
@@ -47,10 +62,11 @@ export const useProfilesStore = defineStore('profiles', () => {
       }))
       activeProfile.value = selected
       if (selected) {
-        activeProfileName.value = selected.name
+        persistActiveSelection(selected)
       } else {
         activeProfileName.value = null
         localStorage.removeItem(ACTIVE_PROFILE_STORAGE_KEY)
+        localStorage.removeItem(ACTIVE_AGENT_STORAGE_KEY)
       }
       // 清理所有会话缓存（不再使用 localStorage 缓存）
       clearAllSessionCaches()
@@ -147,13 +163,18 @@ export const useProfilesStore = defineStore('profiles', () => {
     try {
       const ok = await profilesApi.switchProfile(name)
       if (ok) {
-        activeProfileName.value = name
-        localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, name)
         profiles.value = profiles.value.map(profile => ({
           ...profile,
           active: profile.name === name,
         }))
         activeProfile.value = profiles.value.find(profile => profile.name === name) ?? null
+        if (activeProfile.value) {
+          persistActiveSelection(activeProfile.value)
+        } else {
+          activeProfileName.value = name
+          localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, name)
+          localStorage.removeItem(ACTIVE_AGENT_STORAGE_KEY)
+        }
         await useAppStore().reloadModels()
       }
       return ok
@@ -203,12 +224,14 @@ export const useProfilesStore = defineStore('profiles', () => {
     const selectedName = storedName && ownedProfiles.has(storedName) ? storedName : name
     activeProfileName.value = selectedName
     localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, selectedName)
+    localStorage.removeItem(ACTIVE_AGENT_STORAGE_KEY)
     if (profiles.value.length > 0) {
       profiles.value = profiles.value.map(profile => ({
         ...profile,
         active: profile.name === selectedName,
       }))
       activeProfile.value = profiles.value.find(profile => profile.name === selectedName) ?? null
+      persistActiveSelection(activeProfile.value)
     }
     if (user !== undefined) {
       setCurrentUser(user)

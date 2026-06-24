@@ -19,7 +19,7 @@ import { getActiveProfileName } from '../../services/hermes/hermes-profile'
 import { HermesSkillInjector } from '../../services/hermes/skill-injector'
 import type { HermesProfile } from '../../services/hermes/hermes-cli'
 import { listUserProfiles } from '../../db/hermes/users-store'
-import { registerOwnedProfile } from '../../services/hermes/agent-ownership'
+import { listOwnedProfileMetadata, registerOwnedProfile } from '../../services/hermes/agent-ownership'
 
 const bridgeCleanupClient = () => new AgentBridgeClient({ connectRetryMs: 0, timeoutMs: 5000 })
 
@@ -56,6 +56,14 @@ type FeishuGroupAvatarCacheEntry = {
 }
 
 type RuntimeStatus = Awaited<ReturnType<typeof buildRuntimeStatus>>
+
+interface SharedAgentBrokerRow {
+  agent_id?: string
+  profile_name?: string
+  owner_open_id?: string
+  display_label?: string
+  role?: 'viewer' | 'editor' | 'manager' | string
+}
 
 interface RuntimeStatusCacheEntry {
   status: RuntimeStatus
@@ -196,6 +204,24 @@ function allowedProfileNamesForUser(user: any): Set<string> {
     }
   }
   return allowed
+}
+
+function mergeOwnedAgentMetadataForContext(ctx: any, profiles: HermesProfile[]): HermesProfile[] {
+  const openid = typeof ctx.state?.user?.openid === 'string' ? ctx.state.user.openid.trim() : ''
+  if (!openid) return profiles
+  const ownedMetadata = listOwnedProfileMetadata(openid)
+  if (ownedMetadata.size === 0) return profiles
+  return profiles.map(profile => {
+    const metadata = ownedMetadata.get(profile.name)
+    if (!metadata) return profile
+    return {
+      ...profile,
+      ...(metadata.kind ? { kind: metadata.kind } : {}),
+      ...(metadata.agentId ? { agentId: metadata.agentId } : {}),
+      ...(metadata.ownerOpenId ? { ownerOpenId: metadata.ownerOpenId } : {}),
+      ...(metadata.displayLabel ? { displayLabel: metadata.displayLabel } : {}),
+    } as HermesProfile & Record<string, unknown>
+  })
 }
 
 function listAuthorizedProfilesFromDisk(ctx: any): HermesProfile[] | null {
@@ -540,6 +566,49 @@ function listProfilesForStatusFast(): HermesProfile[] {
   return filterVisibleProfiles(listProfilesFromDisk(getActiveProfileName()))
 }
 
+async function fetchSharedAgentProfilesForContext(ctx: any): Promise<HermesProfile[]> {
+  const openid = typeof ctx.state?.user?.openid === 'string' ? ctx.state.user.openid.trim() : ''
+  if (!openid || !config.runBrokerUrl) return []
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Hermes-Owner-Open-Id': openid,
+  }
+  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
+  try {
+    const res = await fetch(`${config.runBrokerUrl}/api/run-broker/agents/shared`, {
+      method: 'GET',
+      headers,
+    })
+    if (!res.ok) {
+      logger.warn('[profiles] shared agent broker list failed with HTTP %s', res.status)
+      return []
+    }
+    const body = await res.json().catch(() => ({})) as { agents?: SharedAgentBrokerRow[] }
+    if (!Array.isArray(body.agents)) return []
+    const profiles: HermesProfile[] = []
+    for (const agent of body.agents) {
+      const name = String(agent.profile_name || '').trim()
+      const agentId = String(agent.agent_id || '').trim()
+      if (!name || !agentId) continue
+      profiles.push({
+        name,
+        active: false,
+        model: '—',
+        alias: '',
+        kind: 'agent',
+        agentId,
+        ownerOpenId: String(agent.owner_open_id || '').trim(),
+        displayLabel: String(agent.display_label || '').trim(),
+        shareRole: String(agent.role || '').trim(),
+      } as HermesProfile)
+    }
+    return profiles
+  } catch (err) {
+    logger.warn(err, '[profiles] failed to fetch shared agents from broker')
+    return []
+  }
+}
+
 async function refreshRuntimeStatusCache(checkedAt: number): Promise<void> {
   const profiles = await listProfilesForStatus()
   const bridge = await readBridgeWorkers()
@@ -587,6 +656,14 @@ export async function list(ctx: any) {
 
     profiles = filterVisibleProfiles(profiles)
     profiles = filterProfilesForUser(ctx, profiles)
+    profiles = mergeOwnedAgentMetadataForContext(ctx, profiles)
+    const existingNames = new Set(profiles.map(profile => profile.name))
+    for (const shared of await fetchSharedAgentProfilesForContext(ctx)) {
+      if (!existingNames.has(shared.name)) {
+        profiles.push(shared)
+        existingNames.add(shared.name)
+      }
+    }
 
     // Web UI active profile is request-scoped and comes from X-Hermes-Profile.
     profiles.forEach(p => {

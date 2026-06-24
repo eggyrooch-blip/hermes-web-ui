@@ -26,6 +26,7 @@ const isSuperAdmin = computed(() => isStoredSuperAdmin())
 const activeName = computed(() => profilesStore.activeProfileName ?? '')
 const displayName = computed(() => activeName.value || 'default')
 const activeProfile = computed(() => profilesStore.profiles.find(profile => profile.name === displayName.value))
+const activeDisplayLabel = computed(() => activeProfile.value?.displayLabel || displayName.value)
 const runtimeStatuses = ref<ProfileRuntimeStatus[]>([])
 const runtimeLoading = ref(false)
 const showProfileModal = ref(false)
@@ -93,8 +94,13 @@ function handleProfileModalShowChange(show: boolean) {
 }
 
 function openAvatarModal(profile: HermesProfile) {
+  if (profile.shareRole) return
   editingProfile.value = profile
   showAvatarModal.value = true
+}
+
+function profileDisplayLabel(profile: HermesProfile): string {
+  return profile.displayLabel || profile.name
 }
 
 function randomSeed() {
@@ -229,7 +235,7 @@ onMounted(() => {
     <div class="selector-label">{{ t('sidebar.profiles') }}</div>
     <div class="profile-display" data-testid="profile-selector-select" @click="openProfileModal">
       <ProfileAvatarView class="profile-avatar" :name="displayName" :avatar="activeProfile?.avatar" :size="24" />
-      <span class="profile-name">{{ displayName }}</span>
+      <span class="profile-name">{{ activeDisplayLabel }}</span>
     </div>
 
     <NModal
@@ -263,6 +269,10 @@ onMounted(() => {
                 <div class="profile-runtime-name-row">
                   <span class="profile-runtime-name">{{ profile.name }}</span>
                   <span v-if="profile.name === displayName" class="active-badge">{{ t('profiles.runtime.activeTag') }}</span>
+                  <span v-if="profile.shareRole" class="shared-agent-badge">{{ profile.shareRole }}</span>
+                </div>
+                <div v-if="profileDisplayLabel(profile) !== profile.name" class="runtime-detail">
+                  {{ profileDisplayLabel(profile) }}
                 </div>
                 <div v-if="isSuperAdmin" class="runtime-status-grid">
                   <div class="runtime-row compact">
@@ -290,6 +300,7 @@ onMounted(() => {
             </div>
             <div class="profile-runtime-actions">
               <NButton
+                v-if="!profile.shareRole"
                 size="small"
                 type="primary"
                 @click="openAvatarModal(profile)"
@@ -533,6 +544,16 @@ onMounted(() => {
   border-radius: 999px;
   background: color-mix(in srgb, $success 16%, transparent);
   color: $success;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.shared-agent-badge {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, $accent-primary 16%, transparent);
+  color: $accent-primary;
   font-size: 10px;
   font-weight: 700;
 }

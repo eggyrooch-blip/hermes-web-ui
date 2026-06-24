@@ -239,6 +239,7 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   if (path.startsWith('/api/auth/feishu/uat/')) return false
   if (path.startsWith('/api/auth/skill-credentials')) return false
   if (path.startsWith('/api/hermes/sessions')) return false
+  if (path.startsWith('/api/hermes/agents')) return false
   if (path.startsWith('/api/hermes/search/sessions')) return false
   if (path.startsWith('/api/hermes/usage/stats')) return false
   if (path.startsWith('/api/hermes/jobs')) return false

@@ -4,6 +4,7 @@ const DEFAULT_BASE_URL = ''
 const AUTH_MODE_STORAGE_KEY = 'hermes_auth_mode'
 const WEB_PLANE_STORAGE_KEY = 'hermes_web_plane'
 const ACTIVE_PROFILE_STORAGE_KEY = 'hermes_active_profile_name'
+const ACTIVE_AGENT_STORAGE_KEY = 'hermes_active_agent_id'
 
 function isDesktopShell(): boolean {
   return typeof window !== 'undefined' &&
@@ -37,6 +38,7 @@ function clearAuthSessionState() {
   clearApiKey()
   clearRuntimeMode()
   localStorage.removeItem(ACTIVE_PROFILE_STORAGE_KEY)
+  localStorage.removeItem(ACTIVE_AGENT_STORAGE_KEY)
 }
 
 export function hasApiKey(): boolean {
@@ -160,6 +162,24 @@ function isProfileWideSessionCollection(pathname: string): boolean {
     pathname === '/api/hermes/sessions/conversations'
 }
 
+function shouldAttachAgentHeader(path: string): boolean {
+  try {
+    const url = new URL(path, 'http://hermes.local')
+    return isAgentScopedSessionPath(url.pathname)
+  } catch {
+    return isAgentScopedSessionPath(path.split('?')[0] || path)
+  }
+}
+
+function isAgentScopedSessionPath(pathname: string): boolean {
+  return pathname === '/api/hermes/sessions' ||
+    pathname === '/api/hermes/sessions/batch-delete' ||
+    pathname === '/api/hermes/search/sessions' ||
+    pathname === '/api/hermes/sessions/search' ||
+    pathname === '/api/hermes/sessions/conversations' ||
+    pathname.startsWith('/api/hermes/sessions/')
+}
+
 function emitAuthNotice(kind: 'expired' | 'forbidden') {
   if (typeof window === 'undefined') return
   window.dispatchEvent(new CustomEvent('hermes-auth-notice', { detail: { kind } }))
@@ -222,6 +242,10 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const profileName = getActiveProfileName()
   if (profileName && shouldAttachProfileHeader(path, fetchOptions)) {
     headers['X-Hermes-Profile'] = profileName
+  }
+  const agentId = localStorage.getItem(ACTIVE_AGENT_STORAGE_KEY)
+  if (agentId && shouldAttachAgentHeader(path)) {
+    headers['X-Hermes-Agent-Id'] = agentId
   }
 
   const res = await fetch(url, { ...fetchOptions, headers })

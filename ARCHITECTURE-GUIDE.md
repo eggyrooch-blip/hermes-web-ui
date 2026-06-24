@@ -15,6 +15,13 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
+> [!info] 2026-06-24 worktree — Agent share ACL WebUI adapter
+> `agent-sharing-acl` adds the WebUI side of agent sharing. The browser never calls the multitenancy Run Broker directly: server routes under `/api/hermes/agents/*/shares` proxy to `/api/run-broker/agents/*/shares` with the authenticated Feishu actor in `X-Hermes-Owner-Open-Id` and optional broker bearer key. The Run Broker remains the source of truth for owner/manager/share-role decisions.
+>
+> Profile listing now appends broker-shared agents and merges owner agent metadata from the multitenancy routing DB. The client persists a shared selection as both `hermes_active_profile_name` and `hermes_active_agent_id`; chat-run sockets include `agent_id`, and session collection requests include `X-Hermes-Agent-Id`. Server session collection resolves the actor's role through the Run Broker: viewer/editor see only sessions whose `user_id` matches their Feishu open_id; manager/owner see all WebUI sessions for that agent. Existing profile-scoped settings/config endpoints are not widened for grantees; shared profile metadata editing stays hidden in the selector/card UI.
+>
+> Owner agent profiles with `agentId` get a compact sharing modal in `ProfileCard.vue` for list/grant/revoke. Roles are `viewer`, `editor`, and `manager`; current WebUI support treats editor as runnable plus future config-edit surface, not as permission to use the existing owner profile config endpoints. Verification for this worktree: full Vitest 284 files / 2074 passed / 2 skipped, `vue-tsc -b` passed, server `tsc --noEmit` passed.
+
 > [!info] 2026-06-24 本机 main 已合入，等待 sunke 验证 — Profile/智能体头像按来源解析，生产未发布
 > `webui-agent-avatar-sources` 收敛 WebUI profile selector 头像来源：有 WebUI 自定义头像时仍优先使用本地 `profile-metadata`；登录用户的 Feishu 个人 profile 在没有自定义头像时使用 `/api/auth/me` envelope 里的 `avatarUrl`；群聊创建的 profile 在没有自定义头像时读取 profile-local `group_profile.json` 的 `chat_id`，再通过飞书开放平台 `GET /open-apis/im/v1/chats/{chat_id}` 获取群头像字段 `avatar`。该路径只使用 profile-local `config.yaml` 里的 Feishu app_id/app_secret 换 tenant_access_token，不调用 `lark-cli`，失败或缺凭证时回退到现有 multiavatar 生成头像。
 >
