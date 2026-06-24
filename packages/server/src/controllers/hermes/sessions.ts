@@ -134,6 +134,22 @@ async function resolveSharedAgentRole(ctx: any, agentId: string): Promise<string
   if (!actor || !agentId || !config.runBrokerUrl) return null
   const encodedAgentId = encodeURIComponent(agentId)
   try {
+    const sharedRes = await fetch(`${config.runBrokerUrl}/api/run-broker/agents/shared`, {
+      method: 'GET',
+      headers: brokerHeaders(ctx),
+    })
+    if (sharedRes.ok) {
+      const payload = await sharedRes.json().catch(() => ({})) as { agents?: Array<Record<string, unknown>> }
+      const agents = Array.isArray(payload.agents) ? payload.agents : []
+      const match = agents.find(agent => String(agent.agent_id || '').trim() === agentId)
+      const role = String(match?.role || '').trim()
+      if (role === 'viewer' || role === 'editor' || role === 'manager') return role
+    }
+  } catch (err) {
+    logger.warn({ err, agentId }, '[sessions] Run Broker shared-agent role lookup failed')
+  }
+
+  try {
     const managerRes = await fetch(`${config.runBrokerUrl}/api/run-broker/agents/${encodedAgentId}/shares`, {
       method: 'GET',
       headers: brokerHeaders(ctx),
@@ -145,22 +161,7 @@ async function resolveSharedAgentRole(ctx: any, agentId: string): Promise<string
   } catch (err) {
     logger.warn({ err, agentId }, '[sessions] Run Broker share manager probe failed')
   }
-
-  try {
-    const sharedRes = await fetch(`${config.runBrokerUrl}/api/run-broker/agents/shared`, {
-      method: 'GET',
-      headers: brokerHeaders(ctx),
-    })
-    if (!sharedRes.ok) return null
-    const payload = await sharedRes.json().catch(() => ({})) as { agents?: Array<Record<string, unknown>> }
-    const agents = Array.isArray(payload.agents) ? payload.agents : []
-    const match = agents.find(agent => String(agent.agent_id || '').trim() === agentId)
-    const role = String(match?.role || '').trim()
-    return role === 'viewer' || role === 'editor' || role === 'manager' ? role : null
-  } catch (err) {
-    logger.warn({ err, agentId }, '[sessions] Run Broker shared-agent role lookup failed')
-    return null
-  }
+  return null
 }
 
 async function sharedAgentSessionScope(ctx: any, agentId: string): Promise<{ agentId: string; userId?: string } | null> {

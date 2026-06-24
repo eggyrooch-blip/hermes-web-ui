@@ -322,9 +322,6 @@ describe('session conversations controller', () => {
     const fetchMock = vi.fn(async (url: string, options: any) => {
       expect(options.headers.Authorization).toBe('Bearer broker-key')
       expect(options.headers['X-Hermes-Owner-Open-Id']).toBe('ou_viewer')
-      if (url.endsWith('/api/run-broker/agents/agent-shared/shares')) {
-        return new Response(JSON.stringify({ error: 'manager required' }), { status: 403, headers: { 'Content-Type': 'application/json' } })
-      }
       expect(url).toBe('http://broker.test/api/run-broker/agents/shared')
       return new Response(JSON.stringify({
         agents: [{ agent_id: 'agent-shared', role: 'viewer' }],
@@ -351,14 +348,17 @@ describe('session conversations controller', () => {
       source: undefined,
       limit: 2000,
     })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(ctx.body.sessions.map((session: any) => session.id)).toEqual(['own-session'])
   })
 
   it('lists all agent sessions for a shared manager agent', async () => {
     process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
     const fetchMock = vi.fn(async (url: string) => {
-      expect(url).toBe('http://broker.test/api/run-broker/agents/agent-shared/shares')
-      return new Response(JSON.stringify({ shares: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      expect(url).toBe('http://broker.test/api/run-broker/agents/shared')
+      return new Response(JSON.stringify({
+        agents: [{ agent_id: 'agent-shared', role: 'manager' }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     })
     vi.stubGlobal('fetch', fetchMock)
     localListSessionsByAgentMock.mockReturnValue([

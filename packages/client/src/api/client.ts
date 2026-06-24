@@ -177,7 +177,8 @@ function isAgentScopedSessionPath(pathname: string): boolean {
     pathname === '/api/hermes/search/sessions' ||
     pathname === '/api/hermes/sessions/search' ||
     pathname === '/api/hermes/sessions/conversations' ||
-    pathname.startsWith('/api/hermes/sessions/')
+    pathname.startsWith('/api/hermes/sessions/') ||
+    pathname === '/api/hermes/config'
 }
 
 function emitAuthNotice(kind: 'expired' | 'forbidden') {

@@ -1,6 +1,7 @@
 import { readFile } from 'fs/promises'
 import { join } from 'path'
 import { getActiveProfileName, getProfileDir } from '../../services/hermes/hermes-profile'
+import { config } from '../../config'
 import { restartGatewayForProfile } from '../../services/hermes/gateway-autostart'
 import { readAppConfig, writeAppConfig, normalizeGatewayAutoStartConfig } from '../../services/app-config'
 import { saveEnvValueForProfile } from '../../services/config-helpers'
@@ -15,6 +16,86 @@ const PLATFORM_SECTIONS = new Set([
 ])
 
 const APP_CONFIG_SECTIONS = new Set(['gatewayAutoStart'])
+const SHARED_AGENT_ROLES = new Set(['viewer', 'editor', 'manager'])
+const SHARED_AGENT_CONFIG_EDITOR_ROLES = new Set(['editor', 'manager'])
+
+type SharedAgentConfigAccess = {
+  profile: string
+  role: string
+}
+
+function actorOpenId(ctx: any): string {
+  const value = ctx.state?.user?.openid
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function requestedAgentId(ctx: any): string {
+  return typeof ctx.get === 'function' ? String(ctx.get('x-hermes-agent-id') || '').trim() : ''
+}
+
+function brokerHeadersForActor(ctx: any): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
+  const openid = actorOpenId(ctx)
+  if (openid) headers['X-Hermes-Owner-Open-Id'] = openid
+  return headers
+}
+
+async function resolveSharedAgentConfigAccess(ctx: any, agentId: string): Promise<SharedAgentConfigAccess | null> {
+  const actor = actorOpenId(ctx)
+  if (!actor) {
+    ctx.status = 403
+    ctx.body = { error: 'Feishu user identity required' }
+    return null
+  }
+  if (!config.runBrokerUrl) {
+    ctx.status = 503
+    ctx.body = { error: 'HERMES_RUN_BROKER_URL is required for shared agent config access' }
+    return null
+  }
+
+  try {
+    const res = await fetch(`${config.runBrokerUrl}/api/run-broker/agents/shared`, {
+      method: 'GET',
+      headers: brokerHeadersForActor(ctx),
+    })
+    if (!res.ok) {
+      ctx.status = res.status
+      ctx.body = await res.json().catch(() => ({ error: 'Shared agent access lookup failed' }))
+      return null
+    }
+    const body = await res.json().catch(() => ({})) as { agents?: Array<Record<string, unknown>> }
+    const shared = Array.isArray(body.agents)
+      ? body.agents.find((agent) => String(agent?.agent_id || '').trim() === agentId)
+      : null
+    const profile = String(shared?.profile_name || '').trim()
+    const role = String(shared?.role || '').trim()
+    if (!shared || !profile || !SHARED_AGENT_ROLES.has(role)) {
+      ctx.status = 403
+      ctx.body = { error: 'Shared agent access denied' }
+      return null
+    }
+    return { profile, role }
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Shared agent access lookup failed' }
+    return null
+  }
+}
+
+async function resolveConfigProfile(ctx: any, action: 'read' | 'write'): Promise<string | null> {
+  const agentId = isChatPlaneRequest(ctx) ? requestedAgentId(ctx) : ''
+  if (!agentId) return requestedProfile(ctx)
+
+  const access = await resolveSharedAgentConfigAccess(ctx, agentId)
+  if (!access) return null
+  if (action === 'write' && !SHARED_AGENT_CONFIG_EDITOR_ROLES.has(access.role)) {
+    ctx.status = 403
+    ctx.body = { error: 'Editor or manager role required for shared agent config writes' }
+    return null
+  }
+  return access.profile
+}
 
 function requestedProfile(ctx: any): string {
   // Chat plane: the caller may not freely select a profile via header/query/body.
@@ -201,7 +282,8 @@ function safeConfigSections(config: Record<string, any>): Record<string, any> {
 
 export async function getConfig(ctx: any) {
   try {
-    const profile = requestedProfile(ctx)
+    const profile = await resolveConfigProfile(ctx, 'read')
+    if (!profile) return
     const config = await readConfig(profile)
 
     // Chat plane: never expose env-backed platform credentials, app-level
@@ -297,7 +379,8 @@ export async function updateConfig(ctx: any) {
       }
     }
 
-    const profile = requestedProfile(ctx)
+    const profile = await resolveConfigProfile(ctx, 'write')
+    if (!profile) return
     await safeFileStore.updateYaml(configPath(profile), (config) => {
       config[section] = deepMerge(config[section] || {}, values)
       return config

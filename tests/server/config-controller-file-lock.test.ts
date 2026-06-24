@@ -23,6 +23,9 @@ vi.mock('../../packages/server/src/services/hermes/agent-bridge', () => ({
 
 const originalHermesHome = process.env.HERMES_HOME
 const originalWebUiHome = process.env.HERMES_WEB_UI_HOME
+const originalWebPlane = process.env.HERMES_WEB_PLANE
+const originalRunBrokerUrl = process.env.HERMES_RUN_BROKER_URL
+const originalRunBrokerKey = process.env.HERMES_RUN_BROKER_KEY
 const tempHomes: string[] = []
 let hermesHome = ''
 
@@ -57,6 +60,13 @@ afterEach(async () => {
   else process.env.HERMES_HOME = originalHermesHome
   if (originalWebUiHome === undefined) delete process.env.HERMES_WEB_UI_HOME
   else process.env.HERMES_WEB_UI_HOME = originalWebUiHome
+  if (originalWebPlane === undefined) delete process.env.HERMES_WEB_PLANE
+  else process.env.HERMES_WEB_PLANE = originalWebPlane
+  if (originalRunBrokerUrl === undefined) delete process.env.HERMES_RUN_BROKER_URL
+  else process.env.HERMES_RUN_BROKER_URL = originalRunBrokerUrl
+  if (originalRunBrokerKey === undefined) delete process.env.HERMES_RUN_BROKER_KEY
+  else process.env.HERMES_RUN_BROKER_KEY = originalRunBrokerKey
+  vi.unstubAllGlobals()
   await Promise.all(tempHomes.splice(0).map(dir => rm(dir, { recursive: true, force: true })))
   hermesHome = ''
 })
@@ -360,5 +370,110 @@ describe('config controller locked file updates', () => {
         timeout: 30,
       },
     })
+  })
+
+  it('lets shared editors read and write safe config sections on the owner profile', async () => {
+    process.env.HERMES_WEB_PLANE = 'chat'
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    process.env.HERMES_RUN_BROKER_KEY = 'broker-key'
+    const ownerDir = join(hermesHome, 'profiles', 'owned_agent_profile')
+    await mkdir(ownerDir, { recursive: true })
+    await writeFile(join(hermesHome, 'config.yaml'), [
+      'display:',
+      '  compact: false',
+      '',
+    ].join('\n'), 'utf-8')
+    await writeFile(join(ownerDir, 'config.yaml'), [
+      'display:',
+      '  compact: false',
+      'model:',
+      '  default: owner-secret-model',
+      '',
+    ].join('\n'), 'utf-8')
+    const fetchMock = vi.fn(async (url: string, options: any) => {
+      expect(url).toBe('http://broker.test/api/run-broker/agents/shared')
+      expect(options.headers.Authorization).toBe('Bearer broker-key')
+      expect(options.headers['X-Hermes-Owner-Open-Id']).toBe('ou_editor')
+      return new Response(JSON.stringify({
+        agents: [{ agent_id: 'agent-shared', profile_name: 'owned_agent_profile', role: 'editor' }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { getConfig, updateConfig } = await loadController()
+    const baseCtx = {
+      query: {},
+      state: { user: { openid: 'ou_editor', profile: 'actor_profile' } },
+      get: vi.fn((name: string) => name.toLowerCase() === 'x-hermes-agent-id' ? 'agent-shared' : ''),
+    }
+
+    const readCtx: any = {
+      ...baseCtx,
+      request: { body: {} },
+      status: 200,
+      body: undefined,
+    }
+    await getConfig(readCtx)
+
+    expect(readCtx.body).toEqual({
+      display: { compact: false },
+      session_reset: {},
+      privacy: {},
+    })
+
+    const writeCtx: any = {
+      ...baseCtx,
+      request: { body: { section: 'display', values: { compact: true } } },
+      status: 200,
+      body: undefined,
+    }
+    await updateConfig(writeCtx)
+
+    expect(writeCtx.body).toEqual({ success: true })
+    const rootConfig = YAML.load(await readFile(join(hermesHome, 'config.yaml'), 'utf-8')) as any
+    const ownerConfig = YAML.load(await readFile(join(ownerDir, 'config.yaml'), 'utf-8')) as any
+    expect(rootConfig.display.compact).toBe(false)
+    expect(ownerConfig.display.compact).toBe(true)
+    expect(ownerConfig.model.default).toBe('owner-secret-model')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects shared viewer config writes and unsafe shared config sections', async () => {
+    process.env.HERMES_WEB_PLANE = 'chat'
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    const ownerDir = join(hermesHome, 'profiles', 'owned_agent_profile')
+    await mkdir(ownerDir, { recursive: true })
+    await writeFile(join(ownerDir, 'config.yaml'), [
+      'display:',
+      '  compact: false',
+      'model:',
+      '  default: keep-model',
+      '',
+    ].join('\n'), 'utf-8')
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      agents: [{ agent_id: 'agent-shared', profile_name: 'owned_agent_profile', role: 'viewer' }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+    const { updateConfig } = await loadController()
+    const makeSharedCtx = (section: string, values: Record<string, any>): any => ({
+      request: { body: { section, values } },
+      query: {},
+      state: { user: { openid: 'ou_viewer', profile: 'actor_profile' } },
+      get: vi.fn((name: string) => name.toLowerCase() === 'x-hermes-agent-id' ? 'agent-shared' : ''),
+      status: 200,
+      body: undefined,
+    })
+
+    const viewerCtx = makeSharedCtx('display', { compact: true })
+    await updateConfig(viewerCtx)
+    expect(viewerCtx.status).toBe(403)
+    expect(viewerCtx.body).toEqual({ error: 'Editor or manager role required for shared agent config writes' })
+
+    const unsafeCtx = makeSharedCtx('model', { default: 'changed-model' })
+    await updateConfig(unsafeCtx)
+    expect(unsafeCtx.status).toBe(403)
+    expect(unsafeCtx.body).toEqual({ error: 'This settings section is not available in chat plane' })
+
+    const ownerConfig = YAML.load(await readFile(join(ownerDir, 'config.yaml'), 'utf-8')) as any
+    expect(ownerConfig.display.compact).toBe(false)
+    expect(ownerConfig.model.default).toBe('keep-model')
   })
 })

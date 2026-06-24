@@ -97,6 +97,32 @@ const TEXT_FILE_EXTENSIONS = new Set([
 const SPREADSHEET_FILE_EXTENSIONS = new Set(['.xlsx'])
 const MAX_INLINE_FILE_CHARS = 200_000
 
+async function resolveAccessibleSocketAgentProfile(openid: string, agentId: string, requestedProfile: string): Promise<string | null> {
+  const actor = openid.trim()
+  const requestedAgentId = agentId.trim()
+  if (!actor || !requestedAgentId) return null
+
+  if (requestedProfile && ownerOwnsProfile(actor, requestedProfile)) {
+    const ownedAgentId = resolveOwnedProfileAgentId(actor, requestedProfile)
+    if (ownedAgentId === requestedAgentId) return requestedProfile
+  }
+
+  if (!config.runBrokerUrl) return null
+  const headers: Record<string, string> = {
+    'X-Hermes-Owner-Open-Id': actor,
+  }
+  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
+  const res = await fetch(`${config.runBrokerUrl}/api/run-broker/agents/shared`, { method: 'GET', headers })
+  if (!res.ok) return null
+  const body = await res.json().catch(() => null) as any
+  const agents = Array.isArray(body?.agents) ? body.agents : []
+  const shared = agents.find((agent: any) => String(agent?.agent_id || '').trim() === requestedAgentId)
+  if (!shared) return null
+  const profileName = String(shared.profile_name || '').trim()
+  if (requestedProfile && profileName && requestedProfile !== profileName) return null
+  return profileName || requestedProfile || null
+}
+
 function resolveUploadedPath(profile: string, filePath: string): string | null {
   if (!filePath) return null
   const workspaceRoot = resolve(getProfileDir(profile), 'workspace')
@@ -673,8 +699,14 @@ export class BrokerRunController {
       // retaining the WebUser fields the broker chat paths read. The local `user`
       // (WebUser) is kept intact for the profile/agentId resolution just below.
       socket.data.user = { ...user, ...ensureWebUserForFeishu(user.openid) }
-      const resolvedProfile = requestedAgentId && requestedProfile
-        ? requestedProfile
+      const sharedAgentProfile = requestedAgentId
+        ? await resolveAccessibleSocketAgentProfile(user.openid, requestedAgentId, requestedProfile)
+        : null
+      if (requestedAgentId && !sharedAgentProfile) {
+        return next(new Error('Agent access denied'))
+      }
+      const resolvedProfile = requestedAgentId
+        ? sharedAgentProfile || user.profile
         : requestedProfile && requestedProfile !== user.profile && ownerOwnsProfile(user.openid, requestedProfile)
         ? requestedProfile
         : user.profile

@@ -105,4 +105,31 @@ describe('ProfileCard sharing', () => {
     expect(wrapper.text()).toContain('ou_reader')
     expect(wrapper.text()).toContain('viewer')
   })
+
+  it('allows shared managers to open agent member management', async () => {
+    fetchAgentSharesMock.mockResolvedValue([
+      { agent_id: 'agent-owned', grantee_open_id: 'ou_reader', role: 'viewer', status: 'active' },
+    ])
+    const wrapper = mount(ProfileCard, {
+      props: {
+        profile: {
+          name: 'shared_agent_profile',
+          active: false,
+          model: '',
+          alias: '',
+          kind: 'agent',
+          agentId: 'agent-owned',
+          shareRole: 'manager',
+          ownerOpenId: 'ou_owner',
+        },
+      },
+    })
+
+    const shareButton = wrapper.findAll('button').find(button => button.text().includes('Share'))
+    expect(shareButton).toBeTruthy()
+    await shareButton!.trigger('click')
+
+    expect(fetchAgentSharesMock).toHaveBeenCalledWith('agent-owned')
+    expect(wrapper.text()).toContain('ou_reader')
+  })
 })

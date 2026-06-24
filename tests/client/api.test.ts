@@ -137,6 +137,18 @@ describe('API Client', () => {
       expect(options.headers['X-Hermes-Agent-Id']).toBe('agent-shared')
     })
 
+    it('adds the active shared agent header to config requests', async () => {
+      localStorage.setItem('hermes_active_profile_name', 'owned_agent_profile')
+      localStorage.setItem('hermes_active_agent_id', 'agent-shared')
+      mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => ({ data: 1 }) })
+
+      await request('/api/hermes/config?sections=display')
+
+      const [, options] = mockFetch.mock.calls[0]
+      expect(options.headers['X-Hermes-Profile']).toBe('owned_agent_profile')
+      expect(options.headers['X-Hermes-Agent-Id']).toBe('agent-shared')
+    })
+
     it('does not add Authorization header when no token', async () => {
       mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => ({ data: 1 }) })
 

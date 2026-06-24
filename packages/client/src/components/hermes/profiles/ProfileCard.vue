@@ -28,7 +28,10 @@ const newGranteeOpenId = ref('')
 const newRole = ref<AgentShareRole>('viewer')
 
 const isDefault = computed(() => props.profile.name === 'default')
-const canManageShares = computed(() => !!props.profile.agentId && !props.profile.shareRole)
+const canManageShares = computed(() => (
+  !!props.profile.agentId
+  && (!props.profile.shareRole || props.profile.shareRole === 'manager')
+))
 const shareRoleOptions = [
   { label: 'viewer', value: 'viewer' },
   { label: 'editor', value: 'editor' },
