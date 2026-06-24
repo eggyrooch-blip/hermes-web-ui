@@ -143,7 +143,7 @@ function bodyHasProfileSelector(body: BodyInit | null | undefined): boolean {
 
 function shouldAttachProfileHeader(path: string, options: RequestInit): boolean {
   try {
-    const url = new URL(path, 'http://hermes.local')
+    const url = new URL(path, 'http://localhost')
     if (url.searchParams.has('profile')) return false
     if (url.pathname.startsWith('/api/hermes/profiles')) return false
     if (isProfileWideSessionCollection(url.pathname)) return false
@@ -164,7 +164,7 @@ function isProfileWideSessionCollection(pathname: string): boolean {
 
 function shouldAttachAgentHeader(path: string): boolean {
   try {
-    const url = new URL(path, 'http://hermes.local')
+    const url = new URL(path, 'http://localhost')
     return isAgentScopedSessionPath(url.pathname)
   } catch {
     return isAgentScopedSessionPath(path.split('?')[0] || path)
