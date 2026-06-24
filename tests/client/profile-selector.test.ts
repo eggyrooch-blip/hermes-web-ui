@@ -320,6 +320,62 @@ describe('ProfileSelector', () => {
     expect(wrapper.text()).toContain('ou_reader')
   })
 
+  it('grants agent sharing from the ordinary selector modal', async () => {
+    fetchAgentSharesMock.mockResolvedValue([])
+    grantAgentShareMock.mockResolvedValue({ agent_id: 'agent-owned', grantee_open_id: 'ou_new', role: 'editor', status: 'active' })
+    profilesStoreMock.profiles = [
+      {
+        name: 'owned_agent_profile',
+        active: true,
+        model: '',
+        gateway: '',
+        alias: '',
+        kind: 'agent',
+        agentId: 'agent-owned',
+      },
+    ]
+    profilesStoreMock.activeProfileName = 'owned_agent_profile'
+    profilesStoreMock.activeProfile = profilesStoreMock.profiles[0]
+    const wrapper = mount(ProfileSelector)
+
+    await wrapper.find('.profile-display').trigger('click')
+    await findButtonByText(wrapper, 'Share')!.trigger('click')
+    await wrapper.find('input[placeholder="OpenID"]').setValue('ou_new')
+    await wrapper.find('select').setValue('editor')
+    await findButtonByText(wrapper, 'Grant')!.trigger('click')
+
+    expect(grantAgentShareMock).toHaveBeenCalledWith('agent-owned', 'ou_new', 'editor')
+    expect(fetchAgentSharesMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('revokes agent sharing from the ordinary selector modal', async () => {
+    fetchAgentSharesMock.mockResolvedValue([
+      { agent_id: 'agent-owned', grantee_open_id: 'ou_reader', role: 'viewer', status: 'active' },
+    ])
+    revokeAgentShareMock.mockResolvedValue(undefined)
+    profilesStoreMock.profiles = [
+      {
+        name: 'owned_agent_profile',
+        active: true,
+        model: '',
+        gateway: '',
+        alias: '',
+        kind: 'agent',
+        agentId: 'agent-owned',
+      },
+    ]
+    profilesStoreMock.activeProfileName = 'owned_agent_profile'
+    profilesStoreMock.activeProfile = profilesStoreMock.profiles[0]
+    const wrapper = mount(ProfileSelector)
+
+    await wrapper.find('.profile-display').trigger('click')
+    await findButtonByText(wrapper, 'Share')!.trigger('click')
+    await findButtonByText(wrapper, 'Revoke')!.trigger('click')
+
+    expect(revokeAgentShareMock).toHaveBeenCalledWith('agent-owned', 'ou_reader')
+    expect(wrapper.text()).not.toContain('ou_reader')
+  })
+
   it('does not expose agent sharing controls for shared viewer/editor profiles', async () => {
     profilesStoreMock.profiles = [
       {
