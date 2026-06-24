@@ -34,12 +34,12 @@ related:
 >
 > The same work also removes the misleading clone option from ordinary ProfileSelector creation. `ProfileCreateModal` has an `allowClone` prop; ProfileSelector passes `allowClone=false` for non-super-admin users, while `/hermes/profiles` keeps the default clone-capable behavior for admins. The backend remains the security boundary: chat-plane Feishu users still force `effectiveClone=false` before calling `hermesCli.createProfile()`, then require owner registration before reporting success.
 
-> [!info] 2026-06-24 worktree — Agent share principal identity adapter, production not published
+> [!info] 2026-06-24 本机 main 已合入并重启，等待 sunke 验证 — Agent share principal identity adapter，生产未发布
 > `webui-share-principal-identity` changes the browser-facing sharing contract from raw Feishu OpenID to provider-neutral grantee lookup. Client APIs accept either the legacy `granteeOpenId` string or a new `grantee={provider,type,value}` object; ProfileCard/ProfileSelector now build Feishu lookups from "email or Feishu user ID" input, render principal display name/avatar/email when present, and revoke through opaque `share_id` when available. Legacy share rows still fall back to `grantee_open_id`.
 >
 > The browser never sends actor principal fields. Server routes under `/api/hermes/agents/*/shares` derive Run Broker identity headers from the verified `WebUser`: `X-Hermes-Actor-Provider`, `Tenant-Key`, `App-Id`, `User-Id`, `Display-Name`, `Avatar-Url`, and `Email`. Feishu OAuth session cookies now persist `userId`, `unionId`, `tenantKey`, `appId`, and `email`; `exchangeFeishuCode()` fetches `user_info` when token data lacks canonical principal fields even if name/avatar are already present. This keeps multitenancy ownership tied to the authenticated Feishu session instead of request body data.
 >
-> Focused verification so far: server `feishu-oauth` and `agent-sharing-controller` tests, client `agents-api` and `profile-card-sharing` tests. This worktree has not yet been shipped to local main or production.
+> Verification: server `feishu-oauth` and `agent-sharing-controller` tests, client `agents-api`, `profile-card-sharing`, and `profile-selector` tests, plus `npm run build`; ftask ship full `bun run test` passed and merged to local main. The local `127.0.0.1:8648` production server was rebuilt/restarted and `/` + `/health` return 200. This is not pushed/finalized and production has not pulled or restarted.
 
 > [!info] 2026-06-24 本机 main 已合入，等待 sunke 验证 — Profile/智能体头像按来源解析，生产未发布
 > `webui-agent-avatar-sources` 收敛 WebUI profile selector 头像来源：有 WebUI 自定义头像时仍优先使用本地 `profile-metadata`；登录用户的 Feishu 个人 profile 在没有自定义头像时使用 `/api/auth/me` envelope 里的 `avatarUrl`；群聊创建的 profile 在没有自定义头像时读取 profile-local `group_profile.json` 的 `chat_id`，再通过飞书开放平台 `GET /open-apis/im/v1/chats/{chat_id}` 获取群头像字段 `avatar`。该路径只使用 profile-local `config.yaml` 里的 Feishu app_id/app_secret 换 tenant_access_token，不调用 `lark-cli`，失败或缺凭证时回退到现有 multiavatar 生成头像。
