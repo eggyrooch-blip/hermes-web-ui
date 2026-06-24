@@ -1,7 +1,7 @@
 import type { Context } from 'koa'
 import { config } from '../../config'
 import { isChatPlaneRequest, type WebUser } from '../../services/request-context'
-import { ownerOwnsProfile, resolveOwnedProfileAgentId } from '../../services/hermes/agent-ownership'
+import { ownerOwnsProfile, resolveAccessibleProfileAgentId } from '../../services/hermes/agent-ownership'
 
 export interface SlashCommand {
   name: string
@@ -43,7 +43,7 @@ function requestedProfile(ctx: Context): string {
 
 function brokerAgentId(ctx: Context, profile: string): string | undefined {
   const openid = chatPlaneOpenId(ctx)
-  if (openid) return profile ? resolveOwnedProfileAgentId(openid, profile) : undefined
+  if (openid) return profile ? resolveAccessibleProfileAgentId(openid, profile) : undefined
   return String(ctx.query?.agent_id || ctx.get?.('x-hermes-agent-id') || '').trim() || undefined
 }
 

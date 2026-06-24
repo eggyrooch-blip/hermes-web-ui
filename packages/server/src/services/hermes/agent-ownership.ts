@@ -201,6 +201,58 @@ export function resolveOwnedProfileAgentId(openid: string, profileName: string):
     return listOwnedProfileMetadata(openid).get(profileName.trim())?.agentId
 }
 
+/**
+ * Resolve the broker agent_id for a profile the user can access — whether they OWN it
+ * or hold an active SHARE on it. Sharing matters because Feishu open_id is per-app: the
+ * same person has a different open_id under the webui-login app vs the bot/sync app that
+ * registered the profile, so an owner viewing "their own" profile can present as a
+ * non-owner here. The broker re-verifies the share role; this only resolves the id so the
+ * request carries it.
+ */
+export function resolveAccessibleProfileAgentId(openid: string, profileName: string): string | undefined {
+    if (!isNonEmptyString(openid) || !isNonEmptyString(profileName)) return undefined
+    const owned = resolveOwnedProfileAgentId(openid, profileName)
+    if (owned) return owned
+
+    const normalizedOpenid = openid.trim()
+    const normalizedProfileName = profileName.trim()
+
+    for (const dbPath of candidateMultitenancyDbs()) {
+        try {
+            if (!existsSync(dbPath) || statSync(dbPath).size === 0) continue
+            const db = new DatabaseSync(dbPath, { readOnly: true })
+            try {
+                const tableExists = db.prepare(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='multitenancy_agent_shares' LIMIT 1"
+                ).get()
+                if (!tableExists) continue
+                const routingColumns = new Set((db.prepare('PRAGMA table_info(multitenancy_routing)').all() as Array<{ name: string }>).map(column => column.name))
+                if (!routingColumns.has('agent_id')) continue
+
+                // the profile's agent_id, joined to an active share granted to this user
+                const row = db.prepare(
+                    `SELECT r.agent_id AS agent_id
+                       FROM multitenancy_routing r
+                       JOIN multitenancy_agent_shares s ON s.agent_id = r.agent_id
+                      WHERE r.profile_name = ?
+                        AND r.active = 1
+                        AND s.grantee_open_id = ?
+                        AND s.status = 'active'
+                      LIMIT 1`
+                ).get(normalizedProfileName, normalizedOpenid) as { agent_id?: string } | undefined
+
+                if (row && isNonEmptyString(row.agent_id)) return row.agent_id.trim()
+            } finally {
+                db.close()
+            }
+        } catch {
+            // Try the next candidate DB.
+        }
+    }
+
+    return undefined
+}
+
 export function registerOwnedProfile(openid: string, profileName: string, upstreamProfile?: string): boolean {
     if (!isNonEmptyString(openid) || !isNonEmptyString(profileName)) return false
 

@@ -44,6 +44,7 @@ import { performanceMonitorRoutes } from './hermes/performance-monitor'
 import { mcpRoutes } from './hermes/mcp'
 import { runtimeVersionRoutes } from './hermes/runtime-versions'
 import { writeGateRoutes } from './hermes/write-gate'
+import { slashRoutes } from './hermes/slash'
 
 /**
  * Register all routes on the Koa app.
@@ -74,6 +75,7 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(profileRoutes.routes())
   app.use(agentRoutes.routes())
   app.use(skillRoutes.routes())
+  app.use(slashRoutes.routes())            // /api/hermes/slash/commands (re-register: dropped in rebaseline)
   app.use(pluginRoutes.routes())
   app.use(memoryRoutes.routes())
   app.use(modelRoutes.routes())
