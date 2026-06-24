@@ -751,9 +751,12 @@ export async function create(ctx: any) {
     // isolation (ownerOwnsProfile / getRequestProfile) recognizes it as theirs.
     if (userMode && user?.openid) {
       try {
-        registerOwnedProfile(user.openid, name, user.profile)
+        if (!registerOwnedProfile(user.openid, name, user.profile)) {
+          throw new Error('owner registration returned false')
+        }
       } catch (err: any) {
         logger.error(err, 'Failed to register owned profile "%s" for openid', name)
+        throw new Error('Failed to register created profile ownership')
       }
     }
 

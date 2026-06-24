@@ -112,6 +112,7 @@ describe('Profile Routes', () => {
     else process.env.HERMES_AUTH_MODE = originalAuthMode
     if (originalWebPlane === undefined) delete process.env.HERMES_WEB_PLANE
     else process.env.HERMES_WEB_PLANE = originalWebPlane
+    vi.doUnmock('../../packages/server/src/services/hermes/agent-ownership')
     vi.resetModules()
     await Promise.all(tempHomes.splice(0).map(dir => rm(dir, { recursive: true, force: true })))
   })
@@ -469,6 +470,50 @@ describe('Profile Routes', () => {
       expect(switchCtx.status).toBe(200)
       expect(switchCtx.body).toMatchObject({ success: true, active: 'web_agent' })
       expect(sessionDeleterMocks.switchProfile).toHaveBeenCalledWith('web_agent')
+    })
+
+    it('does not report chat-plane create success when owner registration cannot be persisted', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-create-agent-unregistered-'))
+      tempHomes.push(hermesHome)
+      process.env.HERMES_HOME = hermesHome
+      process.env.HERMES_AUTH_MODE = 'trusted-feishu'
+      delete process.env.HERMES_WEB_PLANE
+      const dbPath = join(hermesHome, 'multitenancy.db')
+      process.env.HERMES_MULTITENANCY_DB = dbPath
+      await writeFile(join(hermesHome, 'active_profile'), 'feishu_user_a\n', 'utf-8')
+      vi.mocked(hermesCli.createProfile).mockImplementation(async (name: string) => {
+        const profileDir = join(hermesHome, 'profiles', name)
+        await mkdir(profileDir, { recursive: true })
+        await writeFile(join(profileDir, 'config.yaml'), 'model:\n  default: web-agent-model\n', 'utf-8')
+        return `Profile ${name} created`
+      })
+      vi.doMock('../../packages/server/src/services/hermes/agent-ownership', () => ({
+        listOwnedProfileMetadata: vi.fn(() => new Map()),
+        registerOwnedProfile: vi.fn(() => false),
+      }))
+      vi.resetModules()
+      const { create } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = {
+        state: {
+          user: {
+            id: 7,
+            role: 'user',
+            openid: 'ou_user_a',
+            profile: 'feishu_user_a',
+            profiles: ['feishu_user_a'],
+          },
+          profile: { name: 'feishu_user_a' },
+        },
+        request: { body: { name: 'unregistered_agent', clone: true } },
+        status: 200,
+        body: undefined,
+      }
+
+      await create(ctx)
+
+      expect(hermesCli.createProfile).toHaveBeenCalledWith('unregistered_agent', false)
+      expect(ctx.status).toBe(500)
+      expect(ctx.body).toEqual({ error: 'Failed to register created profile ownership' })
     })
   })
 
