@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { defineComponent } from 'vue'
 import SessionListItem from '@/components/hermes/chat/SessionListItem.vue'
+
+const profileStoreMocks = vi.hoisted(() => ({
+  profiles: [] as any[],
+}))
 
 vi.mock('@/stores/hermes/app', () => ({
   useAppStore: () => ({
@@ -11,7 +15,7 @@ vi.mock('@/stores/hermes/app', () => ({
 }))
 
 vi.mock('@/stores/hermes/profiles', () => ({
-  useProfilesStore: () => ({ profiles: [] }),
+  useProfilesStore: () => ({ profiles: profileStoreMocks.profiles }),
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -50,6 +54,10 @@ const session = {
 }
 
 describe('SessionListItem', () => {
+  beforeEach(() => {
+    profileStoreMocks.profiles = []
+  })
+
   it('renders normal mode as a link to the session route', () => {
     const wrapper = mount(SessionListItem, {
       props: {
@@ -135,26 +143,43 @@ describe('SessionListItem', () => {
     expect(wrapper.emitted('select')).toBeUndefined()
   })
 
-  it('renders the Hermes logo for Hermes sessions', () => {
-    const wrapper = mount(SessionListItem, {
-      props: {
-        session: { ...session, source: 'cli', agent: 'hermes' },
-        active: false,
-        pinned: false,
-        canDelete: true,
-      },
-      global: {
-        stubs: {
-          ProfileAvatar: true,
+  it.each(['cli', 'api_server', 'global_agent'])(
+    'renders the profile avatar as the agent logo for %s Hermes sessions',
+    (source) => {
+      profileStoreMocks.profiles = [{
+        name: 'kira',
+        avatar: {
+          type: 'url',
+          url: 'https://example.com/kira-avatar.png',
         },
-      },
-    })
+      }]
+      const wrapper = mount(SessionListItem, {
+        props: {
+          session: { ...session, source, agent: 'hermes' },
+          active: false,
+          pinned: false,
+          canDelete: true,
+        },
+        global: {
+          stubs: {
+            ProfileAvatar: defineComponent({
+              name: 'ProfileAvatar',
+              props: ['name', 'avatar', 'size'],
+              template: '<span class="profile-avatar-stub" :data-name="name" :data-avatar-url="avatar?.url || \'\'" :data-size="size"></span>',
+            }),
+          },
+        },
+      })
 
-    const logo = wrapper.get('.session-item-agent-logo')
-    expect(logo.attributes('src')).toBe('/coding-agents/hermes.png')
-    expect(logo.attributes('alt')).toBe('Hermes')
-    expect(wrapper.find('.session-item-agent-name').exists()).toBe(false)
-  })
+      expect(wrapper.find('.session-item-agent-logo').exists()).toBe(false)
+      const logo = wrapper.get('.session-item-agent-logo-wrap .profile-avatar-stub')
+      expect(logo.attributes('data-name')).toBe('kira')
+      expect(logo.attributes('data-avatar-url')).toBe('https://example.com/kira-avatar.png')
+      expect(logo.attributes('data-size')).toBe('18')
+      expect(wrapper.find('.session-item-profile .profile-avatar-stub').exists()).toBe(false)
+      expect(wrapper.find('.session-item-agent-name').exists()).toBe(false)
+    },
+  )
 
   it('defaults old sessions without agent metadata to the Hermes logo', () => {
     const wrapper = mount(SessionListItem, {

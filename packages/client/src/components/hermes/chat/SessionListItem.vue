@@ -43,6 +43,8 @@ const profileModelsMissing = computed(() =>
   appStore.profileModelGroups.length > 0 && !profileHasModels.value,
 )
 const isGlobalAgentSession = computed(() => props.session.source === 'global_agent')
+const profileAvatarAgentSources = new Set(['cli', 'api_server', 'global_agent'])
+const useProfileAvatarAsAgentLogo = computed(() => profileAvatarAgentSources.has(props.session.source || ''))
 const sessionAgentLogo = computed(() => {
   if (props.session.source === 'coding_agent') {
     if (props.session.codingAgentId === 'codex' || props.session.agent === 'codex') {
@@ -148,14 +150,28 @@ onUnmounted(() => {
       </span>
       <span class="session-item-agent-row">
         <span class="session-item-agent-logo-wrap" :class="{ streaming }">
+          <ProfileAvatar
+            v-if="useProfileAvatarAsAgentLogo"
+            class="session-item-agent-avatar"
+            :name="profileName"
+            :avatar="profileAvatar"
+            :size="18"
+          />
           <img
+            v-else
             class="session-item-agent-logo"
             :src="sessionAgentLogo.src"
             :alt="sessionAgentLogo.label"
           >
         </span>
         <span v-if="props.showProfile" class="session-item-profile">
-          <ProfileAvatar class="session-item-profile-avatar" :name="profileName" :avatar="profileAvatar" :size="16" />
+          <ProfileAvatar
+            v-if="!useProfileAvatarAsAgentLogo"
+            class="session-item-profile-avatar"
+            :name="profileName"
+            :avatar="profileAvatar"
+            :size="16"
+          />
           <span class="session-item-profile-name">{{ profileName }}</span>
         </span>
       </span>
@@ -414,6 +430,11 @@ onUnmounted(() => {
   border-radius: inherit;
   object-fit: contain;
   background: #fff;
+}
+
+.session-item-agent-avatar {
+  position: relative;
+  z-index: 1;
 }
 
 @keyframes rainbow-glow {
