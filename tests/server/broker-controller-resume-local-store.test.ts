@@ -234,4 +234,20 @@ describe('BrokerRunController local session resume', () => {
       outputTokens: usage.outputTokens,
     }))
   })
+
+  it('emits live session events to profile-scoped socket rooms', async () => {
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    const emitToRoom = vi.fn()
+    const to = vi.fn(() => ({ emit: emitToRoom }))
+    ;(controller as any).nsp = { to, adapter: { rooms: new Map() } }
+    const socket = { connected: false, emit: vi.fn() }
+
+    ;(controller as any).emitToSession(socket, 'shared-session', 'profile-a', 'usage.updated', { event: 'usage.updated' })
+    ;(controller as any).emitToSession(socket, 'shared-session', 'profile-b', 'usage.updated', { event: 'usage.updated' })
+
+    expect(to.mock.calls[0][0]).not.toBe(to.mock.calls[1][0])
+    expect(to.mock.calls[0][0]).toContain('profile-a')
+    expect(to.mock.calls[1][0]).toContain('profile-b')
+  })
 })

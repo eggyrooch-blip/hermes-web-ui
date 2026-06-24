@@ -621,8 +621,16 @@ export class BrokerRunController {
   private sessionMap = new Map<string, SessionState>()
   private hermesSessionIds = new Map<string, string>()
 
+  private profileKey(profile?: string): string {
+    return profile?.trim() || 'default'
+  }
+
   private sessionStateKey(sessionId: string, profile?: string): string {
-    return `${profile?.trim() || 'default'}\u0000${sessionId}`
+    return `${this.profileKey(profile)}\u0000${sessionId}`
+  }
+
+  private sessionRoom(sessionId: string, profile?: string): string {
+    return `session:${encodeURIComponent(this.profileKey(profile))}:${encodeURIComponent(sessionId)}`
   }
 
   private getSessionState(sessionId: string, profile?: string): SessionState | undefined {
@@ -721,7 +729,7 @@ export class BrokerRunController {
             instructions: data.instructions,
             profile,
           })
-          this.nsp.to(`session:${data.session_id}`).emit('run.queued', {
+          this.nsp.to(this.sessionRoom(data.session_id, profile)).emit('run.queued', {
             event: 'run.queued',
             session_id: data.session_id,
             queue_length: state.queue.length,
@@ -740,7 +748,7 @@ export class BrokerRunController {
       const before = state.queue.length
       state.queue = state.queue.filter(item => item.queue_id !== data.queue_id)
       if (state.queue.length === before) return
-      this.nsp.to(`session:${data.session_id}`).emit('run.queued', {
+      this.nsp.to(this.sessionRoom(data.session_id, profile)).emit('run.queued', {
         event: 'run.queued',
         session_id: data.session_id,
         queue_length: state.queue.length,
@@ -752,7 +760,7 @@ export class BrokerRunController {
     socket.on('resume', async (data: { session_id?: string }) => {
       if (!data.session_id) return
       const sid = data.session_id
-      const room = `session:${sid}`
+      const room = this.sessionRoom(sid, profile)
       socket.join(room)
       this.resumeSession(socket, sid, profile)
     })
@@ -776,7 +784,7 @@ export class BrokerRunController {
           clarifyId,
           response: String(data.response || ''),
         })
-        this.nsp.to(`session:${sessionId}`).emit('clarify.resolved', {
+        this.nsp.to(this.sessionRoom(sessionId, profile)).emit('clarify.resolved', {
           event: 'clarify.resolved',
           session_id: sessionId,
           clarify_id: clarifyId,
@@ -1060,14 +1068,14 @@ export class BrokerRunController {
         })
       }
 
-      socket.join(`session:${session_id}`)
+      socket.join(this.sessionRoom(session_id, profile))
     }
 
     // Emit helper: tag every payload with session_id
     const emit = (event: string, payload: any) => {
       const tagged = session_id ? { ...payload, session_id } : payload
       if (session_id) {
-        this.nsp.to(`session:${session_id}`).emit(event, tagged)
+        this.nsp.to(this.sessionRoom(session_id, profile)).emit(event, tagged)
       } else if (socket.connected) {
         socket.emit(event, tagged)
       }
@@ -1200,8 +1208,8 @@ export class BrokerRunController {
     })
   }
 
-  private emitSessionCommand(socket: Socket, sessionId: string, payload: Record<string, unknown>) {
-    this.emitToSession(socket, sessionId, 'session.command', {
+  private emitSessionCommand(socket: Socket, sessionId: string, profile: string, payload: Record<string, unknown>) {
+    this.emitToSession(socket, sessionId, profile, 'session.command', {
       event: 'session.command',
       session_id: sessionId,
       ok: true,
@@ -1227,7 +1235,7 @@ export class BrokerRunController {
 
     const state = this.getOrCreateSession(sessionId, profile)
     state.profile = profile
-    socket.join(`session:${sessionId}`)
+    socket.join(this.sessionRoom(sessionId, profile))
     this.persistCommandMessage(sessionId, state, parsed.raw)
 
     let result: BrokerSessionCommandResult
@@ -1243,7 +1251,7 @@ export class BrokerRunController {
       const detail = err instanceof Error ? err.message : String(err)
       const message = `Command failed: ${detail}`
       this.persistCommandMessage(sessionId, state, message)
-      this.emitSessionCommand(socket, sessionId, {
+      this.emitSessionCommand(socket, sessionId, profile, {
         command: parsed.name,
         ok: false,
         action: 'error',
@@ -1267,7 +1275,7 @@ export class BrokerRunController {
     if (eventMessage) {
       this.persistCommandMessage(sessionId, state, eventMessage)
     }
-    this.emitSessionCommand(socket, sessionId, {
+    this.emitSessionCommand(socket, sessionId, profile, {
       command: commandName,
       action,
       terminal: !state.isWorking,
@@ -1321,7 +1329,7 @@ export class BrokerRunController {
       ? result.message.trim()
       : 'Continuing goal.'
     this.persistCommandMessage(sessionId, state, message)
-    this.emitSessionCommand(socket, sessionId, {
+    this.emitSessionCommand(socket, sessionId, profile, {
       command: 'goal',
       action: 'continue',
       terminal: true,
@@ -1353,7 +1361,7 @@ export class BrokerRunController {
         state.runId = undefined
         state.events = []
       }
-      this.emitToSession(socket, sessionId, 'abort.completed', {
+      this.emitToSession(socket, sessionId, profile, 'abort.completed', {
         event: 'abort.completed',
         synced: false,
         ignored: true,
@@ -1368,7 +1376,7 @@ export class BrokerRunController {
       run_id: runId,
       graceMs: 5000,
     })
-    this.emitToSession(socket, sessionId, 'abort.started', {
+    this.emitToSession(socket, sessionId, profile, 'abort.started', {
       event: 'abort.started',
       run_id: runId,
       graceMs: 5000,
@@ -1409,7 +1417,7 @@ export class BrokerRunController {
       state.responseRun = undefined
       updateSessionStats(sessionId)
       const emit = (event: string, payload: any) => {
-        this.nsp.to(`session:${sessionId}`).emit(event, { ...payload, session_id: sessionId })
+        this.nsp.to(this.sessionRoom(sessionId, profileKey)).emit(event, { ...payload, session_id: sessionId })
       }
       await this.calcAndUpdateUsage(sessionId, state, emit, profile)
       if (_info.event === 'run.completed') {
@@ -1425,7 +1433,7 @@ export class BrokerRunController {
 
     const next = state.queue.shift()!
     logger.info('[chat-run-socket] dequeuing queued run for session %s (remaining: %d)', sessionId, state.queue.length)
-    this.nsp.to(`session:${sessionId}`).emit('run.queued', {
+    this.nsp.to(this.sessionRoom(sessionId, fallbackProfile)).emit('run.queued', {
       event: 'run.queued',
       session_id: sessionId,
       queue_length: state.queue.length,
@@ -1465,13 +1473,13 @@ export class BrokerRunController {
         synced: true,
         queue_length: state.queue.length + 1,
       })
-      this.emitToSession(socket, sessionId, 'abort.completed', {
+      this.emitToSession(socket, sessionId, profileKey, 'abort.completed', {
         event: 'abort.completed',
         run_id: runId,
         synced: true,
         queue_length: state.queue.length + 1,
       })
-      this.emitToSession(socket, sessionId, 'run.queued', {
+      this.emitToSession(socket, sessionId, profileKey, 'run.queued', {
         event: 'run.queued',
         queue_length: state.queue.length,
         dequeued_queue_id: next.queue_id,
@@ -1493,7 +1501,7 @@ export class BrokerRunController {
       run_id: runId,
       synced: true,
     })
-    this.emitToSession(socket, sessionId, 'abort.completed', {
+    this.emitToSession(socket, sessionId, profileKey, 'abort.completed', {
       event: 'abort.completed',
       run_id: runId,
       synced: true,
@@ -1624,10 +1632,11 @@ export class BrokerRunController {
     this.pushState(sessionId, profile, event, data)
   }
 
-  private emitToSession(socket: Socket, sessionId: string, event: string, payload: any) {
+  private emitToSession(socket: Socket, sessionId: string, profile: string | undefined, event: string, payload: any) {
     const tagged = { ...payload, session_id: sessionId }
-    this.nsp.to(`session:${sessionId}`).emit(event, tagged)
-    if (!this.nsp.adapter?.rooms?.get(`session:${sessionId}`)?.size && socket.connected) {
+    const room = this.sessionRoom(sessionId, profile)
+    this.nsp.to(room).emit(event, tagged)
+    if (!this.nsp.adapter?.rooms?.get(room)?.size && socket.connected) {
       socket.emit(event, tagged)
     }
   }
