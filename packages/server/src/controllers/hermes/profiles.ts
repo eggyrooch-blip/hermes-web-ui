@@ -203,6 +203,12 @@ function allowedProfileNamesForUser(user: any): Set<string> {
       if (typeof profile === 'string' && profile.trim()) allowed.add(profile.trim())
     }
   }
+  const openid = typeof user?.openid === 'string' ? user.openid.trim() : ''
+  if (openid) {
+    for (const profileName of listOwnedProfileMetadata(openid).keys()) {
+      allowed.add(profileName)
+    }
+  }
   return allowed
 }
 
@@ -241,7 +247,7 @@ function listAuthorizedProfilesFromDisk(ctx: any): HermesProfile[] | null {
 function canAccessProfile(ctx: any, profileName: string): boolean {
   const user = ctx.state?.user
   if (!user || user.role === 'super_admin') return true
-  return listUserProfiles(user.id).some(profile => profile.profile_name === profileName)
+  return allowedProfileNamesForUser(user).has(profileName)
 }
 
 function denyProfile(ctx: any, profileName: string): boolean {

@@ -24,6 +24,7 @@ const profilesStoreMock = vi.hoisted(() => ({
   switching: false,
   fetchProfiles: vi.fn(),
   switchProfile: vi.fn(),
+  createProfile: vi.fn(),
   updateAvatar: vi.fn(),
   deleteAvatar: vi.fn(),
 }))
@@ -44,6 +45,13 @@ vi.mock('@/api/hermes/profiles', () => ({
   fetchProfileRuntimeStatusesWithMeta: fetchProfileRuntimeStatusesWithMetaMock,
   restartProfileGateway: vi.fn(),
   restartProfileRuntime: vi.fn(),
+}))
+
+vi.mock('@/components/hermes/profiles/ProfileCreateModal.vue', () => ({
+  default: {
+    emits: ['close', 'saved'],
+    template: '<div data-testid="profile-create-modal"><button type="button" data-testid="profile-create-saved" @click="$emit(\'saved\')">saved</button><button type="button" data-testid="profile-create-close" @click="$emit(\'close\')">close</button></div>',
+  },
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -73,6 +81,7 @@ vi.mock('vue-i18n', () => ({
         'profiles.runtime.restartGateway': 'Restart Gateway',
         'profiles.runtime.restartProfile': 'Restart Profile',
         'profiles.runtime.switchProfile': 'Switch Profile',
+        'profiles.create': 'Create Profile',
         'profiles.switchSuccess': `Switched ${params?.name || ''}`,
         'profiles.switchFailed': 'Switch failed',
       }
@@ -196,6 +205,20 @@ describe('ProfileSelector', () => {
     expect(wrapper.text()).not.toContain('Restart Profile')
     expect(profilesStoreMock.fetchProfiles).toHaveBeenCalled()
     expect(fetchProfileRuntimeStatusesWithMetaMock).not.toHaveBeenCalled()
+  })
+
+  it('opens the create profile modal from the selector for ordinary Feishu users', async () => {
+    const wrapper = mount(ProfileSelector)
+
+    await wrapper.find('.profile-display').trigger('click')
+    const createButton = findButtonByText(wrapper, 'Create Profile')
+
+    expect(createButton).toBeTruthy()
+    await createButton!.trigger('click')
+    expect(wrapper.find('[data-testid="profile-create-modal"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="profile-create-saved"]').trigger('click')
+    expect(wrapper.find('[data-testid="profile-create-modal"]').exists()).toBe(false)
   })
 
   it('shows shared agent labels and hides profile metadata controls for shared agents', async () => {

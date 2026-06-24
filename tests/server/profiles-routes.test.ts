@@ -83,6 +83,8 @@ describe('Profile Routes', () => {
   const originalMultitenancyDb = process.env.HERMES_MULTITENANCY_DB
   const originalRunBrokerUrl = process.env.HERMES_RUN_BROKER_URL
   const originalRunBrokerKey = process.env.HERMES_RUN_BROKER_KEY
+  const originalAuthMode = process.env.HERMES_AUTH_MODE
+  const originalWebPlane = process.env.HERMES_WEB_PLANE
   const tempHomes: string[] = []
 
   beforeEach(() => {
@@ -106,6 +108,11 @@ describe('Profile Routes', () => {
     else process.env.HERMES_RUN_BROKER_URL = originalRunBrokerUrl
     if (originalRunBrokerKey === undefined) delete process.env.HERMES_RUN_BROKER_KEY
     else process.env.HERMES_RUN_BROKER_KEY = originalRunBrokerKey
+    if (originalAuthMode === undefined) delete process.env.HERMES_AUTH_MODE
+    else process.env.HERMES_AUTH_MODE = originalAuthMode
+    if (originalWebPlane === undefined) delete process.env.HERMES_WEB_PLANE
+    else process.env.HERMES_WEB_PLANE = originalWebPlane
+    vi.resetModules()
     await Promise.all(tempHomes.splice(0).map(dir => rm(dir, { recursive: true, force: true })))
   })
 
@@ -338,6 +345,130 @@ describe('Profile Routes', () => {
         ownerOpenId: 'ou_owner',
         displayLabel: 'Owner agent',
       }))
+    })
+
+    it('lets ordinary Feishu users create, list, and switch to their owner-scoped agent profile', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-create-agent-'))
+      tempHomes.push(hermesHome)
+      process.env.HERMES_HOME = hermesHome
+      process.env.HERMES_AUTH_MODE = 'trusted-feishu'
+      delete process.env.HERMES_WEB_PLANE
+      const dbPath = join(hermesHome, 'multitenancy.db')
+      process.env.HERMES_MULTITENANCY_DB = dbPath
+      const userProfileDir = join(hermesHome, 'profiles', 'feishu_user_a')
+      await mkdir(userProfileDir, { recursive: true })
+      await writeFile(join(userProfileDir, 'config.yaml'), 'model:\n  default: personal-model\n', 'utf-8')
+      await writeFile(join(hermesHome, 'active_profile'), 'feishu_user_a\n', 'utf-8')
+      const { DatabaseSync } = await import('node:sqlite')
+      const db = new DatabaseSync(dbPath)
+      try {
+        db.exec(`
+          CREATE TABLE multitenancy_routing (
+            user_id TEXT PRIMARY KEY,
+            profile_name TEXT NOT NULL,
+            open_id TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            kind TEXT,
+            owner_open_id TEXT,
+            provenance TEXT,
+            display_label TEXT,
+            agent_id TEXT,
+            upstream_profile TEXT
+          )
+        `)
+      } finally {
+        db.close()
+      }
+      usersStoreMocks.listUserProfiles.mockReturnValue([
+        { user_id: 7, profile_name: 'feishu_user_a', is_default: 1, created_at: 1 },
+      ])
+      vi.mocked(hermesCli.createProfile).mockImplementation(async (name: string) => {
+        const profileDir = join(hermesHome, 'profiles', name)
+        await mkdir(profileDir, { recursive: true })
+        await writeFile(join(profileDir, 'config.yaml'), 'model:\n  default: web-agent-model\n', 'utf-8')
+        return `Profile ${name} created`
+      })
+      vi.mocked(hermesCli.useProfile).mockImplementation(async (name: string) => {
+        await writeFile(join(hermesHome, 'active_profile'), `${name}\n`, 'utf-8')
+        return `Switched to profile ${name}`
+      })
+      vi.mocked(hermesCli.getProfile).mockImplementation(async (name: string) => ({
+        name,
+        path: join(hermesHome, 'profiles', name),
+        model: 'web-agent-model',
+        provider: 'test',
+        skills: 0,
+        hasEnv: false,
+        hasSoulMd: false,
+      }) as any)
+      vi.resetModules()
+      const { create, list, switchProfile } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const user = {
+        id: 7,
+        role: 'user',
+        openid: 'ou_user_a',
+        profile: 'feishu_user_a',
+        profiles: ['feishu_user_a'],
+      }
+
+      const createCtx: any = {
+        state: { user, profile: { name: 'feishu_user_a' } },
+        request: { body: { name: 'web_agent', clone: true } },
+        status: 200,
+        body: undefined,
+      }
+      await create(createCtx)
+
+      expect(createCtx.status).toBe(200)
+      expect(hermesCli.createProfile).toHaveBeenCalledWith('web_agent', false)
+      const rowDb = new DatabaseSync(dbPath, { readOnly: true })
+      try {
+        expect(rowDb.prepare(`
+          SELECT profile_name, kind, owner_open_id, provenance, display_label, agent_id, upstream_profile
+          FROM multitenancy_routing
+          WHERE user_id = ?
+        `).get('webui:ou_user_a:web_agent')).toEqual({
+          profile_name: 'web_agent',
+          kind: 'agent',
+          owner_open_id: 'ou_user_a',
+          provenance: 'webui-agent',
+          display_label: 'web_agent',
+          agent_id: 'webui:ou_user_a:web_agent',
+          upstream_profile: 'feishu_user_a',
+        })
+      } finally {
+        rowDb.close()
+      }
+
+      const listCtx: any = {
+        state: { user, profile: { name: 'feishu_user_a' } },
+        get: vi.fn(() => ''),
+        status: 200,
+        body: undefined,
+      }
+      await list(listCtx)
+
+      expect(listCtx.status).toBe(200)
+      expect(listCtx.body.profiles.map((profile: any) => profile.name)).toEqual(['feishu_user_a', 'web_agent'])
+      expect(listCtx.body.profiles.find((profile: any) => profile.name === 'web_agent')).toEqual(expect.objectContaining({
+        kind: 'agent',
+        agentId: 'webui:ou_user_a:web_agent',
+        ownerOpenId: 'ou_user_a',
+        displayLabel: 'web_agent',
+      }))
+
+      const switchCtx: any = {
+        state: { user, profile: { name: 'feishu_user_a' } },
+        request: { body: { name: 'web_agent' } },
+        get: vi.fn(() => ''),
+        status: 200,
+        body: undefined,
+      }
+      await switchProfile(switchCtx)
+
+      expect(switchCtx.status).toBe(200)
+      expect(switchCtx.body).toMatchObject({ success: true, active: 'web_agent' })
+      expect(sessionDeleterMocks.switchProfile).toHaveBeenCalledWith('web_agent')
     })
   })
 

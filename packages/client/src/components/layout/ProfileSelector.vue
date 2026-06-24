@@ -11,6 +11,7 @@ import {
   type ProfileRuntimeStatus,
 } from '@/api/hermes/profiles'
 import ProfileAvatarView from '@/components/hermes/profiles/ProfileAvatar.vue'
+import ProfileCreateModal from '@/components/hermes/profiles/ProfileCreateModal.vue'
 import { useI18n } from 'vue-i18n'
 import { isStoredSuperAdmin } from '@/api/client'
 
@@ -30,6 +31,7 @@ const activeDisplayLabel = computed(() => activeProfile.value?.displayLabel || d
 const runtimeStatuses = ref<ProfileRuntimeStatus[]>([])
 const runtimeLoading = ref(false)
 const showProfileModal = ref(false)
+const showCreateProfileModal = ref(false)
 const showAvatarModal = ref(false)
 const editingProfile = ref<HermesProfile | null>(null)
 const avatarSaving = ref(false)
@@ -91,6 +93,19 @@ function scheduleRuntimeStatusPoll(attempt = 0) {
 
 function handleProfileModalShowChange(show: boolean) {
   setProfileModalShow(show)
+}
+
+function openCreateProfileModal() {
+  showCreateProfileModal.value = true
+}
+
+function closeCreateProfileModal() {
+  showCreateProfileModal.value = false
+}
+
+function handleCreateProfileSaved() {
+  showCreateProfileModal.value = false
+  void profilesStore.fetchProfiles()
 }
 
 function openAvatarModal(profile: HermesProfile) {
@@ -252,6 +267,9 @@ onMounted(() => {
             <span class="profile-popover-name">{{ t('sidebar.profiles') }}</span>
             <span class="profile-popover-subtitle">{{ t('profiles.runtime.activeProfile', { name: displayName }) }}</span>
           </div>
+          <NButton size="small" type="primary" @click="openCreateProfileModal">
+            {{ t('profiles.create') }}
+          </NButton>
         </div>
       </template>
 
@@ -339,6 +357,12 @@ onMounted(() => {
         </div>
       </NSpin>
     </NModal>
+
+    <ProfileCreateModal
+      v-if="showCreateProfileModal"
+      @close="closeCreateProfileModal"
+      @saved="handleCreateProfileSaved"
+    />
 
     <NModal
       v-model:show="showAvatarModal"
@@ -453,6 +477,14 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.profile-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
 }
 
 .profile-popover-name {
