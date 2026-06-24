@@ -16,7 +16,7 @@ related:
 # hermes-web-ui 架构速查 — EKKO fork
 
 > [!info] 2026-06-24 本机 main 已合入，等待 sunke 验证 — WebUI 普通用户新建智能体恢复，生产未发布
-> `webui-create-agent-restore` restores the upstream create-agent path without reopening the super-admin-only `/hermes/profiles` page to ordinary Feishu users. `ProfileSelector.vue` now exposes the existing create modal from the user selector, so an authenticated chat-plane user can create a custom agent/profile from the normal profile switcher.
+> `webui-create-agent-restore` restores the upstream create-agent path without reopening the super-admin-only `/hermes/profiles` page to ordinary Feishu users. `ProfileSelector.vue` now exposes the existing create modal from the user selector, so an authenticated chat-plane user can create a custom agent/profile from the normal profile switcher. The create action is rendered in a body toolbar above the profile list, not only in the Naive card header, because screenshot verification showed the header-slot action was not visible in the real settings-page modal.
 >
 > Chat-plane profile creation remains tenant-scoped: when `config.webPlane === 'chat'` and the request has a Feishu `openid`, `create()` forces `clone=false` because the current CLI clone API can only clone from the active/admin profile and would otherwise copy provider credentials. After `hermesCli.createProfile()` succeeds, `registerOwnedProfile(openid, name, user.profile)` is mandatory; if owner registration fails, WebUI calls `deleteProfile(name)` as rollback and returns `500 Failed to register created profile ownership`. `registerOwnedProfile()` now requires a routing schema that can persist `owner_open_id`, so legacy schemas fail closed instead of creating rows that the owner cannot list or select.
 >

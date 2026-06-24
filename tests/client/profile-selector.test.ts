@@ -211,8 +211,10 @@ describe('ProfileSelector', () => {
     const wrapper = mount(ProfileSelector)
 
     await wrapper.find('.profile-display').trigger('click')
-    const createButton = findButtonByText(wrapper, 'Create Profile')
+    const toolbar = wrapper.find('.profile-modal-toolbar')
+    const createButton = toolbar.findAll('button').find(button => button.text().includes('Create Profile'))
 
+    expect(toolbar.exists()).toBe(true)
     expect(createButton).toBeTruthy()
     await createButton!.trigger('click')
     expect(wrapper.find('[data-testid="profile-create-modal"]').exists()).toBe(true)

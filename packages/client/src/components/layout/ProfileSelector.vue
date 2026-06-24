@@ -267,13 +267,15 @@ onMounted(() => {
             <span class="profile-popover-name">{{ t('sidebar.profiles') }}</span>
             <span class="profile-popover-subtitle">{{ t('profiles.runtime.activeProfile', { name: displayName }) }}</span>
           </div>
-          <NButton size="small" type="primary" @click="openCreateProfileModal">
-            {{ t('profiles.create') }}
-          </NButton>
         </div>
       </template>
 
       <NSpin :show="runtimeLoading || profilesStore.loading" size="small">
+        <div class="profile-modal-toolbar">
+          <NButton size="small" type="primary" @click="openCreateProfileModal">
+            {{ t('profiles.create') }}
+          </NButton>
+        </div>
         <div class="profile-runtime-list">
           <div
             v-for="profile in profilesStore.profiles"
@@ -482,9 +484,14 @@ onMounted(() => {
 .profile-modal-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   min-width: 0;
+}
+
+.profile-modal-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
 }
 
 .profile-popover-name {
