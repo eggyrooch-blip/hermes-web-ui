@@ -4,6 +4,12 @@ import { NModal, NForm, NFormItem, NInput, NButton, NSwitch, NText, useMessage }
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useI18n } from 'vue-i18n'
 
+const props = withDefaults(defineProps<{
+  allowClone?: boolean
+}>(), {
+  allowClone: true,
+})
+
 const emit = defineEmits<{
   close: []
   saved: []
@@ -43,12 +49,13 @@ async function handleSave() {
 
   loading.value = true
   try {
-    const res = await profilesStore.createProfile(name.value.trim(), clone.value)
+    const requestedClone = props.allowClone ? clone.value : false
+    const res = await profilesStore.createProfile(name.value.trim(), requestedClone)
     if (res.success) {
       const stripped = res.strippedCredentials ?? []
       const disabled = res.disabledPlatforms ?? []
       const cfgStripped = res.strippedConfigCredentials ?? []
-      if (clone.value && (stripped.length > 0 || disabled.length > 0 || cfgStripped.length > 0)) {
+      if (requestedClone && (stripped.length > 0 || disabled.length > 0 || cfgStripped.length > 0)) {
         const parts: string[] = []
         if (stripped.length > 0) parts.push(t('profiles.cloneStrippedCredentials', { count: stripped.length, list: stripped.join(', ') }))
         if (disabled.length > 0) parts.push(t('profiles.cloneDisabledPlatforms', { count: disabled.length, list: disabled.join(', ') }))
@@ -94,10 +101,10 @@ function handleClose() {
         {{ nameValidationMessage }}
       </NText>
 
-      <NFormItem :label="t('profiles.cloneFromCurrent')">
+      <NFormItem v-if="allowClone" :label="t('profiles.cloneFromCurrent')">
         <NSwitch v-model:value="clone" />
       </NFormItem>
-      <NText v-if="clone" depth="3" style="font-size: 12px;">
+      <NText v-if="allowClone && clone" depth="3" style="font-size: 12px;">
         {{ t('profiles.cloneCleanupNotice') }}
       </NText>
     </NForm>

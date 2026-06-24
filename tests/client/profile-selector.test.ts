@@ -30,6 +30,9 @@ const profilesStoreMock = vi.hoisted(() => ({
 }))
 const isStoredSuperAdminMock = vi.hoisted(() => vi.fn(() => false))
 const fetchProfileRuntimeStatusesWithMetaMock = vi.hoisted(() => vi.fn().mockResolvedValue({ profiles: [], refreshing: false }))
+const fetchAgentSharesMock = vi.hoisted(() => vi.fn())
+const grantAgentShareMock = vi.hoisted(() => vi.fn())
+const revokeAgentShareMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/stores/hermes/profiles', () => ({
   useProfilesStore: () => profilesStoreMock,
@@ -37,6 +40,12 @@ vi.mock('@/stores/hermes/profiles', () => ({
 
 vi.mock('@/api/client', () => ({
   isStoredSuperAdmin: isStoredSuperAdminMock,
+}))
+
+vi.mock('@/api/hermes/agents', () => ({
+  fetchAgentShares: fetchAgentSharesMock,
+  grantAgentShare: grantAgentShareMock,
+  revokeAgentShare: revokeAgentShareMock,
 }))
 
 // The upstream component pulls runtime status + restart helpers from the api module
@@ -49,8 +58,9 @@ vi.mock('@/api/hermes/profiles', () => ({
 
 vi.mock('@/components/hermes/profiles/ProfileCreateModal.vue', () => ({
   default: {
+    props: ['allowClone'],
     emits: ['close', 'saved'],
-    template: '<div data-testid="profile-create-modal"><button type="button" data-testid="profile-create-saved" @click="$emit(\'saved\')">saved</button><button type="button" data-testid="profile-create-close" @click="$emit(\'close\')">close</button></div>',
+    template: '<div data-testid="profile-create-modal" :data-allow-clone="String(allowClone)"><span v-if="allowClone">clone toggle</span><button type="button" data-testid="profile-create-saved" @click="$emit(\'saved\')">saved</button><button type="button" data-testid="profile-create-close" @click="$emit(\'close\')">close</button></div>',
   },
 }))
 
@@ -84,6 +94,17 @@ vi.mock('vue-i18n', () => ({
         'profiles.create': 'Create Profile',
         'profiles.switchSuccess': `Switched ${params?.name || ''}`,
         'profiles.switchFailed': 'Switch failed',
+        'profiles.share.manage': 'Share',
+        'profiles.share.title': 'Agent sharing',
+        'profiles.share.empty': 'No shares',
+        'profiles.share.grantee': 'OpenID',
+        'profiles.share.grant': 'Grant',
+        'profiles.share.revoke': 'Revoke',
+        'profiles.share.loadFailed': 'Share load failed',
+        'profiles.share.grantSuccess': 'Share granted',
+        'profiles.share.grantFailed': 'Share grant failed',
+        'profiles.share.revokeSuccess': 'Share revoked',
+        'profiles.share.revokeFailed': 'Share revoke failed',
       }
       return values[key] || key
     },
@@ -104,6 +125,20 @@ vi.mock('naive-ui', () => ({
   NSpin: {
     props: ['show', 'size'],
     template: '<div class="n-spin"><slot /></div>',
+  },
+  NTag: {
+    props: ['size', 'bordered'],
+    template: '<span class="n-tag"><slot /></span>',
+  },
+  NInput: {
+    props: ['value', 'placeholder', 'size'],
+    emits: ['update:value'],
+    template: '<input :value="value" :placeholder="placeholder" @input="$emit(\'update:value\', $event.target.value)" />',
+  },
+  NSelect: {
+    props: ['value', 'options', 'size'],
+    emits: ['update:value'],
+    template: '<select :value="value" @change="$emit(\'update:value\', $event.target.value)"><option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option></select>',
   },
   useMessage: () => ({
     success: vi.fn(),
@@ -218,9 +253,75 @@ describe('ProfileSelector', () => {
     expect(createButton).toBeTruthy()
     await createButton!.trigger('click')
     expect(wrapper.find('[data-testid="profile-create-modal"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="profile-create-modal"]').attributes('data-allow-clone')).toBe('false')
+    expect(wrapper.text()).not.toContain('clone toggle')
 
     await wrapper.find('[data-testid="profile-create-saved"]').trigger('click')
     expect(wrapper.find('[data-testid="profile-create-modal"]').exists()).toBe(false)
+  })
+
+  it('opens agent sharing from the ordinary selector for owner agent profiles', async () => {
+    fetchAgentSharesMock.mockResolvedValue([
+      { agent_id: 'agent-owned', grantee_open_id: 'ou_reader', role: 'viewer', status: 'active' },
+    ])
+    profilesStoreMock.profiles = [
+      {
+        name: 'owned_agent_profile',
+        active: true,
+        model: '',
+        gateway: '',
+        alias: '',
+        kind: 'agent',
+        agentId: 'agent-owned',
+        displayLabel: 'Owned analyst',
+      },
+    ]
+    profilesStoreMock.activeProfileName = 'owned_agent_profile'
+    profilesStoreMock.activeProfile = profilesStoreMock.profiles[0]
+    const wrapper = mount(ProfileSelector)
+
+    await wrapper.find('.profile-display').trigger('click')
+    const shareButton = wrapper.findAll('button').find(button => button.text().includes('Share'))
+
+    expect(shareButton).toBeTruthy()
+    await shareButton!.trigger('click')
+    expect(fetchAgentSharesMock).toHaveBeenCalledWith('agent-owned')
+    expect(wrapper.text()).toContain('ou_reader')
+    expect(wrapper.text()).toContain('viewer')
+  })
+
+  it('does not expose agent sharing controls for shared viewer/editor profiles', async () => {
+    profilesStoreMock.profiles = [
+      {
+        name: 'viewer_profile',
+        active: true,
+        model: '',
+        gateway: '',
+        alias: '',
+        kind: 'agent',
+        agentId: 'agent-viewer',
+        shareRole: 'viewer',
+      },
+      {
+        name: 'editor_profile',
+        active: false,
+        model: '',
+        gateway: '',
+        alias: '',
+        kind: 'agent',
+        agentId: 'agent-editor',
+        shareRole: 'editor',
+      },
+    ]
+    profilesStoreMock.activeProfileName = 'viewer_profile'
+    profilesStoreMock.activeProfile = profilesStoreMock.profiles[0]
+    const wrapper = mount(ProfileSelector)
+
+    await wrapper.find('.profile-display').trigger('click')
+
+    expect(wrapper.text()).toContain('viewer')
+    expect(wrapper.text()).toContain('editor')
+    expect(wrapper.findAll('button').some(button => button.text().includes('Share'))).toBe(false)
   })
 
   it('shows shared agent labels and hides profile metadata controls for shared agents', async () => {

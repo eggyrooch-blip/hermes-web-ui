@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NButton, NModal, NSpin, useMessage } from 'naive-ui'
+import { NButton, NInput, NModal, NSelect, NSpin, NTag, useMessage } from 'naive-ui'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import {
   fetchProfileRuntimeStatusesWithMeta,
@@ -10,6 +10,7 @@ import {
   type ProfileAvatar,
   type ProfileRuntimeStatus,
 } from '@/api/hermes/profiles'
+import { fetchAgentShares, grantAgentShare, revokeAgentShare, type AgentShare, type AgentShareRole } from '@/api/hermes/agents'
 import ProfileAvatarView from '@/components/hermes/profiles/ProfileAvatar.vue'
 import ProfileCreateModal from '@/components/hermes/profiles/ProfileCreateModal.vue'
 import { useI18n } from 'vue-i18n'
@@ -36,10 +37,22 @@ const showAvatarModal = ref(false)
 const editingProfile = ref<HermesProfile | null>(null)
 const avatarSaving = ref(false)
 const fileInputRef = ref<HTMLInputElement | null>(null)
+const shareModalVisible = ref(false)
+const shareLoading = ref(false)
+const shareSaving = ref(false)
+const shareProfile = ref<HermesProfile | null>(null)
+const shares = ref<AgentShare[]>([])
+const newGranteeOpenId = ref('')
+const newRole = ref<AgentShareRole>('viewer')
 const gatewayRestarting = ref<Record<string, boolean>>({})
 const profileRestarting = ref<Record<string, boolean>>({})
 const profileSwitching = ref<Record<string, boolean>>({})
 const statusByProfile = computed(() => new Map(runtimeStatuses.value.map(status => [status.profile, status])))
+const shareRoleOptions = [
+  { label: 'viewer', value: 'viewer' },
+  { label: 'editor', value: 'editor' },
+  { label: 'manager', value: 'manager' },
+]
 let runtimeRefreshToken = 0
 
 function setProfileModalShow(show: boolean) {
@@ -112,6 +125,64 @@ function openAvatarModal(profile: HermesProfile) {
   if (profile.shareRole) return
   editingProfile.value = profile
   showAvatarModal.value = true
+}
+
+function canManageShares(profile: HermesProfile): boolean {
+  return !!profile.agentId && (!profile.shareRole || profile.shareRole === 'manager')
+}
+
+async function loadShares() {
+  const agentId = shareProfile.value?.agentId
+  if (!agentId) return
+  shareLoading.value = true
+  try {
+    shares.value = await fetchAgentShares(agentId)
+  } catch (err: any) {
+    shares.value = []
+    message.error(err?.message || t('profiles.share.loadFailed'))
+  } finally {
+    shareLoading.value = false
+  }
+}
+
+async function openShareModal(profile: HermesProfile) {
+  if (!canManageShares(profile)) return
+  shareProfile.value = profile
+  shareModalVisible.value = true
+  await loadShares()
+}
+
+async function handleGrantShare() {
+  const agentId = shareProfile.value?.agentId
+  const grantee = newGranteeOpenId.value.trim()
+  if (!agentId || !grantee) return
+  shareSaving.value = true
+  try {
+    await grantAgentShare(agentId, grantee, newRole.value)
+    newGranteeOpenId.value = ''
+    newRole.value = 'viewer'
+    await loadShares()
+    message.success(t('profiles.share.grantSuccess'))
+  } catch (err: any) {
+    message.error(err?.message || t('profiles.share.grantFailed'))
+  } finally {
+    shareSaving.value = false
+  }
+}
+
+async function handleRevokeShare(share: AgentShare) {
+  const agentId = shareProfile.value?.agentId
+  if (!agentId) return
+  shareSaving.value = true
+  try {
+    await revokeAgentShare(agentId, share.grantee_open_id)
+    shares.value = shares.value.filter(item => item.grantee_open_id !== share.grantee_open_id)
+    message.success(t('profiles.share.revokeSuccess'))
+  } catch (err: any) {
+    message.error(err?.message || t('profiles.share.revokeFailed'))
+  } finally {
+    shareSaving.value = false
+  }
 }
 
 function profileDisplayLabel(profile: HermesProfile): string {
@@ -328,6 +399,14 @@ onMounted(() => {
                 {{ t('profiles.avatar.customize') }}
               </NButton>
               <NButton
+                v-if="canManageShares(profile)"
+                size="small"
+                type="primary"
+                @click="openShareModal(profile)"
+              >
+                {{ t('profiles.share.manage') }}
+              </NButton>
+              <NButton
                 v-if="isSuperAdmin"
                 size="small"
                 type="primary"
@@ -362,9 +441,48 @@ onMounted(() => {
 
     <ProfileCreateModal
       v-if="showCreateProfileModal"
+      :allow-clone="isSuperAdmin"
       @close="closeCreateProfileModal"
       @saved="handleCreateProfileSaved"
     />
+
+    <NModal
+      v-model:show="shareModalVisible"
+      preset="card"
+      :bordered="false"
+      :style="{ width: '520px', maxWidth: 'calc(100vw - 32px)' }"
+    >
+      <template #header>
+        <div class="share-modal-title">{{ t('profiles.share.title') }}</div>
+      </template>
+      <NSpin :show="shareLoading" size="small">
+        <div class="share-list">
+          <div v-if="shares.length === 0" class="share-empty">{{ t('profiles.share.empty') }}</div>
+          <div v-for="share in shares" :key="share.grantee_open_id" class="share-row">
+            <code class="share-grantee">{{ share.grantee_open_id }}</code>
+            <NTag size="tiny" :bordered="false">{{ share.role }}</NTag>
+            <NButton size="tiny" quaternary :loading="shareSaving" @click="handleRevokeShare(share)">
+              {{ t('profiles.share.revoke') }}
+            </NButton>
+          </div>
+        </div>
+        <div class="share-form">
+          <NInput
+            v-model:value="newGranteeOpenId"
+            size="small"
+            :placeholder="t('profiles.share.grantee')"
+          />
+          <NSelect
+            v-model:value="newRole"
+            size="small"
+            :options="shareRoleOptions"
+          />
+          <NButton size="small" type="primary" :loading="shareSaving" @click="handleGrantShare">
+            {{ t('profiles.share.grant') }}
+          </NButton>
+        </div>
+      </NSpin>
+    </NModal>
 
     <NModal
       v-model:show="showAvatarModal"
@@ -646,6 +764,56 @@ onMounted(() => {
 .runtime-detail {
   line-height: 1.4;
   word-break: break-word;
+}
+
+.share-modal-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: $text-primary;
+}
+
+.share-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 48px;
+}
+
+.share-empty {
+  color: $text-muted;
+  font-size: 13px;
+}
+
+.share-row,
+.share-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.share-row {
+  justify-content: space-between;
+  padding: 8px;
+  border: 1px solid $border-light;
+  border-radius: 8px;
+}
+
+.share-grantee {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.share-form {
+  margin-top: 12px;
+
+  :deep(.n-select) {
+    width: 116px;
+    flex: 0 0 116px;
+  }
 }
 
 .avatar-editor {
