@@ -617,9 +617,27 @@ export function mapRunBrokerFrameForChat(parsed: any, frameEvent?: string): RunB
 
 export class BrokerRunController {
   private nsp!: ReturnType<Server['of']>
-  /** sessionId → session state (messages, working status, events, run tracking) */
+  /** profile-scoped session key → session state (messages, working status, events, run tracking) */
   private sessionMap = new Map<string, SessionState>()
   private hermesSessionIds = new Map<string, string>()
+
+  private sessionStateKey(sessionId: string, profile?: string): string {
+    return `${profile?.trim() || 'default'}\u0000${sessionId}`
+  }
+
+  private getSessionState(sessionId: string, profile?: string): SessionState | undefined {
+    return this.sessionMap.get(this.sessionStateKey(sessionId, profile))
+  }
+
+  private setSessionState(sessionId: string, profile: string | undefined, state: SessionState): void {
+    this.sessionMap.set(this.sessionStateKey(sessionId, profile), state)
+  }
+
+  private scopedSessionMap(profile: string): Map<string, SessionState> {
+    return {
+      get: (sessionId: string) => this.getSessionState(sessionId, profile),
+    } as unknown as Map<string, SessionState>
+  }
 
   /** Parent ChatRunSocket hands us its /chat-run namespace when webuiRunBroker. */
   init(nsp: ReturnType<Server['of']>) {
@@ -693,7 +711,7 @@ export class BrokerRunController {
         return
       }
       if (data.session_id) {
-        const state = this.getOrCreateSession(data.session_id)
+        const state = this.getOrCreateSession(data.session_id, profile)
         if (state.isWorking) {
           state.queue.push({
             queue_id: data.queue_id || `queue_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
@@ -717,7 +735,7 @@ export class BrokerRunController {
 
     socket.on('cancel_queued_run', (data: { session_id?: string; queue_id?: string }) => {
       if (!data.session_id || !data.queue_id) return
-      const state = this.sessionMap.get(data.session_id)
+      const state = this.getSessionState(data.session_id, profile)
       if (!state?.queue.length) return
       const before = state.queue.length
       state.queue = state.queue.filter(item => item.queue_id !== data.queue_id)
@@ -741,7 +759,7 @@ export class BrokerRunController {
 
     socket.on('abort', (data: { session_id?: string }) => {
       if (data.session_id) {
-        void this.handleAbort(socket, data.session_id)
+        void this.handleAbort(socket, data.session_id, profile)
       }
     })
 
@@ -914,10 +932,10 @@ export class BrokerRunController {
     return _messages
   }
   private async resumeSession(socket: Socket, sid: string, profile?: string) {
-    let state = this.sessionMap.get(sid)
+    let state = this.getSessionState(sid, profile)
     if (!state) {
       state = await this.loadSessionStateFromDb(sid, profile)
-      this.sessionMap.set(sid, state)
+      this.setSessionState(sid, profile, state)
     }
     socket.emit('resumed', {
       session_id: sid,
@@ -998,12 +1016,12 @@ export class BrokerRunController {
     const now = Math.floor(Date.now() / 1000)
     // Mark working immediately on run start, and append user message
     if (session_id) {
-      let state = this.sessionMap.get(session_id)
+      let state = this.getSessionState(session_id, profile)
       if (!state) {
         state = getSession(session_id)
           ? await this.loadSessionStateFromDb(session_id, profile)
           : { messages: [], isWorking: false, events: [], queue: [] }
-        this.sessionMap.set(session_id, state)
+        this.setSessionState(session_id, profile, state)
       }
       state.isWorking = true
       state.events = []
@@ -1131,7 +1149,7 @@ export class BrokerRunController {
     profile: string,
     fallbackContent: string,
   ): string | undefined {
-    const state = this.sessionMap.get(sessionId)
+    const state = this.getSessionState(sessionId, profile)
     if (!state) return fallbackContent
     const profileDir = getProfileDir(profile)
     let latestAssistant: SessionMessage | undefined
@@ -1202,7 +1220,7 @@ export class BrokerRunController {
     const parsed = parseBrokerSessionCommand(data.input)
     if (!sessionId || !parsed) return false
 
-    const state = this.getOrCreateSession(sessionId)
+    const state = this.getOrCreateSession(sessionId, profile)
     state.profile = profile
     socket.join(`session:${sessionId}`)
     this.persistCommandMessage(sessionId, state, parsed.raw)
@@ -1293,7 +1311,7 @@ export class BrokerRunController {
       ? result.continuation_prompt.trim()
       : ''
     if (!result.should_continue || !continuation) return
-    const state = this.getOrCreateSession(sessionId)
+    const state = this.getOrCreateSession(sessionId, profile)
     const message = typeof result.message === 'string' && result.message.trim()
       ? result.message.trim()
       : 'Continuing goal.'
@@ -1319,8 +1337,8 @@ export class BrokerRunController {
 
   // --- Abort handler ---
 
-  private async handleAbort(socket: Socket, sessionId: string) {
-    const state = this.sessionMap.get(sessionId)
+  private async handleAbort(socket: Socket, sessionId: string, profile: string) {
+    const state = this.getSessionState(sessionId, profile)
     if (!state?.isWorking || (!state.runId && !state.abortController)) {
       logger.info({ sessionId }, '[chat-run-socket][abort] ignored: no active run')
       if (state) {
@@ -1340,7 +1358,7 @@ export class BrokerRunController {
 
     const runId = state.runId
     state.isAborting = true
-    this.replaceState(sessionId, 'abort.started', {
+    this.replaceState(sessionId, profile, 'abort.started', {
       event: 'abort.started',
       run_id: runId,
       graceMs: 5000,
@@ -1359,12 +1377,12 @@ export class BrokerRunController {
       state.abortController.abort()
     }
 
-    await this.markAbortCompleted(socket, sessionId, runId || 'response_stream')
+    await this.markAbortCompleted(socket, sessionId, profile, runId || 'response_stream')
   }
 
   /** Mark a session run as completed/failed so reconnecting clients get notified */
-  private async markCompleted(socket: Socket, sessionId: string, _info: { event: string; run_id?: string; final_response?: string }) {
-    const state = this.sessionMap.get(sessionId)
+  private async markCompleted(socket: Socket, sessionId: string, profileKey: string, _info: { event: string; run_id?: string; final_response?: string }) {
+    const state = this.getSessionState(sessionId, profileKey)
     if (state) {
       if (state.isAborting) {
         logger.info({
@@ -1379,7 +1397,7 @@ export class BrokerRunController {
       state.events = []
       this.flushResponseRunToDb(state, sessionId)
       const profile = state.profile
-      const hermesSessionId = this.hermesSessionIds.get(sessionId)
+      const hermesSessionId = this.hermesSessionIds.get(this.sessionStateKey(sessionId, profileKey))
       if (profile && hermesSessionId) {
         void this.syncFromHermes(socket, sessionId, hermesSessionId, profile, { maxAttempts: 10, delayMs: 500 })
       }
@@ -1397,7 +1415,7 @@ export class BrokerRunController {
   }
 
   private dequeueNextQueuedRun(socket: Socket, sessionId: string, fallbackProfile = 'default') {
-    const state = this.sessionMap.get(sessionId)
+    const state = this.getSessionState(sessionId, fallbackProfile)
     if (!state?.queue.length) return false
 
     const next = state.queue.shift()!
@@ -1418,8 +1436,8 @@ export class BrokerRunController {
     return true
   }
 
-  private async markAbortCompleted(socket: Socket, sessionId: string, runId: string) {
-    const state = this.sessionMap.get(sessionId)
+  private async markAbortCompleted(socket: Socket, sessionId: string, profileKey: string, runId: string) {
+    const state = this.getSessionState(sessionId, profileKey)
     if (!state) return
 
     const profile = state.profile
@@ -1436,7 +1454,7 @@ export class BrokerRunController {
     if (state.queue.length > 0) {
       const next = state.queue.shift()!
       logger.info('[chat-run-socket][abort] dequeuing queued run for session %s (remaining: %d)', sessionId, state.queue.length)
-      this.replaceState(sessionId, 'abort.completed', {
+      this.replaceState(sessionId, profileKey, 'abort.completed', {
         event: 'abort.completed',
         run_id: runId,
         synced: true,
@@ -1465,7 +1483,7 @@ export class BrokerRunController {
     }
 
     state.events = []
-    this.replaceState(sessionId, 'abort.completed', {
+    this.replaceState(sessionId, profileKey, 'abort.completed', {
       event: 'abort.completed',
       run_id: runId,
       synced: true,
@@ -1529,11 +1547,11 @@ export class BrokerRunController {
     emit: (event: string, payload: any) => void,
   ) {
     return handleRunChatBrokerRun(socket, data, profile, runMarker, emit, {
-      sessionMap: this.sessionMap,
-      getOrCreateSession: this.getOrCreateSession.bind(this),
+      sessionMap: this.scopedSessionMap(profile),
+      getOrCreateSession: (sessionId: string) => this.getOrCreateSession(sessionId, profile),
       getResponseRunState: this.getResponseRunState.bind(this),
-      markCompleted: this.markCompleted.bind(this),
-      dequeueNextQueuedRun: this.dequeueNextQueuedRun.bind(this),
+      markCompleted: (socket, sessionId, info) => this.markCompleted(socket, sessionId, profile, info),
+      dequeueNextQueuedRun: (socket, sessionId) => this.dequeueNextQueuedRun(socket, sessionId, profile),
       buildInput: buildResponsesInput,
     })
   }
@@ -1553,7 +1571,7 @@ export class BrokerRunController {
         const { getSessionMessagesFromDb } = await import('../../db/hermes/sessions-db')
         const detail = await getSessionMessagesFromDb(hermesSessionId)
         if (detail?.messages?.length) {
-          const state = this.sessionMap.get(localSessionId)
+          const state = this.getSessionState(localSessionId, profile)
           if (state) {
             state.messages = this.handleMessage(detail.messages.map(message => ({
               ...message,
@@ -1573,24 +1591,24 @@ export class BrokerRunController {
   }
 
   /** Get or create session state in sessionMap */
-  private getOrCreateSession(sessionId: string): SessionState {
-    let state = this.sessionMap.get(sessionId)
+  private getOrCreateSession(sessionId: string, profile?: string): SessionState {
+    let state = this.getSessionState(sessionId, profile)
     if (!state) {
       state = { messages: [], isWorking: false, events: [], queue: [] }
-      this.sessionMap.set(sessionId, state)
+      this.setSessionState(sessionId, profile, state)
     }
     return state
   }
 
   /** Append a state event for a session (used for replay on reconnect) */
-  private pushState(sessionId: string, event: string, data: any) {
-    const state = this.getOrCreateSession(sessionId)
+  private pushState(sessionId: string, profile: string | undefined, event: string, data: any) {
+    const state = this.getOrCreateSession(sessionId, profile)
     state.events.push({ event, data })
   }
 
   /** Replace the last state with the same event name, or append if different */
-  private replaceState(sessionId: string, event: string, data: any) {
-    const state = this.sessionMap.get(sessionId)
+  private replaceState(sessionId: string, profile: string | undefined, event: string, data: any) {
+    const state = this.getSessionState(sessionId, profile)
     if (state) {
       const idx = state.events.findIndex(s => s.event === event)
       if (idx >= 0) {
@@ -1598,7 +1616,7 @@ export class BrokerRunController {
         return
       }
     }
-    this.pushState(sessionId, event, data)
+    this.pushState(sessionId, profile, event, data)
   }
 
   private emitToSession(socket: Socket, sessionId: string, event: string, payload: any) {

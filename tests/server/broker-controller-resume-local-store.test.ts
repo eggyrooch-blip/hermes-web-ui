@@ -145,4 +145,35 @@ describe('BrokerRunController local session resume', () => {
       expect.objectContaining({ content: '历史问题' }),
     ]))
   })
+
+  it('keeps resumed session cache scoped by profile for the same session id', async () => {
+    getSessionDetailFromDbWithProfileMock.mockResolvedValue({
+      id: 'local-session',
+      profile: 'other_profile',
+      source: 'cli',
+      messages: [
+        { id: 3, session_id: 'local-session', role: 'user', content: 'profile scoped question', timestamp: 3 },
+      ],
+    })
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    const otherSocket = { id: 'socket-other', emit: vi.fn() }
+    const localSocket = { id: 'socket-local', emit: vi.fn() }
+
+    await (controller as any).resumeSession(otherSocket, 'local-session', 'other_profile')
+    await (controller as any).resumeSession(localSocket, 'local-session', 'feishu_g41a5b5g')
+
+    const otherPayload = otherSocket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    const localPayload = localSocket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    expect(otherPayload?.messages).toMatchObject([
+      { role: 'user', content: 'profile scoped question' },
+    ])
+    expect(localPayload?.messages).toMatchObject([
+      { role: 'user', content: '历史问题' },
+      { role: 'assistant', content: '历史回答' },
+    ])
+    expect(localPayload?.messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: 'profile scoped question' }),
+    ]))
+  })
 })
