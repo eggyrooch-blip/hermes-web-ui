@@ -97,7 +97,7 @@ vi.mock('vue-i18n', () => ({
         'profiles.share.manage': 'Share',
         'profiles.share.title': 'Agent sharing',
         'profiles.share.empty': 'No shares',
-        'profiles.share.grantee': 'OpenID',
+        'profiles.share.grantee': 'Email or Feishu user ID',
         'profiles.share.grant': 'Grant',
         'profiles.share.revoke': 'Revoke',
         'profiles.share.loadFailed': 'Share load failed',
@@ -340,11 +340,15 @@ describe('ProfileSelector', () => {
 
     await wrapper.find('.profile-display').trigger('click')
     await findButtonByText(wrapper, 'Share')!.trigger('click')
-    await wrapper.find('input[placeholder="OpenID"]').setValue('ou_new')
+    await wrapper.find('input[placeholder="Email or Feishu user ID"]').setValue('ou_new')
     await wrapper.find('select').setValue('editor')
     await findButtonByText(wrapper, 'Grant')!.trigger('click')
 
-    expect(grantAgentShareMock).toHaveBeenCalledWith('agent-owned', 'ou_new', 'editor')
+    expect(grantAgentShareMock).toHaveBeenCalledWith('agent-owned', {
+      provider: 'feishu',
+      type: 'user_id',
+      value: 'ou_new',
+    }, 'editor')
     expect(fetchAgentSharesMock).toHaveBeenCalledTimes(2)
   })
 
