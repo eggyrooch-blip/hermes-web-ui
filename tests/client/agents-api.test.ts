@@ -31,4 +31,26 @@ describe('agents api', () => {
       method: 'DELETE',
     })
   })
+
+  it('grants shares by provider-neutral grantee lookup', async () => {
+    mockRequest.mockResolvedValueOnce({ share: { role: 'manager', grantee_principal_id: 'prn_editor' } })
+
+    await grantAgentShare('agent-shared', {
+      provider: 'feishu',
+      type: 'email',
+      value: 'editor@example.test',
+    }, 'manager')
+
+    expect(mockRequest).toHaveBeenCalledWith('/api/hermes/agents/agent-shared/shares', {
+      method: 'POST',
+      body: JSON.stringify({
+        grantee: {
+          provider: 'feishu',
+          type: 'email',
+          value: 'editor@example.test',
+        },
+        role: 'manager',
+      }),
+    })
+  })
 })

@@ -45,6 +45,36 @@ describe('Feishu OAuth session helpers', () => {
     })).toBeNull()
   })
 
+  it('preserves canonical Feishu principal fields in the signed session cookie', async () => {
+    const {
+      createFeishuSessionCookie,
+      parseFeishuSessionCookie,
+    } = await import('../../packages/server/src/services/feishu-oauth')
+
+    const cookie = createFeishuSessionCookie({
+      openid: 'ou_test',
+      userId: 'u_test',
+      tenantKey: 'tenant_a',
+      appId: 'cli_test',
+      email: 'user@example.test',
+      profile: 'researcher',
+      secret: 'session-secret',
+      now: 1_700_000_000,
+      maxAgeSeconds: 3600,
+    })
+
+    expect(parseFeishuSessionCookie(cookie, {
+      secret: 'session-secret',
+      now: 1_700_000_100,
+    })).toMatchObject({
+      openid: 'ou_test',
+      userId: 'u_test',
+      tenantKey: 'tenant_a',
+      appId: 'cli_test',
+      email: 'user@example.test',
+    })
+  })
+
   it('rejects expired session cookies', async () => {
     const {
       createFeishuSessionCookie,
@@ -153,6 +183,51 @@ describe('Feishu OAuth session helpers', () => {
         headers: expect.objectContaining({ Authorization: 'Bearer user-token' }),
       }),
     )
+  })
+
+  it('fetches Feishu user_info when token data lacks canonical principal fields', async () => {
+    process.env.FEISHU_APP_ID = 'cli_test'
+    process.env.FEISHU_APP_SECRET = 'app-secret'
+    process.env.FEISHU_API_BASE_URL = 'https://feishu.test'
+    vi.resetModules()
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        code: 0,
+        app_access_token: 'app-token',
+      }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        code: 0,
+        data: {
+          open_id: 'ou_test',
+          access_token: 'user-token',
+          name: 'Token Name',
+          avatar_url: 'https://example.com/token-avatar.png',
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        code: 0,
+        data: {
+          open_id: 'ou_test',
+          user_id: 'u_test',
+          union_id: 'on_test',
+          tenant_key: 'tenant_a',
+          enterprise_email: 'user@example.test',
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { exchangeFeishuCode } = await import('../../packages/server/src/services/feishu-oauth')
+
+    await expect(exchangeFeishuCode('oauth-code')).resolves.toMatchObject({
+      openid: 'ou_test',
+      userId: 'u_test',
+      unionId: 'on_test',
+      tenantKey: 'tenant_a',
+      appId: 'cli_test',
+      email: 'user@example.test',
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 })
 

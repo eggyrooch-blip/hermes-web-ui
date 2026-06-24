@@ -85,6 +85,21 @@ export async function currentUser(ctx: Context) {
   if (typeof stateUser?.openid === 'string' && stateUser.openid) {
     feishuIdentity.openid = stateUser.openid
   }
+  if (typeof stateUser?.userId === 'string' && stateUser.userId) {
+    feishuIdentity.userId = stateUser.userId
+  }
+  if (typeof stateUser?.unionId === 'string' && stateUser.unionId) {
+    feishuIdentity.unionId = stateUser.unionId
+  }
+  if (typeof stateUser?.tenantKey === 'string' && stateUser.tenantKey) {
+    feishuIdentity.tenantKey = stateUser.tenantKey
+  }
+  if (typeof stateUser?.appId === 'string' && stateUser.appId) {
+    feishuIdentity.appId = stateUser.appId
+  }
+  if (typeof stateUser?.email === 'string' && stateUser.email) {
+    feishuIdentity.email = stateUser.email
+  }
   if (typeof stateUser?.profile === 'string' && stateUser.profile) {
     feishuIdentity.profile = stateUser.profile
   }
@@ -867,6 +882,11 @@ export async function feishuCallback(ctx: Context) {
   try {
     const token = await exchangeFeishuCode(code)
     const bound = createBoundFeishuSession(token.openid, {
+      userId: token.userId,
+      unionId: token.unionId,
+      tenantKey: token.tenantKey,
+      appId: token.appId,
+      email: token.email,
       name: token.name,
       avatarUrl: token.avatarUrl,
     })

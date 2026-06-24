@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue'
 import { NButton, NInput, NModal, NSelect, NTag, NSpin, useMessage, useDialog } from 'naive-ui'
 import type { HermesProfile, HermesProfileDetail } from '@/api/hermes/profiles'
-import { fetchAgentShares, grantAgentShare, revokeAgentShare, type AgentShare, type AgentShareRole } from '@/api/hermes/agents'
+import { fetchAgentShares, grantAgentShare, revokeAgentShare, type AgentShare, type AgentShareGrantee, type AgentShareRole } from '@/api/hermes/agents'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useI18n } from 'vue-i18n'
 import ProfileAvatar from './ProfileAvatar.vue'
@@ -24,7 +24,7 @@ const shareModalVisible = ref(false)
 const shareLoading = ref(false)
 const shareSaving = ref(false)
 const shares = ref<AgentShare[]>([])
-const newGranteeOpenId = ref('')
+const newGranteeQuery = ref('')
 const newRole = ref<AgentShareRole>('viewer')
 
 const isDefault = computed(() => props.profile.name === 'default')
@@ -130,12 +130,12 @@ async function openShareModal() {
 
 async function handleGrantShare() {
   if (!props.profile.agentId) return
-  const grantee = newGranteeOpenId.value.trim()
+  const grantee = newGranteeQuery.value.trim()
   if (!grantee) return
   shareSaving.value = true
   try {
-    await grantAgentShare(props.profile.agentId, grantee, newRole.value)
-    newGranteeOpenId.value = ''
+    await grantAgentShare(props.profile.agentId, granteeLookupFromInput(grantee), newRole.value)
+    newGranteeQuery.value = ''
     newRole.value = 'viewer'
     await loadShares()
     message.success(t('profiles.share.grantSuccess'))
@@ -150,14 +150,40 @@ async function handleRevokeShare(share: AgentShare) {
   if (!props.profile.agentId) return
   shareSaving.value = true
   try {
-    await revokeAgentShare(props.profile.agentId, share.grantee_open_id)
-    shares.value = shares.value.filter(item => item.grantee_open_id !== share.grantee_open_id)
+    const key = shareKey(share)
+    await revokeAgentShare(props.profile.agentId, key)
+    shares.value = shares.value.filter(item => shareKey(item) !== key)
     message.success(t('profiles.share.revokeSuccess'))
   } catch (err: any) {
     message.error(err?.message || t('profiles.share.revokeFailed'))
   } finally {
     shareSaving.value = false
   }
+}
+
+function granteeLookupFromInput(value: string): AgentShareGrantee {
+  return {
+    provider: 'feishu',
+    type: value.includes('@') ? 'email' : 'user_id',
+    value,
+  }
+}
+
+function shareKey(share: AgentShare): string {
+  return share.share_id || share.grantee_principal_id || share.grantee_open_id
+}
+
+function shareDisplayName(share: AgentShare): string {
+  return share.principal?.display_name || share.principal?.email || share.principal?.user_id || share.grantee_open_id
+}
+
+function shareSecondaryLabel(share: AgentShare): string {
+  if (!share.principal) return ''
+  return share.principal.email || share.principal.user_id || ''
+}
+
+function shareAvatarUrl(share: AgentShare): string {
+  return share.principal?.avatar_url || ''
 }
 </script>
 
@@ -265,8 +291,19 @@ async function handleRevokeShare(share: AgentShare) {
       <NSpin :show="shareLoading" size="small">
         <div class="share-list">
           <div v-if="shares.length === 0" class="share-empty">{{ t('profiles.share.empty') }}</div>
-          <div v-for="share in shares" :key="share.grantee_open_id" class="share-row">
-            <code class="share-grantee">{{ share.grantee_open_id }}</code>
+          <div v-for="share in shares" :key="shareKey(share)" class="share-row">
+            <img
+              v-if="shareAvatarUrl(share)"
+              class="share-principal-avatar"
+              :src="shareAvatarUrl(share)"
+              alt=""
+            >
+            <div class="share-grantee">
+              <span class="share-grantee-name">{{ shareDisplayName(share) }}</span>
+              <span v-if="shareSecondaryLabel(share)" class="share-grantee-secondary">
+                {{ shareSecondaryLabel(share) }}
+              </span>
+            </div>
             <NTag size="tiny" :bordered="false">{{ share.role }}</NTag>
             <NButton size="tiny" quaternary :loading="shareSaving" @click="handleRevokeShare(share)">
               {{ t('profiles.share.revoke') }}
@@ -275,7 +312,7 @@ async function handleRevokeShare(share: AgentShare) {
         </div>
         <div class="share-form">
           <NInput
-            v-model:value="newGranteeOpenId"
+            v-model:value="newGranteeQuery"
             size="small"
             :placeholder="t('profiles.share.grantee')"
           />
@@ -446,13 +483,37 @@ async function handleRevokeShare(share: AgentShare) {
   border-radius: 8px;
 }
 
+.share-principal-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: 0 0 28px;
+}
+
 .share-grantee {
   min-width: 0;
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.share-grantee-name,
+.share-grantee-secondary {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.share-grantee-name {
+  color: $text-primary;
   font-size: 12px;
+}
+
+.share-grantee-secondary {
+  color: $text-muted;
+  font-size: 11px;
 }
 
 .share-form {

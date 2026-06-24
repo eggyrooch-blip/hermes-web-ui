@@ -1223,7 +1223,7 @@ export default {
       manage: '共享',
       title: '代理共享',
       empty: '暫無共享成員',
-      grantee: '飛書 OpenID',
+      grantee: 'Email 或飛書 user_id',
       role: '權限',
       grant: '授權',
       revoke: '撤銷',

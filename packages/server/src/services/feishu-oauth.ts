@@ -30,6 +30,11 @@ type SignedPayload = Record<string, unknown>
 interface CookieOptions {
   openid: string
   profile: string
+  userId?: string
+  unionId?: string
+  tenantKey?: string
+  appId?: string
+  email?: string
   name?: string
   avatarUrl?: string
   secret: string
@@ -47,9 +52,14 @@ interface FeishuTokenResponse {
   msg?: string
   data?: {
     open_id?: string
+    user_id?: string
+    union_id?: string
+    tenant_key?: string
     access_token?: string
     refresh_token?: string
     expires_in?: number
+    email?: string
+    enterprise_email?: string
     name?: string
     en_name?: string
     avatar_url?: string
@@ -66,6 +76,11 @@ interface FeishuUserInfoResponse {
   msg?: string
   data?: {
     open_id?: string
+    user_id?: string
+    union_id?: string
+    tenant_key?: string
+    email?: string
+    enterprise_email?: string
     name?: string
     en_name?: string
     avatar_url?: string
@@ -121,6 +136,11 @@ export function createFeishuSessionCookie(options: CookieOptions): string {
     openid: options.openid,
     profile: options.profile,
     role: 'user',
+    userId: options.userId,
+    unionId: options.unionId,
+    tenantKey: options.tenantKey,
+    appId: options.appId,
+    email: options.email,
     name: options.name,
     avatarUrl: options.avatarUrl,
     iat: now,
@@ -133,6 +153,11 @@ export function parseFeishuSessionCookie(cookie: string | undefined, options: Pa
     openid?: unknown
     profile?: unknown
     role?: unknown
+    userId?: unknown
+    unionId?: unknown
+    tenantKey?: unknown
+    appId?: unknown
+    email?: unknown
     name?: unknown
     avatarUrl?: unknown
     exp?: unknown
@@ -145,6 +170,11 @@ export function parseFeishuSessionCookie(cookie: string | undefined, options: Pa
     openid: payload.openid,
     profile: payload.profile,
     role: payload.role === 'admin' ? 'admin' : 'user',
+    ...(typeof payload.userId === 'string' && payload.userId ? { userId: payload.userId } : {}),
+    ...(typeof payload.unionId === 'string' && payload.unionId ? { unionId: payload.unionId } : {}),
+    ...(typeof payload.tenantKey === 'string' && payload.tenantKey ? { tenantKey: payload.tenantKey } : {}),
+    ...(typeof payload.appId === 'string' && payload.appId ? { appId: payload.appId } : {}),
+    ...(typeof payload.email === 'string' && payload.email ? { email: payload.email } : {}),
     ...(typeof payload.name === 'string' && payload.name ? { name: payload.name } : {}),
     ...(typeof payload.avatarUrl === 'string' && payload.avatarUrl ? { avatarUrl: payload.avatarUrl } : {}),
   }
@@ -230,6 +260,11 @@ export async function getFeishuAppAccessToken(): Promise<string> {
 
 export async function exchangeFeishuCode(code: string): Promise<{
   openid: string
+  userId?: string
+  unionId?: string
+  tenantKey?: string
+  appId?: string
+  email?: string
   accessToken: string
   refreshToken?: string
   expiresIn?: number
@@ -251,7 +286,8 @@ export async function exchangeFeishuCode(code: string): Promise<{
   let userInfo: FeishuUserInfoResponse['data'] | null = null
   const tokenName = data.data?.name || data.data?.en_name
   const tokenAvatar = pickAvatar(data.data)
-  if (!tokenName || !tokenAvatar) {
+  const tokenEmail = data.data?.enterprise_email || data.data?.email
+  if (!tokenName || !tokenAvatar || !data.data?.user_id || !data.data?.tenant_key || !tokenEmail) {
     try {
       userInfo = await getFeishuUserInfo(accessToken)
     } catch {
@@ -261,6 +297,11 @@ export async function exchangeFeishuCode(code: string): Promise<{
 
   return {
     openid,
+    userId: data.data?.user_id || userInfo?.user_id,
+    unionId: data.data?.union_id || userInfo?.union_id,
+    tenantKey: data.data?.tenant_key || userInfo?.tenant_key,
+    appId: config.feishuAppId || undefined,
+    email: tokenEmail || userInfo?.enterprise_email || userInfo?.email,
     accessToken,
     refreshToken: data.data?.refresh_token,
     expiresIn: data.data?.expires_in,
@@ -308,7 +349,7 @@ export async function feishuOAuthAuth(ctx: Context, next: Next): Promise<void> {
   await next()
 }
 
-export function createBoundFeishuSession(openid: string, metadata: { name?: string; avatarUrl?: string } = {}): { user: WebUser; cookie: string } | null {
+export function createBoundFeishuSession(openid: string, metadata: Partial<Pick<WebUser, 'userId' | 'unionId' | 'tenantKey' | 'appId' | 'email' | 'name' | 'avatarUrl'>> = {}): { user: WebUser; cookie: string } | null {
   const profile = resolveProfileForOpenId(openid)
   if (!profile) return null
 
@@ -316,12 +357,22 @@ export function createBoundFeishuSession(openid: string, metadata: { name?: stri
     openid,
     profile,
     role: 'user',
+    ...(metadata.userId ? { userId: metadata.userId } : {}),
+    ...(metadata.unionId ? { unionId: metadata.unionId } : {}),
+    ...(metadata.tenantKey ? { tenantKey: metadata.tenantKey } : {}),
+    ...(metadata.appId ? { appId: metadata.appId } : {}),
+    ...(metadata.email ? { email: metadata.email } : {}),
     ...(metadata.name ? { name: metadata.name } : {}),
     ...(metadata.avatarUrl ? { avatarUrl: metadata.avatarUrl } : {}),
   } satisfies WebUser
   const cookie = createFeishuSessionCookie({
     openid,
     profile,
+    userId: metadata.userId,
+    unionId: metadata.unionId,
+    tenantKey: metadata.tenantKey,
+    appId: metadata.appId,
+    email: metadata.email,
     name: metadata.name,
     avatarUrl: metadata.avatarUrl,
     secret: getFeishuSessionSecret(),

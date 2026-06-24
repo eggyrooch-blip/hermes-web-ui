@@ -12,6 +12,11 @@ export interface WebUser {
   openid: string
   profile: string
   role: 'user' | 'admin'
+  userId?: string
+  unionId?: string
+  tenantKey?: string
+  appId?: string
+  email?: string
   name?: string
   avatarUrl?: string
 }

@@ -29,7 +29,7 @@ vi.mock('vue-i18n', () => ({
       'profiles.share.manage': 'Share',
       'profiles.share.title': 'Agent sharing',
       'profiles.share.empty': 'No shares',
-      'profiles.share.grantee': 'OpenID',
+      'profiles.share.grantee': 'Email or Feishu user ID',
       'profiles.share.role': 'Role',
       'profiles.share.grant': 'Grant',
       'profiles.share.revoke': 'Revoke',
@@ -131,5 +131,63 @@ describe('ProfileCard sharing', () => {
 
     expect(fetchAgentSharesMock).toHaveBeenCalledWith('agent-owned')
     expect(wrapper.text()).toContain('ou_reader')
+  })
+
+  it('renders principal member identity and grants by email lookup without showing raw OpenID', async () => {
+    fetchAgentSharesMock.mockResolvedValue([
+      {
+        agent_id: 'agent-owned',
+        share_id: 'shr_editor',
+        grantee_open_id: 'principal:prn_editor',
+        grantee_principal_id: 'prn_editor',
+        role: 'editor',
+        status: 'active',
+        principal: {
+          provider: 'feishu',
+          display_name: 'Editor User',
+          avatar_url: 'https://example.test/editor.png',
+          email: 'editor@example.test',
+          user_id: 'u_editor',
+        },
+      },
+    ])
+    const wrapper = mount(ProfileCard, {
+      props: {
+        profile: {
+          name: 'owned_agent_profile',
+          active: false,
+          model: '',
+          alias: '',
+          kind: 'agent',
+          agentId: 'agent-owned',
+        },
+      },
+    })
+
+    const shareButton = wrapper.findAll('button').find(button => button.text().includes('Share'))
+    await shareButton!.trigger('click')
+
+    expect(wrapper.text()).toContain('Editor User')
+    expect(wrapper.text()).toContain('editor@example.test')
+    expect(wrapper.text()).not.toContain('principal:prn_editor')
+    expect(wrapper.find('img.share-principal-avatar').attributes('src')).toBe('https://example.test/editor.png')
+
+    const input = wrapper.find('input')
+    await input.setValue('new-editor@example.test')
+    const roleSelect = wrapper.find('select')
+    await roleSelect.setValue('manager')
+    const grantButton = wrapper.findAll('button').find(button => button.text().includes('Grant'))
+    await grantButton!.trigger('click')
+
+    expect(grantAgentShareMock).toHaveBeenCalledWith('agent-owned', {
+      provider: 'feishu',
+      type: 'email',
+      value: 'new-editor@example.test',
+    }, 'manager')
+
+    const revokeButton = wrapper.findAll('button').find(button => button.text().includes('Revoke'))
+    await revokeButton!.trigger('click')
+
+    expect(revokeAgentShareMock).toHaveBeenCalledWith('agent-owned', 'shr_editor')
   })
 })

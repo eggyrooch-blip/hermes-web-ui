@@ -43,4 +43,80 @@ describe('agent sharing controller', () => {
     expect(ctx.status).toBe(200)
     expect(ctx.body.share.role).toBe('editor')
   })
+
+  it('forwards canonical Feishu actor identity and grantee lookup payloads to the Run Broker', async () => {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    process.env.HERMES_RUN_BROKER_KEY = 'broker-key'
+    process.env.FEISHU_APP_ID = 'cli_web'
+    vi.resetModules()
+    const fetchMock = vi.fn(async (url: string, options: any) => {
+      expect(url).toBe('http://broker.test/api/run-broker/agents/agent-shared/shares')
+      expect(options.method).toBe('POST')
+      expect(options.headers.Authorization).toBe('Bearer broker-key')
+      expect(options.headers['X-Hermes-Owner-Open-Id']).toBe('ou_owner')
+      expect(options.headers['X-Hermes-Actor-Provider']).toBe('feishu')
+      expect(options.headers['X-Hermes-Actor-Tenant-Key']).toBe('tenant_a')
+      expect(options.headers['X-Hermes-Actor-App-Id']).toBe('cli_web')
+      expect(options.headers['X-Hermes-Actor-User-Id']).toBe('u_owner')
+      expect(options.headers['X-Hermes-Actor-Display-Name']).toBe('Owner User')
+      expect(options.headers['X-Hermes-Actor-Avatar-Url']).toBe('https://example.test/owner.png')
+      expect(options.headers['X-Hermes-Actor-Email']).toBe('owner@example.test')
+      expect(JSON.parse(options.body)).toEqual({
+        grantee: {
+          provider: 'feishu',
+          type: 'email',
+          value: 'editor@example.test',
+        },
+        role: 'manager',
+      })
+      return new Response(JSON.stringify({
+        share: {
+          share_id: 'shr_123',
+          grantee_principal_id: 'prn_editor',
+          role: 'manager',
+          status: 'active',
+          principal: {
+            provider: 'feishu',
+            display_name: 'Editor User',
+            avatar_url: 'https://example.test/editor.png',
+            email: 'editor@example.test',
+            user_id: 'u_editor',
+          },
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { grantShare } = await import('../../packages/server/src/controllers/hermes/agents')
+    const ctx: any = {
+      params: { agentId: 'agent-shared' },
+      state: {
+        user: {
+          openid: 'ou_owner',
+          userId: 'u_owner',
+          tenantKey: 'tenant_a',
+          appId: 'cli_web',
+          name: 'Owner User',
+          avatarUrl: 'https://example.test/owner.png',
+          email: 'owner@example.test',
+        },
+      },
+      request: {
+        body: {
+          grantee: {
+            provider: 'feishu',
+            type: 'email',
+            value: 'editor@example.test',
+          },
+          role: 'manager',
+        },
+      },
+      status: 200,
+      body: undefined,
+    }
+
+    await grantShare(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body.share.grantee_principal_id).toBe('prn_editor')
+  })
 })

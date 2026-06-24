@@ -1223,7 +1223,7 @@ export default {
       manage: '共享',
       title: '智能体共享',
       empty: '暂无共享成员',
-      grantee: '飞书 OpenID',
+      grantee: '邮箱或飞书 user_id',
       role: '权限',
       grant: '授权',
       revoke: '撤销',
