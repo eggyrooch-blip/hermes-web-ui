@@ -11,10 +11,28 @@ function actorOpenId(ctx: Context): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function isByteString(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    if (value.charCodeAt(i) > 255) return false
+  }
+  return true
+}
+
 function setHeaderIfPresent(headers: Record<string, string>, name: string, value: unknown): void {
   if (typeof value !== 'string') return
   const trimmed = value.trim()
-  if (trimmed) headers[name] = trimmed
+  if (trimmed && isByteString(trimmed)) headers[name] = trimmed
+}
+
+function setEncodedHeaderIfNeeded(headers: Record<string, string>, name: string, encodedName: string, value: unknown): void {
+  if (typeof value !== 'string') return
+  const trimmed = value.trim()
+  if (!trimmed) return
+  if (isByteString(trimmed)) {
+    headers[name] = trimmed
+  } else {
+    headers[encodedName] = encodeURIComponent(trimmed)
+  }
 }
 
 function brokerHeaders(ctx: Context): Record<string, string> {
@@ -28,7 +46,12 @@ function brokerHeaders(ctx: Context): Record<string, string> {
     setHeaderIfPresent(headers, 'X-Hermes-Actor-Tenant-Key', user.tenantKey)
     setHeaderIfPresent(headers, 'X-Hermes-Actor-App-Id', user.appId || config.feishuAppId)
     setHeaderIfPresent(headers, 'X-Hermes-Actor-User-Id', user.userId)
-    setHeaderIfPresent(headers, 'X-Hermes-Actor-Display-Name', user.name)
+    setEncodedHeaderIfNeeded(
+      headers,
+      'X-Hermes-Actor-Display-Name',
+      'X-Hermes-Actor-Display-Name-Encoded',
+      user.name,
+    )
     setHeaderIfPresent(headers, 'X-Hermes-Actor-Avatar-Url', user.avatarUrl)
     setHeaderIfPresent(headers, 'X-Hermes-Actor-Email', user.email)
   }

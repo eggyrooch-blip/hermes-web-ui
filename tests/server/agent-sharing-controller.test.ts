@@ -119,4 +119,43 @@ describe('agent sharing controller', () => {
     expect(ctx.status).toBe(200)
     expect(ctx.body.share.grantee_principal_id).toBe('prn_editor')
   })
+
+  it('encodes non-ASCII Feishu actor names before adding broker headers', async () => {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    process.env.HERMES_RUN_BROKER_KEY = 'broker-key'
+    process.env.FEISHU_APP_ID = 'cli_web'
+    vi.resetModules()
+    const fetchMock = vi.fn(async (_url: string, options: any) => {
+      expect(() => new Headers(options.headers)).not.toThrow()
+      expect(options.headers['X-Hermes-Actor-Display-Name']).toBeUndefined()
+      expect(options.headers['X-Hermes-Actor-Display-Name-Encoded']).toBe(encodeURIComponent('孙可'))
+      return new Response(JSON.stringify({ shares: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { listShares } = await import('../../packages/server/src/controllers/hermes/agents')
+    const ctx: any = {
+      params: { agentId: 'agent-shared' },
+      state: {
+        user: {
+          openid: 'ou_owner',
+          userId: 'u_owner',
+          tenantKey: 'tenant_a',
+          appId: 'cli_web',
+          name: '孙可',
+          avatarUrl: 'https://example.test/owner.png',
+          email: 'owner@example.test',
+        },
+      },
+      status: 200,
+      body: undefined,
+    }
+
+    await listShares(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body.shares).toEqual([])
+  })
 })
