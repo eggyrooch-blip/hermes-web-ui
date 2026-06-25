@@ -194,6 +194,36 @@ describe('CredentialsView', () => {
     localStorage.clear()
   })
 
+  it('drops a superseded refresh so a late response cannot overwrite a newer one (load-seq guard)', async () => {
+    // Two overlapping refreshes exercise the same loadSeq guard that protects a profile
+    // switch (the reactive route mock can't fire the watcher post-mount, so we drive the
+    // overlap via the refresh button — equivalent mechanism).
+    localStorage.clear()
+    routeQuery.profile = 'feishu_g41a5b5g'
+    const row = (status: string, label: string) => [
+      { id: 'kep-cli', title: 'kep-cli', provider: 'keep', installed: true, status, detail: label, action: { kind: 'oauth_url', label: 'x' } },
+    ]
+    fetchSkillCredentialsMock.mockResolvedValueOnce({ profile_name: 'feishu_g41a5b5g', credentials: row('authenticated', 'INIT') })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(r => setTimeout(r, 0)); await wrapper.vm.$nextTick()
+
+    // refresh #1 hangs (the stale one); refresh #2 resolves (the current one)
+    let resolveStale: () => void = () => {}
+    fetchSkillCredentialsMock.mockImplementationOnce(() => new Promise(r => { resolveStale = () => r({ profile_name: 'feishu_g41a5b5g', credentials: row('missing', 'STALE-B') }) }))
+    fetchSkillCredentialsMock.mockResolvedValueOnce({ profile_name: 'feishu_g41a5b5g', credentials: row('needs_auth', 'CURRENT-A') })
+    const btn = wrapper.find('.page-header button')
+    await btn.trigger('click')  // refresh #1 (hangs) → loadSeq = N
+    await btn.trigger('click')  // refresh #2 (resolves) → loadSeq = N+1 → applies CURRENT-A
+    await new Promise(r => setTimeout(r, 0)); await wrapper.vm.$nextTick()
+    resolveStale()              // late stale response — guard must drop it
+    await new Promise(r => setTimeout(r, 0)); await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('CURRENT-A')
+    expect(wrapper.text()).not.toContain('STALE-B')
+    localStorage.clear()
+  })
+
   it('manual refresh button requests FRESH status (bypasses the broker cache)', async () => {
     localStorage.clear()
     const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default

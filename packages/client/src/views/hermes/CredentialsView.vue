@@ -43,6 +43,9 @@ let authWindowToken = 0
 let attemptSeq = 0
 // Set on unmount so an in-flight poll stops touching a torn-down component.
 let pollAbort = false
+// Monotonic load id — a late response from a superseded load (e.g. after a profile
+// switch) must not overwrite the current panel.
+let loadSeq = 0
 
 const credentials = computed(() => data.value?.credentials || [])
 const routeProfile = computed(() => typeof route.query.profile === 'string' ? route.query.profile.trim() : '')
@@ -129,9 +132,14 @@ async function ensureProfileSelection() {
 async function refreshCredentials(fresh = false) {
   // Cached load keeps the single-arg call shape; only the fresh path passes options.
   const profile = requestedProfile.value
-  data.value = fresh
+  const seq = ++loadSeq
+  const result = fresh
     ? await fetchSkillCredentials(profile, { fresh: true })
     : await fetchSkillCredentials(profile)
+  // Drop a stale response: a newer load (e.g. a profile switch) superseded this one,
+  // so applying profile A's late response must not overwrite profile B's panel.
+  if (seq !== loadSeq) return
+  data.value = result
   persistToCache(profile)  // remember for the next visit's instant paint
 }
 
