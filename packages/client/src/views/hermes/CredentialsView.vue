@@ -139,6 +139,7 @@ async function pollCredentialAfterOAuth(id: string, token: number) {
     for (let attempt = 0; attempt < 18; attempt += 1) {
       await sleep(2_500)
       if (pollAbort) return  // component unmounted — stop touching it
+      if (token !== attemptSeq) return  // superseded by a newer attempt or a profile switch
       await refreshCredentials(true)  // fresh: bypass the broker cache to see the new login
       if (credentialAuthSucceeded(id)) {
         closeAuthWindow(token)  // close only THIS attempt's popup, on genuine success
@@ -243,6 +244,13 @@ onUnmounted(() => {
 
 watch(requestedProfile, async (profile, previous) => {
   if (!profileWatchReady || profile === previous) return
+  // Abandon any in-flight auth attempt tied to the previous profile: bump the seq so
+  // its poll stops, and close its popup. The poll refreshes the reactive profile, so
+  // without this it would poll the NEW profile and could mis-close (or never close)
+  // the old profile's popup.
+  attemptSeq += 1
+  closeAuthWindow()
+  oauthPollingId.value = ''
   await loadCredentials()
 })
 </script>
