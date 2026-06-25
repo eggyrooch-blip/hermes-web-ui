@@ -24,6 +24,7 @@ describe('skill credential status', () => {
     delete process.env.HERMES_MULTITENANCY_DB
     delete process.env.HERMES_WEB_PLANE
     delete process.env.HERMES_WEBUI_CONNECTORS_USE_BROKER
+    delete process.env.HERMES_RUN_BROKER_URL
   })
 
   function makeRoutingDb(rows: Array<{ user_id: string; profile_name: string; open_id: string; active?: number; owner_open_id?: string; provenance?: string; kind?: string | null }>) {
@@ -1280,6 +1281,74 @@ describe('skill credential status', () => {
       status: 'configured',
     })
     expect(JSON.stringify(ctx.body)).not.toContain('group-gitlab-secret-token')
+    fetchSpy.mockRestore()
+  })
+
+  it('serves connector status from the broker by default (single source of truth)', async () => {
+    // No HERMES_WEBUI_CONNECTORS_USE_BROKER set → default ON → must hit the broker.
+    const hermesHome = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-home-'))
+    roots.push(hermesHome)
+    process.env.HERMES_HOME = hermesHome
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    mkdirSync(join(hermesHome, 'profiles', 'preview', 'workspace', 'credentials'), { recursive: true })
+    writeFileSync(join(hermesHome, 'active_profile'), 'preview\n', 'utf-8')
+    // A local gitlab token: the LOCAL reader would report 'configured'. If the result
+    // came from local instead of the broker, this test would catch it.
+    writeFileSync(join(hermesHome, 'profiles', 'preview', 'workspace', 'credentials', 'gitlab.token'), 'local-secret', 'utf-8')
+
+    const brokerBody = {
+      profile_name: 'preview',
+      connectors: [
+        { id: 'kep-cli', title: 'kep-cli', provider: 'keep', installed: true, status: 'needs_auth', detail: 'kep-cli 登录已过期，请重新认证。', action: { kind: 'oauth_url', label: '重新认证' } },
+        { id: 'gitlab', title: 'GitLab', provider: 'gitlab', installed: true, status: 'configured', detail: 'from-broker', action: { kind: 'manual', label: '刷新' } },
+      ],
+    }
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(brokerBody), { status: 200 }) as any,
+    )
+
+    vi.resetModules()
+    const { skillCredentialsStatus } = await import('../../packages/server/src/controllers/auth')
+    const ctx: any = { state: {}, query: {}, get: () => '' }
+    await skillCredentialsStatus(ctx)
+
+    expect(ctx.status).toBe(200)
+    // It reached the broker's /connectors endpoint...
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining('http://broker.test/api/run-broker/connectors'),
+      expect.anything(),
+    )
+    // ...and served the broker's exp-decoded kep-cli needs_auth (NOT a local blind
+    // 'authenticated'), and the broker gitlab row (detail proves it isn't local).
+    expect(ctx.body.credentials.find((c: any) => c.id === 'kep-cli')?.status).toBe('needs_auth')
+    expect(ctx.body.credentials.find((c: any) => c.id === 'gitlab')?.detail).toBe('from-broker')
+    fetchSpy.mockRestore()
+  })
+
+  it('fails safe to error states when the broker is down — never the lying-local result', async () => {
+    const hermesHome = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-home-'))
+    roots.push(hermesHome)
+    process.env.HERMES_HOME = hermesHome
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    mkdirSync(join(hermesHome, 'profiles', 'preview', 'workspace', 'credentials'), { recursive: true })
+    writeFileSync(join(hermesHome, 'active_profile'), 'preview\n', 'utf-8')
+    // Local gitlab token present → the LOCAL reader would say 'configured'. The
+    // fail-safe must NOT fall back to it (that's the red line: never a stale truth).
+    writeFileSync(join(hermesHome, 'profiles', 'preview', 'workspace', 'credentials', 'gitlab.token'), 'local-secret', 'utf-8')
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'))
+
+    vi.resetModules()
+    const { skillCredentialsStatus } = await import('../../packages/server/src/controllers/auth')
+    const ctx: any = { state: {}, query: {}, get: () => '' }
+    await skillCredentialsStatus(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body.credentials.length).toBeGreaterThan(0)
+    // Every connector is the fail-safe error state — gitlab is 'error', NOT the
+    // local reader's 'configured'. No fallback to a source that could lie.
+    expect(ctx.body.credentials.every((c: any) => c.status === 'error')).toBe(true)
+    expect(ctx.body.credentials.find((c: any) => c.id === 'gitlab')?.status).toBe('error')
     fetchSpy.mockRestore()
   })
 })
