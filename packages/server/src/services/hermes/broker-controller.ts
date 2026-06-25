@@ -389,6 +389,7 @@ interface QueuedRun {
   model?: string
   provider?: string
   instructions?: string
+  expert_id?: string
   profile: string
 }
 
@@ -749,6 +750,7 @@ export class BrokerRunController {
       model?: string
       provider?: string
       instructions?: string
+      expert_id?: string
       queue_id?: string
     }) => {
       if (config.webuiRunBroker && data.session_id && !data.__skipSessionCommand && parseBrokerSessionCommand(data.input)) {
@@ -764,6 +766,7 @@ export class BrokerRunController {
             model: data.model,
             provider: data.provider,
             instructions: data.instructions,
+            expert_id: data.expert_id,
             profile,
           })
           this.nsp.to(this.sessionRoom(data.session_id, profile)).emit('run.queued', {
@@ -1048,11 +1051,11 @@ export class BrokerRunController {
 
   private async handleRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; model?: string; provider?: string; instructions?: string },
+    data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; model?: string; provider?: string; instructions?: string; expert_id?: string },
     profile: string,
     skipUserMessage = false,
   ) {
-    const { input, session_id, model, provider, instructions } = data
+    const { input, session_id, model, provider, instructions, expert_id } = data
     if (config.webuiRunBroker && session_id && !data.__skipSessionCommand && parseBrokerSessionCommand(input)) {
       await this.handleBrokerSessionCommand(socket, data, profile)
       return
@@ -1131,6 +1134,7 @@ export class BrokerRunController {
         model,
         provider,
         instructions,
+        expert_id,
       }, profile, runMarker, emit)
       return
     }
@@ -1270,6 +1274,7 @@ export class BrokerRunController {
       model?: string
       provider?: string
       instructions?: string
+      expert_id?: string
       queue_id?: string
     },
     profile: string,
@@ -1339,6 +1344,7 @@ export class BrokerRunController {
         model: data.model,
         provider: data.provider,
         instructions: data.instructions,
+        expert_id: data.expert_id,
       }, profile)
     }
     return true
@@ -1490,6 +1496,7 @@ export class BrokerRunController {
       model: next.model,
       provider: next.provider,
       instructions: next.instructions,
+      expert_id: next.expert_id,
     }, next.profile || fallbackProfile, true)
     return true
   }
@@ -1536,6 +1543,7 @@ export class BrokerRunController {
         model: next.model,
         provider: next.provider,
         instructions: next.instructions,
+        expert_id: next.expert_id,
       }, next.profile || profile || 'default', true)
       return
     }
@@ -1599,7 +1607,7 @@ export class BrokerRunController {
 
   private async handleBrokerRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string },
+    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string; expert_id?: string },
     profile: string,
     runMarker: string | undefined,
     emit: (event: string, payload: any) => void,

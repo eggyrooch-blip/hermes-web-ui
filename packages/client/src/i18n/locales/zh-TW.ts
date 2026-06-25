@@ -409,9 +409,32 @@ export default {
       skills: 'Skills',
       connectors: '連接器',
     },
+    catalog: {
+      searchPlaceholder: '搜尋專家、標籤或能力…',
+      loading: '載入中…',
+      error: '專家廣場暫時無法使用，請稍後再試。',
+      empty: '目前沒有可用的專家。',
+      noResults: '沒有符合的專家。',
+      activeBadge: '已啟用',
+    },
+    detail: {
+      close: '關閉',
+      capabilities: '能力',
+      noCapabilities: '未宣告任何能力。',
+      governance: '治理',
+      governanceNote: '憑證仍使用你本人的登入狀態；高風險寫入操作執行前需人工確認。',
+      envDefault: '預設環境',
+      approvalRequired: '需人工確認的操作',
+      activate: '在對話中使用此專家',
+      deactivate: '停止使用此專家',
+    },
   },
 
   chat: {
+    expertSlot: {
+      tooltip: '啟用中的專家',
+      none: '未選擇專家',
+    },
     contextRemaining: '剩餘',
     contextClickToEdit: '點擊編輯上下文長度',
     contextEditTitle: '編輯上下文長度',

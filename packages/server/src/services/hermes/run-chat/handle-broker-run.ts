@@ -61,6 +61,10 @@ type BuildRunBrokerRequestOptions = {
   model?: string
   provider?: string
   agentId?: string
+  /** Active expert overlay id (专家广场). Forwarded into the broker request
+   *  body (`expert_id`) and metadata so the multitenancy layer can inject the
+   *  expert persona overlay for this run only. */
+  expertId?: string
   instructions?: string
   workspace?: string | null
   messages?: SessionMessage[]
@@ -93,6 +97,7 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
     model,
     provider,
     agentId,
+    expertId,
     instructions,
     workspace,
     idempotencyKey,
@@ -109,6 +114,7 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
   }
   if (model) metadata.model = model
   if (provider) metadata.provider = provider
+  if (expertId) metadata.expert_id = expertId
   if (sessionId) metadata.conversation = `webui:${sessionId}`
   metadata.instructions = [
     getSystemPrompt(),
@@ -132,6 +138,7 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
     channel: 'webui',
     profile_name: profile,
     ...(agentId ? { agent_id: agentId } : {}),
+    ...(expertId ? { expert_id: expertId } : {}),
     user_key: userKey,
     content,
     session_id: sessionId,
@@ -318,17 +325,19 @@ function readSmallText(path: string): string {
   }
 }
 
-export function buildRunBrokerHeaders(options: { runBrokerKey?: string; ownerOpenId?: string; agentId?: string }): Record<string, string> {
+export function buildRunBrokerHeaders(options: { runBrokerKey?: string; ownerOpenId?: string; agentId?: string; expertId?: string }): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const key = options.runBrokerKey?.trim()
   const ownerOpenId = options.ownerOpenId?.trim()
   const agentId = options.agentId?.trim()
+  const expertId = options.expertId?.trim()
   if (key) headers.Authorization = `Bearer ${key}`
   if (ownerOpenId) {
     headers['X-Hermes-Owner-Open-Id'] = ownerOpenId
     headers['X-Hermes-Feishu-OpenId'] = ownerOpenId
   }
   if (agentId) headers['X-Hermes-Agent-Id'] = agentId
+  if (expertId) headers['X-Hermes-Expert-Id'] = expertId
   return headers
 }
 
@@ -691,13 +700,13 @@ function appendBrokerFailureMessage(
 
 export async function handleBrokerRun(
   socket: Socket,
-  data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string },
+  data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string; expert_id?: string },
   profile: string,
   runMarker: string | undefined,
   emit: (event: string, payload: any) => void,
   context: HandleBrokerRunContext,
 ) {
-  const { input, session_id, model, provider, instructions } = data
+  const { input, session_id, model, provider, instructions, expert_id } = data
   const brokerUrl = config.runBrokerUrl
   if (!brokerUrl) {
     const queueLen = session_id ? context.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
@@ -720,6 +729,7 @@ export async function handleBrokerRun(
     profile,
     ownerOpenId,
     agentId,
+    expertId: expert_id,
     sessionId: session_id,
     model,
     provider,
@@ -749,6 +759,7 @@ export async function handleBrokerRun(
         runBrokerKey: config.runBrokerKey,
         ownerOpenId,
         agentId,
+        expertId: expert_id,
       }),
       body: JSON.stringify(request),
       signal: abortController.signal,
