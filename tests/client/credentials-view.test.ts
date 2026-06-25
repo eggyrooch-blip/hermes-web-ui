@@ -224,6 +224,34 @@ describe('CredentialsView', () => {
     localStorage.clear()
   })
 
+  it('a superseded load that FAILS does not show its error over the current panel', async () => {
+    // The error channel must respect the same guard: an old failed load must not set
+    // error.value while a newer load (data still null, in-flight) is pending.
+    localStorage.clear()
+    routeQuery.profile = 'feishu_g41a5b5g'
+    const row = (status: string, label: string) => [
+      { id: 'kep-cli', title: 'kep-cli', provider: 'keep', installed: true, status, detail: label, action: { kind: 'oauth_url', label: 'x' } },
+    ]
+    // initial (mount) load #1 hangs, then REJECTS — data stays null
+    let rejectInit: () => void = () => {}
+    fetchSkillCredentialsMock.mockImplementationOnce(() => new Promise((_res, rej) => { rejectInit = () => rej(new Error('STALE-ERROR')) }))
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await wrapper.vm.$nextTick()  // load #1 in flight, data null
+    // load #2 (button) starts, hangs, then resolves CURRENT
+    let resolveNew: () => void = () => {}
+    fetchSkillCredentialsMock.mockImplementationOnce(() => new Promise(res => { resolveNew = () => res({ profile_name: 'feishu_g41a5b5g', credentials: row('needs_auth', 'CURRENT-A') }) }))
+    await wrapper.find('.page-header button').trigger('click')  // load #2 in flight, loadSeq bumped
+    rejectInit()  // stale load #1 fails while data is still null and #2 is pending
+    await new Promise(r => setTimeout(r, 0)); await wrapper.vm.$nextTick()
+    resolveNew()  // current load resolves
+    await new Promise(r => setTimeout(r, 0)); await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.credentials-error').exists()).toBe(false)  // stale error suppressed
+    expect(wrapper.text()).toContain('CURRENT-A')
+    localStorage.clear()
+  })
+
   it('manual refresh button requests FRESH status (bypasses the broker cache)', async () => {
     localStorage.clear()
     const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default

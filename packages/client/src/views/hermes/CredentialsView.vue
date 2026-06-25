@@ -110,16 +110,19 @@ async function loadCredentials(opts?: { fresh?: boolean }) {
   // Paint last-known instantly, then revalidate. The blocking spinner only shows on a
   // true cold first visit (no cached data) — see <NSpin :show="loading && !data">.
   hydrateFromCache(requestedProfile.value)
+  // Own a load id so a SUPERSEDED load (e.g. after a profile switch) can't write back
+  // data, error, or loading over the current one — including via the error channel.
+  const seq = ++loadSeq
   loading.value = true
   error.value = ''
   try {
     await ensureProfileSelection()
-    await refreshCredentials(opts?.fresh)
+    await refreshCredentials(opts?.fresh, seq)
   } catch (err: any) {
-    // Don't blow away a good cached view on a transient refresh error.
-    if (!data.value) error.value = err?.message || '连接器状态加载失败'
+    // Only the current load may set the error, and never over a good cached view.
+    if (seq === loadSeq && !data.value) error.value = err?.message || '连接器状态加载失败'
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
@@ -129,16 +132,18 @@ async function ensureProfileSelection() {
   }
 }
 
-async function refreshCredentials(fresh = false) {
+async function refreshCredentials(fresh = false, seq?: number) {
   // Cached load keeps the single-arg call shape; only the fresh path passes options.
+  // `seq` is the owning load's id when called from loadCredentials; the poll/focus
+  // callers omit it and mint their own so their write is likewise superseded-guarded.
   const profile = requestedProfile.value
-  const seq = ++loadSeq
+  const mySeq = seq ?? ++loadSeq
   const result = fresh
     ? await fetchSkillCredentials(profile, { fresh: true })
     : await fetchSkillCredentials(profile)
   // Drop a stale response: a newer load (e.g. a profile switch) superseded this one,
   // so applying profile A's late response must not overwrite profile B's panel.
-  if (seq !== loadSeq) return
+  if (mySeq !== loadSeq) return
   data.value = result
   persistToCache(profile)  // remember for the next visit's instant paint
 }
