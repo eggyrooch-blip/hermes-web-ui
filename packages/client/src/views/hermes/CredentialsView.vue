@@ -155,8 +155,14 @@ async function pollCredentialAfterOAuth(id: string, token: number) {
 
 async function startCredential(entry: SkillCredentialEntry) {
   startingId.value = entry.id
+  // Mint the attempt token BEFORE the await so it marks the LATEST user start. If a
+  // newer start supersedes this one while the request is in flight, the stale result
+  // is dropped below — otherwise an out-of-order response could close a newer popup
+  // and open a stale one.
+  const attemptToken = ++attemptSeq
   try {
     const result = await startSkillCredentialAuth(entry.id, requestedProfile.value)
+    if (attemptToken !== attemptSeq) return  // a newer attempt superseded this one
     if (result.qrcode_id && result.qrcode_url) {
       qrDialog.value = {
         id: entry.id,
@@ -169,7 +175,6 @@ async function startCredential(entry: SkillCredentialEntry) {
     }
     if (result.verification_uri) {
       closeAuthWindow()  // close any stale popup from a previous attempt
-      const attemptToken = ++attemptSeq
       authWindow = window.open('about:blank', '_blank')
       authWindowOwnerId = authWindow ? entry.id : ''
       authWindowToken = authWindow ? attemptToken : 0
