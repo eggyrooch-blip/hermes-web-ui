@@ -33,10 +33,14 @@ const qrDialog = ref<{
 const oauthPollingId = ref('')
 // The auth popup we open (window.open) — kept so we can auto-close it once the
 // credential reaches an authenticated state (the kep-auth success page can't close
-// itself; we opened it, so we can). Tagged with the connector id that opened it so an
-// older poll can't close a newer popup belonging to a different connector.
+// itself; we opened it, so we can). Tagged with a per-ATTEMPT token (not just the
+// connector id) so an older poll cannot close a newer popup — even for the same
+// connector started twice. `authWindowOwnerId` records which connector the current
+// popup belongs to (for the focus handler); `authWindowToken` is the live attempt.
 let authWindow: Window | null = null
 let authWindowOwnerId = ''
+let authWindowToken = 0
+let attemptSeq = 0
 // Set on unmount so an in-flight poll stops touching a torn-down component.
 let pollAbort = false
 
@@ -97,16 +101,18 @@ async function refreshCredentials(fresh = false) {
     : await fetchSkillCredentials(requestedProfile.value)
 }
 
-function closeAuthWindow(ownerId?: string) {
-  // When called with an ownerId (from a poll/focus), only close if that flow still
-  // owns the popup — guards against an older poll closing a newer connector's popup.
-  // Called with no ownerId (explicit cleanup before a new attempt) it always closes.
-  if (ownerId && ownerId !== authWindowOwnerId) return
+function closeAuthWindow(token?: number) {
+  // When called with a token (from a poll/focus), only close if that attempt still
+  // owns the popup — guards against an older poll closing a newer popup, even for the
+  // same connector re-started. Called with no token (explicit cleanup before a new
+  // attempt) it always closes.
+  if (token !== undefined && token !== authWindowToken) return
   if (authWindow && !authWindow.closed) {
     try { authWindow.close() } catch { /* best-effort: cross-origin window we opened */ }
   }
   authWindow = null
   authWindowOwnerId = ''
+  authWindowToken = 0
 }
 
 function sleep(ms: number) {
@@ -127,7 +133,7 @@ function credentialAuthSucceeded(id: string) {
   return credential?.status === 'authenticated' || credential?.status === 'configured'
 }
 
-async function pollCredentialAfterOAuth(id: string) {
+async function pollCredentialAfterOAuth(id: string, token: number) {
   oauthPollingId.value = id
   try {
     for (let attempt = 0; attempt < 18; attempt += 1) {
@@ -135,7 +141,7 @@ async function pollCredentialAfterOAuth(id: string) {
       if (pollAbort) return  // component unmounted — stop touching it
       await refreshCredentials(true)  // fresh: bypass the broker cache to see the new login
       if (credentialAuthSucceeded(id)) {
-        closeAuthWindow(id)  // auto-close THIS flow's popup only, on genuine success
+        closeAuthWindow(token)  // close only THIS attempt's popup, on genuine success
         return
       }
       if (credentialReachedTerminalAuthState(id)) return  // settled but not success (待验证) → stop, leave popup
@@ -163,15 +169,17 @@ async function startCredential(entry: SkillCredentialEntry) {
     }
     if (result.verification_uri) {
       closeAuthWindow()  // close any stale popup from a previous attempt
+      const attemptToken = ++attemptSeq
       authWindow = window.open('about:blank', '_blank')
       authWindowOwnerId = authWindow ? entry.id : ''
+      authWindowToken = authWindow ? attemptToken : 0
       if (authWindow) {
         authWindow.opener = null
         authWindow.location.href = result.verification_uri
       } else {
         window.location.assign(result.verification_uri)
       }
-      void pollCredentialAfterOAuth(entry.id)
+      void pollCredentialAfterOAuth(entry.id, attemptToken)
       message.success(result.user_code ? `${entry.title}: ${result.user_code}` : `${entry.title} 认证流程已启动`)
       return
     }
@@ -208,10 +216,11 @@ function handleWindowFocus() {
   // The user likely just returned from the auth popup. If a poll is in flight,
   // refresh immediately (fresh) instead of waiting for the next 2.5s tick, and
   // close the popup the moment auth is confirmed.
-  if (!oauthPollingId.value) return
-  const id = oauthPollingId.value
+  if (!authWindowToken) return  // no active popup awaiting auth
+  const id = authWindowOwnerId
+  const token = authWindowToken
   void refreshCredentials(true).then(() => {
-    if (credentialAuthSucceeded(id)) closeAuthWindow(id)  // only close THIS flow's popup, on success
+    if (credentialAuthSucceeded(id)) closeAuthWindow(token)  // only close THIS attempt's popup, on success
   }).catch(() => { /* manual refresh stays available */ })
 }
 
