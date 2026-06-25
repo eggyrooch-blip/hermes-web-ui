@@ -4,6 +4,7 @@ import * as profilesApi from '@/api/hermes/profiles'
 import type { HermesProfile, HermesProfileDetail } from '@/api/hermes/profiles'
 import type { CurrentUser } from '@/api/auth'
 import { useAppStore } from './app'
+import { prewarmConnectorStatus } from '@/utils/connector-status-cache'
 
 const ACTIVE_PROFILE_STORAGE_KEY = 'hermes_active_profile_name'
 const ACTIVE_AGENT_STORAGE_KEY = 'hermes_active_agent_id'
@@ -39,6 +40,9 @@ export const useProfilesStore = defineStore('profiles', () => {
     }
     activeProfileName.value = profile.name
     localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, profile.name)
+    // Warm the connector-status cache in the background (deduped) so the FIRST open of
+    // the connectors panel this session is instant, not a cold ~2s wait. Fire-and-forget.
+    prewarmConnectorStatus(profile.name)
     if (profile.agentId && profile.shareRole) {
       localStorage.setItem(ACTIVE_AGENT_STORAGE_KEY, profile.agentId)
     } else {

@@ -6,6 +6,7 @@ import { NButton, NModal, NSpin, useMessage } from 'naive-ui'
 import { completeSkillCredentialAuth, fetchSkillCredentials, startSkillCredentialAuth } from '@/api/skillCredentials'
 import type { SkillCredentialEntry, SkillCredentialsResponse } from '@/api/skillCredentials'
 import { useProfilesStore } from '@/stores/hermes/profiles'
+import { readCachedConnectorStatus, writeCachedConnectorStatus } from '@/utils/connector-status-cache'
 
 const message = useMessage()
 const { t } = useI18n()
@@ -81,29 +82,16 @@ function statusClass(status: SkillCredentialEntry['status']) {
 // --- instant render (stale-while-revalidate) --------------------------------
 // The panel does ~5 live CLI checks server-side (~2s cold), so a fresh open used to
 // block on a spinner. Instead we paint the LAST-KNOWN status (from a prior visit)
-// immediately and refresh in the background. Status only — no secrets (the broker
-// already redacts tokens). localStorage may be unavailable (private mode/quota), so
-// every access is guarded and simply falls back to a normal load.
-const STATUS_CACHE_PREFIX = 'hermes:connector-status:'
-
-function statusCacheKey(profile: string) {
-  return STATUS_CACHE_PREFIX + (profile || '_active')
-}
-
+// immediately and refresh in the background. The cache read/write live in a shared
+// util so the background pre-warm (on app init / profile switch) uses the same format.
 function hydrateFromCache(profile: string) {
   if (data.value) return
-  try {
-    const raw = localStorage.getItem(statusCacheKey(profile))
-    if (!raw) return
-    const parsed = JSON.parse(raw)
-    if (parsed && Array.isArray(parsed.credentials)) data.value = parsed
-  } catch { /* unavailable — fall back to a normal blocking load */ }
+  const cached = readCachedConnectorStatus(profile)
+  if (cached) data.value = cached
 }
 
 function persistToCache(profile: string) {
-  try {
-    if (data.value) localStorage.setItem(statusCacheKey(profile), JSON.stringify(data.value))
-  } catch { /* unavailable — skip persistence */ }
+  writeCachedConnectorStatus(profile, data.value)
 }
 
 async function loadCredentials(opts?: { fresh?: boolean }) {
