@@ -475,6 +475,18 @@ watch(
   },
 )
 
+// Reload the composer expert catalog whenever the active profile changes, and
+// CLEAR the current selection — experts are profile-scoped, so a selection made
+// under profile A must never be carried (or sent as `expert_id`) under profile B.
+// Mirrors ExpertCatalogView.vue's `watch(activeProfileName, loadExperts)`.
+watch(
+  () => profilesStore.activeProfileName,
+  () => {
+    chatStore.setActiveExpert(null)
+    void loadExpertsForSlot()
+  },
+)
+
 const canSend = computed(() => inputText.value.trim() || attachments.value.length > 0)
 
 function scrollCommandIntoView() {
