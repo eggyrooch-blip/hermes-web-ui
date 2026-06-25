@@ -140,6 +140,18 @@ function readHubInstalledNames(lockContent: string | null): Set<string> {
   return new Set()
 }
 
+/** Read keephub-installed skill names from ~/.hermes/skills/.keephub/lock.json */
+function readKeephubNames(lockContent: string | null): Set<string> {
+  if (!lockContent) return new Set()
+  try {
+    const data = JSON.parse(lockContent)
+    if (data?.installed && typeof data.installed === 'object') {
+      return new Set(Object.keys(data.installed))
+    }
+  } catch { /* ignore */ }
+  return new Set()
+}
+
 /** Compute md5 hash of all files in a directory (mirrors Hermes _dir_hash), with in-memory cache */
 const hashCache = new Map<string, { hash: string; mtime: number }>()
 const HASH_CACHE_TTL = 60_000 // 1 minute
@@ -165,9 +177,11 @@ async function dirHash(directory: string): Promise<string> {
 function getSkillSource(
   dirName: string,
   bundledManifest: Map<string, string>,
+  keephubNames: Set<string>,
   hubNames: Set<string>,
 ): SkillSource {
   if (bundledManifest.has(dirName)) return 'builtin'
+  if (keephubNames.has(dirName)) return 'keephub'
   if (hubNames.has(dirName)) return 'hub'
   return 'local'
 }
@@ -249,7 +263,7 @@ async function resolveSkillDirFromConfig(
  * or by containing subdirectories with SKILL.md (three-level pattern).
  * Skills without a parent category (flat skills) are grouped under the "misc" category.
  */
-async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, string>, hubNames: Set<string>, disabledList: string[], usageStats: Map<string, UsageStats>, chatPlane = false) {
+async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, string>, keephubNames: Set<string>, hubNames: Set<string>, disabledList: string[], usageStats: Map<string, UsageStats>, chatPlane = false) {
   const allEntries = await readdir(skillsDir, { withFileTypes: true })
   const dirNames = allEntries
     .filter(e => e.isDirectory() && !e.name.startsWith('.'))
@@ -274,7 +288,7 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
       flatSkills.push({
         name: dirName,
         skillMd: hasSkillMd,
-        source: getSkillSource(dirName, bundledManifest, hubNames),
+        source: getSkillSource(dirName, bundledManifest, keephubNames, hubNames),
       })
     } else if (!!hasDesc || subDirs.length > 0) {
       // True category: has DESCRIPTION.md or subdirs, but no SKILL.md at top level
@@ -299,7 +313,7 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
         const entryPath = join(dir, entry.name)
         const skillMd = await safeReadFile(join(entryPath, 'SKILL.md'))
         if (skillMd) {
-          const source = getSkillSource(entry.name, bundledManifest, hubNames)
+          const source = getSkillSource(entry.name, bundledManifest, keephubNames, hubNames)
           let modified = false
           // The builtin-modified check is an admin-only signal: it requires
           // hashing the skill dir against the global bundled manifest. On the
@@ -376,7 +390,7 @@ async function scanExternalSkillsDir(
   usageStats: Map<string, UsageStats>,
   sourcePath: string,
 ) {
-  return scanSkillsDir(skillsDir, new Map(), new Set(), disabledList, usageStats).then(categories =>
+  return scanSkillsDir(skillsDir, new Map(), new Set(), new Set(), disabledList, usageStats).then(categories =>
     categories.map(category => ({
       ...category,
       skills: category.skills.map((skill: any) => ({
@@ -439,11 +453,12 @@ export async function list(ctx: any) {
 
     // Read provenance sources
     const bundledManifest = readBundledManifest(await safeReadFile(join(skillsDir, '.bundled_manifest')))
+    const keephubNames = readKeephubNames(await safeReadFile(join(skillsDir, '.keephub', 'lock.json')))
     const hubNames = readHubInstalledNames(await safeReadFile(join(skillsDir, '.hub', 'lock.json')))
     const usageStats = readUsageStats(await safeReadFile(join(skillsDir, '.usage.json')))
 
     // Scan all skills (supports both two-level and three-level directory structures)
-    let categories = await scanSkillsDir(skillsDir, bundledManifest, hubNames, disabledList, usageStats, chatPlane)
+    let categories = await scanSkillsDir(skillsDir, bundledManifest, keephubNames, hubNames, disabledList, usageStats, chatPlane)
     // Map resolved → raw so we can attach the user-written path (e.g. ~/...) to
     // each external skill — the SkillsView groups by this when the external
     // filter is active.
@@ -469,7 +484,7 @@ export async function list(ctx: any) {
         archived.push({
           name: entry.name,
           description: extractDescription(skillMd),
-          source: getSkillSource(entry.name, bundledManifest, hubNames),
+          source: getSkillSource(entry.name, bundledManifest, keephubNames, hubNames),
           patchCount: usage?.patch_count,
           useCount: usage?.use_count,
           viewCount: usage?.view_count,
@@ -784,8 +799,9 @@ export async function updateFile_(ctx: any) {
     }
 
     const bundledManifest = readBundledManifest(await safeReadFile(join(profileSkillsDir, '.bundled_manifest')))
+    const keephubNames = readKeephubNames(await safeReadFile(join(profileSkillsDir, '.keephub', 'lock.json')))
     const hubNames = readHubInstalledNames(await safeReadFile(join(profileSkillsDir, '.hub', 'lock.json')))
-    const source = getSkillSource(skill, bundledManifest, hubNames)
+    const source = getSkillSource(skill, bundledManifest, keephubNames, hubNames)
     if (source !== 'local') {
       ctx.status = 403
       ctx.body = { error: 'Skill is read-only' }
@@ -932,8 +948,9 @@ export async function deleteSkill(ctx: any) {
   try {
     // Determine source — only allow deleting `local` skills
     const bundledManifest = readBundledManifest(await safeReadFile(join(skillsDir, '.bundled_manifest')))
+    const keephubNames = readKeephubNames(await safeReadFile(join(skillsDir, '.keephub', 'lock.json')))
     const hubNames = readHubInstalledNames(await safeReadFile(join(skillsDir, '.hub', 'lock.json')))
-    const source = getSkillSource(name, bundledManifest, hubNames)
+    const source = getSkillSource(name, bundledManifest, keephubNames, hubNames)
     if (source !== 'local') {
       ctx.status = 403
       ctx.body = { error: `Only local skills can be deleted (this skill is ${source})` }

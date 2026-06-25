@@ -205,6 +205,9 @@ function handlePinToggled(name: string, pinned: boolean) {
         <button class="legend-item" :class="{ active: sourceFilter === 'hub' }" @click="toggleFilter('hub')">
           <span class="legend-dot dot-hub" />{{ t('skills.source.hub') }}
         </button>
+        <button class="legend-item" :class="{ active: sourceFilter === 'keephub' }" @click="toggleFilter('keephub')">
+          <span class="legend-dot dot-keephub" />{{ t('skills.source.keephub') }}
+        </button>
         <button class="legend-item" :class="{ active: sourceFilter === 'local' }" @click="toggleFilter('local')">
           <span class="legend-dot dot-local" />{{ t('skills.source.local') }}
         </button>
@@ -216,6 +219,14 @@ function handlePinToggled(name: string, pinned: boolean) {
         </button>
       </div>
       <div class="header-actions">
+        <a
+          class="keephub-link"
+          href="https://ark.gotokeep.com/aidock-cms/admin/skills"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {{ t('skills.keepHubLink') }}
+        </a>
         <NButton
           v-if="writeApprovalSupported"
           class="header-action-btn"
@@ -369,6 +380,23 @@ function handlePinToggled(name: string, pinned: boolean) {
   gap: 8px;
 }
 
+.keephub-link {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 2px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent-primary);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color $transition-fast;
+
+  &:hover {
+    color: var(--accent-hover);
+  }
+}
+
 .legend-item {
   display: inline-flex;
   align-items: center;
@@ -405,6 +433,7 @@ function handlePinToggled(name: string, pinned: boolean) {
 
 .legend-dot.dot-builtin { background: #888; }
 .legend-dot.dot-hub { background: #4a90d9; }
+.legend-dot.dot-keephub { background: #13bf8c; }
 .legend-dot.dot-local { background: #66bb6a; }
 .legend-dot.dot-external { background: #f59e0b; }
 

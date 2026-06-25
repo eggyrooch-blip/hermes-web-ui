@@ -107,4 +107,16 @@ describe('SkillsView enterprise surface gating', () => {
     expect(wrapper.text()).toContain('skills.import')
     expect(wrapper.text()).toContain('skills.externalDirs.manage')
   })
+
+  it('renders keephub legend filter and browse link', async () => {
+    const wrapper = mount(SkillsView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('skills.source.keephub')
+    const keepHubLink = wrapper.get('a.keephub-link')
+    expect(keepHubLink.attributes('href')).toBe('https://ark.gotokeep.com/aidock-cms/admin/skills')
+    expect(keepHubLink.attributes('target')).toBe('_blank')
+    expect(keepHubLink.attributes('rel')).toContain('noopener')
+    expect(keepHubLink.text()).toBe('skills.keepHubLink')
+  })
 })

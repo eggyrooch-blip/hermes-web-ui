@@ -502,6 +502,10 @@ function confirmDelete(category: string, skillName: string) {
     background: #f59e0b;
 }
 
+.dot-keephub {
+    background: #13bf8c;
+}
+
 .skill-info {
     flex: 1;
     min-width: 0;

@@ -164,6 +164,36 @@ describe('skills controller', () => {
     }
   })
 
+  it('prefers keephub provenance over hub when listing skills', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-keephub-list-'))
+    const profileDir = join(root, 'research')
+    const skillDir = join(profileDir, 'skills', 'tools', 'shared-skill')
+    const hubLockDir = join(profileDir, 'skills', '.hub')
+    const keephubLockDir = join(profileDir, 'skills', '.keephub')
+
+    await mkdir(skillDir, { recursive: true })
+    await mkdir(hubLockDir, { recursive: true })
+    await mkdir(keephubLockDir, { recursive: true })
+    await writeFile(join(skillDir, 'SKILL.md'), '# Shared Skill\nsynced copy\n', 'utf-8')
+    await writeFile(join(hubLockDir, 'lock.json'), JSON.stringify({ installed: { 'shared-skill': { version: '1.0.0' } } }), 'utf-8')
+    await writeFile(join(keephubLockDir, 'lock.json'), JSON.stringify({ installed: { 'shared-skill': { version: '2.0.0' } } }), 'utf-8')
+    mockGetProfileDir.mockReturnValue(profileDir)
+
+    try {
+      const { list } = await loadController()
+      const ctx: any = { state: { profile: { name: 'research' } }, body: null }
+
+      await list(ctx)
+
+      const tools = ctx.body.categories.find((category: any) => category.name === 'tools')
+      expect(tools.skills).toEqual([
+        expect.objectContaining({ name: 'shared-skill', source: 'keephub', editable: false, description: 'synced copy' }),
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('updates external skill directories in the request-scoped profile config', async () => {
     let updatedConfig: Record<string, any> | undefined
     mockUpdateConfigYamlForProfile.mockImplementation(async (_profile: string, updater: (config: Record<string, any>) => Record<string, any>) => {
@@ -293,6 +323,36 @@ describe('skills controller', () => {
     }
   })
 
+  it('rejects deleting keephub-managed skills from the request-scoped profile directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-delete-keephub-skill-'))
+    const profileDir = join(root, 'research')
+    const skillDir = join(profileDir, 'skills', 'tools', 'shared-skill')
+    const keephubLockDir = join(profileDir, 'skills', '.keephub')
+    await mkdir(skillDir, { recursive: true })
+    await mkdir(keephubLockDir, { recursive: true })
+    await writeFile(join(skillDir, 'SKILL.md'), '# Shared Skill\n', 'utf-8')
+    await writeFile(join(keephubLockDir, 'lock.json'), JSON.stringify({ installed: { 'shared-skill': { version: '1.0.0' } } }), 'utf-8')
+    mockGetProfileDir.mockReturnValue(profileDir)
+
+    const ctx: any = {
+      params: { category: 'tools', skill: 'shared-skill' },
+      state: { profile: { name: 'research' } },
+      body: null,
+    }
+
+    try {
+      const { deleteSkill } = await loadController()
+
+      await deleteSkill(ctx)
+
+      await expect(readFile(join(skillDir, 'SKILL.md'), 'utf-8')).resolves.toBe('# Shared Skill\n')
+      expect(ctx.status).toBe(403)
+      expect(ctx.body).toEqual({ error: 'Only local skills can be deleted (this skill is keephub)' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('updates an editable request-scoped profile-local skill file', async () => {
     const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-edit-local-skill-'))
     const profileDir = join(root, 'research')
@@ -322,6 +382,44 @@ describe('skills controller', () => {
 
       await expect(readFile(skillPath, 'utf-8')).resolves.toBe('# Daily Writing\nnew instructions\n')
       expect(ctx.body).toEqual({ success: true, content: '# Daily Writing\nnew instructions\n' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects editing keephub-managed skills so synced directories remain read-only', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-edit-keephub-skill-'))
+    const profileDir = join(root, 'research')
+    const skillDir = join(profileDir, 'skills', 'daily-writing')
+    const skillPath = join(skillDir, 'SKILL.md')
+    const keephubLockDir = join(profileDir, 'skills', '.keephub')
+    await mkdir(skillDir, { recursive: true })
+    await mkdir(keephubLockDir, { recursive: true })
+    await writeFile(skillPath, '# Daily Writing\nkeep synced instructions\n', 'utf-8')
+    await writeFile(join(keephubLockDir, 'lock.json'), JSON.stringify({ installed: { 'daily-writing': { version: '1.0.0' } } }), 'utf-8')
+    mockGetProfileDir.mockReturnValue(profileDir)
+
+    const ctx: any = {
+      request: {
+        body: {
+          category: 'misc',
+          skill: 'daily-writing',
+          path: 'SKILL.md',
+          content: '# Daily Writing\nchanged locally\n',
+        },
+      },
+      state: { profile: { name: 'research' } },
+      body: null,
+    }
+
+    try {
+      const { updateFile_ } = await loadController()
+
+      await updateFile_(ctx)
+
+      await expect(readFile(skillPath, 'utf-8')).resolves.toBe('# Daily Writing\nkeep synced instructions\n')
+      expect(ctx.status).toBe(403)
+      expect(ctx.body).toEqual({ error: 'Skill is read-only' })
     } finally {
       await rm(root, { recursive: true, force: true })
     }

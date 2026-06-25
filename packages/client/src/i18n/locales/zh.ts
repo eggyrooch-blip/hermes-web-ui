@@ -841,9 +841,11 @@ export default {
     source: {
       builtin: '内置',
       hub: 'Hub 安装',
+      keephub: 'Keep 同步',
       local: '本地安装',
       external: '外部目录',
     },
+    keepHubLink: '去 Keep AI Hub 挑技能 →',
     delete: '删除',
     deleteConfirm: '确定要删除技能 "{name}" 吗？此操作不可撤销。',
     deleteSuccess: '已删除技能',

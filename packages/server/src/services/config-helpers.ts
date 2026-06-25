@@ -52,7 +52,7 @@ export const PROVIDER_ENV_MAP: Record<string, { api_key_env: string; base_url_en
 
 // --- Types ---
 
-export type SkillSource = 'builtin' | 'hub' | 'local' | 'external'
+export type SkillSource = 'builtin' | 'hub' | 'local' | 'external' | 'keephub'
 
 export interface SkillInfo {
   name: string

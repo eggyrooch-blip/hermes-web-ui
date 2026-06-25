@@ -1,6 +1,6 @@
 import { request, getBaseUrlValue, getApiKey, getActiveProfileName } from '../client'
 
-export type SkillSource = 'builtin' | 'hub' | 'local' | 'external'
+export type SkillSource = 'builtin' | 'hub' | 'local' | 'external' | 'keephub'
 
 export interface SkillInfo {
   name: string

@@ -841,9 +841,11 @@ export default {
     source: {
       builtin: 'Builtin',
       hub: 'Hub',
+      keephub: 'Keep Sync',
       local: 'Local',
       external: 'External',
     },
+    keepHubLink: 'Browse Keep AI Hub →',
     delete: 'Delete',
     deleteConfirm: 'Delete skill "{name}"? This cannot be undone.',
     deleteSuccess: 'Skill deleted',
