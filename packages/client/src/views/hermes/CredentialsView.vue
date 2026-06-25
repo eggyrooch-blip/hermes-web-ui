@@ -37,6 +37,8 @@ const oauthPollingId = ref('')
 // older poll can't close a newer popup belonging to a different connector.
 let authWindow: Window | null = null
 let authWindowOwnerId = ''
+// Set on unmount so an in-flight poll stops touching a torn-down component.
+let pollAbort = false
 
 const credentials = computed(() => data.value?.credentials || [])
 const routeProfile = computed(() => typeof route.query.profile === 'string' ? route.query.profile.trim() : '')
@@ -89,7 +91,10 @@ async function ensureProfileSelection() {
 }
 
 async function refreshCredentials(fresh = false) {
-  data.value = await fetchSkillCredentials(requestedProfile.value, fresh ? { fresh: true } : undefined)
+  // Cached load keeps the single-arg call shape; only the fresh path passes options.
+  data.value = fresh
+    ? await fetchSkillCredentials(requestedProfile.value, { fresh: true })
+    : await fetchSkillCredentials(requestedProfile.value)
 }
 
 function closeAuthWindow(ownerId?: string) {
@@ -127,6 +132,7 @@ async function pollCredentialAfterOAuth(id: string) {
   try {
     for (let attempt = 0; attempt < 18; attempt += 1) {
       await sleep(2_500)
+      if (pollAbort) return  // component unmounted — stop touching it
       await refreshCredentials(true)  // fresh: bypass the broker cache to see the new login
       if (credentialAuthSucceeded(id)) {
         closeAuthWindow(id)  // auto-close THIS flow's popup only, on genuine success
@@ -216,7 +222,9 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  pollAbort = true  // stop the in-flight poll from touching the torn-down component
   window.removeEventListener('focus', handleWindowFocus)
+  closeAuthWindow()  // don't leave a stale auth popup open after navigating away
 })
 
 watch(requestedProfile, async (profile, previous) => {

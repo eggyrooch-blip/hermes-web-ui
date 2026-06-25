@@ -168,6 +168,21 @@ describe('CredentialsView', () => {
     expect(html).not.toContain('gitlab-secret-token')
   })
 
+  it('manual refresh button requests FRESH status (bypasses the broker cache)', async () => {
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+    // Initial mount load is cached (single-arg); the manual refresh must be fresh.
+    expect(fetchSkillCredentialsMock).toHaveBeenLastCalledWith('feishu_g41a5b5g')
+    fetchSkillCredentialsMock.mockClear()
+
+    await wrapper.find('.page-header button').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(fetchSkillCredentialsMock).toHaveBeenCalledWith('feishu_g41a5b5g', { fresh: true })
+  })
+
   it('keeps explicit route profile support on the standalone connectors route', async () => {
     routeQuery.profile = 'route_profile'
     const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
