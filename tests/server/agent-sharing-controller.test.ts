@@ -165,50 +165,29 @@ describe('agent sharing controller', () => {
     process.env.FEISHU_APP_ID = 'cli_web'
     vi.resetModules()
     const fetchMock = vi.fn(async (_url: string, options: any) => {
-      expect(options.headers['X-Hermes-Owner-Open-Id']).toBe('ou_owner')
-      expect(options.headers['X-Hermes-Actor-Provider']).toBe('feishu')
-      expect(options.headers['X-Hermes-Actor-Tenant-Key']).toBe('cli_web')
-      expect(options.headers['X-Hermes-Actor-App-Id']).toBe('cli_web')
-      expect(options.headers['X-Hermes-Actor-User-Id']).toBe('g41a5b5g')
-      expect(options.headers['X-Hermes-Actor-Display-Name-Encoded']).toBe(encodeURIComponent('孙可'))
+      expect(options.headers).toMatchObject({
+        'X-Hermes-Owner-Open-Id': 'ou_owner',
+        'X-Hermes-Actor-Provider': 'feishu',
+        'X-Hermes-Actor-Tenant-Key': 'cli_web',
+        'X-Hermes-Actor-App-Id': 'cli_web',
+        'X-Hermes-Actor-User-Id': 'g41a5b5g',
+        'X-Hermes-Actor-Display-Name-Encoded': encodeURIComponent('孙可'),
+      })
       expect(JSON.parse(options.body)).toEqual({
-        grantee: {
-          provider: 'feishu',
-          type: 'user_id',
-          value: 'ee966643',
-        },
+        grantee: { provider: 'feishu', type: 'user_id', value: 'ee966643' },
         role: 'viewer',
       })
-      return new Response(JSON.stringify({
-        share: {
-          share_id: 'shr_legacy',
-          grantee_principal_id: 'prn_ee966643',
-          role: 'viewer',
-          status: 'active',
-        },
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      return new Response(JSON.stringify({ share: { grantee_principal_id: 'prn_ee966643', role: 'viewer' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
     })
     vi.stubGlobal('fetch', fetchMock)
     const { grantShare } = await import('../../packages/server/src/controllers/hermes/agents')
     const ctx: any = {
       params: { agentId: 'webui:ou_owner:123' },
-      state: {
-        user: {
-          openid: 'ou_owner',
-          profile: 'feishu_g41a5b5g',
-          name: '孙可',
-        },
-      },
-      request: {
-        body: {
-          grantee: {
-            provider: 'feishu',
-            type: 'user_id',
-            value: 'ee966643',
-          },
-          role: 'viewer',
-        },
-      },
+      state: { user: { openid: 'ou_owner', profile: 'feishu_g41a5b5g', name: '孙可' } },
+      request: { body: { grantee: { provider: 'feishu', type: 'user_id', value: 'ee966643' }, role: 'viewer' } },
       status: 200,
       body: undefined,
     }
