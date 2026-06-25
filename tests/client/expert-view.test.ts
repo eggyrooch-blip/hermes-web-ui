@@ -4,7 +4,6 @@ import { mount } from '@vue/test-utils'
 
 const replaceMock = vi.hoisted(() => vi.fn())
 const routeQuery = vi.hoisted(() => ({ tab: undefined as string | undefined }))
-const openMock = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-router', () => ({
   useRoute: () => ({ query: routeQuery }),
@@ -38,7 +37,6 @@ describe('ExpertView', () => {
   beforeEach(() => {
     routeQuery.tab = undefined
     replaceMock.mockClear()
-    openMock.mockClear()
     vi.unstubAllEnvs()
   })
 
@@ -69,30 +67,13 @@ describe('ExpertView', () => {
     })
   })
 
-  it('hides the AiHub entry button when VITE_HERMES_AIHUB_URL is unset', () => {
+  it('always renders the Keep AI Hub entry link in the shared header', () => {
     const wrapper = mount(ExpertView)
-    expect(wrapper.find('.aihub-entry').exists()).toBe(false)
-  })
-
-  it('shows the AiHub entry button and opens the configured URL in a new tab', async () => {
-    vi.stubEnv('VITE_HERMES_AIHUB_URL', 'https://aihub.example.com')
-    vi.stubGlobal('open', openMock)
-
-    const wrapper = mount(ExpertView)
-    const btn = wrapper.find('.aihub-entry')
-    expect(btn.exists()).toBe(true)
-
-    await btn.trigger('click')
-    expect(openMock).toHaveBeenCalledWith(
-      'https://aihub.example.com',
-      '_blank',
-      'noopener,noreferrer',
-    )
-  })
-
-  it('keeps the AiHub button hidden when only the placeholder default is set', () => {
-    vi.stubEnv('VITE_HERMES_AIHUB_URL', '__AIHUB_URL_NOT_CONFIGURED__')
-    const wrapper = mount(ExpertView)
-    expect(wrapper.find('.aihub-entry').exists()).toBe(false)
+    const link = wrapper.find('a.keephub-link')
+    expect(link.exists()).toBe(true)
+    expect(link.attributes('href')).toBe('https://ark.gotokeep.com/aidock-cms/admin/skills')
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.attributes('rel')).toContain('noopener')
+    expect(link.text()).toBe('skills.keepHubLink')
   })
 })

@@ -108,15 +108,26 @@ describe('SkillsView enterprise surface gating', () => {
     expect(wrapper.text()).toContain('skills.externalDirs.manage')
   })
 
-  it('renders keephub legend filter and browse link', async () => {
+  it('renders merged KeepAiHub legend filter and standalone browse link', async () => {
     const wrapper = mount(SkillsView)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('skills.source.keephub')
+    // hub + keephub are merged into one legend item; standalone (non-embedded)
+    // SkillsView keeps the toolbar browse link.
+    expect(wrapper.text()).toContain('skills.source.keepaihub')
     const keepHubLink = wrapper.get('a.keephub-link')
     expect(keepHubLink.attributes('href')).toBe('https://ark.gotokeep.com/aidock-cms/admin/skills')
     expect(keepHubLink.attributes('target')).toBe('_blank')
     expect(keepHubLink.attributes('rel')).toContain('noopener')
     expect(keepHubLink.text()).toBe('skills.keepHubLink')
+  })
+
+  it('hides the toolbar browse link when embedded so it never duplicates the ExpertView header link', async () => {
+    const wrapper = mount(SkillsView, { props: { embedded: true } })
+    await flushPromises()
+
+    // Embedded in the expert panel, the Keep AI Hub entry lives only in
+    // ExpertView's shared header — the toolbar copy must not render.
+    expect(wrapper.find('a.keephub-link').exists()).toBe(false)
   })
 })

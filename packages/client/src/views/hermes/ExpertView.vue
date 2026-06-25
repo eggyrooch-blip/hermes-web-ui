@@ -37,20 +37,10 @@ function tabQuery(tab: ExpertTab) {
   return tab === 'experts' ? undefined : tab
 }
 
-// AiHub portal entry. CONFIG-DRIVEN: read from the VITE_HERMES_AIHUB_URL build/
-// deploy env var. TODO(sunke): supply the real AiHub portal URL — the value is
-// intentionally NOT hardcoded here. When unset (the default), the button is
-// hidden rather than linking to a guessed URL.
-const AIHUB_URL_PLACEHOLDER = '__AIHUB_URL_NOT_CONFIGURED__'
-const aiHubUrl = computed<string>(() => {
-  const raw = (import.meta.env.VITE_HERMES_AIHUB_URL as string | undefined)?.trim()
-  return raw && raw !== AIHUB_URL_PLACEHOLDER ? raw : ''
-})
-
-function openAiHub() {
-  if (!aiHubUrl.value) return
-  window.open(aiHubUrl.value, '_blank', 'noopener,noreferrer')
-}
+// Keep AI Hub entry. Lives in the shared expert header (top-right), visible on
+// all three tabs. Replaces the old config-driven AiHub share button; hardcoded
+// ark URL matches the standalone /hermes/skills toolbar link.
+const KEEP_AIHUB_URL = 'https://ark.gotokeep.com/aidock-cms/admin/skills'
 
 function selectTab(tab: ExpertTab) {
   activeTab.value = tab
@@ -94,20 +84,14 @@ watch(() => route.query.tab, (tab) => {
         </button>
       </nav>
 
-      <button
-        v-if="aiHubUrl"
-        class="aihub-entry"
-        type="button"
-        :title="t('expert.aihub.openTooltip')"
-        @click="openAiHub"
+      <a
+        class="keephub-link"
+        :href="KEEP_AIHUB_URL"
+        target="_blank"
+        rel="noopener noreferrer"
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-          <polyline points="15 3 21 3 21 9" />
-          <line x1="10" y1="14" x2="21" y2="3" />
-        </svg>
-        <span class="aihub-entry-label">{{ t('expert.aihub.label') }}</span>
-      </button>
+        {{ t('skills.keepHubLink') }}
+      </a>
     </div>
 
     <section class="expert-panel" role="tabpanel">
@@ -154,33 +138,25 @@ watch(() => route.query.tab, (tab) => {
   background: $bg-primary;
 }
 
-.aihub-entry {
+// Ported verbatim from SkillsView's .keephub-link so the entry keeps the exact
+// same font/look after moving into the shared header. flex:0 0 auto keeps it
+// tight at the right edge of the space-between header.
+.keephub-link {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 12px;
-  border: 1px solid $border-color;
-  border-radius: $radius-sm;
-  background: $bg-card;
-  color: $text-secondary;
+  height: 28px;
+  padding: 0 2px;
   font-size: 12px;
-  line-height: 16px;
-  cursor: pointer;
-  transition:
-    border-color $transition-fast,
-    color $transition-fast,
-    background-color $transition-fast;
+  font-weight: 500;
+  color: var(--accent-primary);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color $transition-fast;
 
   &:hover {
-    color: $accent-primary;
-    border-color: $accent-muted;
+    color: var(--accent-hover);
   }
-}
-
-.aihub-entry-label {
-  white-space: nowrap;
 }
 
 .expert-tab {

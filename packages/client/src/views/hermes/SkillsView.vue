@@ -13,7 +13,9 @@ import { fetchPendingWrites } from '@/api/hermes/write-gate'
 import { isStoredSuperAdmin } from '@/api/client'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 
-type SourceFilter = SkillSource | 'modified'
+// `keepaihub` is a display-only merge of backend sources `hub` + `keephub`
+// (see SkillList.vue displaySource()). Not a real backend SkillSource.
+type SourceFilter = SkillSource | 'modified' | 'keepaihub'
 
 const { t, locale } = useI18n()
 const profilesStore = useProfilesStore()
@@ -202,11 +204,8 @@ function handlePinToggled(name: string, pinned: boolean) {
         <button class="legend-item" :class="{ active: sourceFilter === 'builtin' }" @click="toggleFilter('builtin')">
           <span class="legend-dot dot-builtin" />{{ t('skills.source.builtin') }}
         </button>
-        <button class="legend-item" :class="{ active: sourceFilter === 'hub' }" @click="toggleFilter('hub')">
-          <span class="legend-dot dot-hub" />{{ t('skills.source.hub') }}
-        </button>
-        <button class="legend-item" :class="{ active: sourceFilter === 'keephub' }" @click="toggleFilter('keephub')">
-          <span class="legend-dot dot-keephub" />{{ t('skills.source.keephub') }}
+        <button class="legend-item" :class="{ active: sourceFilter === 'keepaihub' }" @click="toggleFilter('keepaihub')">
+          <span class="legend-dot dot-keepaihub" />{{ t('skills.source.keepaihub') }}
         </button>
         <button class="legend-item" :class="{ active: sourceFilter === 'local' }" @click="toggleFilter('local')">
           <span class="legend-dot dot-local" />{{ t('skills.source.local') }}
@@ -219,7 +218,10 @@ function handlePinToggled(name: string, pinned: boolean) {
         </button>
       </div>
       <div class="header-actions">
+        <!-- Standalone /hermes/skills route only. In the embedded expert panel
+             this entry lives in ExpertView's shared header (top-right). -->
         <a
+          v-if="!props.embedded"
           class="keephub-link"
           href="https://ark.gotokeep.com/aidock-cms/admin/skills"
           target="_blank"
@@ -432,8 +434,7 @@ function handlePinToggled(name: string, pinned: boolean) {
 }
 
 .legend-dot.dot-builtin { background: #888; }
-.legend-dot.dot-hub { background: #4a90d9; }
-.legend-dot.dot-keephub { background: #13bf8c; }
+.legend-dot.dot-keepaihub { background: #13bf8c; }
 .legend-dot.dot-local { background: #66bb6a; }
 .legend-dot.dot-external { background: #f59e0b; }
 

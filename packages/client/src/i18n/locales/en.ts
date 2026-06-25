@@ -418,10 +418,6 @@ export default {
       activeBadge: 'Active',
       aihubBadge: 'From AiHub',
     },
-    aihub: {
-      label: 'AiHub',
-      openTooltip: 'Open AiHub in a new tab',
-    },
     detail: {
       close: 'Close',
       capabilities: 'Capabilities',
@@ -861,7 +857,6 @@ export default {
     loadFailed: 'Failed to load skill',
     fileLoadFailed: 'Failed to load file',
     modified: 'Modified',
-    aihubBadge: 'From AiHub',
     archived: 'Archived',
     pinned: 'Pinned',
     pin: 'Pin skill',
@@ -870,8 +865,7 @@ export default {
     toggleFailed: 'Failed to toggle skill',
     source: {
       builtin: 'Builtin',
-      hub: 'Hub',
-      keephub: 'Keep Sync',
+      keepaihub: 'KeepAiHub',
       local: 'Local',
       external: 'External',
     },

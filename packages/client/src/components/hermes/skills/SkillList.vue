@@ -5,7 +5,18 @@ import type { SkillCategory, SkillSource, SkillInfo } from '@/api/hermes/skills'
 import { toggleSkill, deleteSkillApi } from '@/api/hermes/skills'
 import { useI18n } from 'vue-i18n'
 
-type SourceFilter = SkillSource | 'modified'
+type SourceFilter = SkillSource | 'modified' | 'keepaihub'
+
+// Display-source merge: `hub` (skillhub-installer) and `keephub` (Keep AI Hub
+// sync) are two distinct BACKEND sources but one thing to the user — both are
+// "installed from Keep AI Hub". Collapse them to a single display token
+// `keepaihub` for the legend filter, the source dot, and the source tooltip.
+// The raw `skill.source` value is NEVER mutated, so the backend / multitenancy
+// `.keephub/lock.json` contract is untouched (display-only merge).
+function displaySource(source?: string | null): string {
+    const s = source || 'local'
+    return s === 'hub' || s === 'keephub' ? 'keepaihub' : s
+}
 
 const { t } = useI18n()
 const message = useMessage()
@@ -32,7 +43,7 @@ const deletingSkills = ref<Set<string>>(new Set())
 const filteredArchived = computed(() => {
     let result = props.archived
     if (props.sourceFilter && props.sourceFilter !== 'modified') {
-        result = result.filter(s => (s.source || 'local') === props.sourceFilter)
+        result = result.filter(s => displaySource(s.source) === props.sourceFilter)
     }
     if (props.searchQuery) {
         const q = props.searchQuery.toLowerCase()
@@ -51,7 +62,7 @@ const filteredCategories = computed(() => {
                 ...cat,
                 skills: cat.skills.filter(s => {
                     if (props.sourceFilter === 'modified') return s.modified
-                    return (s.source || 'local') === props.sourceFilter
+                    return displaySource(s.source) === props.sourceFilter
                 }),
             }))
             .filter(cat => cat.skills.length > 0)
@@ -232,11 +243,9 @@ function confirmDelete(category: string, skillName: string) {
                                 ]" @click="handleSelect(cat.name, skill.name)">
                                 <div class="skill-info">
                                     <span class="skill-name">
-                                        <span class="source-dot" :class="`dot-${skill.source || 'local'}`"
-                                            :title="t(`skills.source.${skill.source || 'local'}`)" />
+                                        <span class="source-dot" :class="`dot-${displaySource(skill.source)}`"
+                                            :title="t(`skills.source.${displaySource(skill.source)}`)" />
                                         {{ skill.name }}
-                                        <span v-if="skill.source === 'hub'" class="aihub-badge"
-                                            :title="t('skills.aihubBadge')">{{ t('skills.aihubBadge') }}</span>
                                         <span v-if="skill.modified" class="modified-badge"
                                             :title="t('skills.modified')">✎</span>
                                     </span>
@@ -270,11 +279,9 @@ function confirmDelete(category: string, skillName: string) {
                     ]" @click="handleSelect(cat.name, skill.name)">
                         <div class="skill-info">
                             <span class="skill-name">
-                                <span class="source-dot" :class="`dot-${skill.source || 'local'}`"
-                                    :title="t(`skills.source.${skill.source || 'local'}`)" />
+                                <span class="source-dot" :class="`dot-${displaySource(skill.source)}`"
+                                    :title="t(`skills.source.${displaySource(skill.source)}`)" />
                                 {{ skill.name }}
-                                <span v-if="skill.source === 'hub'" class="aihub-badge"
-                                    :title="t('skills.aihubBadge')">{{ t('skills.aihubBadge') }}</span>
                                 <span v-if="skill.modified" class="modified-badge"
                                     :title="t('skills.modified')">✎</span>
                             </span>
@@ -316,8 +323,8 @@ function confirmDelete(category: string, skillName: string) {
                     @click="handleSelect('.archive', skill.name)">
                     <div class="skill-info">
                         <span class="skill-name">
-                            <span class="source-dot" :class="`dot-${skill.source || 'local'}`"
-                                :title="t(`skills.source.${skill.source || 'local'}`)" />
+                            <span class="source-dot" :class="`dot-${displaySource(skill.source)}`"
+                                :title="t(`skills.source.${displaySource(skill.source)}`)" />
                             {{ skill.name }}
                         </span>
                         <span v-if="skill.description" class="skill-desc">{{ skill.description }}</span>
@@ -510,6 +517,12 @@ function confirmDelete(category: string, skillName: string) {
     background: #13bf8c;
 }
 
+// Unified "KeepAiHub 安装" dot — covers both backend sources hub + keephub
+// (see displaySource()). Keep brand green.
+.dot-keepaihub {
+    background: #13bf8c;
+}
+
 .skill-info {
     flex: 1;
     min-width: 0;
@@ -528,17 +541,6 @@ function confirmDelete(category: string, skillName: string) {
     color: $warning;
     margin-left: 2px;
     opacity: 0.7;
-}
-
-.aihub-badge {
-    font-size: 10px;
-    line-height: 14px;
-    margin-left: 4px;
-    padding: 0 6px;
-    border-radius: 999px;
-    background: rgba(74, 144, 217, 0.14);
-    color: #4a90d9;
-    white-space: nowrap;
 }
 
 .skill-desc {

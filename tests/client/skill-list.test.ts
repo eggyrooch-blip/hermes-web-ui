@@ -51,6 +51,71 @@ describe('SkillList', () => {
     expect(wrapper.get('.source-dot').attributes('title')).toBe('skills.source.external')
   })
 
+  it('merges hub and keephub sources under the single keepaihub filter and dot', () => {
+    const wrapper = mount(SkillList, {
+      props: {
+        categories: [
+          {
+            name: 'tools',
+            description: '',
+            skills: [
+              { name: 'hub-skill', description: '', enabled: true, source: 'hub' },
+              { name: 'keephub-skill', description: '', enabled: true, source: 'keephub' },
+              { name: 'local-skill', description: '', enabled: true, source: 'local' },
+            ],
+          },
+        ],
+        archived: [],
+        selectedSkill: null,
+        searchQuery: '',
+        sourceFilter: 'keepaihub',
+      },
+    })
+
+    // One legend click shows BOTH backend sources, hides the rest.
+    expect(wrapper.text()).toContain('hub-skill')
+    expect(wrapper.text()).toContain('keephub-skill')
+    expect(wrapper.text()).not.toContain('local-skill')
+
+    // Both render the unified KeepAiHub dot + tooltip (raw source untouched).
+    const dots = wrapper.findAll('.source-dot')
+    expect(dots).toHaveLength(2)
+    for (const dot of dots) {
+      expect(dot.classes()).toContain('dot-keepaihub')
+      expect(dot.attributes('title')).toBe('skills.source.keepaihub')
+    }
+  })
+
+  it('applies the keepaihub merge to the archived list too', async () => {
+    const wrapper = mount(SkillList, {
+      props: {
+        categories: [],
+        archived: [
+          { name: 'arch-hub', description: '', enabled: true, source: 'hub' },
+          { name: 'arch-keephub', description: '', enabled: true, source: 'keephub' },
+          { name: 'arch-local', description: '', enabled: true, source: 'local' },
+        ],
+        selectedSkill: null,
+        searchQuery: '',
+        sourceFilter: 'keepaihub',
+      },
+    })
+
+    // Archived section is collapsed by default — expand it to inspect rows.
+    await wrapper.get('.archive-header').trigger('click')
+
+    expect(wrapper.text()).toContain('arch-hub')
+    expect(wrapper.text()).toContain('arch-keephub')
+    expect(wrapper.text()).not.toContain('arch-local')
+
+    const dots = wrapper.findAll('.skill-archived .source-dot')
+    expect(dots).toHaveLength(2)
+    for (const dot of dots) {
+      expect(dot.classes()).toContain('dot-keepaihub')
+      expect(dot.attributes('title')).toBe('skills.source.keepaihub')
+    }
+  })
+
   it('groups external skills by source path then category when external filter is active', () => {
     const wrapper = mount(SkillList, {
       props: {
