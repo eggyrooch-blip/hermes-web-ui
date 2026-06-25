@@ -150,7 +150,9 @@ async function pollCredentialAfterOAuth(id: string, token: number) {
   } catch {
     // The manual refresh button remains available if a background poll fails.
   } finally {
-    if (oauthPollingId.value === id) oauthPollingId.value = ''
+    // Only clear the indicator if THIS poll is still the current attempt — a superseded
+    // poll must not hide a newer poll's loading state.
+    if (oauthPollingId.value === id && token === attemptSeq) oauthPollingId.value = ''
   }
 }
 
