@@ -243,6 +243,9 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   if (path === '/api/auth/status' || path === '/api/auth/me' || path === '/api/auth/feishu/logout' || path === '/health' || path === '/upload') return false
   if (path.startsWith('/api/auth/feishu/uat/')) return false
   if (path.startsWith('/api/auth/skill-credentials')) return false
+  // Expert catalog (专家广场) — read-only, audience-filtered per the caller's own
+  // profile by the broker; safe for chat-plane users (GET only).
+  if (path.startsWith('/api/hermes/experts')) return method !== 'GET'
   if (path.startsWith('/api/hermes/sessions')) return false
   if (path.startsWith('/api/hermes/agents')) return false
   if (path.startsWith('/api/hermes/search/sessions')) return false
