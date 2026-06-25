@@ -197,4 +197,69 @@ describe('agent sharing controller', () => {
     expect(ctx.status).toBe(200)
     expect(ctx.body.share.grantee_principal_id).toBe('prn_ee966643')
   })
+
+  it('does not send actor principal headers for explicit userId sessions missing tenantKey', async () => {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    process.env.HERMES_RUN_BROKER_KEY = 'broker-key'
+    process.env.FEISHU_APP_ID = 'cli_web'
+    vi.resetModules()
+    const fetchMock = vi.fn(async (_url: string, options: any) => {
+      expect(options.headers['X-Hermes-Owner-Open-Id']).toBe('ou_owner')
+      expect(options.headers['X-Hermes-Actor-Provider']).toBeUndefined()
+      expect(options.headers['X-Hermes-Actor-Tenant-Key']).toBeUndefined()
+      expect(options.headers['X-Hermes-Actor-App-Id']).toBeUndefined()
+      expect(options.headers['X-Hermes-Actor-User-Id']).toBeUndefined()
+      return new Response(JSON.stringify({ share: { role: 'viewer' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { grantShare } = await import('../../packages/server/src/controllers/hermes/agents')
+    const ctx: any = {
+      params: { agentId: 'agent-shared' },
+      state: { user: { openid: 'ou_owner', userId: 'u_owner', appId: 'cli_web', name: 'Owner User' } },
+      request: { body: { grantee: { provider: 'feishu', type: 'user_id', value: 'ee966643' }, role: 'viewer' } },
+      status: 200,
+      body: undefined,
+    }
+
+    await grantShare(ctx)
+
+    expect(ctx.status).toBe(200)
+  })
+
+  it('does not derive actor principal headers from group or OpenID-shaped profiles', async () => {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    process.env.HERMES_RUN_BROKER_KEY = 'broker-key'
+    process.env.FEISHU_APP_ID = 'cli_web'
+    vi.resetModules()
+    const fetchMock = vi.fn(async (_url: string, options: any) => {
+      expect(options.headers['X-Hermes-Owner-Open-Id']).toBe('ou_owner')
+      expect(options.headers['X-Hermes-Actor-Provider']).toBeUndefined()
+      expect(options.headers['X-Hermes-Actor-Tenant-Key']).toBeUndefined()
+      expect(options.headers['X-Hermes-Actor-App-Id']).toBeUndefined()
+      expect(options.headers['X-Hermes-Actor-User-Id']).toBeUndefined()
+      return new Response(JSON.stringify({ share: { role: 'viewer' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { grantShare } = await import('../../packages/server/src/controllers/hermes/agents')
+    for (const profile of ['feishu_group_abc', 'feishu_ou_owner']) {
+      const ctx: any = {
+        params: { agentId: 'agent-shared' },
+        state: { user: { openid: 'ou_owner', profile, name: 'Owner User' } },
+        request: { body: { grantee: { provider: 'feishu', type: 'user_id', value: 'ee966643' }, role: 'viewer' } },
+        status: 200,
+        body: undefined,
+      }
+
+      await grantShare(ctx)
+
+      expect(ctx.status).toBe(200)
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
 })

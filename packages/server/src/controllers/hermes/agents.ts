@@ -50,12 +50,13 @@ function brokerHeaders(ctx: Context): Record<string, string> {
   const user = actor(ctx)
   const openid = actorOpenId(ctx)
   if (openid) headers['X-Hermes-Owner-Open-Id'] = openid
-  const actorUserId = typeof user?.userId === 'string' && user.userId.trim()
-    ? user.userId.trim()
-    : inferFeishuUserIdFromProfile(user?.profile)
+  const explicitActorUserId = typeof user?.userId === 'string' ? user.userId.trim() : ''
+  const inferredActorUserId = explicitActorUserId ? '' : inferFeishuUserIdFromProfile(user?.profile)
+  const actorUserId = explicitActorUserId || inferredActorUserId
+  const legacyTenantKey = typeof user?.appId === 'string' && user.appId.trim() ? user.appId.trim() : config.feishuAppId
   const actorTenantKey = typeof user?.tenantKey === 'string' && user.tenantKey.trim()
     ? user.tenantKey.trim()
-    : (typeof user?.appId === 'string' && user.appId.trim() ? user.appId.trim() : config.feishuAppId)
+    : (inferredActorUserId ? legacyTenantKey : '')
   if (actorUserId && actorTenantKey) {
     headers['X-Hermes-Actor-Provider'] = 'feishu'
     setHeaderIfPresent(headers, 'X-Hermes-Actor-Tenant-Key', actorTenantKey)
