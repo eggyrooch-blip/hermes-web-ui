@@ -23,6 +23,7 @@ describe('skill credential status', () => {
     delete process.env.HERMES_MEEGLE_STATUS_ALLOW_NPX
     delete process.env.HERMES_MULTITENANCY_DB
     delete process.env.HERMES_WEB_PLANE
+    delete process.env.HERMES_WEBUI_CONNECTORS_USE_BROKER
   })
 
   function makeRoutingDb(rows: Array<{ user_id: string; profile_name: string; open_id: string; active?: number; owner_open_id?: string; provenance?: string; kind?: string | null }>) {
@@ -1206,6 +1207,9 @@ describe('skill credential status', () => {
   })
 
   it('loads credential status from the request profile without a Feishu session', async () => {
+    // This test asserts the LOCAL reader's output (gitlab=configured + secret
+    // redaction); the broker path is covered by connector-registry-client.test.ts.
+    process.env.HERMES_WEBUI_CONNECTORS_USE_BROKER = '0'
     const hermesHome = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-home-'))
     roots.push(hermesHome)
     process.env.HERMES_HOME = hermesHome
@@ -1237,6 +1241,9 @@ describe('skill credential status', () => {
   })
 
   it('loads credential status from an owner-scoped selected profile for a Feishu session', async () => {
+    // Asserts the LOCAL reader's output (gitlab=configured + secret redaction)
+    // through owner-scoped profile resolution; broker path tested separately.
+    process.env.HERMES_WEBUI_CONNECTORS_USE_BROKER = '0'
     const hermesHome = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-home-'))
     roots.push(hermesHome)
     process.env.HERMES_HOME = hermesHome

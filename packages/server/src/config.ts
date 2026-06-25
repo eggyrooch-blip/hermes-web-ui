@@ -78,6 +78,17 @@ export function parseBool(raw: string | undefined): boolean {
   return value === '1' || value === 'true' || value === 'yes' || value === 'on'
 }
 
+// Like parseBool but honours an explicit OFF and uses `fallback` when the var is
+// unset/blank. Used for flags whose default we want to flip ON without forcing
+// every deployment to set the env var (an explicit `=0/false/off` still opts out).
+export function parseBoolWithDefault(raw: string | undefined, fallback: boolean): boolean {
+  const value = raw?.trim().toLowerCase()
+  if (value === undefined || value === '') return fallback
+  if (value === '1' || value === 'true' || value === 'yes' || value === 'on') return true
+  if (value === '0' || value === 'false' || value === 'no' || value === 'off') return false
+  return fallback
+}
+
 export function getJobsBrokerEnabled(env: Record<string, string | undefined> = process.env): boolean {
   const explicit = env.HERMES_WEBUI_JOBS_BROKER
   if (explicit !== undefined) return parseBool(explicit)
@@ -146,9 +157,13 @@ export const config = {
   webuiJobsBroker: getJobsBrokerEnabled(),
   runBrokerUrl: getRunBrokerUrl(),
   runBrokerKey: getRunBrokerKey(),
-  // Connector Registry Phase 2 (all default OFF → zero behavior change on ship):
-  // serve skill-credentials status from the Run Broker connector registry.
-  connectorsUseBroker: parseBool(process.env.HERMES_WEBUI_CONNECTORS_USE_BROKER),
+  // Connector Registry Phase 2: serve skill-credentials status from the Run Broker
+  // connector registry — the SINGLE SOURCE OF TRUTH. It decodes the real token exp
+  // (the local TS reader trusts a blind `kep-auth status` and falsely reports an
+  // expired token as authenticated). Defaults ON; set HERMES_WEBUI_CONNECTORS_USE_BROKER=0
+  // to fall back to the legacy local reader. Broker-down → fail-safe error states,
+  // never the lying-local result (see auth.ts skillCredentials).
+  connectorsUseBroker: parseBoolWithDefault(process.env.HERMES_WEBUI_CONNECTORS_USE_BROKER, true),
   // Phase 1.5 shadow compare: fetch the OTHER source in the background and log a
   // redacted diff without changing the served result.
   connectorShadowCompare: parseBool(process.env.HERMES_CONNECTOR_SHADOW_COMPARE),
