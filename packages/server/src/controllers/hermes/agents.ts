@@ -11,6 +11,15 @@ function actorOpenId(ctx: Context): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function inferFeishuUserIdFromProfile(profile: unknown): string {
+  if (typeof profile !== 'string') return ''
+  const trimmed = profile.trim()
+  if (!trimmed.startsWith('feishu_') || trimmed.startsWith('feishu_group_')) return ''
+  const userId = trimmed.slice('feishu_'.length).trim()
+  if (!userId || userId.startsWith('ou_')) return ''
+  return userId
+}
+
 function isByteString(value: string): boolean {
   for (let i = 0; i < value.length; i += 1) {
     if (value.charCodeAt(i) > 255) return false
@@ -41,19 +50,25 @@ function brokerHeaders(ctx: Context): Record<string, string> {
   const user = actor(ctx)
   const openid = actorOpenId(ctx)
   if (openid) headers['X-Hermes-Owner-Open-Id'] = openid
-  if (user?.userId && user?.tenantKey) {
+  const actorUserId = typeof user?.userId === 'string' && user.userId.trim()
+    ? user.userId.trim()
+    : inferFeishuUserIdFromProfile(user?.profile)
+  const actorTenantKey = typeof user?.tenantKey === 'string' && user.tenantKey.trim()
+    ? user.tenantKey.trim()
+    : (typeof user?.appId === 'string' && user.appId.trim() ? user.appId.trim() : config.feishuAppId)
+  if (actorUserId && actorTenantKey) {
     headers['X-Hermes-Actor-Provider'] = 'feishu'
-    setHeaderIfPresent(headers, 'X-Hermes-Actor-Tenant-Key', user.tenantKey)
-    setHeaderIfPresent(headers, 'X-Hermes-Actor-App-Id', user.appId || config.feishuAppId)
-    setHeaderIfPresent(headers, 'X-Hermes-Actor-User-Id', user.userId)
+    setHeaderIfPresent(headers, 'X-Hermes-Actor-Tenant-Key', actorTenantKey)
+    setHeaderIfPresent(headers, 'X-Hermes-Actor-App-Id', user?.appId || config.feishuAppId)
+    setHeaderIfPresent(headers, 'X-Hermes-Actor-User-Id', actorUserId)
     setEncodedHeaderIfNeeded(
       headers,
       'X-Hermes-Actor-Display-Name',
       'X-Hermes-Actor-Display-Name-Encoded',
-      user.name,
+      user?.name,
     )
-    setHeaderIfPresent(headers, 'X-Hermes-Actor-Avatar-Url', user.avatarUrl)
-    setHeaderIfPresent(headers, 'X-Hermes-Actor-Email', user.email)
+    setHeaderIfPresent(headers, 'X-Hermes-Actor-Avatar-Url', user?.avatarUrl)
+    setHeaderIfPresent(headers, 'X-Hermes-Actor-Email', user?.email)
   }
   return headers
 }
