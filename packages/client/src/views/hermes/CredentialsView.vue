@@ -143,9 +143,10 @@ async function refreshCredentials(fresh = false, seq?: number) {
   const result = fresh
     ? await fetchSkillCredentials(profile, { fresh: true })
     : await fetchSkillCredentials(profile)
-  // Drop a stale response: a newer load (e.g. a profile switch) superseded this one,
-  // so applying profile A's late response must not overwrite profile B's panel.
-  if (mySeq !== loadSeq) return
+  // Drop a stale response: a newer load superseded this one (seq), OR the profile changed
+  // under us (covers a switch during the initial mount load, before the watcher is ready,
+  // where loadSeq wasn't bumped). Either way, never write another profile's data here.
+  if (mySeq !== loadSeq || profile !== requestedProfile.value) return
   data.value = result
   persistToCache(profile)  // remember for the next visit's instant paint
 }
@@ -283,8 +284,11 @@ function handleWindowFocus() {
 
 onMounted(async () => {
   window.addEventListener('focus', handleWindowFocus)
-  await loadCredentials()
+  // Activate the profile watcher BEFORE the initial load so a profile switch DURING that
+  // load triggers a replacement load (the `profile === previous` guard still suppresses
+  // the no-op fire when requestedProfile merely resolves to the same value).
   profileWatchReady = true
+  await loadCredentials()
 })
 
 onUnmounted(() => {
