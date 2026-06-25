@@ -39,6 +39,9 @@ export interface ExpertEntry {
   skills?: string[]
   governance?: ExpertGovernance
   plugin_id?: string
+  /** Distribution source ('aihub' = ingested managed plugin) → drives the 来自 AiHub badge. */
+  source?: string
+  from_aihub?: boolean
 }
 
 export interface ExpertListResult {
@@ -69,6 +72,8 @@ interface ExpertRowDict {
   skills?: unknown
   governance?: Record<string, unknown>
   plugin_id?: string
+  source?: unknown
+  from_aihub?: unknown
   // The persona (`agent_md`) MUST NOT be surfaced; it is dropped here even if
   // the broker ever includes it.
 }
@@ -108,6 +113,8 @@ export function mapExpertRow(r: ExpertRowDict): ExpertEntry {
   const gov = coerceGovernance(r.governance)
   if (gov) entry.governance = gov
   if (r.plugin_id) entry.plugin_id = String(r.plugin_id)
+  if (r.source) entry.source = String(r.source)
+  if (typeof r.from_aihub === 'boolean') entry.from_aihub = r.from_aihub
   return entry
 }
 
