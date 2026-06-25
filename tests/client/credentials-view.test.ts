@@ -63,6 +63,7 @@ vi.mock('naive-ui', async () => {
 describe('CredentialsView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    try { localStorage.clear() } catch { /* jsdom localStorage */ }
     for (const key of Object.keys(routeQuery)) delete routeQuery[key]
     fetchSkillCredentialsMock.mockResolvedValue({
       profile_name: 'feishu_user_a',
@@ -168,7 +169,33 @@ describe('CredentialsView', () => {
     expect(html).not.toContain('gitlab-secret-token')
   })
 
+  it('paints last-known status instantly from localStorage before the live refresh resolves', async () => {
+    localStorage.clear()
+    const cached = {
+      profile_name: 'feishu_g41a5b5g',
+      credentials: [
+        { id: 'kep-cli', title: 'kep-cli', provider: 'keep', installed: true, status: 'authenticated', action: { kind: 'oauth_url', label: '重新认证' } },
+      ],
+    }
+    localStorage.setItem('hermes:connector-status:feishu_g41a5b5g', JSON.stringify(cached))
+    // Hang the live refresh so only the cached instant-paint is observable.
+    let resolveFetch: (v: any) => void = () => {}
+    fetchSkillCredentialsMock.mockReturnValue(new Promise(r => { resolveFetch = r }))
+
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await wrapper.vm.$nextTick()
+
+    // Cached card renders even though the live fetch has NOT resolved yet.
+    expect(wrapper.findAll('.credential-card').length).toBeGreaterThan(0)
+    expect(wrapper.text()).toContain('kep-cli')
+
+    resolveFetch({ profile_name: 'feishu_g41a5b5g', credentials: cached.credentials })
+    localStorage.clear()
+  })
+
   it('manual refresh button requests FRESH status (bypasses the broker cache)', async () => {
+    localStorage.clear()
     const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
     const wrapper = mount(CredentialsView)
     await new Promise(resolve => setTimeout(resolve, 0))

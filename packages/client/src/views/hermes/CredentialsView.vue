@@ -75,14 +75,46 @@ function statusClass(status: SkillCredentialEntry['status']) {
   return `status-${status.replace('_', '-')}`
 }
 
+// --- instant render (stale-while-revalidate) --------------------------------
+// The panel does ~5 live CLI checks server-side (~2s cold), so a fresh open used to
+// block on a spinner. Instead we paint the LAST-KNOWN status (from a prior visit)
+// immediately and refresh in the background. Status only — no secrets (the broker
+// already redacts tokens). localStorage may be unavailable (private mode/quota), so
+// every access is guarded and simply falls back to a normal load.
+const STATUS_CACHE_PREFIX = 'hermes:connector-status:'
+
+function statusCacheKey(profile: string) {
+  return STATUS_CACHE_PREFIX + (profile || '_active')
+}
+
+function hydrateFromCache(profile: string) {
+  if (data.value) return
+  try {
+    const raw = localStorage.getItem(statusCacheKey(profile))
+    if (!raw) return
+    const parsed = JSON.parse(raw)
+    if (parsed && Array.isArray(parsed.credentials)) data.value = parsed
+  } catch { /* unavailable — fall back to a normal blocking load */ }
+}
+
+function persistToCache(profile: string) {
+  try {
+    if (data.value) localStorage.setItem(statusCacheKey(profile), JSON.stringify(data.value))
+  } catch { /* unavailable — skip persistence */ }
+}
+
 async function loadCredentials(opts?: { fresh?: boolean }) {
+  // Paint last-known instantly, then revalidate. The blocking spinner only shows on a
+  // true cold first visit (no cached data) — see <NSpin :show="loading && !data">.
+  hydrateFromCache(requestedProfile.value)
   loading.value = true
   error.value = ''
   try {
     await ensureProfileSelection()
     await refreshCredentials(opts?.fresh)
   } catch (err: any) {
-    error.value = err?.message || '连接器状态加载失败'
+    // Don't blow away a good cached view on a transient refresh error.
+    if (!data.value) error.value = err?.message || '连接器状态加载失败'
   } finally {
     loading.value = false
   }
@@ -96,9 +128,11 @@ async function ensureProfileSelection() {
 
 async function refreshCredentials(fresh = false) {
   // Cached load keeps the single-arg call shape; only the fresh path passes options.
+  const profile = requestedProfile.value
   data.value = fresh
-    ? await fetchSkillCredentials(requestedProfile.value, { fresh: true })
-    : await fetchSkillCredentials(requestedProfile.value)
+    ? await fetchSkillCredentials(profile, { fresh: true })
+    : await fetchSkillCredentials(profile)
+  persistToCache(profile)  // remember for the next visit's instant paint
 }
 
 function closeAuthWindow(token?: number) {
@@ -253,6 +287,9 @@ watch(requestedProfile, async (profile, previous) => {
   attemptSeq += 1
   closeAuthWindow()
   oauthPollingId.value = ''
+  // Drop the previous profile's data so loadCredentials paints the NEW profile's
+  // last-known (via hydrateFromCache) instead of briefly showing the old profile's.
+  data.value = null
   await loadCredentials()
 })
 </script>
