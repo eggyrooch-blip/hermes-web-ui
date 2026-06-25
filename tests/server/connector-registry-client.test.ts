@@ -110,6 +110,19 @@ describe('fetchConnectorStatuses', () => {
     expect(init.headers.Authorization).toBe('Bearer k-test')
   })
 
+  it('appends fresh=1 only when opts.fresh is set (cache-bypass for the post-auth poll)', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ profile_name: 'p1', connectors: [brokerConnector()] }),
+    })
+    const { fetchConnectorStatuses } = await import(MODULE)
+    await fetchConnectorStatuses({ profileName: 'p1', userKey: 'u1' })
+    expect((globalThis.fetch as any).mock.calls[0][0] as string).not.toContain('fresh=1')
+    await fetchConnectorStatuses({ profileName: 'p1', userKey: 'u1', fresh: true })
+    expect((globalThis.fetch as any).mock.calls[1][0] as string).toContain('fresh=1')
+  })
+
   it('throws BrokerUnavailableError on 5xx (fail-safe trigger)', async () => {
     ;(globalThis.fetch as any).mockResolvedValue({ ok: false, status: 503, json: async () => ({}) })
     const { fetchConnectorStatuses, BrokerUnavailableError } = await import(MODULE)

@@ -48,13 +48,19 @@ export interface SkillCredentialCompleteResponse {
   account_hint?: string
 }
 
-function withProfile(path: string, profile?: string): string {
+function withProfile(path: string, profile?: string, extra?: Record<string, string>): string {
+  const search = new URLSearchParams()
   const value = profile?.trim()
-  return value ? `${path}?profile=${encodeURIComponent(value)}` : path
+  if (value) search.set('profile', value)
+  for (const [k, v] of Object.entries(extra || {})) search.set(k, v)
+  const qs = search.toString()
+  return qs ? `${path}?${qs}` : path
 }
 
-export async function fetchSkillCredentials(profile?: string): Promise<SkillCredentialsResponse> {
-  return request(withProfile('/api/auth/skill-credentials', profile))
+// `fresh` forces the broker to bypass its short-TTL connector cache — used by the
+// post-auth poll and the manual refresh so a just-completed login shows immediately.
+export async function fetchSkillCredentials(profile?: string, opts?: { fresh?: boolean }): Promise<SkillCredentialsResponse> {
+  return request(withProfile('/api/auth/skill-credentials', profile, opts?.fresh ? { fresh: '1' } : undefined))
 }
 
 export async function startSkillCredentialAuth(id: string, profile?: string): Promise<SkillCredentialStartResponse> {

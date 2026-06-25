@@ -131,6 +131,7 @@ export async function fetchConnectorStatuses(opts: {
   profileName: string
   userKey?: string
   timeoutMs?: number
+  fresh?: boolean
 }): Promise<SkillCredentialsResult> {
   if (!config.runBrokerUrl) {
     throw new BrokerUnavailableError('HERMES_RUN_BROKER_URL is not configured', 503)
@@ -138,6 +139,8 @@ export async function fetchConnectorStatuses(opts: {
   const params = new URLSearchParams()
   params.set('profile_name', opts.profileName)
   if (opts.userKey) params.set('user_key', opts.userKey)
+  // Forward the cache-bypass so the post-auth poll / manual refresh read live.
+  if (opts.fresh) params.set('fresh', '1')
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
 

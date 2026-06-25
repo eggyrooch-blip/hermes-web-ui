@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { NButton, NModal, NSpin, useMessage } from 'naive-ui'
@@ -31,6 +31,10 @@ const qrDialog = ref<{
   redirectUrl?: string
 } | null>(null)
 const oauthPollingId = ref('')
+// The auth popup we open (window.open) — kept so we can auto-close it once the
+// credential reaches an authenticated state (the kep-auth success page can't close
+// itself; we opened it, so we can).
+let authWindow: Window | null = null
 
 const credentials = computed(() => data.value?.credentials || [])
 const routeProfile = computed(() => typeof route.query.profile === 'string' ? route.query.profile.trim() : '')
@@ -63,12 +67,12 @@ function statusClass(status: SkillCredentialEntry['status']) {
   return `status-${status.replace('_', '-')}`
 }
 
-async function loadCredentials() {
+async function loadCredentials(opts?: { fresh?: boolean }) {
   loading.value = true
   error.value = ''
   try {
     await ensureProfileSelection()
-    await refreshCredentials()
+    await refreshCredentials(opts?.fresh)
   } catch (err: any) {
     error.value = err?.message || '连接器状态加载失败'
   } finally {
@@ -82,8 +86,15 @@ async function ensureProfileSelection() {
   }
 }
 
-async function refreshCredentials() {
-  data.value = await fetchSkillCredentials(requestedProfile.value)
+async function refreshCredentials(fresh = false) {
+  data.value = await fetchSkillCredentials(requestedProfile.value, fresh ? { fresh: true } : undefined)
+}
+
+function closeAuthWindow() {
+  if (authWindow && !authWindow.closed) {
+    try { authWindow.close() } catch { /* best-effort: cross-origin window we opened */ }
+  }
+  authWindow = null
 }
 
 function sleep(ms: number) {
@@ -100,8 +111,11 @@ async function pollCredentialAfterOAuth(id: string) {
   try {
     for (let attempt = 0; attempt < 18; attempt += 1) {
       await sleep(2_500)
-      await refreshCredentials()
-      if (credentialReachedTerminalAuthState(id)) return
+      await refreshCredentials(true)  // fresh: bypass the broker cache to see the new login
+      if (credentialReachedTerminalAuthState(id)) {
+        closeAuthWindow()  // auto-close the "登录成功" popup now that auth is confirmed
+        return
+      }
     }
   } catch {
     // The manual refresh button remains available if a background poll fails.
@@ -125,7 +139,8 @@ async function startCredential(entry: SkillCredentialEntry) {
       return
     }
     if (result.verification_uri) {
-      const authWindow = window.open('about:blank', '_blank')
+      closeAuthWindow()  // close any stale popup from a previous attempt
+      authWindow = window.open('about:blank', '_blank')
       if (authWindow) {
         authWindow.opener = null
         authWindow.location.href = result.verification_uri
@@ -153,7 +168,7 @@ async function completeQrCredential() {
     const result = await completeSkillCredentialAuth(current.id, current.qrcodeId, requestedProfile.value)
     message.success(result.account_hint ? `${current.title} 已认证：${result.account_hint}` : `${current.title} 已认证`)
     qrDialog.value = null
-    await loadCredentials()
+    await loadCredentials({ fresh: true })
   } catch (err: any) {
     message.error(err?.message || '还没有检测到扫码完成，请确认后再试')
   } finally {
@@ -165,9 +180,25 @@ function closeQrDialog() {
   qrDialog.value = null
 }
 
+function handleWindowFocus() {
+  // The user likely just returned from the auth popup. If a poll is in flight,
+  // refresh immediately (fresh) instead of waiting for the next 2.5s tick, and
+  // close the popup the moment auth is confirmed.
+  if (!oauthPollingId.value) return
+  const id = oauthPollingId.value
+  void refreshCredentials(true).then(() => {
+    if (credentialReachedTerminalAuthState(id)) closeAuthWindow()
+  }).catch(() => { /* manual refresh stays available */ })
+}
+
 onMounted(async () => {
+  window.addEventListener('focus', handleWindowFocus)
   await loadCredentials()
   profileWatchReady = true
+})
+
+onUnmounted(() => {
+  window.removeEventListener('focus', handleWindowFocus)
 })
 
 watch(requestedProfile, async (profile, previous) => {
@@ -180,7 +211,7 @@ watch(requestedProfile, async (profile, previous) => {
   <div class="credentials-view" :class="{ 'is-embedded': props.embedded }">
     <header class="page-header">
       <h2 class="header-title">{{ t('sidebar.connectors') }}</h2>
-      <NButton size="small" quaternary :loading="loading" @click="loadCredentials">刷新</NButton>
+      <NButton size="small" quaternary :loading="loading" @click="() => loadCredentials({ fresh: true })">刷新</NButton>
     </header>
 
     <NSpin :show="loading && !data">

@@ -1008,6 +1008,9 @@ export async function skillCredentialsStatus(ctx: Context) {
   try {
     const user = getOptionalFeishuUser(ctx)
     const profileName = getRequestProfile(ctx)
+    // `?fresh=1` (post-auth poll + manual refresh) forces the broker to bypass its
+    // short-TTL connector cache so a just-completed login is reflected immediately.
+    const fresh = ['1', 'true', 'yes', 'on'].includes(String(ctx.query?.fresh ?? '').trim().toLowerCase())
 
     // Local source: the WebUI's own 1192-line implementation (unchanged).
     const localFetch = async (): Promise<SkillCredentialsResult> => {
@@ -1028,7 +1031,7 @@ export async function skillCredentialsStatus(ctx: Context) {
     }
     // Broker source: the Run Broker connector registry (Phase 2 control plane).
     const brokerFetch = (): Promise<SkillCredentialsResult> =>
-      fetchConnectorStatuses({ profileName, userKey: user?.openid })
+      fetchConnectorStatuses({ profileName, userKey: user?.openid, fresh })
 
     let served: SkillCredentialsResult
     let servedSource: 'local' | 'broker'
