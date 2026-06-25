@@ -416,6 +416,11 @@ export default {
       empty: 'No experts available.',
       noResults: 'No matching experts.',
       activeBadge: 'Active',
+      aihubBadge: 'From AiHub',
+    },
+    aihub: {
+      label: 'AiHub',
+      openTooltip: 'Open AiHub in a new tab',
     },
     detail: {
       close: 'Close',
@@ -856,6 +861,7 @@ export default {
     loadFailed: 'Failed to load skill',
     fileLoadFailed: 'Failed to load file',
     modified: 'Modified',
+    aihubBadge: 'From AiHub',
     archived: 'Archived',
     pinned: 'Pinned',
     pin: 'Pin skill',

@@ -46,6 +46,8 @@ vi.mock('@/api/hermes/sessions', () => ({
 
 vi.mock('@/api/client', () => ({
   getActiveProfileName: () => 'default',
+  getActiveExpertId: () => null,
+  setActiveExpertId: () => {},
   isStoredSuperAdmin: () => false,
 }))
 

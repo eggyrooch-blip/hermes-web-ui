@@ -416,6 +416,11 @@ export default {
       empty: '暂无可用专家。',
       noResults: '没有匹配的专家。',
       activeBadge: '已启用',
+      aihubBadge: '来自 AiHub',
+    },
+    aihub: {
+      label: 'AiHub',
+      openTooltip: '在新标签页打开 AiHub',
     },
     detail: {
       close: '关闭',
@@ -856,6 +861,7 @@ export default {
     loadFailed: '加载技能失败',
     fileLoadFailed: '加载文件失败',
     modified: '用户已修改',
+    aihubBadge: '来自 AiHub',
     archived: '已归档',
     pinned: '已置顶',
     pin: '置顶技能',

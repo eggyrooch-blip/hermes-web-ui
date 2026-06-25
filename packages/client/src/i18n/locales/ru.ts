@@ -341,6 +341,11 @@ export default {
       empty: 'No experts available.',
       noResults: 'No matching experts.',
       activeBadge: 'Active',
+      aihubBadge: 'From AiHub',
+    },
+    aihub: {
+      label: 'AiHub',
+      openTooltip: 'Open AiHub in a new tab',
     },
     detail: {
       close: 'Close',
@@ -760,6 +765,7 @@ export default {
     loadFailed: 'Ошибка загрузки навыков',
     fileLoadFailed: 'Ошибка загрузки файла',
     modified: 'Пользователь изменил',
+    aihubBadge: 'From AiHub',
     archived: 'В архиве',
     pinned: 'Закреплено',
     pin: 'Закрепить навык',

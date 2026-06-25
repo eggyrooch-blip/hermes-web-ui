@@ -23,6 +23,8 @@ vi.mock('@/api/hermes/chat', () => ({
 
 vi.mock('@/api/client', () => ({
   getActiveProfileName: () => 'default',
+  getActiveExpertId: () => null,
+  setActiveExpertId: () => {},
 }))
 
 vi.mock('@/api/hermes/sessions', () => ({

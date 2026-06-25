@@ -235,6 +235,8 @@ function confirmDelete(category: string, skillName: string) {
                                         <span class="source-dot" :class="`dot-${skill.source || 'local'}`"
                                             :title="t(`skills.source.${skill.source || 'local'}`)" />
                                         {{ skill.name }}
+                                        <span v-if="skill.source === 'hub'" class="aihub-badge"
+                                            :title="t('skills.aihubBadge')">{{ t('skills.aihubBadge') }}</span>
                                         <span v-if="skill.modified" class="modified-badge"
                                             :title="t('skills.modified')">✎</span>
                                     </span>
@@ -271,6 +273,8 @@ function confirmDelete(category: string, skillName: string) {
                                 <span class="source-dot" :class="`dot-${skill.source || 'local'}`"
                                     :title="t(`skills.source.${skill.source || 'local'}`)" />
                                 {{ skill.name }}
+                                <span v-if="skill.source === 'hub'" class="aihub-badge"
+                                    :title="t('skills.aihubBadge')">{{ t('skills.aihubBadge') }}</span>
                                 <span v-if="skill.modified" class="modified-badge"
                                     :title="t('skills.modified')">✎</span>
                             </span>
@@ -524,6 +528,17 @@ function confirmDelete(category: string, skillName: string) {
     color: $warning;
     margin-left: 2px;
     opacity: 0.7;
+}
+
+.aihub-badge {
+    font-size: 10px;
+    line-height: 14px;
+    margin-left: 4px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: rgba(74, 144, 217, 0.14);
+    color: #4a90d9;
+    white-space: nowrap;
 }
 
 .skill-desc {

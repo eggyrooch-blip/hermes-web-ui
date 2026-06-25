@@ -416,6 +416,11 @@ export default {
       empty: '目前沒有可用的專家。',
       noResults: '沒有符合的專家。',
       activeBadge: '已啟用',
+      aihubBadge: '來自 AiHub',
+    },
+    aihub: {
+      label: 'AiHub',
+      openTooltip: '在新分頁開啟 AiHub',
     },
     detail: {
       close: '關閉',
@@ -856,6 +861,7 @@ export default {
     loadFailed: '載入技能失敗',
     fileLoadFailed: '載入檔案失敗',
     modified: '使用者已修改',
+    aihubBadge: '來自 AiHub',
     archived: '已封存',
     pinned: '已釘選',
     pin: '釘選技能',

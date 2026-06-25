@@ -42,6 +42,19 @@ export interface ExpertInfo {
   governance?: ExpertGovernance
   /** Plugin id this expert was published from. */
   plugin_id?: string
+  /**
+   * Distribution source. `aihub` = published via an ingested managed plugin
+   * (AiHub marketplace); surfaced as a "来自 AiHub" badge on the card. Absent /
+   * other values render no badge. Mirror of the plugin-distribution indicator.
+   */
+  source?: 'aihub' | 'local' | string
+  /** Convenience flag some broker payloads set instead of `source`. */
+  from_aihub?: boolean
+}
+
+/** True when an expert was distributed through the AiHub managed-plugin pipeline. */
+export function isAiHubExpert(expert: Pick<ExpertInfo, 'source' | 'from_aihub'>): boolean {
+  return expert.source === 'aihub' || expert.from_aihub === true
 }
 
 export interface ExpertListResponse {

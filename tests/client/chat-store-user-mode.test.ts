@@ -18,6 +18,9 @@ const resumeSessionMock = vi.hoisted(() => vi.fn((_sessionId: string, onResumed:
 vi.mock('@/api/client', () => ({
   getApiKey: vi.fn(() => ''),
   isUserMode: isUserModeMock,
+  getActiveProfileName: () => 'default',
+  getActiveExpertId: () => null,
+  setActiveExpertId: () => {},
 }))
 
 vi.mock('@/stores/hermes/app', () => ({

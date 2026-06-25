@@ -475,14 +475,14 @@ watch(
   },
 )
 
-// Reload the composer expert catalog whenever the active profile changes, and
-// CLEAR the current selection — experts are profile-scoped, so a selection made
-// under profile A must never be carried (or sent as `expert_id`) under profile B.
-// Mirrors ExpertCatalogView.vue's `watch(activeProfileName, loadExperts)`.
+// Reload the composer expert catalog whenever the active profile changes.
+// The stale-selection clear is handled CENTRALLY in the chat store (it watches
+// activeProfileName and resets activeExpertId regardless of what is mounted), so
+// we only refresh this component's slot list here. Mirrors
+// ExpertCatalogView.vue's `watch(activeProfileName, loadExperts)`.
 watch(
   () => profilesStore.activeProfileName,
   () => {
-    chatStore.setActiveExpert(null)
     void loadExpertsForSlot()
   },
 )

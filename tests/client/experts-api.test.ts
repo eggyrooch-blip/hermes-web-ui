@@ -13,7 +13,7 @@ vi.mock('@/router', () => ({
   },
 }))
 
-import { fetchExperts } from '../../packages/client/src/api/hermes/experts'
+import { fetchExperts, isAiHubExpert } from '../../packages/client/src/api/hermes/experts'
 
 function jsonResponse(body: unknown) {
   return { ok: true, status: 200, json: () => Promise.resolve(body) }
@@ -75,5 +75,22 @@ describe('experts api client', () => {
     mockFetch.mockResolvedValue({ ok: false, status: 502, text: () => Promise.resolve('bad gateway') })
 
     await expect(fetchExperts('sunke')).rejects.toThrow('API Error 502')
+  })
+})
+
+describe('isAiHubExpert', () => {
+  it('is true when source is aihub', () => {
+    expect(isAiHubExpert({ source: 'aihub' })).toBe(true)
+  })
+
+  it('is true when the from_aihub flag is set', () => {
+    expect(isAiHubExpert({ from_aihub: true })).toBe(true)
+  })
+
+  it('is false for local / unknown / absent sources', () => {
+    expect(isAiHubExpert({ source: 'local' })).toBe(false)
+    expect(isAiHubExpert({ source: 'something-else' })).toBe(false)
+    expect(isAiHubExpert({})).toBe(false)
+    expect(isAiHubExpert({ from_aihub: false })).toBe(false)
   })
 })

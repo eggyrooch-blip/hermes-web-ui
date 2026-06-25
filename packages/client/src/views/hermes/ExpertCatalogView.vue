@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { NInput, NDrawer, NDrawerContent } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { fetchExperts, type ExpertInfo } from '@/api/hermes/experts'
+import { fetchExperts, isAiHubExpert, type ExpertInfo } from '@/api/hermes/experts'
 import { useChatStore } from '@/stores/hermes/chat'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import ExpertDetailPanel from '@/components/hermes/expert/ExpertDetailPanel.vue'
@@ -119,7 +119,10 @@ watch(activeProfileName, () => {
               <img v-if="expert.avatar" :src="expert.avatar" :alt="expert.title || expert.name" />
               <span v-else class="avatar-initial">{{ initialOf(expert) }}</span>
             </div>
-            <span v-if="isActive(expert)" class="card-active-badge">{{ t('expert.catalog.activeBadge') }}</span>
+            <div class="card-badges">
+              <span v-if="isAiHubExpert(expert)" class="card-source-badge">{{ t('expert.catalog.aihubBadge') }}</span>
+              <span v-if="isActive(expert)" class="card-active-badge">{{ t('expert.catalog.activeBadge') }}</span>
+            </div>
           </div>
           <h3 class="card-title">{{ expert.title || expert.name }}</h3>
           <p v-if="expert.tagline" class="card-tagline">{{ expert.tagline }}</p>
@@ -238,6 +241,14 @@ watch(activeProfileName, () => {
   }
 }
 
+.card-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .card-active-badge {
   font-size: 11px;
   line-height: 16px;
@@ -245,6 +256,15 @@ watch(activeProfileName, () => {
   border-radius: 999px;
   background: $accent-primary;
   color: #fff;
+}
+
+.card-source-badge {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(74, 144, 217, 0.14);
+  color: #4a90d9;
 }
 
 .card-title {

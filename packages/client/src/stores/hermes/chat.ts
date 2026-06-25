@@ -698,6 +698,25 @@ export const useChatStore = defineStore('chat', () => {
     setActiveExpertId(next)
   }
 
+  // CENTRAL stale-expert guard. Experts are profile-scoped, so a selection made
+  // under profile A must NEVER be sent as `expert_id` under profile B. We clear
+  // it here in the chat store — which is instantiated once and always alive —
+  // rather than in a component watcher (ChatInput / ExpertCatalogView), because
+  // those watchers don't fire while the composer/catalog is unmounted, which let
+  // a stale expert_id leak across a profile switch (regression recurred twice).
+  // This watcher fires on every profile change regardless of what is mounted.
+  watch(
+    () => useProfilesStore().activeProfileName,
+    (next, prev) => {
+      // Skip the initial run (prev === undefined) so a freshly-restored
+      // selection from localStorage survives app startup; only a real
+      // profile *change* resets it.
+      if (prev !== undefined && next !== prev && activeExpertId.value !== null) {
+        setActiveExpert(null)
+      }
+    },
+  )
+
   function isSessionLive(sessionId: string): boolean {
     return streamStates.value.has(sessionId) || serverWorking.value.has(sessionId)
   }
