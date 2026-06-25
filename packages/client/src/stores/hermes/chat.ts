@@ -1,6 +1,6 @@
 import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondToolApproval, onPeerUserMessage, onSessionCommand, onSessionTitleUpdated, respondClarify, type ChatRunTransport, type RunEvent, type ResumeSessionPayload, type StartRunRequest, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
 import { deleteSession as deleteSessionApi, fetchSessionMessagesPage, fetchSessions, setSessionModel, type HermesMessage, type ProviderApiMode, type SessionSummary } from '@/api/hermes/sessions'
-import { getActiveProfileName } from '@/api/client'
+import { getActiveProfileName, getActiveExpertId, setActiveExpertId } from '@/api/client'
 import { getDownloadUrl } from '@/api/hermes/download'
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
@@ -685,6 +685,18 @@ export const useChatStore = defineStore('chat', () => {
 
   const activeSession = ref<Session | null>(null)
   const messages = computed<Message[]>(() => activeSession.value?.messages || [])
+
+  // Active expert overlay (专家广场). Selected from the composer's expert slot;
+  // when set, the run submission carries `expert_id` so the multitenancy layer
+  // injects the expert persona overlay for that run only. Persisted to
+  // localStorage so the selection survives navigation/reload (cleared by
+  // setActiveExpertId(null)).
+  const activeExpertId = ref<string | null>(getActiveExpertId())
+  function setActiveExpert(expertId: string | null) {
+    const next = expertId && expertId.trim() ? expertId.trim() : null
+    activeExpertId.value = next
+    setActiveExpertId(next)
+  }
 
   function isSessionLive(sessionId: string): boolean {
     return streamStates.value.has(sessionId) || serverWorking.value.has(sessionId)
@@ -1941,6 +1953,8 @@ export const useChatStore = defineStore('chat', () => {
         // Per-session reasoning effort override. Coding Agent runners do not
         // consume this setting yet, so keep their payloads explicit.
         reasoning_effort: sessionSource === 'coding_agent' ? undefined : activeSession.value?.reasoningEffort || undefined,
+        // Active expert overlay (专家广场). Coding Agent runs never carry it.
+        expert_id: sessionSource === 'coding_agent' ? undefined : (activeExpertId.value || undefined),
       }
       if (shouldSendInitialSessionConfig && activeSession.value) {
         activeSession.value.messageCount = Math.max(activeSession.value.messageCount || 0, 1)
@@ -3511,6 +3525,8 @@ export const useChatStore = defineStore('chat', () => {
     runtimeMode,
     activeSessionId,
     activeSession,
+    activeExpertId,
+    setActiveExpert,
     focusMessageId,
     messages,
     isStreaming,

@@ -6,6 +6,7 @@ import { useProfilesStore } from '@/stores/hermes/profiles'
 import { fetchContextLength } from '@/api/hermes/sessions'
 import { setModelContext } from '@/api/hermes/model-context'
 import { fetchSkills, type SkillCategory, type SkillInfo } from '@/api/hermes/skills'
+import { fetchExperts, type ExpertInfo } from '@/api/hermes/experts'
 import { fetchSlashCommands, type SlashCommand } from '@/api/hermes/slash'
 import { isStoredSuperAdmin } from '@/api/client'
 import { NButton, NTooltip, NSwitch, NModal, NInputNumber, NPopselect, useMessage } from 'naive-ui'
@@ -51,6 +52,37 @@ function onReasoningEffortChange(value: string | null | undefined) {
   const sid = chatStore.activeSessionId
   if (!sid) return
   chatStore.setSessionReasoningEffort(sid, value || '')
+}
+
+// --- Expert overlay slot (专家广场) -----------------------------------------
+// Selecting an expert here makes the NEXT run carry `expert_id` so the
+// multitenancy layer injects the expert persona overlay (ephemeral per run).
+const experts = ref<ExpertInfo[]>([])
+const activeExpertId = computed<string | null>(() => chatStore.activeExpertId)
+const activeExpert = computed<ExpertInfo | null>(
+  () => experts.value.find(e => e.id === activeExpertId.value) ?? null,
+)
+const activeExpertLabel = computed<string>(() => {
+  const e = activeExpert.value
+  if (e) return e.title || e.name
+  // Fall back to the raw id when the catalog hasn't loaded the active expert
+  // (e.g. selected on another surface). Empty = no expert.
+  return activeExpertId.value || ''
+})
+const expertOptions = computed(() => [
+  { label: t('chat.expertSlot.none'), value: '' },
+  ...experts.value.map(e => ({ label: e.title || e.name, value: e.id })),
+])
+function onExpertChange(value: string | null | undefined) {
+  chatStore.setActiveExpert(value || null)
+}
+async function loadExpertsForSlot() {
+  try {
+    const data = await fetchExperts(profilesStore.activeProfileName || undefined)
+    experts.value = data.experts
+  } catch {
+    experts.value = []
+  }
 }
 const DRAFT_STORAGE_KEY = 'hermes_chat_input_drafts_v1'
 type DraftMap = Record<string, string>
@@ -413,6 +445,7 @@ onMounted(() => {
     // 同步到 chat store
     chatStore.setAutoPlaySpeech(autoPlaySpeech.value)
   }
+  void loadExpertsForSlot()
 })
 
 // 监听变化并保存
@@ -979,6 +1012,36 @@ function isImage(type: string): boolean {
         </NTooltip>
       </NPopselect>
 
+      <NPopselect
+        v-if="experts.length > 0"
+        :value="activeExpertId || ''"
+        :options="expertOptions"
+        trigger="click"
+        @update:value="onExpertChange"
+      >
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <NButton
+              quaternary
+              size="tiny"
+              class="expert-slot-button"
+              :class="{ active: !!activeExpertId }"
+              :aria-label="`${t('chat.expertSlot.tooltip')}: ${activeExpertLabel || t('chat.expertSlot.none')}`"
+            >
+              <template #icon>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+                  <circle cx="9" cy="7" r="4"/>
+                  <path d="M19 8v6M22 11h-6"/>
+                </svg>
+              </template>
+              <span v-if="activeExpertId" class="expert-slot-label">{{ activeExpertLabel }}</span>
+            </NButton>
+          </template>
+          {{ t('chat.expertSlot.tooltip') }}: {{ activeExpertLabel || t('chat.expertSlot.none') }}
+        </NTooltip>
+      </NPopselect>
+
       <div class="auto-play-speech-switch">
         <NTooltip trigger="hover">
           <template #trigger>
@@ -1311,6 +1374,21 @@ function isImage(type: string): boolean {
   &.active {
     color: #4caf50;
   }
+}
+
+.expert-slot-button {
+  &.active {
+    color: $accent-primary;
+  }
+}
+
+.expert-slot-label {
+  margin-left: 4px;
+  font-size: 11px;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .context-info {

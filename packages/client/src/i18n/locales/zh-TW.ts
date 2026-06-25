@@ -405,6 +405,7 @@ export default {
 
   expert: {
     tabs: {
+      experts: '專家',
       skills: 'Skills',
       connectors: '連接器',
     },

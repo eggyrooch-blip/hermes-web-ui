@@ -330,6 +330,7 @@ export default {
 
   expert: {
     tabs: {
+      experts: 'Experts',
       skills: 'Skills',
       connectors: 'Connectors',
     },

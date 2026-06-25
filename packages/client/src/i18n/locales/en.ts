@@ -405,12 +405,36 @@ export default {
 
   expert: {
     tabs: {
+      experts: 'Experts',
       skills: 'Skills',
       connectors: 'Connectors',
+    },
+    catalog: {
+      searchPlaceholder: 'Search experts, tags or capabilities…',
+      loading: 'Loading…',
+      error: 'The expert catalog is temporarily unavailable. Please try again later.',
+      empty: 'No experts available.',
+      noResults: 'No matching experts.',
+      activeBadge: 'Active',
+    },
+    detail: {
+      close: 'Close',
+      capabilities: 'Capabilities',
+      noCapabilities: 'No declared capabilities.',
+      governance: 'Governance',
+      governanceNote: 'Credentials remain your own login; high-risk write operations require manual confirmation before execution.',
+      envDefault: 'Default environment',
+      approvalRequired: 'Operations requiring approval',
+      activate: 'Use this expert in chat',
+      deactivate: 'Stop using this expert',
     },
   },
 
   chat: {
+    expertSlot: {
+      tooltip: 'Active expert',
+      none: 'No expert',
+    },
     contextRemaining: 'remaining',
     contextClickToEdit: 'Click to edit context length',
     contextEditTitle: 'Edit Context Length',

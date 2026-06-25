@@ -4,8 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import SkillsView from '@/views/hermes/SkillsView.vue'
 import CredentialsView from '@/views/hermes/CredentialsView.vue'
+import ExpertCatalogView from '@/views/hermes/ExpertCatalogView.vue'
 
-type ExpertTab = 'skills' | 'connectors'
+type ExpertTab = 'experts' | 'skills' | 'connectors'
 
 const route = useRoute()
 const router = useRouter()
@@ -13,23 +14,27 @@ const { t } = useI18n()
 const props = withDefaults(defineProps<{ embedded?: boolean }>(), {
   embedded: false,
 })
-const activeTab = ref<ExpertTab>('skills')
+const activeTab = ref<ExpertTab>('experts')
 
 const tabs = computed<Array<{ key: ExpertTab; label: string }>>(() => [
+  { key: 'experts', label: t('expert.tabs.experts') },
   { key: 'skills', label: t('expert.tabs.skills') },
   { key: 'connectors', label: t('expert.tabs.connectors') },
 ])
 
 function normalizeTab(value: unknown): ExpertTab {
-  return value === 'connectors' ? 'connectors' : 'skills'
+  if (value === 'skills') return 'skills'
+  if (value === 'connectors') return 'connectors'
+  return 'experts'
 }
 
 function isValidTab(value: unknown): value is ExpertTab {
-  return value === 'skills' || value === 'connectors'
+  return value === 'experts' || value === 'skills' || value === 'connectors'
 }
 
 function tabQuery(tab: ExpertTab) {
-  return tab === 'skills' ? undefined : tab
+  // `experts` is the default tab — keep the URL clean (no query param).
+  return tab === 'experts' ? undefined : tab
 }
 
 function selectTab(tab: ExpertTab) {
@@ -74,7 +79,8 @@ watch(() => route.query.tab, (tab) => {
     </nav>
 
     <section class="expert-panel" role="tabpanel">
-      <SkillsView v-if="activeTab === 'skills'" embedded />
+      <ExpertCatalogView v-if="activeTab === 'experts'" />
+      <SkillsView v-else-if="activeTab === 'skills'" embedded />
       <CredentialsView v-else embedded prefer-active-profile />
     </section>
   </div>
@@ -98,7 +104,7 @@ watch(() => route.query.tab, (tab) => {
   flex: 0 0 auto;
   min-height: 44px;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 2px;
   padding: 2px;
   align-items: center;
@@ -137,14 +143,15 @@ watch(() => route.query.tab, (tab) => {
 }
 
 :deep(.skills-view),
-:deep(.credentials-view) {
+:deep(.credentials-view),
+:deep(.expert-catalog-view) {
   min-height: 0;
 }
 
 @media (min-width: 768px) {
   .expert-tabs-bar {
     width: fit-content;
-    min-width: 240px;
+    min-width: 320px;
     margin: 6px 0 0 24px;
     border: 1px solid $border-color;
     border-radius: $radius-sm;

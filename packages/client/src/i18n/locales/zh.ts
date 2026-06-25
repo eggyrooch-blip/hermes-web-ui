@@ -405,12 +405,36 @@ export default {
 
   expert: {
     tabs: {
+      experts: '专家',
       skills: 'Skills',
       connectors: '连接器',
+    },
+    catalog: {
+      searchPlaceholder: '搜索专家、标签或能力…',
+      loading: '加载中…',
+      error: '专家目录暂时不可用，请稍后重试。',
+      empty: '暂无可用专家。',
+      noResults: '没有匹配的专家。',
+      activeBadge: '已启用',
+    },
+    detail: {
+      close: '关闭',
+      capabilities: '能力',
+      noCapabilities: '暂无能力声明。',
+      governance: '治理',
+      governanceNote: '凭证仍使用你本人的登录态；高风险写操作执行前需人工确认。',
+      envDefault: '默认环境',
+      approvalRequired: '需人工确认的操作',
+      activate: '在对话中启用此专家',
+      deactivate: '停用此专家',
     },
   },
 
   chat: {
+    expertSlot: {
+      tooltip: '当前专家',
+      none: '不使用专家',
+    },
     contextRemaining: '剩余',
     contextClickToEdit: '点击编辑上下文长度',
     contextEditTitle: '编辑上下文长度',

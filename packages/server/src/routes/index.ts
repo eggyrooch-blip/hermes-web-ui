@@ -17,6 +17,7 @@ import { sessionRoutes } from './hermes/sessions'
 import { profileRoutes } from './hermes/profiles'
 import { agentRoutes } from './hermes/agents'
 import { skillRoutes } from './hermes/skills'
+import { expertRoutes } from './hermes/experts'
 import { pluginRoutes } from './hermes/plugins'
 import { memoryRoutes } from './hermes/memory'
 import { modelRoutes } from './hermes/models'
@@ -75,6 +76,7 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(profileRoutes.routes())
   app.use(agentRoutes.routes())
   app.use(skillRoutes.routes())
+  app.use(expertRoutes.routes())           // /api/hermes/experts — expert catalog (专家广场) BFF proxy
   app.use(slashRoutes.routes())            // /api/hermes/slash/commands (re-register: dropped in rebaseline)
   app.use(pluginRoutes.routes())
   app.use(memoryRoutes.routes())

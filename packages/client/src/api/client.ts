@@ -5,6 +5,7 @@ const AUTH_MODE_STORAGE_KEY = 'hermes_auth_mode'
 const WEB_PLANE_STORAGE_KEY = 'hermes_web_plane'
 const ACTIVE_PROFILE_STORAGE_KEY = 'hermes_active_profile_name'
 const ACTIVE_AGENT_STORAGE_KEY = 'hermes_active_agent_id'
+const ACTIVE_EXPERT_STORAGE_KEY = 'hermes_active_expert_id'
 
 function isDesktopShell(): boolean {
   return typeof window !== 'undefined' &&
@@ -131,6 +132,20 @@ export function getActiveProfileName(): string | null {
   return localStorage.getItem(ACTIVE_PROFILE_STORAGE_KEY)
 }
 
+/** Active expert overlay id (专家广场). Empty/null = default Hermes persona. */
+export function getActiveExpertId(): string | null {
+  const v = localStorage.getItem(ACTIVE_EXPERT_STORAGE_KEY)
+  return v && v.trim() ? v : null
+}
+
+export function setActiveExpertId(expertId: string | null): void {
+  if (expertId && expertId.trim()) {
+    localStorage.setItem(ACTIVE_EXPERT_STORAGE_KEY, expertId.trim())
+  } else {
+    localStorage.removeItem(ACTIVE_EXPERT_STORAGE_KEY)
+  }
+}
+
 function bodyHasProfileSelector(body: BodyInit | null | undefined): boolean {
   if (typeof body !== 'string') return false
   try {
@@ -247,6 +262,12 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const agentId = localStorage.getItem(ACTIVE_AGENT_STORAGE_KEY)
   if (agentId && shouldAttachAgentHeader(path)) {
     headers['X-Hermes-Agent-Id'] = agentId
+  }
+  // Active expert overlay — forwarded so HTTP run-submit paths carry the expert
+  // selection (the socket run path carries it in the StartRunRequest body).
+  const expertId = getActiveExpertId()
+  if (expertId) {
+    headers['X-Hermes-Expert-Id'] = expertId
   }
 
   const res = await fetch(url, { ...fetchOptions, headers })

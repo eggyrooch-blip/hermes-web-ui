@@ -35,6 +35,11 @@ export interface StartRunRequest {
   /** Per-session reasoning effort override.
    * Empty/undefined = use config.yaml default. */
   reasoning_effort?: string
+  /** Active expert overlay id (专家广场). When set, the multitenancy layer
+   *  injects the expert persona overlay for this run only. Empty/undefined =
+   *  the default Hermes persona. Also forwarded as the `X-Hermes-Expert-Id`
+   *  request header by the run transport. */
+  expert_id?: string
 }
 
 export interface StartRunResponse {
