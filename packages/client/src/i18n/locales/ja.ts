@@ -416,6 +416,11 @@ export default {
       empty: 'No experts available.',
       noResults: 'No matching experts.',
       activeBadge: 'Active',
+      aihubBadge: 'From AiHub',
+    },
+    aihub: {
+      label: 'AiHub',
+      openTooltip: 'Open AiHub in a new tab',
     },
     detail: {
       close: 'Close',
@@ -723,6 +728,7 @@ export default {
     loadFailed: 'スキルの読み込みに失敗しました',
     fileLoadFailed: 'ファイルの読み込みに失敗しました',
     modified: 'ユーザー変更あり',
+    aihubBadge: 'From AiHub',
     archived: 'アーカイブ済み',
     pinned: 'ピン留め',
     pin: 'スキルをピン留め',

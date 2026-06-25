@@ -416,6 +416,11 @@ export default {
       empty: 'No experts available.',
       noResults: 'No matching experts.',
       activeBadge: 'Active',
+      aihubBadge: 'From AiHub',
+    },
+    aihub: {
+      label: 'AiHub',
+      openTooltip: 'Open AiHub in a new tab',
     },
     detail: {
       close: 'Close',
@@ -723,6 +728,7 @@ export default {
     loadFailed: '스킬을 불러오지 못했습니다',
     fileLoadFailed: '파일을 불러오지 못했습니다',
     modified: '사용자 수정됨',
+    aihubBadge: 'From AiHub',
     archived: '보관됨',
     pinned: '고정됨',
     pin: '스킬 고정',
