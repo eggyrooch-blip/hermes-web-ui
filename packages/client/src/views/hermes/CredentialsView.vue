@@ -102,8 +102,17 @@ function sleep(ms: number) {
 }
 
 function credentialReachedTerminalAuthState(id: string) {
+  // "settled" — stop polling. Includes `unknown` (待验证): an indeterminate result
+  // we won't keep retrying. NOTE: this is NOT the same as success — see below.
   const credential = credentials.value.find(item => item.id === id)
   return credential?.status === 'authenticated' || credential?.status === 'configured' || credential?.status === 'unknown'
+}
+
+function credentialAuthSucceeded(id: string) {
+  // Genuine success only — used to AUTO-CLOSE the popup. `unknown`/待验证 must NOT
+  // close it, or we'd hide a failed/indeterminate auth as if it were done.
+  const credential = credentials.value.find(item => item.id === id)
+  return credential?.status === 'authenticated' || credential?.status === 'configured'
 }
 
 async function pollCredentialAfterOAuth(id: string) {
@@ -112,10 +121,11 @@ async function pollCredentialAfterOAuth(id: string) {
     for (let attempt = 0; attempt < 18; attempt += 1) {
       await sleep(2_500)
       await refreshCredentials(true)  // fresh: bypass the broker cache to see the new login
-      if (credentialReachedTerminalAuthState(id)) {
-        closeAuthWindow()  // auto-close the "登录成功" popup now that auth is confirmed
+      if (credentialAuthSucceeded(id)) {
+        closeAuthWindow()  // auto-close the "登录成功" popup only on genuine success
         return
       }
+      if (credentialReachedTerminalAuthState(id)) return  // settled but not success (待验证) → stop, leave popup
     }
   } catch {
     // The manual refresh button remains available if a background poll fails.
@@ -187,7 +197,7 @@ function handleWindowFocus() {
   if (!oauthPollingId.value) return
   const id = oauthPollingId.value
   void refreshCredentials(true).then(() => {
-    if (credentialReachedTerminalAuthState(id)) closeAuthWindow()
+    if (credentialAuthSucceeded(id)) closeAuthWindow()  // only close on genuine success
   }).catch(() => { /* manual refresh stays available */ })
 }
 
