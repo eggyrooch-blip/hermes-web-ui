@@ -134,10 +134,12 @@ async function ensureProfileSelection() {
 
 async function refreshCredentials(fresh = false, seq?: number) {
   // Cached load keeps the single-arg call shape; only the fresh path passes options.
-  // `seq` is the owning load's id when called from loadCredentials; the poll/focus
-  // callers omit it and mint their own so their write is likewise superseded-guarded.
+  // `seq` is the owning load's id when called from loadCredentials. Background callers
+  // (poll/focus) omit it and SNAPSHOT the current seq — they must NOT bump it, or they'd
+  // steal an in-flight loadCredentials' loading/error ownership and strand the spinner.
+  // Only loadCredentials increments loadSeq.
   const profile = requestedProfile.value
-  const mySeq = seq ?? ++loadSeq
+  const mySeq = seq ?? loadSeq
   const result = fresh
     ? await fetchSkillCredentials(profile, { fresh: true })
     : await fetchSkillCredentials(profile)
