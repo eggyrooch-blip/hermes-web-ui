@@ -214,6 +214,44 @@ describe('skills controller', () => {
       expect(tools.skills.map((s: any) => s.name).sort()).toEqual(['linked-skill', 'real-skill'])
       const misc = ctx.body.categories.find((c: any) => c.name === 'misc')
       expect(misc.skills.map((s: any) => s.name)).toContain('lark-im')
+
+      // Symlinked (managed) skills must surface as READ-ONLY: editable:false so the
+      // UI hides edit/delete affordances. Real-dir local skills stay editable.
+      const findSkill = (n: string) => ctx.body.categories.flatMap((c: any) => c.skills).find((s: any) => s.name === n)
+      expect(findSkill('real-skill')).toMatchObject({ source: 'local', editable: true })
+      expect(findSkill('lark-im').editable).toBe(false)
+      expect(findSkill('linked-skill').editable).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses to delete a symlinked (managed) skill — symlink and its shared target survive', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-delete-symlink-'))
+    const profileDir = join(root, 'research')
+    const skillsRoot = join(profileDir, 'skills')
+    const central = join(root, 'central-skills', 'lark-im')
+    await mkdir(central, { recursive: true })
+    await mkdir(join(skillsRoot, 'tools'), { recursive: true })
+    await writeFile(join(central, 'SKILL.md'), '# Lark IM\nshared install\n', 'utf-8')
+    const linkPath = join(skillsRoot, 'tools', 'lark-im')
+    await symlink(central, linkPath)
+    mockGetProfileDir.mockReturnValue(profileDir)
+
+    const ctx: any = {
+      params: { category: 'tools', skill: 'lark-im' },
+      state: { profile: { name: 'research' } },
+      body: null,
+    }
+
+    try {
+      const { deleteSkill } = await loadController()
+      await deleteSkill(ctx)
+
+      expect(ctx.status).toBe(403)
+      // The symlink is untouched (skill still installed) and the SHARED target is intact.
+      await expect(readFile(join(linkPath, 'SKILL.md'), 'utf-8')).resolves.toContain('shared install')
+      await expect(readFile(join(central, 'SKILL.md'), 'utf-8')).resolves.toContain('shared install')
     } finally {
       await rm(root, { recursive: true, force: true })
     }

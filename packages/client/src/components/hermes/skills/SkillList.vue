@@ -287,7 +287,7 @@ function confirmDelete(category: string, skillName: string) {
                             </span>
                             <span v-if="skill.description" class="skill-desc">{{ skill.description }}</span>
                         </div>
-                        <button v-if="(skill.source ?? 'local') === 'local'" class="skill-action-btn"
+                        <button v-if="(skill.source ?? 'local') === 'local' && skill.editable !== false" class="skill-action-btn"
                             :title="t('skills.delete')" :disabled="deletingSkills.has(skill.name)"
                             @click.stop="confirmDelete(cat.name, skill.name)">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"

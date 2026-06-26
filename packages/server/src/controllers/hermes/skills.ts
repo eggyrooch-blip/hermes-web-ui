@@ -284,9 +284,18 @@ async function isDirectoryLike(parentDir: string, entry: import('fs').Dirent): P
 async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, string>, keephubNames: Set<string>, hubNames: Set<string>, disabledList: string[], usageStats: Map<string, UsageStats>, chatPlane = false) {
   const allEntries = await readdir(skillsDir, { withFileTypes: true })
   const dirNames: string[] = []
+  // Symlinked skills are managed/installed (symlink into ~/.hermes/skills or a
+  // personal/managed install) — they reappear in the list (above) but must stay
+  // READ-ONLY: editing is already blocked by resolveLocalEditableSkillDir, and
+  // deleteSkill refuses them. Marking them non-editable hides the edit/delete
+  // affordances in the UI so the list metadata matches the API contract.
+  const symlinkedFlatNames = new Set<string>()
   for (const e of allEntries) {
     if (e.name.startsWith('.')) continue
-    if (await isDirectoryLike(skillsDir, e)) dirNames.push(e.name)
+    if (await isDirectoryLike(skillsDir, e)) {
+      dirNames.push(e.name)
+      if (e.isSymbolicLink()) symlinkedFlatNames.add(e.name)
+    }
   }
 
   // Classify directories: categories vs. flat skills
@@ -355,7 +364,7 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
             description: extractDescription(skillMd),
             enabled: !disabledList.includes(entry.name),
             source,
-            editable: source === 'local',
+            editable: source === 'local' && !entry.isSymbolicLink(),
             modified: modified || undefined,
             patchCount: usage?.patch_count,
             useCount: usage?.use_count,
@@ -386,7 +395,7 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
         description: extractDescription(fs.skillMd),
         enabled: !disabledList.includes(fs.name),
         source: fs.source,
-        editable: fs.source === 'local',
+        editable: fs.source === 'local' && !symlinkedFlatNames.has(fs.name),
         modified: undefined,
         patchCount: usage?.patch_count,
         useCount: usage?.use_count,
@@ -977,6 +986,17 @@ export async function deleteSkill(ctx: any) {
     if (source !== 'local') {
       ctx.status = 403
       ctx.body = { error: `Only local skills can be deleted (this skill is ${source})` }
+      return
+    }
+
+    // Symlinked skills are managed/installed (symlink into ~/.hermes/skills or a
+    // personal/managed install) and resolve to source 'local', but deleting one
+    // would unlink the install (breaking the user's skill) — and a stray follow
+    // could reach the SHARED target. Treat them read-only, same as the edit path.
+    const { readOnly } = await resolveLocalEditableSkillDir(skillsDir, category, name)
+    if (readOnly) {
+      ctx.status = 403
+      ctx.body = { error: 'This skill is a managed (symlinked) install and is read-only; it cannot be deleted here.' }
       return
     }
 
