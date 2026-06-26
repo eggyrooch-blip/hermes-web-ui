@@ -413,7 +413,8 @@ describe('ChatPanel user-mode gateway state', () => {
     const bottom = wrapper.get('.page-sidebar-bottom')
     const userCard = bottom.get('.sidebar-user')
     expect(userCard.text()).toContain('孙可')
-    expect(userCard.text()).toContain('feishu_g41a5b5g')
+    // The redundant profile id is no longer rendered in the sidebar user card.
+    expect(userCard.text()).not.toContain('feishu_g41a5b5g')
     expect(userCard.text()).toContain('sidebar.connected')
     expect(userCard.get('img.user-avatar').attributes('src')).toBe('https://example.com/avatar.png')
     expect(bottom.find('.page-sidebar-menu-btn').exists()).toBe(false)

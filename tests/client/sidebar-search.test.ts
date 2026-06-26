@@ -309,7 +309,8 @@ describe('AppSidebar navigation', () => {
     const avatar = wrapper.get('img.user-avatar')
     expect(avatar.attributes('src')).toBe('https://example.com/feishu-avatar.png')
     expect(wrapper.text()).toContain('孙可')
-    expect(wrapper.text()).toContain('sunke')
+    // The redundant profile id is no longer rendered in the sidebar user card.
+    expect(wrapper.text()).not.toContain('sunke')
     expect(wrapper.find('.logout-username').exists()).toBe(false)
   })
 
