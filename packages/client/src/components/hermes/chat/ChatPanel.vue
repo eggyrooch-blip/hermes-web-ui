@@ -10,6 +10,7 @@ import {
 } from "@/api/coding-agents";
 import { useChatStore, type Session } from "@/stores/hermes/chat";
 import { useAppStore } from "@/stores/hermes/app";
+import { useFilesStore } from "@/stores/hermes/files";
 import { useProfilesStore } from "@/stores/hermes/profiles";
 import { useSessionBrowserPrefsStore } from "@/stores/hermes/session-browser-prefs";
 import {
@@ -47,6 +48,7 @@ import { isStoredSuperAdmin } from "@/api/client";
 
 const chatStore = useChatStore();
 const appStore = useAppStore();
+const filesStore = useFilesStore();
 const profilesStore = useProfilesStore();
 const sessionBrowserPrefsStore = useSessionBrowserPrefsStore();
 const route = useRoute();
@@ -220,6 +222,10 @@ watch(showToolPanel, async (visible) => {
   if (!visible || isMobile.value) return;
   await nextTick();
   handleToolPanelViewportResize();
+});
+watch(() => filesStore.previewPanelRequestedAt, () => {
+  showToolPanel.value = true;
+  activeToolPanel.value = "files";
 });
 
 const showRenameModal = ref(false);

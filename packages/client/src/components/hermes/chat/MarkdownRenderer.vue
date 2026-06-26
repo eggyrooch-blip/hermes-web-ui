@@ -18,6 +18,7 @@ import {
   SUPPORT_PREVIEW_FILE_TYPES,
 } from './mermaidRenderer'
 import { downloadFile, getDownloadUrl, fetchFileText } from '@/api/hermes/download'
+import { useFilesStore } from '@/stores/hermes/files'
 
 const LATEX_FENCE_LANGS = new Set(['latex', 'tex', 'math', 'katex'])
 const PREVIEW_AREA_WIDTH = 'min(800px, 100vw)'
@@ -69,6 +70,7 @@ const props = withDefaults(defineProps<{
 
 const { t } = useI18n()
 const message = useMessage()
+const filesStore = useFilesStore()
 
 function diffFoldLabel(hiddenCount: number): string {
   return t('chat.unchangedLines', { count: hiddenCount })
@@ -419,7 +421,11 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
     if (path) {
       const ext = fileName?.split('.').pop()?.toLowerCase()
       if (SUPPORT_PREVIEW_FILE_TYPES.includes(ext || '')) {
-        previewTextFile(path, fileName || '')
+        if (path.startsWith('/workspace/')) {
+          await filesStore.previewByDisplayPath(path, fileName || undefined)
+        } else {
+          previewTextFile(path, fileName || '')
+        }
       } else { // Download file immediately
         downloadFile(path, fileName).catch((err: Error) => {
           message.error(err.message || t('download.downloadFailed'))

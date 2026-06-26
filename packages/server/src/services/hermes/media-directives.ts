@@ -11,9 +11,11 @@ export function rewriteAssistantMediaDirectives(options: {
   if (!content.includes('MEDIA:')) return content
 
   const profileDir = resolve(options.profileDir)
-  return content.replace(MEDIA_LINE_RE, (match, leading: string, marker: string, rawTarget: string) => {
+  return content.replace(MEDIA_LINE_RE, (match, leading: string, _marker: string, rawTarget: string) => {
     const rewritten = rewriteMediaTarget(rawTarget.trim(), profileDir)
-    return rewritten ? `${leading}${marker}${rewritten}` : match
+    if (!rewritten) return match
+    const name = mediaLinkText(rewritten)
+    return `${leading}[${name}](${rewritten})`
   })
 }
 
@@ -54,4 +56,13 @@ function toPosix(pathValue: string): string {
 
 function encodePathSegment(segment: string): string {
   return encodeURIComponent(segment).replace(/%2F/g, '/')
+}
+
+function mediaLinkText(rewritten: string): string {
+  const segment = rewritten.split('/').filter(Boolean).pop() || rewritten
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return segment
+  }
 }

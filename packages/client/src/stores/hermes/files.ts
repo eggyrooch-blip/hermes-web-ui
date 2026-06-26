@@ -109,6 +109,19 @@ export function isPreviewableFile(name: string): boolean {
   return isImageFile(name) || isMarkdownFile(name) || isTextFile(name)
 }
 
+function decodeDisplayPathSegments(p: string): string {
+  return p
+    .split('/')
+    .map((segment) => {
+      try {
+        return decodeURIComponent(segment)
+      } catch {
+        return segment
+      }
+    })
+    .join('/')
+}
+
 // Returns true if `targetPath` is the same as `changedPath` or lives inside it
 // when `changedIsDir` is true. Used to invalidate preview/editor state when
 // the underlying file is deleted or renamed.
@@ -138,6 +151,7 @@ export const useFilesStore = defineStore('files', () => {
     content?: string
     language?: string
   } | null>(null)
+  const previewPanelRequestedAt = ref(0)
 
   const pathSegments = computed(() => {
     if (!currentPath.value) return []
@@ -232,6 +246,61 @@ export const useFilesStore = defineStore('files', () => {
     }
   }
 
+  async function previewByDisplayPath(displayPath: string, fileName?: string): Promise<void> {
+    const rel = decodeDisplayPathSegments(displayPath.replace(/^\/workspace\//, ''))
+    const relWithWs = decodeDisplayPathSegments(displayPath.replace(/^\//, ''))
+    const inferredFileName = fileName || rel.split('/').filter(Boolean).pop() || ''
+
+    let type: 'image' | 'markdown' | 'html' | 'text' | null = null
+    if (isImageFile(inferredFileName)) {
+      type = 'image'
+    } else if (isMarkdownFile(inferredFileName)) {
+      type = 'markdown'
+    } else if (isHtmlFile(inferredFileName)) {
+      type = 'html'
+    } else if (isTextFile(inferredFileName)) {
+      type = 'text'
+    }
+
+    if (!type) {
+      console.error('Unsupported preview file type for display path:', displayPath)
+      return
+    }
+
+    if (type === 'image') {
+      previewFile.value = { path: rel, type: 'image' }
+      previewPanelRequestedAt.value = previewPanelRequestedAt.value + 1
+      return
+    }
+
+    // Chat-plane roots file reads at workspace/, while admin-plane reads from
+    // profile home and expects paths that still include workspace/.
+    let workingPath = rel
+    let content: string
+
+    try {
+      const result = await filesApi.readFile(rel)
+      content = result.content
+    } catch (firstError) {
+      try {
+        const result = await filesApi.readFile(relWithWs)
+        workingPath = relWithWs
+        content = result.content
+      } catch (secondError) {
+        console.error('Failed to preview file from display path:', displayPath, firstError, secondError)
+        return
+      }
+    }
+
+    previewFile.value = {
+      path: workingPath,
+      type,
+      content,
+      language: getLanguageFromPath(workingPath),
+    }
+    previewPanelRequestedAt.value = previewPanelRequestedAt.value + 1
+  }
+
   function closePreview() { previewFile.value = null }
 
   async function createDir(name: string, targetPath = currentPath.value) {
@@ -297,10 +366,11 @@ export const useFilesStore = defineStore('files', () => {
   return {
     currentPath, entries, loading, sortBy, sortOrder,
     editingFile, previewFile,
+    previewPanelRequestedAt,
     pathSegments, sortedEntries, hasUnsavedChanges,
     fetchEntries, navigateTo, navigateUp,
     openEditor, saveEditor, closeEditor,
-    openPreview, closePreview,
+    openPreview, previewByDisplayPath, closePreview,
     createDir, createFile, deleteEntry, renameEntry, copyEntry,
     uploadFiles, setSort,
   }
