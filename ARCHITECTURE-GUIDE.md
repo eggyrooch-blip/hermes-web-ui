@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-06-24
+updated: 2026-06-26
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
@@ -14,6 +14,29 @@ related:
 ---
 
 # hermes-web-ui 架构速查 — EKKO fork
+
+> [!success] 2026-06-26 main/production — full WebUI release and npm 11 lockfile boundary
+> `main`/`origin/main` has been deployed to the production WebUI runtime on
+> version `0.6.15`. Production validation used the standard path: pull from
+> GitHub, `npm ci --no-audit --no-fund`, `npm run build`, restart the WebUI user
+> service, then verify `/health` and the Run Broker bridge status. Keep private
+> host names, profile names, backup paths, and smoke payloads in the private
+> runbook, not this public repo guide.
+>
+> Build gotcha: do not validate the lockfile only with a different local npm
+> version. The production target uses npm 11.11.x behavior, which resolves
+> `@napi-rs/wasm-runtime` peers into root `@emnapi/core` and `@emnapi/runtime`
+> lockfile entries. If `npm ci` reports package-lock drift on production, first
+> reproduce with the production npm major/minor locally and regenerate only the
+> lockfile with `npm install --package-lock-only --ignore-scripts --no-audit --no-fund`;
+> do not hand-edit `package-lock.json`.
+>
+> This release also makes the WebUI side of the expert/slash surfaces live, but
+> WebUI remains only the interaction/BFF layer: it forwards sanitized selections
+> such as `expert_id` and asks the multitenancy Run Broker for profile-scoped
+> slash/expert metadata. If `/experts` returns an empty list while the endpoint is
+> healthy, check whether managed expert manifests have been installed for that
+> runtime before treating it as a WebUI regression.
 
 > [!info] 2026-06-24 本机 main 已合入，等待 sunke 验证 — WebUI 普通用户新建智能体恢复，生产未发布
 > `webui-create-agent-restore` restores the upstream create-agent path without reopening the super-admin-only `/hermes/profiles` page to ordinary Feishu users. `ProfileSelector.vue` now exposes the existing create modal from the user selector, so an authenticated chat-plane user can create a custom agent/profile from the normal profile switcher. The create action is rendered in a body toolbar above the profile list, not only in the Naive card header, because screenshot verification showed the header-slot action was not visible in the real settings-page modal.
