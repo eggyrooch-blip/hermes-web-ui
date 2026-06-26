@@ -290,6 +290,46 @@ describe('skills controller', () => {
     }
   })
 
+  it('treats skills under a SYMLINKED container as read-only (editable:false + delete refused, target intact)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-symlink-container-'))
+    const profileDir = join(root, 'research')
+    const skillsRoot = join(profileDir, 'skills')
+    // A real container in a shared location holding a REAL child skill.
+    const sharedContainer = join(root, 'shared', 'vendor-pack')
+    const childSkill = join(sharedContainer, 'child-skill')
+    await mkdir(childSkill, { recursive: true })
+    await writeFile(join(childSkill, 'SKILL.md'), '# Child Skill\nin shared pack\n', 'utf-8')
+    await mkdir(skillsRoot, { recursive: true })
+    // Symlink the whole CONTAINER as a category: skills/vendor-pack → sharedContainer.
+    await symlink(sharedContainer, join(skillsRoot, 'vendor-pack'))
+    mockGetProfileDir.mockReturnValue(profileDir)
+    mockReadConfigYamlForProfile.mockResolvedValue({})
+
+    try {
+      const { list, deleteSkill } = await loadController()
+
+      // (1) The child is listed but READ-ONLY (descended through a symlink).
+      const listCtx: any = { state: { profile: { name: 'research' } }, body: null }
+      await list(listCtx)
+      const child = listCtx.body.categories.flatMap((c: any) => c.skills).find((s: any) => s.name === 'child-skill')
+      expect(child).toBeTruthy()
+      expect(child.editable).toBe(false)
+
+      // (2) Deleting it through the symlinked parent is REFUSED; shared target intact.
+      const delCtx: any = {
+        params: { category: 'vendor-pack', skill: 'child-skill' },
+        state: { profile: { name: 'research' } },
+        status: 200,
+        body: null,
+      }
+      await deleteSkill(delCtx)
+      expect(delCtx.status).toBe(403)
+      await expect(readFile(join(childSkill, 'SKILL.md'), 'utf-8')).resolves.toContain('in shared pack')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('prefers keephub provenance over hub when listing skills', async () => {
     const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-keephub-list-'))
     const profileDir = join(root, 'research')

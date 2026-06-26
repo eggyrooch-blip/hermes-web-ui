@@ -1,6 +1,6 @@
 import { lstat, mkdir, readdir, readFile, rm, stat, writeFile, cp } from 'fs/promises'
 import { homedir, tmpdir } from 'os'
-import { dirname, join, resolve } from 'path'
+import { dirname, join, relative, resolve } from 'path'
 import { createHash, randomBytes } from 'crypto'
 import AdmZip from 'adm-zip'
 import {
@@ -339,12 +339,16 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
     const catDir = join(skillsDir, cat.name)
     const subEntries = await readdir(catDir, { withFileTypes: true })
     const skills: any[] = []
-    // Recursively collect skills from subdirectories (supports nested sub-categories)
-    async function collectSkills(dir: string): Promise<any[]> {
+    // Recursively collect skills from subdirectories (supports nested sub-categories).
+    // `viaSymlink` is true once we have descended THROUGH a symlink — every skill at
+    // or below a symlinked dir is a managed/symlinked install and must be read-only
+    // (editable:false), matching the deleteSkill/edit read-only guards.
+    async function collectSkills(dir: string, viaSymlink: boolean): Promise<any[]> {
       const entries = await readdir(dir, { withFileTypes: true })
       const results: any[] = []
       for (const entry of entries) {
         if (entry.name.startsWith('.') || !(await isDirectoryLike(dir, entry))) continue
+        const entryViaSymlink = viaSymlink || entry.isSymbolicLink()
         const entryPath = join(dir, entry.name)
         const skillMd = await safeReadFile(join(entryPath, 'SKILL.md'))
         if (skillMd) {
@@ -367,7 +371,7 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
             description: extractDescription(skillMd),
             enabled: !disabledList.includes(entry.name),
             source,
-            editable: source === 'local' && !entry.isSymbolicLink(),
+            editable: source === 'local' && !entryViaSymlink,
             modified: modified || undefined,
             patchCount: usage?.patch_count,
             useCount: usage?.use_count,
@@ -376,13 +380,14 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
           })
         } else {
           // No SKILL.md — might be a sub-category container, recurse deeper
-          const subResults = await collectSkills(entryPath)
+          const subResults = await collectSkills(entryPath, entryViaSymlink)
           results.push(...subResults)
         }
       }
       return results
     }
-    skills.push(...await collectSkills(catDir))
+    // If the category dir itself is a symlink, everything under it is read-only.
+    skills.push(...await collectSkills(catDir, symlinkedFlatNames.has(cat.name)))
     if (skills.length > 0) {
       categories.push({ name: cat.name, description: cat.description, skills })
     }
@@ -992,17 +997,6 @@ export async function deleteSkill(ctx: any) {
       return
     }
 
-    // Symlinked skills are managed/installed (symlink into ~/.hermes/skills or a
-    // personal/managed install) and resolve to source 'local', but deleting one
-    // would unlink the install (breaking the user's skill) — and a stray follow
-    // could reach the SHARED target. Treat them read-only, same as the edit path.
-    const { readOnly } = await resolveLocalEditableSkillDir(skillsDir, category, name)
-    if (readOnly) {
-      ctx.status = 403
-      ctx.body = { error: 'This skill is a managed (symlinked) install and is read-only; it cannot be deleted here.' }
-      return
-    }
-
     // Resolve via the same category-aware path used by list/listFiles/readFile_
     // so two skills sharing a name in different categories don't collide.
     // Skip `external_dirs` here — only the local profile dir is deletable.
@@ -1015,6 +1009,17 @@ export async function deleteSkill(ctx: any) {
     if (!isPathWithin(localSkillDir, skillsDir)) {
       ctx.status = 403
       ctx.body = { error: 'Access denied' }
+      return
+    }
+
+    // Read-only if the resolved path traverses a symlink at ANY level (managed/
+    // symlinked install). Covers BOTH a direct symlink skill dir AND a symlinked
+    // parent/container with real children — deleting either would unlink the
+    // install or `rm -r` content inside the SHARED target. Same invariant the edit
+    // path enforces; checked on the resolved dir so ancestors are walked.
+    if ((await assertEditablePathHasNoSymlinks(skillsDir, relative(skillsDir, localSkillDir))) === 'symlink') {
+      ctx.status = 403
+      ctx.body = { error: 'This skill is a managed (symlinked) install and is read-only; it cannot be deleted here.' }
       return
     }
 
