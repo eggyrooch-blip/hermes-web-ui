@@ -149,10 +149,10 @@ describe('SessionListItem', () => {
     template: '<span class="profile-avatar-stub" :data-name="name" :data-avatar-url="avatar?.url || \'\'" :data-size="size"></span>',
   })
 
+  // Upstream design: every row shows the AGENT logo (per agent) PLUS the USER avatar.
   it.each(['cli', 'api_server', 'global_agent'])(
-    'renders the generated agent avatar (NOT the user profile avatar) for %s Hermes sessions',
+    'renders the Hermes agent logo AND the user avatar for %s Hermes sessions',
     (source) => {
-      // Even when the profile carries the user's own avatar...
       profileStoreMocks.profiles = [{
         name: 'kira',
         avatar: {
@@ -172,18 +172,20 @@ describe('SessionListItem', () => {
         },
       })
 
-      expect(wrapper.find('.session-item-agent-logo').exists()).toBe(false)
-      const logo = wrapper.get('.session-item-agent-logo-wrap .profile-avatar-stub')
-      // ...the agent avatar uses the fixed generated seed, never the user's avatar.
-      expect(logo.attributes('data-name')).toBe('hermes-agent')
-      expect(logo.attributes('data-avatar-url')).toBe('')
-      expect(logo.attributes('data-size')).toBe('18')
-      // The redundant profile-id row is gone entirely.
-      expect(wrapper.find('.session-item-profile').exists()).toBe(false)
+      // Agent identity = the Hermes logo (per-agent; Codex/Claude for coding agents).
+      const logo = wrapper.get('.session-item-agent-logo')
+      expect(logo.attributes('src')).toBe('/coding-agents/hermes.png')
+      expect(logo.attributes('alt')).toBe('Hermes')
+      // User identity = the user's own profile avatar + name, shown separately.
+      const userAvatar = wrapper.get('.session-item-profile .profile-avatar-stub')
+      expect(userAvatar.attributes('data-name')).toBe('kira')
+      expect(userAvatar.attributes('data-avatar-url')).toBe('https://example.com/kira-avatar.png')
+      expect(userAvatar.attributes('data-size')).toBe('16')
+      expect(wrapper.get('.session-item-profile-name').text()).toBe('kira')
     },
   )
 
-  it('renders the generated agent avatar for old sessions without agent metadata', () => {
+  it('defaults old sessions without agent metadata to the Hermes logo', () => {
     const wrapper = mount(SessionListItem, {
       props: {
         session: { ...session, source: undefined, agent: undefined, codingAgentId: undefined },
@@ -196,12 +198,9 @@ describe('SessionListItem', () => {
       },
     })
 
-    // Non-coding-agent sessions no longer show the Hermes logo img — they show the
-    // generated agent avatar.
-    expect(wrapper.find('.session-item-agent-logo').exists()).toBe(false)
-    const logo = wrapper.get('.session-item-agent-logo-wrap .profile-avatar-stub')
-    expect(logo.attributes('data-name')).toBe('hermes-agent')
-    expect(logo.attributes('data-size')).toBe('18')
+    const logo = wrapper.get('.session-item-agent-logo')
+    expect(logo.attributes('src')).toBe('/coding-agents/hermes.png')
+    expect(logo.attributes('alt')).toBe('Hermes')
   })
 
   it('renders the Claude Code logo for Claude coding agent sessions', () => {

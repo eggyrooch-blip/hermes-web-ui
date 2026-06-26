@@ -4,6 +4,7 @@ import { NPopconfirm, NCheckbox, NTooltip } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import type { Session } from '@/stores/hermes/chat'
 import { useAppStore } from '@/stores/hermes/app'
+import { useProfilesStore } from '@/stores/hermes/profiles'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
 import { formatTimestampMs } from '@/shared/session-display'
 
@@ -31,7 +32,9 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const profilesStore = useProfilesStore()
 const profileName = computed(() => props.session.profile || 'default')
+const profileAvatar = computed(() => profilesStore.profiles.find(profile => profile.name === profileName.value)?.avatar)
 const profileHasModels = computed(() => {
   const profileModels = appStore.profileModelGroups.find(profile => profile.profile === profileName.value)
   return !!profileModels?.groups?.some(group => group.models.length > 0)
@@ -40,10 +43,9 @@ const profileModelsMissing = computed(() =>
   appStore.profileModelGroups.length > 0 && !profileHasModels.value,
 )
 const isGlobalAgentSession = computed(() => props.session.source === 'global_agent')
-// Session-list avatar for a non-coding-agent conversation: a FIXED generated (multiavatar)
-// agent avatar — never the user's own profile/Feishu avatar (matches the chat bubble).
-// Coding-agent sessions keep their real Codex/Claude logos.
-const AGENT_AVATAR_SEED = 'hermes-agent'
+// Upstream design (multi-agent): each row shows the AGENT's own logo (per agent —
+// Hermes / Codex / Claude) AND the USER's avatar — two distinct identities, never the
+// user's avatar masquerading as the agent.
 const sessionAgentLogo = computed(() => {
   if (props.session.source === 'coding_agent') {
     if (props.session.codingAgentId === 'codex' || props.session.agent === 'codex') {
@@ -150,17 +152,14 @@ onUnmounted(() => {
       <span class="session-item-agent-row">
         <span class="session-item-agent-logo-wrap" :class="{ streaming }">
           <img
-            v-if="session.source === 'coding_agent'"
             class="session-item-agent-logo"
             :src="sessionAgentLogo.src"
             :alt="sessionAgentLogo.label"
           >
-          <ProfileAvatar
-            v-else
-            class="session-item-agent-avatar"
-            :name="AGENT_AVATAR_SEED"
-            :size="18"
-          />
+        </span>
+        <span v-if="props.showProfile" class="session-item-profile">
+          <ProfileAvatar class="session-item-profile-avatar" :name="profileName" :avatar="profileAvatar" :size="16" />
+          <span class="session-item-profile-name">{{ profileName }}</span>
         </span>
       </span>
     </div>
