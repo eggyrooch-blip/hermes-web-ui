@@ -94,6 +94,11 @@ export function isMarkdownFile(name: string): boolean {
   return ext === '.md' || ext === '.markdown'
 }
 
+export function isHtmlFile(name: string): boolean {
+  const ext = getFileExt(name)
+  return ext === '.html' || ext === '.htm'
+}
+
 export function isTextFile(name: string): boolean {
   const basename = name.split('/').pop() || ''
   if (TEXT_BASENAMES.has(basename) || basename.startsWith('.env.')) return true
@@ -129,7 +134,7 @@ export const useFilesStore = defineStore('files', () => {
 
   const previewFile = ref<{
     path: string
-    type: 'image' | 'markdown' | 'text'
+    type: 'image' | 'markdown' | 'text' | 'html'
     content?: string
     language?: string
   } | null>(null)
@@ -205,6 +210,17 @@ export const useFilesStore = defineStore('files', () => {
     } else if (isMarkdownFile(entry.name)) {
       const result = await filesApi.readFile(entry.path)
       previewFile.value = { path: entry.path, type: 'markdown', content: result.content }
+    } else if (isHtmlFile(entry.name)) {
+      // HTML artifacts (e.g. difflib reports) render in a sandboxed iframe via
+      // the profile-scoped /api/hermes/download URL. content is kept so the
+      // "源码/渲染" toggle in FilePreview can show the raw source on demand.
+      const result = await filesApi.readFile(entry.path)
+      previewFile.value = {
+        path: entry.path,
+        type: 'html',
+        content: result.content,
+        language: getLanguageFromPath(entry.path),
+      }
     } else if (isTextFile(entry.name)) {
       const result = await filesApi.readFile(entry.path)
       previewFile.value = {

@@ -2114,6 +2114,8 @@ export default {
     dragDropHint: 'Drag files here to upload',
     closeEditor: 'Close Editor',
     closePreview: 'Close',
+    previewRender: 'Render',
+    previewSource: 'Source',
     saveFile: 'Save',
   },
   // Download
