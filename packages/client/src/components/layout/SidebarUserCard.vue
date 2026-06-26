@@ -36,15 +36,6 @@ const displayName = computed(() =>
   props.profileFallback ||
   'Hermes'
 )
-const displayProfile = computed(() =>
-  props.user?.profile ||
-  props.profileFallback ||
-  ''
-)
-const showProfile = computed(() => {
-  const profile = displayProfile.value.trim()
-  return profile.length > 0 && profile !== displayName.value.trim()
-})
 const displayInitial = computed(() => {
   const source = displayName.value.trim() || 'H'
   return source.slice(0, 1).toLocaleUpperCase()
@@ -71,7 +62,6 @@ const actionClass = computed(() =>
     </div>
     <div class="user-meta">
       <span class="user-name" :title="displayName">{{ displayName }}</span>
-      <span v-if="showProfile" class="user-profile" :title="displayProfile">{{ displayProfile }}</span>
       <span class="user-connection" :class="{ connected }">
         {{ connected ? t("sidebar.connected") : t("sidebar.disconnected") }}
       </span>

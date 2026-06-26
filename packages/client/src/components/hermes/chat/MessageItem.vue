@@ -184,11 +184,12 @@ const chatStore = useChatStore();
 const settingsStore = useSettingsStore();
 const speech = useGlobalSpeech();
 const voiceSettings = useVoiceSettings();
-// Agent (assistant) bubbles show a FIXED brand mascot avatar — never the user's own
-// profile/Feishu avatar. In multitenancy each user IS a profile, so reusing the profile
-// avatar made the agent wear the user's own face ("talking to yourself"). 'name' is the
-// multiavatar fallback if the image 404s.
-const AGENT_AVATAR = { type: "url", url: "/coding-agents/agent-avatar.png" } as const;
+// Agent (assistant) bubbles show a FIXED, non-personal generated (multiavatar) avatar —
+// never the user's own profile/Feishu avatar. In multitenancy each user IS a profile, so
+// reusing the profile avatar made the agent wear the user's own face ("talking to
+// yourself"). A constant seed → the same generated avatar for every user. (Users change
+// their OWN avatar via the profile dialog's 头像 button.)
+const AGENT_AVATAR_SEED = "hermes-agent";
 
 // Copy entire bubble content
 const copyableContent = computed(() => {
@@ -817,8 +818,7 @@ onBeforeUnmount(() => {
         <ProfileAvatar
           v-if="message.role === 'assistant'"
           class="msg-avatar"
-          name="Hermes"
-          :avatar="AGENT_AVATAR"
+          :name="AGENT_AVATAR_SEED"
           :size="40"
         />
         <div class="msg-content" :class="message.role">

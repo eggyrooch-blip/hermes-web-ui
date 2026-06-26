@@ -45,12 +45,11 @@ describe('MessageItem agent avatar', () => {
     })
   })
 
-  it('renders the fixed Hermes brand avatar for the agent, never the active profile image avatar', () => {
+  it('renders a generated (non-personal) avatar for the agent even when the active profile has an image avatar', () => {
     // The active profile carries the user's own uploaded photo.
-    const userPhoto = 'data:image/png;base64,AAAA'
     const profiles = useProfilesStore()
     profiles.profiles = [
-      { name: '孙可', active: true, avatar: { type: 'image', dataUrl: userPhoto } } as any,
+      { name: '孙可', active: true, avatar: { type: 'image', dataUrl: 'data:image/png;base64,AAAA' } } as any,
     ]
     profiles.activeProfileName = '孙可'
     const chat = useChatStore()
@@ -71,11 +70,9 @@ describe('MessageItem agent avatar', () => {
 
     const avatar = wrapper.find('.msg-avatar')
     expect(avatar.exists()).toBe(true)
-    const img = avatar.find('.profile-avatar-image')
-    // The agent shows the fixed brand mascot image...
-    expect(img.exists()).toBe(true)
-    expect(img.attributes('src')).toBe('/coding-agents/agent-avatar.png')
-    // ...and NEVER the user's own profile photo.
-    expect(img.attributes('src')).not.toBe(userPhoto)
+    // The agent shows a generated (multiavatar) SVG...
+    expect(avatar.find('.profile-avatar-svg').exists()).toBe(true)
+    // ...and NEVER the user's own personal image avatar.
+    expect(avatar.find('.profile-avatar-image').exists()).toBe(false)
   })
 })
