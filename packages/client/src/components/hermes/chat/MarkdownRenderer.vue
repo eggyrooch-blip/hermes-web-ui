@@ -148,8 +148,30 @@ function hasExtension(path: string, extensions: Set<string>): boolean {
   return !!ext && extensions.has(ext)
 }
 
+// Turn a produced-file directive line `MEDIA:<abs-path>` into a markdown file
+// link `[name](/workspace/rel)` so the existing <a>->file-card transform renders
+// a clickable card (click -> previewByDisplayPath -> panel render). Done on the
+// CLIENT because the agent persists the raw MEDIA line and, for gateway-routed
+// profiles (e.g. Feishu users), the server never rewrites it on the serve path.
+// Only workspace artifacts are linkable (the file must be reachable under the
+// profile workspace for preview/download); other MEDIA targets are left as text.
+function preprocessMediaDirectives(content: string): string {
+  if (!content || !content.includes('MEDIA:')) return content
+  return content.replace(/(^|\n)[ \t]*MEDIA:([^\r\n]+)/g, (match, leading: string, rawTarget: string) => {
+    const target = rawTarget.trim()
+    const marker = '/workspace/'
+    const idx = target.indexOf(marker)
+    if (idx === -1) return match
+    const rel = target.slice(idx + marker.length).replace(/^\/+/, '')
+    if (!rel) return match
+    const name = rel.split('/').filter(Boolean).pop() || rel
+    const href = '/workspace/' + rel.split('/').map(encodeURIComponent).join('/')
+    return `${leading}[${name}](${href})`
+  })
+}
+
 const renderedHtml = computed(() => {
-  let html = md.render(repairNestedMarkdownFences(props.content))
+  let html = md.render(preprocessMediaDirectives(repairNestedMarkdownFences(props.content)))
 
   // Add IDs to headings for anchor links
   const prefix = props.headingIdPrefix ? `${props.headingIdPrefix}-` : ''
