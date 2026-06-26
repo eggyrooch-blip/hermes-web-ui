@@ -159,7 +159,6 @@ onUnmounted(() => {
         </span>
         <span v-if="props.showProfile" class="session-item-profile">
           <ProfileAvatar class="session-item-profile-avatar" :name="profileName" :avatar="profileAvatar" :size="16" />
-          <span class="session-item-profile-name">{{ profileName }}</span>
         </span>
       </span>
     </div>

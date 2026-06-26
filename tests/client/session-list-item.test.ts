@@ -176,12 +176,14 @@ describe('SessionListItem', () => {
       const logo = wrapper.get('.session-item-agent-logo')
       expect(logo.attributes('src')).toBe('/coding-agents/hermes.png')
       expect(logo.attributes('alt')).toBe('Hermes')
-      // User identity = the user's own profile avatar + name, shown separately.
+      // User identity = the user's own profile avatar, shown separately (avatar only,
+      // no profile-id text — sunke asked for just the two avatars).
       const userAvatar = wrapper.get('.session-item-profile .profile-avatar-stub')
       expect(userAvatar.attributes('data-name')).toBe('kira')
       expect(userAvatar.attributes('data-avatar-url')).toBe('https://example.com/kira-avatar.png')
       expect(userAvatar.attributes('data-size')).toBe('16')
-      expect(wrapper.get('.session-item-profile-name').text()).toBe('kira')
+      expect(wrapper.find('.session-item-profile-name').exists()).toBe(false)
+      expect(wrapper.text()).not.toContain('kira')
     },
   )
 
