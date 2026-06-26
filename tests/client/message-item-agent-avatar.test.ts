@@ -4,8 +4,8 @@
 // The re-baseline (commit 9f7296e2) made the assistant bubble reuse the ACTIVE
 // PROFILE's avatar. In multitenancy each user IS a profile, so the agent ended up
 // wearing the user's own Feishu photo ("talking to yourself"). The agent bubble must
-// instead render a FIXED, non-personal multiavatar-generated SVG — never the profile's
-// uploaded/image avatar.
+// instead render the AGENT's own per-agent logo (Hermes / Codex / Claude), matching the
+// session list — never the profile's uploaded/image avatar.
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -45,17 +45,19 @@ describe('MessageItem agent avatar', () => {
     })
   })
 
-  it('renders a generated (non-personal) avatar for the agent even when the active profile has an image avatar', () => {
+  const userPhoto = 'data:image/png;base64,AAAA'
+
+  function mountAssistant(session: Record<string, any>) {
     // The active profile carries the user's own uploaded photo.
     const profiles = useProfilesStore()
     profiles.profiles = [
-      { name: '孙可', active: true, avatar: { type: 'image', dataUrl: 'data:image/png;base64,AAAA' } } as any,
+      { name: '孙可', active: true, avatar: { type: 'image', dataUrl: userPhoto } } as any,
     ]
     profiles.activeProfileName = '孙可'
     const chat = useChatStore()
-    chat.activeSession = { id: 's1', profile: '孙可' } as any
+    chat.activeSession = session as any
 
-    const wrapper = mount(MessageItem, {
+    return mount(MessageItem, {
       props: {
         message: {
           // content empty so MarkdownRenderer (naive-ui) isn't mounted — the avatar
@@ -67,12 +69,21 @@ describe('MessageItem agent avatar', () => {
         } satisfies Message,
       },
     })
+  }
 
-    const avatar = wrapper.find('.msg-avatar')
-    expect(avatar.exists()).toBe(true)
-    // The agent shows a generated (multiavatar) SVG...
-    expect(avatar.find('.profile-avatar-svg').exists()).toBe(true)
-    // ...and NEVER the user's own personal image avatar.
-    expect(avatar.find('.profile-avatar-image').exists()).toBe(false)
+  it('renders the Hermes agent logo (not the user profile avatar) for a normal session', () => {
+    const wrapper = mountAssistant({ id: 's1', profile: '孙可' })
+    const avatar = wrapper.get('img.msg-avatar')
+    expect(avatar.attributes('src')).toBe('/coding-agents/hermes.png')
+    expect(avatar.attributes('alt')).toBe('Hermes')
+    // NEVER the user's own photo.
+    expect(avatar.attributes('src')).not.toBe(userPhoto)
+  })
+
+  it('renders a DIFFERENT (per-agent) logo for a coding-agent session', () => {
+    const wrapper = mountAssistant({ id: 's2', profile: '孙可', source: 'coding_agent', agent: 'codex', codingAgentId: 'codex' })
+    const avatar = wrapper.get('img.msg-avatar')
+    expect(avatar.attributes('src')).toBe('/coding-agents/codex-openai.png')
+    expect(avatar.attributes('alt')).toBe('Codex')
   })
 })

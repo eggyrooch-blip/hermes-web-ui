@@ -9,7 +9,6 @@ import MarkdownRenderer from "./MarkdownRenderer.vue";
 import { parseThinking, countThinkingChars } from "@/utils/thinking-parser";
 import { useChatStore } from "@/stores/hermes/chat";
 import { useSettingsStore } from "@/stores/hermes/settings";
-import ProfileAvatar from "@/components/hermes/profiles/ProfileAvatar.vue";
 import {
   copyTextToClipboard,
   extractUnifiedDiffPayload,
@@ -184,12 +183,20 @@ const chatStore = useChatStore();
 const settingsStore = useSettingsStore();
 const speech = useGlobalSpeech();
 const voiceSettings = useVoiceSettings();
-// Agent (assistant) bubbles show a FIXED, non-personal generated (multiavatar) avatar —
-// never the user's own profile/Feishu avatar. In multitenancy each user IS a profile, so
-// reusing the profile avatar made the agent wear the user's own face ("talking to
-// yourself"). A constant seed → the same generated avatar for every user. (Users change
-// their OWN avatar via the profile dialog's 头像 button.)
-const AGENT_AVATAR_SEED = "hermes-agent";
+// Agent (assistant) bubbles show the AGENT's own logo — per agent (Hermes / Codex /
+// Claude), matching the session list — never the user's own profile/Feishu avatar (which
+// in multitenancy made the agent wear the user's face). Same logic as
+// SessionListItem.sessionAgentLogo, keyed on the active session's agent.
+const agentLogo = computed(() => {
+  const session = chatStore.activeSession;
+  if (session?.source === "coding_agent") {
+    if (session.codingAgentId === "codex" || session.agent === "codex") {
+      return { label: "Codex", src: "/coding-agents/codex-openai.png" };
+    }
+    return { label: "Claude Code", src: "/coding-agents/claude-code.svg" };
+  }
+  return { label: "Hermes", src: "/coding-agents/hermes.png" };
+});
 
 // Copy entire bubble content
 const copyableContent = computed(() => {
@@ -815,12 +822,12 @@ onBeforeUnmount(() => {
     </template>
     <template v-else>
       <div class="msg-body">
-        <ProfileAvatar
+        <img
           v-if="message.role === 'assistant'"
-          class="msg-avatar"
-          :name="AGENT_AVATAR_SEED"
-          :size="40"
-        />
+          class="msg-avatar msg-agent-logo"
+          :src="agentLogo.src"
+          :alt="agentLogo.label"
+        >
         <div class="msg-content" :class="message.role">
           <div
             class="message-bubble"
@@ -1076,6 +1083,15 @@ onBeforeUnmount(() => {
       height: 40px;
       flex-shrink: 0;
       margin-top: 2px;
+    }
+
+    .msg-avatar.msg-agent-logo {
+      border-radius: 50%;
+      object-fit: contain;
+      background: #fff;
+      padding: 4px;
+      box-sizing: border-box;
+      border: 1px solid var(--border-light, rgba(0, 0, 0, 0.08));
     }
 
     .message-bubble {
