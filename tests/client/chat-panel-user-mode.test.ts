@@ -94,6 +94,10 @@ vi.mock('@/stores/hermes/session-browser-prefs', () => ({
   useSessionBrowserPrefsStore: () => prefsStoreMock,
 }))
 
+vi.mock('@/stores/hermes/files', () => ({
+  useFilesStore: () => ({ previewPanelRequestedAt: 0 }),
+}))
+
 vi.mock('@/api/hermes/sessions', () => ({
   renameSession: vi.fn(),
   setSessionWorkspace: vi.fn(),
