@@ -43,6 +43,23 @@ async function invokeFileRoute(method: string, path: string, ctx: any) {
   await layer.stack[layer.stack.length - 1](ctx, async () => {})
 }
 
+// Runs the FULL middleware stack for a route (guard + handler), not just the
+// final handler — so it proves requireSuperAdminOrChatPlane actually lets a
+// chat-plane request reach the handler. Composes the layer stack koa-style.
+async function invokeFileRouteFull(method: string, path: string, ctx: any) {
+  const { fileRoutes } = await import('../../packages/server/src/routes/hermes/files')
+  const layer = (fileRoutes as any).stack.find((item: any) => (
+    item.path === path && item.methods.includes(method.toUpperCase())
+  ))
+  expect(layer, `${method} ${path}`).toBeTruthy()
+  const stack = layer.stack as Array<(c: any, n: () => Promise<void>) => Promise<void>>
+  const dispatch = async (i: number): Promise<void> => {
+    if (i >= stack.length) return
+    await stack[i](ctx, () => dispatch(i + 1))
+  }
+  await dispatch(0)
+}
+
 async function invokeDownloadRoute(ctx: any) {
   const { downloadRoutes } = await import('../../packages/server/src/routes/hermes/download')
   const layer = (downloadRoutes as any).stack.find((item: any) => (
@@ -742,6 +759,26 @@ model:
     expect(ctx.body).toEqual({ ok: true, path: 'todo.md' })
     expect(readFileSync(join(profileWorkspace, 'todo.md'), 'utf-8')).toBe('sandbox note')
     expect(existsSync(join(baseDir, 'todo.md'))).toBe(false)
+  })
+
+  it('passes the write guard and creates a workspace folder end-to-end in chat plane (mkdir full stack)', async () => {
+    // Runs the FULL route stack (requireSuperAdminOrChatPlane guard + handler).
+    // A chat-plane user is role:'user' — under the bare requireSuperAdmin guard
+    // this 403s; here it must reach the handler and create the dir in the
+    // caller's own workspace. This is the regression that broke prod file writes.
+    const profileWorkspace = join(baseDir, 'profiles', 'user_a', 'workspace')
+    mkdirSync(profileWorkspace, { recursive: true })
+    const ctx = mockCtx({
+      method: 'POST',
+      request: { body: { path: 'reports' } },
+    })
+
+    await invokeFileRouteFull('POST', '/api/hermes/files/mkdir', ctx)
+
+    expect(ctx.status).not.toBe(403)
+    expect(ctx.body).toEqual({ ok: true })
+    expect(existsSync(join(profileWorkspace, 'reports'))).toBe(true)
+    expect(existsSync(join(baseDir, 'reports'))).toBe(false)
   })
 
   it('does not expose profile or root config through the chat-plane files workspace', async () => {

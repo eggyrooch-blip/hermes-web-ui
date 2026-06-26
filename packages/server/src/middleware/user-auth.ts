@@ -9,6 +9,7 @@ import {
   type UserRecord,
   type UserRole,
 } from '../db/hermes/users-store'
+import { isChatPlaneRequest } from '../services/request-context'
 
 export interface AuthenticatedUser {
   id: number
@@ -225,6 +226,23 @@ export async function requireSuperAdmin(ctx: Context, next: Next): Promise<void>
     return
   }
   await next()
+}
+
+// File-write guard for the multi-tenant fork. Upstream gates every file write
+// behind `requireSuperAdmin`, which makes sense for the admin web plane (writes
+// resolve into the profile HOME). But in the chat plane every Feishu user is
+// `role:'user'` (set by trustedFeishuAuth), so that guard 403s all writes — even
+// though the file routes deliberately confine chat-plane writes to the caller's
+// own `<profile>/workspace` (getFileRootDir) with traversal + sensitive-path
+// checks. So: allow chat-plane requests (already authenticated + workspace-scoped)
+// and keep the super-admin requirement for the admin plane, where rootDir is
+// undefined and a write would otherwise reach the profile home / root config.
+export async function requireSuperAdminOrChatPlane(ctx: Context, next: Next): Promise<void> {
+  if (isChatPlaneRequest(ctx)) {
+    await next()
+    return
+  }
+  await requireSuperAdmin(ctx, next)
 }
 
 export function resolveRequestedProfile(ctx: Context): string {

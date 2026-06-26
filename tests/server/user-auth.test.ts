@@ -232,6 +232,37 @@ describe('user auth tables and middleware', () => {
     expect(next).toHaveBeenCalledOnce()
   })
 
+  it('lets chat-plane file-write requests through requireSuperAdminOrChatPlane without super admin', async () => {
+    vi.stubEnv('HERMES_WEB_PLANE', 'chat')
+    const { auth } = await initUsers()
+    const next = vi.fn(async () => {})
+    // A normal Feishu user (role:'user') — would be 403 under requireSuperAdmin,
+    // but the chat plane confines the write to the caller's own workspace.
+    const ctx = { state: { user: { id: 1, username: 'feishu', role: 'user' } }, status: 200, body: null } as any
+
+    await auth.requireSuperAdminOrChatPlane(ctx, next)
+
+    expect(next).toHaveBeenCalledOnce()
+    expect(ctx.status).toBe(200)
+  })
+
+  it('still requires super admin for file writes in the admin (non-chat) plane', async () => {
+    vi.stubEnv('HERMES_WEB_PLANE', 'ops')
+    const { auth } = await initUsers()
+
+    const userNext = vi.fn(async () => {})
+    const userCtx = { state: { user: { id: 1, username: 'ops', role: 'user' } }, status: 200, body: null } as any
+    await auth.requireSuperAdminOrChatPlane(userCtx, userNext)
+    expect(userNext).not.toHaveBeenCalled()
+    expect(userCtx.status).toBe(403)
+    expect(userCtx.body).toEqual({ error: 'Super administrator privileges are required' })
+
+    const superNext = vi.fn(async () => {})
+    const superCtx = { state: { user: { id: 2, username: 'root', role: 'super_admin' } }, status: 200, body: null } as any
+    await auth.requireSuperAdminOrChatPlane(superCtx, superNext)
+    expect(superNext).toHaveBeenCalledOnce()
+  })
+
   it('ignores stale profile headers for the aggregate available-models endpoint', async () => {
     const { auth } = await initUsers()
     const ctx = {

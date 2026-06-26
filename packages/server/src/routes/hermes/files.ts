@@ -8,7 +8,7 @@ import {
   resolveHermesPath,
   MAX_EDIT_SIZE,
 } from '../../services/hermes/file-provider'
-import { requireSuperAdmin } from '../../middleware/user-auth'
+import { requireSuperAdminOrChatPlane } from '../../middleware/user-auth'
 import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 import { MultipartParseError, parseMultipartBoundary, parseMultipartFilename, splitMultipart } from '../../lib/multipart'
 
@@ -140,7 +140,7 @@ fileRoutes.get('/api/hermes/files/stat', async (ctx) => {
 })
 
 // GET /api/hermes/files/read?path=
-fileRoutes.get('/api/hermes/files/read', requireSuperAdmin, async (ctx) => {
+fileRoutes.get('/api/hermes/files/read', requireSuperAdminOrChatPlane, async (ctx) => {
   const relativePath = ctx.query.path as string
   if (!relativePath) {
     ctx.status = 400
@@ -165,7 +165,7 @@ fileRoutes.get('/api/hermes/files/read', requireSuperAdmin, async (ctx) => {
 })
 
 // PUT /api/hermes/files/write  body: { path, content }
-fileRoutes.put('/api/hermes/files/write', requireSuperAdmin, async (ctx) => {
+fileRoutes.put('/api/hermes/files/write', requireSuperAdminOrChatPlane, async (ctx) => {
   const { path: relativePath, content } = ctx.request.body as { path?: string; content?: string }
   if (!relativePath) {
     ctx.status = 400
@@ -191,7 +191,7 @@ fileRoutes.put('/api/hermes/files/write', requireSuperAdmin, async (ctx) => {
 })
 
 // DELETE /api/hermes/files/delete  body: { path, recursive? }
-fileRoutes.delete('/api/hermes/files/delete', requireSuperAdmin, async (ctx) => {
+fileRoutes.delete('/api/hermes/files/delete', requireSuperAdminOrChatPlane, async (ctx) => {
   const body = (ctx.request.body || {}) as { path?: string; recursive?: boolean }
   const query = (ctx.query || {}) as { path?: string; recursive?: string }
   const relativePath = body.path || (query.path as string)
@@ -218,7 +218,7 @@ fileRoutes.delete('/api/hermes/files/delete', requireSuperAdmin, async (ctx) => 
 })
 
 // POST /api/hermes/files/rename  body: { oldPath, newPath }
-fileRoutes.post('/api/hermes/files/rename', requireSuperAdmin, async (ctx) => {
+fileRoutes.post('/api/hermes/files/rename', requireSuperAdminOrChatPlane, async (ctx) => {
   const { oldPath, newPath } = ctx.request.body as { oldPath?: string; newPath?: string }
   if (!oldPath || !newPath) {
     ctx.status = 400
@@ -240,7 +240,7 @@ fileRoutes.post('/api/hermes/files/rename', requireSuperAdmin, async (ctx) => {
 })
 
 // POST /api/hermes/files/mkdir  body: { path }
-fileRoutes.post('/api/hermes/files/mkdir', requireSuperAdmin, async (ctx) => {
+fileRoutes.post('/api/hermes/files/mkdir', requireSuperAdminOrChatPlane, async (ctx) => {
   const { path: relativePath } = ctx.request.body as { path?: string }
   if (!relativePath) {
     ctx.status = 400
@@ -260,7 +260,7 @@ fileRoutes.post('/api/hermes/files/mkdir', requireSuperAdmin, async (ctx) => {
 })
 
 // POST /api/hermes/files/copy  body: { srcPath, destPath }
-fileRoutes.post('/api/hermes/files/copy', requireSuperAdmin, async (ctx) => {
+fileRoutes.post('/api/hermes/files/copy', requireSuperAdminOrChatPlane, async (ctx) => {
   const { srcPath, destPath } = ctx.request.body as { srcPath?: string; destPath?: string }
   if (!srcPath || !destPath) {
     ctx.status = 400
@@ -282,7 +282,7 @@ fileRoutes.post('/api/hermes/files/copy', requireSuperAdmin, async (ctx) => {
 })
 
 // POST /api/hermes/files/upload?path=  (multipart/form-data)
-fileRoutes.post('/api/hermes/files/upload', requireSuperAdmin, async (ctx) => {
+fileRoutes.post('/api/hermes/files/upload', requireSuperAdminOrChatPlane, async (ctx) => {
   const targetDir = (ctx.query.path as string) || ''
   const contentType = ctx.get('content-type') || ''
   if (!contentType.startsWith('multipart/form-data')) {
