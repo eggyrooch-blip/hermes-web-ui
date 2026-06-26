@@ -86,4 +86,23 @@ describe('MessageItem agent avatar', () => {
     expect(avatar.attributes('src')).toBe('/coding-agents/codex-openai.png')
     expect(avatar.attributes('alt')).toBe('Codex')
   })
+
+  it('keys the logo off the message\'s own session prop, not the global active session', () => {
+    // History lists render a session that is NOT the globally active one. The agent logo
+    // must follow the message's own session (passed as the `session` prop), not
+    // chatStore.activeSession — otherwise a Codex transcript shows the Hermes logo.
+    const chat = useChatStore()
+    chat.activeSession = { id: 'active', profile: '孙可' } as any // a Hermes session
+
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: { id: 'h1', role: 'assistant', content: '', timestamp: Date.now() } satisfies Message,
+        session: { id: 'history', profile: '孙可', source: 'coding_agent', agent: 'codex', codingAgentId: 'codex' } as any,
+      },
+    })
+
+    const avatar = wrapper.get('img.msg-avatar')
+    expect(avatar.attributes('src')).toBe('/coding-agents/codex-openai.png')
+    expect(avatar.attributes('alt')).toBe('Codex')
+  })
 })

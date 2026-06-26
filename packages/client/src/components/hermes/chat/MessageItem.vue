@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Message, ContentBlock } from "@/stores/hermes/chat";
+import type { Message, ContentBlock, Session } from "@/stores/hermes/chat";
 import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
 import { useMessage } from "naive-ui";
@@ -29,7 +29,7 @@ const JSON_MAX_KEYS_PER_OBJECT = 50;
 const JSON_MAX_ITEMS_PER_ARRAY = 50;
 const JSON_TRUNCATED_KEY = "__truncated__";
 
-const props = defineProps<{ message: Message; highlight?: boolean; headingIdPrefix?: string }>();
+const props = defineProps<{ message: Message; highlight?: boolean; headingIdPrefix?: string; session?: Session | null }>();
 const { t } = useI18n();
 const toast = useMessage();
 
@@ -186,9 +186,10 @@ const voiceSettings = useVoiceSettings();
 // Agent (assistant) bubbles show the AGENT's own logo — per agent (Hermes / Codex /
 // Claude), matching the session list — never the user's own profile/Feishu avatar (which
 // in multitenancy made the agent wear the user's face). Same logic as
-// SessionListItem.sessionAgentLogo, keyed on the active session's agent.
+// SessionListItem.sessionAgentLogo, keyed on the message's own session (props.session,
+// passed by history lists) and falling back to the active chat session.
 const agentLogo = computed(() => {
-  const session = chatStore.activeSession;
+  const session = props.session ?? chatStore.activeSession;
   if (session?.source === "coding_agent") {
     if (session.codingAgentId === "codex" || session.agent === "codex") {
       return { label: "Codex", src: "/coding-agents/codex-openai.png" };

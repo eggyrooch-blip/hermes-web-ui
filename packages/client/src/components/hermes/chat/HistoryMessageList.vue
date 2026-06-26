@@ -207,6 +207,7 @@ defineExpose({
       <template #item="{ message: msg }">
         <MessageItem
           :message="msg"
+          :session="activeSession"
           :highlight="chatStore.focusMessageId === msg.id"
         />
       </template>
