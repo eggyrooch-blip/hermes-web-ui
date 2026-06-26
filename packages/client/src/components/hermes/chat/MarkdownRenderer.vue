@@ -70,7 +70,10 @@ const props = withDefaults(defineProps<{
 
 const { t } = useI18n()
 const message = useMessage()
-const filesStore = useFilesStore()
+// Resolved lazily inside the file-card click handler rather than at setup, so
+// MarkdownRenderer can still mount in contexts without an active Pinia (e.g.
+// the markdown-special-mentions unit test). The store is only needed when a
+// workspace artifact card is actually clicked, where Pinia is always installed.
 
 function diffFoldLabel(hiddenCount: number): string {
   return t('chat.unchangedLines', { count: hiddenCount })
@@ -422,7 +425,7 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
       const ext = fileName?.split('.').pop()?.toLowerCase()
       if (SUPPORT_PREVIEW_FILE_TYPES.includes(ext || '')) {
         if (path.startsWith('/workspace/')) {
-          await filesStore.previewByDisplayPath(path, fileName || undefined)
+          await useFilesStore().previewByDisplayPath(path, fileName || undefined)
         } else {
           previewTextFile(path, fileName || '')
         }
