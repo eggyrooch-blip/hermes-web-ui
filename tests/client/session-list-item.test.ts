@@ -143,9 +143,16 @@ describe('SessionListItem', () => {
     expect(wrapper.emitted('select')).toBeUndefined()
   })
 
+  const avatarStub = defineComponent({
+    name: 'ProfileAvatar',
+    props: ['name', 'avatar', 'size'],
+    template: '<span class="profile-avatar-stub" :data-name="name" :data-avatar-url="avatar?.url || \'\'" :data-size="size"></span>',
+  })
+
   it.each(['cli', 'api_server', 'global_agent'])(
-    'renders the profile avatar as the agent logo for %s Hermes sessions',
+    'renders the generated agent avatar (NOT the user profile avatar) for %s Hermes sessions',
     (source) => {
+      // Even when the profile carries the user's own avatar...
       profileStoreMocks.profiles = [{
         name: 'kira',
         avatar: {
@@ -161,27 +168,22 @@ describe('SessionListItem', () => {
           canDelete: true,
         },
         global: {
-          stubs: {
-            ProfileAvatar: defineComponent({
-              name: 'ProfileAvatar',
-              props: ['name', 'avatar', 'size'],
-              template: '<span class="profile-avatar-stub" :data-name="name" :data-avatar-url="avatar?.url || \'\'" :data-size="size"></span>',
-            }),
-          },
+          stubs: { ProfileAvatar: avatarStub },
         },
       })
 
       expect(wrapper.find('.session-item-agent-logo').exists()).toBe(false)
       const logo = wrapper.get('.session-item-agent-logo-wrap .profile-avatar-stub')
-      expect(logo.attributes('data-name')).toBe('kira')
-      expect(logo.attributes('data-avatar-url')).toBe('https://example.com/kira-avatar.png')
+      // ...the agent avatar uses the fixed generated seed, never the user's avatar.
+      expect(logo.attributes('data-name')).toBe('hermes-agent')
+      expect(logo.attributes('data-avatar-url')).toBe('')
       expect(logo.attributes('data-size')).toBe('18')
-      expect(wrapper.find('.session-item-profile .profile-avatar-stub').exists()).toBe(false)
-      expect(wrapper.find('.session-item-agent-name').exists()).toBe(false)
+      // The redundant profile-id row is gone entirely.
+      expect(wrapper.find('.session-item-profile').exists()).toBe(false)
     },
   )
 
-  it('defaults old sessions without agent metadata to the Hermes logo', () => {
+  it('renders the generated agent avatar for old sessions without agent metadata', () => {
     const wrapper = mount(SessionListItem, {
       props: {
         session: { ...session, source: undefined, agent: undefined, codingAgentId: undefined },
@@ -190,16 +192,16 @@ describe('SessionListItem', () => {
         canDelete: true,
       },
       global: {
-        stubs: {
-          ProfileAvatar: true,
-        },
+        stubs: { ProfileAvatar: avatarStub },
       },
     })
 
-    const logo = wrapper.get('.session-item-agent-logo')
-    expect(logo.attributes('src')).toBe('/coding-agents/hermes.png')
-    expect(logo.attributes('alt')).toBe('Hermes')
-    expect(wrapper.find('.session-item-agent-name').exists()).toBe(false)
+    // Non-coding-agent sessions no longer show the Hermes logo img — they show the
+    // generated agent avatar.
+    expect(wrapper.find('.session-item-agent-logo').exists()).toBe(false)
+    const logo = wrapper.get('.session-item-agent-logo-wrap .profile-avatar-stub')
+    expect(logo.attributes('data-name')).toBe('hermes-agent')
+    expect(logo.attributes('data-size')).toBe('18')
   })
 
   it('renders the Claude Code logo for Claude coding agent sessions', () => {
