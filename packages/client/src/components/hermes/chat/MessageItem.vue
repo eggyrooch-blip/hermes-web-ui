@@ -184,11 +184,11 @@ const chatStore = useChatStore();
 const settingsStore = useSettingsStore();
 const speech = useGlobalSpeech();
 const voiceSettings = useVoiceSettings();
-// Agent (assistant) bubbles show the FIXED Hermes brand avatar — the same mascot as the
-// sidebar "Hermes" header — never the user's own profile/Feishu avatar. In multitenancy
-// each user IS a profile, so reusing the profile avatar made the agent wear the user's
-// own face ("talking to yourself"). 'name' is the multiavatar fallback if the image 404s.
-const AGENT_AVATAR = { type: "url", url: "/coding-agents/hermes.png" } as const;
+// Agent (assistant) bubbles show a FIXED brand mascot avatar — never the user's own
+// profile/Feishu avatar. In multitenancy each user IS a profile, so reusing the profile
+// avatar made the agent wear the user's own face ("talking to yourself"). 'name' is the
+// multiavatar fallback if the image 404s.
+const AGENT_AVATAR = { type: "url", url: "/coding-agents/agent-avatar.png" } as const;
 
 // Copy entire bubble content
 const copyableContent = computed(() => {

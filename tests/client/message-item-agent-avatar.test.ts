@@ -72,9 +72,9 @@ describe('MessageItem agent avatar', () => {
     const avatar = wrapper.find('.msg-avatar')
     expect(avatar.exists()).toBe(true)
     const img = avatar.find('.profile-avatar-image')
-    // The agent shows the fixed Hermes brand image...
+    // The agent shows the fixed brand mascot image...
     expect(img.exists()).toBe(true)
-    expect(img.attributes('src')).toBe('/coding-agents/hermes.png')
+    expect(img.attributes('src')).toBe('/coding-agents/agent-avatar.png')
     // ...and NEVER the user's own profile photo.
     expect(img.attributes('src')).not.toBe(userPhoto)
   })
