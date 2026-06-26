@@ -1865,6 +1865,8 @@ export default {
     dragDropHint: 'Перетащите файлы сюда для загрузки',
     closeEditor: 'Закрыть редактор',
     closePreview: 'Закрыть',
+    previewRender: 'Просмотр',
+    previewSource: 'Исходный код',
     saveFile: 'Сохранить',
   },
   

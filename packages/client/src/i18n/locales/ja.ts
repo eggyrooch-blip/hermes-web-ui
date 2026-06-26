@@ -1979,6 +1979,8 @@ export default {
     dragDropHint: 'ここにファイルをドラッグしてアップロード',
     closeEditor: 'エディタを閉じる',
     closePreview: '閉じる',
+    previewRender: '表示',
+    previewSource: 'ソース',
     saveFile: '保存',
     fileTree: 'ファイルツリー',
   },

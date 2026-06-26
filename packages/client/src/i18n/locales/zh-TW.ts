@@ -2122,6 +2122,8 @@ export default {
     dragDropHint: '拖曳檔案至此處上傳',
     closeEditor: '關閉編輯器',
     closePreview: '關閉',
+    previewRender: '渲染',
+    previewSource: '原始碼',
     saveFile: '儲存',
   },
 

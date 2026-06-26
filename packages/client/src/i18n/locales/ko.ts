@@ -1979,6 +1979,8 @@ export default {
     dragDropHint: '여기로 파일을 드래그하여 업로드',
     closeEditor: '편집기 닫기',
     closePreview: '닫기',
+    previewRender: '렌더링',
+    previewSource: '소스',
     saveFile: '저장',
     fileTree: '파일 트리',
   },
