@@ -306,7 +306,7 @@ describe('skills controller', () => {
     mockReadConfigYamlForProfile.mockResolvedValue({})
 
     try {
-      const { list, deleteSkill } = await loadController()
+      const { list, deleteSkill, updateFile_ } = await loadController()
 
       // (1) The child is listed but READ-ONLY (descended through a symlink).
       const listCtx: any = { state: { profile: { name: 'research' } }, body: null }
@@ -324,6 +324,17 @@ describe('skills controller', () => {
       }
       await deleteSkill(delCtx)
       expect(delCtx.status).toBe(403)
+      await expect(readFile(join(childSkill, 'SKILL.md'), 'utf-8')).resolves.toContain('in shared pack')
+
+      // (3) Editing it through the symlinked parent is REFUSED; shared target unchanged.
+      const editCtx: any = {
+        request: { body: { category: 'vendor-pack', skill: 'child-skill', path: 'SKILL.md', content: '# hijacked\n' } },
+        state: { profile: { name: 'research' } },
+        status: 200,
+        body: null,
+      }
+      await updateFile_(editCtx)
+      expect(editCtx.status).toBe(403)
       await expect(readFile(join(childSkill, 'SKILL.md'), 'utf-8')).resolves.toContain('in shared pack')
     } finally {
       await rm(root, { recursive: true, force: true })

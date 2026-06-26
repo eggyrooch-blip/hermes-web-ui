@@ -775,8 +775,12 @@ async function resolveLocalEditableSkillDir(
 
   const localSkillDir = await findSkillDirInRoot(profileSkillsDir, category, skillName)
   if (localSkillDir) {
-    const localInfo = await lstatOrNull(localSkillDir)
-    if (localInfo?.isSymbolicLink()) return { dir: null, readOnly: true }
+    // Read-only if the resolved dir is a symlink OR sits under a symlinked ancestor
+    // (managed container) — editing a real child through a symlinked parent would
+    // write into the SHARED target. Walk root-relative so ancestors are covered.
+    if ((await assertEditablePathHasNoSymlinks(profileSkillsDir, relative(profileSkillsDir, localSkillDir))) === 'symlink') {
+      return { dir: null, readOnly: true }
+    }
     return { dir: localSkillDir, readOnly: false }
   }
 
