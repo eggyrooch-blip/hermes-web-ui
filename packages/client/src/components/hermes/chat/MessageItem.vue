@@ -8,7 +8,6 @@ import { copyToClipboard } from "@/utils/clipboard";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import { parseThinking, countThinkingChars } from "@/utils/thinking-parser";
 import { useChatStore } from "@/stores/hermes/chat";
-import { useProfilesStore } from "@/stores/hermes/profiles";
 import { useSettingsStore } from "@/stores/hermes/settings";
 import ProfileAvatar from "@/components/hermes/profiles/ProfileAvatar.vue";
 import {
@@ -182,12 +181,14 @@ const toolExpanded = ref(false);
 const previewUrl = ref<string | null>(null);
 
 const chatStore = useChatStore();
-const profilesStore = useProfilesStore();
 const settingsStore = useSettingsStore();
 const speech = useGlobalSpeech();
 const voiceSettings = useVoiceSettings();
-const assistantProfileName = computed(() => chatStore.activeSession?.profile || profilesStore.activeProfileName || "default");
-const assistantProfileAvatar = computed(() => profilesStore.profiles.find(profile => profile.name === assistantProfileName.value)?.avatar);
+// Agent (assistant) bubbles show a FIXED, non-personal generated avatar — never the
+// user's own profile/Feishu avatar. In multitenancy each user IS a profile, so reusing
+// the profile avatar made the agent wear the user's own face ("talking to yourself").
+// A constant seed → multiavatar renders the same non-personal cartoon for every user.
+const AGENT_AVATAR_SEED = "hermes-agent";
 
 // Copy entire bubble content
 const copyableContent = computed(() => {
@@ -816,8 +817,7 @@ onBeforeUnmount(() => {
         <ProfileAvatar
           v-if="message.role === 'assistant'"
           class="msg-avatar"
-          :name="assistantProfileName"
-          :avatar="assistantProfileAvatar"
+          :name="AGENT_AVATAR_SEED"
           :size="40"
         />
         <div class="msg-content" :class="message.role">
