@@ -94,6 +94,12 @@ export function connectGroupChat(opts?: { userId?: string; userName?: string; de
             description: opts?.description || localStorage.getItem('gc_user_description') || undefined,
             authUserId: opts?.authUserId,
         },
+        // Feishu/server-session users have no JS-readable JWT (getApiKey() === '');
+        // they authenticate with the httpOnly `hermes_feishu_session` cookie. Send
+        // credentials so that cookie rides the same-origin WebSocket handshake and
+        // the server's authMiddleware can validate it. (JWT-mode users are
+        // unaffected — they still pass auth.token.)
+        withCredentials: true,
         transports: ['websocket', 'polling'],
         reconnection: true,
         reconnectionAttempts: Infinity,

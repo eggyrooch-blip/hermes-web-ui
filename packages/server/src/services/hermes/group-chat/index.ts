@@ -10,6 +10,12 @@ import { countTokens, SUMMARY_PREFIX } from '../../../lib/context-compressor'
 import { AgentBridgeClient } from '../agent-bridge'
 import { authenticateUserToken, isAuthEnabled, type AuthenticatedUser } from '../../../middleware/user-auth'
 import { findUserByUsername, getUserAvatar } from '../../../db/hermes/users-store'
+import {
+    extractFeishuSessionFromCookieHeader,
+    parseFeishuSessionCookie,
+    getFeishuSessionSecret,
+} from '../../../services/feishu-oauth'
+import { ensureWebUserForFeishu } from '../../../services/compat-user'
 import { config } from '../../../config'
 import { createSocketIoCorsOrigin, shouldRejectUpgradeOrigin } from '../../../security'
 
@@ -736,6 +742,80 @@ class ChatRoom {
     }
 }
 
+// ─── Socket Auth ─────────────────────────────────────────────
+
+export interface GroupChatSocketHandshake {
+    auth?: { source?: string; agentSocketSecret?: string; token?: string }
+    query?: Record<string, unknown>
+    headers?: { cookie?: string | string[] }
+}
+
+export type GroupChatSocketAuthResult =
+    | { kind: 'agent' }
+    | { kind: 'user'; user: AuthenticatedUser }
+    | { kind: 'anonymous' }
+    | { kind: 'unauthorized' }
+
+/**
+ * Resolve the identity behind a /group-chat socket handshake. Three accepted
+ * paths, in order:
+ *   1. agent socket — `source:'agent'` + valid agentSocketSecret (server-internal).
+ *   2. localStorage-JWT — `auth.token` (or `query.token`) validates via the same
+ *      JWT path the HTTP API uses.
+ *   3. Feishu session cookie — server-session / Feishu-OAuth users carry no
+ *      JS-readable JWT, so they authenticate with the httpOnly
+ *      `hermes_feishu_session` cookie sent on the handshake (client uses
+ *      `withCredentials`). This mirrors the HTTP feishuOAuthAuth chain:
+ *      parse the signed cookie → bridge the openid into the user-store via
+ *      ensureWebUserForFeishu so the socket carries a real numeric user id.
+ *
+ * Extracted from the middleware as a pure function so the decision logic is unit
+ * testable without standing up a real Socket.IO server.
+ */
+export async function resolveGroupChatSocketAuth(handshake: GroupChatSocketHandshake): Promise<GroupChatSocketAuthResult> {
+    const auth = handshake.auth ?? {}
+    if (auth.source === 'agent' && auth.agentSocketSecret === GROUP_CHAT_AGENT_SOCKET_SECRET) {
+        return { kind: 'agent' }
+    }
+
+    if (!(await isAuthEnabled())) {
+        return { kind: 'anonymous' }
+    }
+
+    const token = auth.token || (typeof handshake.query?.token === 'string' ? handshake.query.token : '') || ''
+    let user = token ? await authenticateUserToken(String(token)) : null
+    if (!user) {
+        user = resolveFeishuSocketUser(handshake.headers?.cookie)
+    }
+    if (!user) return { kind: 'unauthorized' }
+    return { kind: 'user', user }
+}
+
+/**
+ * Feishu session-cookie fallback for the socket handshake — reuses the exact
+ * HTTP-side helpers (parseFeishuSessionCookie + ensureWebUserForFeishu) so the
+ * two planes can never drift. Fails CLOSED: any parse miss, profile mismatch, or
+ * bridge error yields null (Unauthorized) rather than an unauthenticated socket.
+ */
+function resolveFeishuSocketUser(cookieHeader: string | string[] | undefined): AuthenticatedUser | null {
+    try {
+        const cookie = extractFeishuSessionFromCookieHeader(cookieHeader)
+        if (!cookie) return null
+        const webUser = parseFeishuSessionCookie(cookie, { secret: getFeishuSessionSecret() })
+        if (!webUser) return null
+        // Mirror feishuOAuthAuth's deployment lock: when a single profile is
+        // pinned, reject sessions for any other profile.
+        if (config.requiredProfile && webUser.profile !== config.requiredProfile) return null
+        return ensureWebUserForFeishu(webUser.openid, {
+            ...(webUser.name ? { name: webUser.name } : {}),
+            ...(webUser.avatarUrl ? { avatarUrl: webUser.avatarUrl } : {}),
+        })
+    } catch (err) {
+        logger.warn(`[GroupChat] Feishu socket auth fallback failed: ${(err as Error).message}`)
+        return null
+    }
+}
+
 // ─── GroupChat Server ────────────────────────────────────────
 
 export class GroupChatServer {
@@ -765,7 +845,12 @@ export class GroupChatServer {
         const servers = Array.isArray(httpServers) ? httpServers : [httpServers]
 
         this.io = new Server(servers[0], {
-            cors: { origin: createSocketIoCorsOrigin(config.corsOrigins) },
+            // `credentials: true` is required so the browser keeps the httpOnly
+            // `hermes_feishu_session` cookie on the handshake (client sends
+            // withCredentials). The origin callback only ever echoes a specific
+            // allowed origin (never '*'), so this pairing is valid. Same-origin
+            // 8648 dist doesn't need it; split-origin deploys do.
+            cors: { origin: createSocketIoCorsOrigin(config.corsOrigins), credentials: true },
             allowRequest: (req, callback) => {
                 if (shouldRejectUpgradeOrigin(req, config.corsOrigins)) {
                     callback('origin not allowed', false)
@@ -886,18 +971,13 @@ export class GroupChatServer {
     // ─── Auth ───────────────────────────────────────────────────
 
     private async authMiddleware(socket: Socket, next: (err?: Error) => void): Promise<void> {
-        const auth = socket.handshake.auth as { source?: string; agentSocketSecret?: string; token?: string }
-        const isAgentSocket = auth.source === 'agent' && auth.agentSocketSecret === GROUP_CHAT_AGENT_SOCKET_SECRET
-        if (isAgentSocket) {
-            next()
+        const result = await resolveGroupChatSocketAuth(socket.handshake)
+        if (result.kind === 'unauthorized') {
+            next(new Error('Unauthorized'))
             return
         }
-
-        const token = auth.token || socket.handshake.query.token || ''
-        if (await isAuthEnabled()) {
-            const user = await authenticateUserToken(String(token))
-            if (!user) return next(new Error('Unauthorized'))
-            socket.data.authUser = user
+        if (result.kind === 'user') {
+            socket.data.authUser = result.user
         }
         next()
     }
