@@ -63,6 +63,10 @@ const timeStr = computed(() => formatChatTimestamp(props.message.timestamp))
 
 const avatarProfileName = computed(() => agentInfo.value?.profile || props.message.senderName || props.message.senderId)
 const avatarProfile = computed(() => profilesStore.profiles.find(profile => profile.name === agentInfo.value?.profile))
+// Agent (bot) messages show the Hermes agent logo — never the agent profile's avatar
+// (which in multitenancy is the owner's own Feishu avatar). Human members keep their own
+// avatars. Group RoomAgents carry no coding-agent type, so the logo is always Hermes.
+const AGENT_LOGO_SRC = '/coding-agents/hermes.png'
 
 // 找当前消息发送者在 members 里的记录
 const memberInfo = computed(() => {
@@ -470,7 +474,8 @@ onBeforeUnmount(() => {
 <template>
     <div v-if="isToolMessage" class="group-message tool-message">
         <div class="avatar">
-            <ProfileAvatar :name="avatarDisplayName" :avatar="currentAvatar" :size="36" />
+            <img v-if="isAgent" class="group-agent-logo" :src="AGENT_LOGO_SRC" alt="Hermes" />
+            <ProfileAvatar v-else :name="avatarDisplayName" :avatar="currentAvatar" :size="36" />
         </div>
 
         <div class="msg-body">
@@ -516,7 +521,8 @@ onBeforeUnmount(() => {
     <div v-else class="group-message" :class="{ agent: isAgent, self: isSelf }">
         <!-- Avatar -->
         <div class="avatar">
-            <ProfileAvatar :name="avatarDisplayName" :avatar="currentAvatar" :size="36" />
+            <img v-if="isAgent" class="group-agent-logo" :src="AGENT_LOGO_SRC" alt="Hermes" />
+            <ProfileAvatar v-else :name="avatarDisplayName" :avatar="currentAvatar" :size="36" />
         </div>
 
         <div class="msg-body">
@@ -788,6 +794,17 @@ onBeforeUnmount(() => {
     margin-top: 2px;
     overflow: hidden;
     border-radius: 8px;
+}
+
+.group-agent-logo {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #fff;
+    padding: 3px;
+    box-sizing: border-box;
+    border-radius: 50%;
+    border: 1px solid var(--border-light, rgba(0, 0, 0, 0.08));
 }
 
 .msg-body {
