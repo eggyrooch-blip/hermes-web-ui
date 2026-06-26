@@ -64,6 +64,12 @@ onMounted(() => {
 
 <template>
   <div class="files-panel-drawer">
+    <!-- Clean artifact preview: when a file/artifact is being previewed it takes
+         over the whole panel (no file tree, no new-file/upload toolbar, no
+         breadcrumb) for a light, WorkBuddy-style view. FilePreview's 关闭 button
+         clears previewFile and returns to the file manager below. -->
+    <FilePreview v-if="filesStore.previewFile" class="files-panel-preview-full" />
+    <template v-else>
     <div
       v-if="showSidebar"
       class="sidebar-overlay"
@@ -99,10 +105,10 @@ onMounted(() => {
       <FileBreadcrumb />
       <div class="files-content">
         <FileEditor v-if="filesStore.editingFile" />
-        <FilePreview v-else-if="filesStore.previewFile" />
         <FileList v-else @contextmenu-entry="handleContextMenu" />
       </div>
     </div>
+    </template>
     <FileContextMenu
       ref="contextMenuRef"
       @rename="handleRename"
@@ -127,6 +133,13 @@ onMounted(() => {
   min-height: 0;
   overflow: hidden;
   position: relative;
+}
+
+// Clean artifact preview fills the whole panel (no tree / toolbar / breadcrumb).
+.files-panel-preview-full {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
 }
 
 .sidebar-overlay {

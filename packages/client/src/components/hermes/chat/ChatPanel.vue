@@ -1831,6 +1831,7 @@ async function handleSessionModelCustomSubmit() {
                   {{ t("drawer.files") }}
                 </button>
                 <button
+                  v-if="false"
                   class="chat-tool-tab"
                   :class="{ active: activeToolPanel === 'terminal' }"
                   type="button"
