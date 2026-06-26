@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { NButton, NSpin, NEmpty, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { useFilesStore, isPreviewableFile, isTextFile } from '@/stores/hermes/files'
+import { useFilesStore, isPreviewableFile, isTextFile, isHtmlFile } from '@/stores/hermes/files'
 import { downloadFile } from '@/api/hermes/download'
 import type { FileEntry } from '@/api/hermes/files'
 
@@ -56,6 +56,11 @@ async function handlePreview(entry: FileEntry) {
 async function handleDoubleClick(entry: FileEntry) {
   if (entry.isDir) {
     filesStore.navigateTo(entry.path)
+  } else if (isHtmlFile(entry.name)) {
+    // .html is also an isTextFile, but double-click should RENDER the artifact
+    // (right-side iframe preview), not open the source editor. Check html first.
+    // The ✏️ edit button still opens the raw source for those who want it.
+    await handlePreview(entry)
   } else if (isTextFile(entry.name)) {
     await filesStore.openEditor(entry.path)
   } else if (isPreviewableFile(entry.name)) {
