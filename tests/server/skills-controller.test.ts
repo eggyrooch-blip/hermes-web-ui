@@ -164,6 +164,61 @@ describe('skills controller', () => {
     }
   })
 
+  // Regression: Hermes installs most skills as SYMLINKS into the profile skills/
+  // scan root (lark-* suite, kep-*-cli, kep-trevi-*, personal/managed installs).
+  // Node readdir({withFileTypes}) reports a symlink as isDirectory()===false, so a
+  // bare isDirectory() filter silently DROPS every symlinked skill from the page
+  // (the upstream re-baseline regression). The scan must follow symlinks.
+  it('lists symlinked skills (top-level flat + nested in a category), not just real dirs', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-symlink-skills-'))
+    const profileDir = join(root, 'profile')
+    const skillsRoot = join(profileDir, 'skills')
+    // Shared central skills dir that the profile symlinks INTO (mirrors ~/.hermes/skills).
+    const central = join(root, 'central-skills')
+
+    // A real-dir skill nested in a category (should keep showing).
+    const realSkillDir = join(skillsRoot, 'tools', 'real-skill')
+    await mkdir(realSkillDir, { recursive: true })
+    await writeFile(join(realSkillDir, 'SKILL.md'), '# Real Skill\nreal dir\n', 'utf-8')
+
+    // Central targets for the symlinks.
+    const centralFlat = join(central, 'lark-im')
+    const centralNested = join(central, 'linked-skill')
+    await mkdir(centralFlat, { recursive: true })
+    await mkdir(centralNested, { recursive: true })
+    await writeFile(join(centralFlat, 'SKILL.md'), '# Lark IM\nsymlinked flat\n', 'utf-8')
+    await writeFile(join(centralNested, 'SKILL.md'), '# Linked Skill\nsymlinked nested\n', 'utf-8')
+
+    // Top-level flat symlinked skill (lark-im pattern) → misc category.
+    await symlink(centralFlat, join(skillsRoot, 'lark-im'))
+    // Symlinked skill INSIDE a category → tools category.
+    await symlink(centralNested, join(skillsRoot, 'tools', 'linked-skill'))
+
+    mockGetProfileDir.mockReturnValue(profileDir)
+    mockReadConfigYamlForProfile.mockResolvedValue({})
+
+    try {
+      const { list } = await loadController()
+      const ctx: any = { state: { profile: { name: 'research' } }, body: null }
+
+      await list(ctx)
+
+      const names = (ctx.body.categories as any[]).flatMap(c => c.skills.map((s: any) => s.name))
+      // Real dir still present.
+      expect(names).toContain('real-skill')
+      // The two symlinked skills MUST appear (bare isDirectory() drops them).
+      expect(names).toContain('lark-im')
+      expect(names).toContain('linked-skill')
+
+      const tools = ctx.body.categories.find((c: any) => c.name === 'tools')
+      expect(tools.skills.map((s: any) => s.name).sort()).toEqual(['linked-skill', 'real-skill'])
+      const misc = ctx.body.categories.find((c: any) => c.name === 'misc')
+      expect(misc.skills.map((s: any) => s.name)).toContain('lark-im')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('prefers keephub provenance over hub when listing skills', async () => {
     const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-keephub-list-'))
     const profileDir = join(root, 'research')

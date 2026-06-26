@@ -263,11 +263,31 @@ async function resolveSkillDirFromConfig(
  * or by containing subdirectories with SKILL.md (three-level pattern).
  * Skills without a parent category (flat skills) are grouped under the "misc" category.
  */
+// Hermes installs most skills as SYMLINKS into the profile `skills/` scan root
+// (lark-* suite, kep-*-cli, kep-trevi-*, personal/managed installs all symlink to
+// ~/.hermes/skills/<name>). Node's `readdir({withFileTypes})` reports a symlink as
+// `isDirectory()===false` (it does NOT follow the link), so a bare `isDirectory()`
+// filter silently DROPS every symlinked skill from the skills page. This helper
+// follows the link via `stat` so symlinked and real skill dirs are treated alike.
+// (Lost-fork-fix regression: the upstream re-baseline replaced the fork's original
+// `isDirectoryLike` with bare `isDirectory()`. Restored here.)
+async function isDirectoryLike(parentDir: string, entry: import('fs').Dirent): Promise<boolean> {
+  if (entry.isDirectory()) return true
+  if (!entry.isSymbolicLink()) return false
+  try {
+    return (await stat(join(parentDir, entry.name))).isDirectory()
+  } catch {
+    return false // broken symlink → skip, never throw
+  }
+}
+
 async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, string>, keephubNames: Set<string>, hubNames: Set<string>, disabledList: string[], usageStats: Map<string, UsageStats>, chatPlane = false) {
   const allEntries = await readdir(skillsDir, { withFileTypes: true })
-  const dirNames = allEntries
-    .filter(e => e.isDirectory() && !e.name.startsWith('.'))
-    .map(e => e.name)
+  const dirNames: string[] = []
+  for (const e of allEntries) {
+    if (e.name.startsWith('.')) continue
+    if (await isDirectoryLike(skillsDir, e)) dirNames.push(e.name)
+  }
 
   // Classify directories: categories vs. flat skills
   const categoryDirs: { name: string; description: string }[] = []
@@ -278,7 +298,10 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
     const hasDesc = await safeReadFile(join(catDir, 'DESCRIPTION.md'))
     const hasSkillMd = await safeReadFile(join(catDir, 'SKILL.md'))
     const subEntries = await readdir(catDir, { withFileTypes: true })
-    const subDirs = subEntries.filter(se => se.isDirectory())
+    const subDirs: import('fs').Dirent[] = []
+    for (const se of subEntries) {
+      if (await isDirectoryLike(catDir, se)) subDirs.push(se)
+    }
 
     // Priority: SKILL.md at top level → flat skill
     //           DESCRIPTION.md or subdirs (without SKILL.md) → category
@@ -309,7 +332,7 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
       const entries = await readdir(dir, { withFileTypes: true })
       const results: any[] = []
       for (const entry of entries) {
-        if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+        if (entry.name.startsWith('.') || !(await isDirectoryLike(dir, entry))) continue
         const entryPath = join(dir, entry.name)
         const skillMd = await safeReadFile(join(entryPath, 'SKILL.md'))
         if (skillMd) {
