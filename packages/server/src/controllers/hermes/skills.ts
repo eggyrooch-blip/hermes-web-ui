@@ -210,7 +210,10 @@ async function findSkillDirByName(rootDir: string, skillName: string): Promise<s
   }
 
   for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+    // Follow symlinks: nested symlinked skills (skills/<cat>/<symlink>) are listed
+    // by scanSkillsDir, so the detail/files/readFile paths must resolve them too —
+    // otherwise a listed skill 404s on click. (Same lost-fork-fix as scanSkillsDir.)
+    if (entry.name.startsWith('.') || !(await isDirectoryLike(rootDir, entry))) continue
 
     const entryPath = join(rootDir, entry.name)
     const skillMd = await safeReadFile(join(entryPath, 'SKILL.md'))

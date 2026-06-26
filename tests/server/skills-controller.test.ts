@@ -257,6 +257,39 @@ describe('skills controller', () => {
     }
   })
 
+  it('serves the detail/files path for a nested symlinked skill (does not 404)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-files-symlink-'))
+    const profileDir = join(root, 'research')
+    const skillsRoot = join(profileDir, 'skills')
+    const central = join(root, 'central', 'nested-linked')
+    await mkdir(central, { recursive: true })
+    await mkdir(join(skillsRoot, 'tools'), { recursive: true })
+    await writeFile(join(central, 'SKILL.md'), '# Nested Linked\n', 'utf-8')
+    // Nested symlinked skill: skills/tools/nested-linked → central. The list now
+    // shows it, so its files endpoint must resolve it (findSkillDirByName follows symlinks).
+    await symlink(central, join(skillsRoot, 'tools', 'nested-linked'))
+    mockGetProfileDir.mockReturnValue(profileDir)
+    mockReadConfigYamlForProfile.mockResolvedValue({})
+    mockListFilesRecursive.mockResolvedValue([{ path: 'SKILL.md' }, { path: 'guide.md' }])
+
+    const ctx: any = {
+      params: { category: 'tools', skill: 'nested-linked' },
+      state: { profile: { name: 'research' } },
+      status: 200,
+      body: null,
+    }
+
+    try {
+      const { listFiles } = await loadController()
+      await listFiles(ctx)
+
+      expect(ctx.status).not.toBe(404)
+      expect(ctx.body.files).toEqual([{ path: 'guide.md' }])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('prefers keephub provenance over hub when listing skills', async () => {
     const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-keephub-list-'))
     const profileDir = join(root, 'research')
