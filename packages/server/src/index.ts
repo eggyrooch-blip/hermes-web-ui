@@ -288,6 +288,9 @@ export async function bootstrap() {
   }
 
   const app = new Koa()
+  // Trust Caddy/nginx X-Forwarded-* headers so Koa treats external HTTPS
+  // requests as secure when setting OAuth Secure cookies behind a local HTTP hop.
+  app.proxy = true
   // Initialize all web-ui SQLite tables
   const { initAllStores } = await import('./db/hermes/init')
   initAllStores()

@@ -2,6 +2,12 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 describe('bootstrap body parser limits', () => {
+  it('trusts reverse-proxy forwarded HTTPS before Feishu OAuth sets Secure cookies', () => {
+    const source = readFileSync('packages/server/src/index.ts', 'utf8')
+
+    expect(source).toMatch(/const app = new Koa\(\)[\s\S]*app\.proxy = true/)
+  })
+
   it('allows MiMo voice-clone JSON payloads advertised by the UI/docs', () => {
     const source = readFileSync('packages/server/src/index.ts', 'utf8')
 

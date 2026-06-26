@@ -37,6 +37,12 @@ related:
 > slash/expert metadata. If `/experts` returns an empty list while the endpoint is
 > healthy, check whether managed expert manifests have been installed for that
 > runtime before treating it as a WebUI regression.
+>
+> Feishu OAuth behind a TLS reverse proxy requires Koa `app.proxy = true`.
+> The login route sets a short-lived Secure state cookie before redirecting to
+> Feishu. If Koa does not trust `X-Forwarded-Proto: https`, `cookies.set()` sees
+> the local reverse-proxy hop as plain HTTP and throws `Cannot send secure cookie
+> over unencrypted connection`, surfacing as `GET /api/auth/feishu/login` 500.
 
 > [!info] 2026-06-24 本机 main 已合入，等待 sunke 验证 — WebUI 普通用户新建智能体恢复，生产未发布
 > `webui-create-agent-restore` restores the upstream create-agent path without reopening the super-admin-only `/hermes/profiles` page to ordinary Feishu users. `ProfileSelector.vue` now exposes the existing create modal from the user selector, so an authenticated chat-plane user can create a custom agent/profile from the normal profile switcher. The create action is rendered in a body toolbar above the profile list, not only in the Naive card header, because screenshot verification showed the header-slot action was not visible in the real settings-page modal.
