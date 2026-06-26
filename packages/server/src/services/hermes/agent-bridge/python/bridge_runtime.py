@@ -526,8 +526,24 @@ def _apply_openrouter_attribution_override() -> None:
         pass
 
 
-def _load_cfg(profile: str | None = None) -> dict[str, Any]:
-    _ensure_agent_imports()
+def _merge_bridge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Deep-merge shared Hermes config with profile-local overrides (profile wins).
+
+    Mirrors hermes_multitenancy._merge_profile_config so the bridge worker,
+    which runs with HERMES_HOME pointed at the per-profile home, still sees
+    shared-only keys such as custom_providers from the top-level config.yaml.
+    """
+    merged = dict(base or {})
+    for key, value in (override or {}).items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _merge_bridge_config(current, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _load_profile_layer_cfg() -> dict[str, Any]:
     try:
         from hermes_cli.config import load_config
 
@@ -543,6 +559,27 @@ def _load_cfg(profile: str | None = None) -> dict[str, Any]:
             return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         except Exception:
             return {}
+
+
+def _load_shared_cfg() -> dict[str, Any]:
+    try:
+        import yaml
+
+        path = _base_hermes_home() / "config.yaml"
+        if not path.exists():
+            return {}
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        # Fail open to today's profile-only behavior when the shared config is
+        # missing or unreadable; bridge startup should not crash on that layer.
+        return {}
+
+
+def _load_cfg(profile: str | None = None) -> dict[str, Any]:
+    _ensure_agent_imports()
+    profile_cfg = _load_profile_layer_cfg()
+    shared_cfg = _load_shared_cfg()
+    return _merge_bridge_config(shared_cfg, profile_cfg)
 
 
 def _apply_profile_env(profile: str | None) -> str | None:
@@ -783,11 +820,73 @@ def _resolve_model(cfg: dict[str, Any]) -> str:
     return ""
 
 
+def _effective_provider_from_model(model: str, cfg: dict[str, Any]) -> str:
+    provider_from_model = model.split("/", 1)[0].strip() if "/" in model else model.strip()
+    if provider_from_model.lower() == "custom" or provider_from_model.lower().startswith("custom:"):
+        return provider_from_model
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict):
+        provider = str(model_cfg.get("provider") or "").strip()
+        if provider.lower() == "custom" or provider.lower().startswith("custom:"):
+            return provider
+    return ""
+
+
+def _resolve_custom_provider_runtime(
+    cfg: dict[str, Any], provider: str
+) -> tuple[str | None, str | None]:
+    """Return (explicit_api_key, explicit_base_url) for a custom:<name> provider.
+
+    The bridge runs with HERMES_HOME pointed at the per-profile home, while the
+    actual custom_providers entries often live in the shared base config.yaml.
+    After _load_cfg merges those layers, this resolves the matching inline key
+    and base URL by provider slug or, for bare custom, by model.base_url.
+    """
+    pl = provider.lower() if provider else ""
+    if not (pl == "custom" or pl.startswith("custom:")):
+        return None, None
+    custom_providers = cfg.get("custom_providers")
+    if not isinstance(custom_providers, list):
+        return None, None
+    want_name = provider.split(":", 1)[1].strip().lower() if ":" in provider else ""
+    model_cfg = cfg.get("model")
+    model_base_url = ""
+    if isinstance(model_cfg, dict):
+        model_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip().lower().replace(" ", "-")
+        entry_base = str(
+            entry.get("base_url") or entry.get("url") or entry.get("api") or ""
+        ).strip().rstrip("/")
+        if want_name:
+            matched = name == want_name
+        else:
+            matched = bool(model_base_url) and entry_base == model_base_url
+        if not matched:
+            continue
+        api_key = str(entry.get("api_key") or "").strip() or None
+        base_url = entry_base or model_base_url or None
+        return api_key, base_url
+    return None, None
+
+
 def _resolve_runtime(model: str, provider: str | None = None) -> dict[str, Any]:
     _ensure_agent_imports()
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     requested = provider or os.environ.get("HERMES_BRIDGE_PROVIDER", "").strip() or None
+    cfg = _load_cfg()
+    effective_provider = requested or _effective_provider_from_model(model, cfg)
+    if effective_provider.lower() == "custom" or effective_provider.lower().startswith("custom:"):
+        explicit_api_key, explicit_base_url = _resolve_custom_provider_runtime(cfg, effective_provider)
+        return resolve_runtime_provider(
+            requested=requested,
+            target_model=model or None,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+        )
     return resolve_runtime_provider(requested=requested, target_model=model or None)
 
 
