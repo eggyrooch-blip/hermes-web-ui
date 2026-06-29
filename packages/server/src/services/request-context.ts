@@ -246,6 +246,7 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   // Expert catalog (专家广场) — read-only, audience-filtered per the caller's own
   // profile by the broker; safe for chat-plane users (GET only).
   if (path.startsWith('/api/hermes/experts')) return method !== 'GET'
+  if (path.startsWith('/api/hermes/plugin-assets/')) return method !== 'GET'
   if (path.startsWith('/api/hermes/sessions')) return false
   if (path.startsWith('/api/hermes/agents')) return false
   if (path.startsWith('/api/hermes/search/sessions')) return false

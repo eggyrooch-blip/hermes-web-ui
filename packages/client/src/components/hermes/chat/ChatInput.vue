@@ -62,12 +62,21 @@ const activeExpertId = computed<string | null>(() => chatStore.activeExpertId)
 const activeExpert = computed<ExpertInfo | null>(
   () => experts.value.find(e => e.id === activeExpertId.value) ?? null,
 )
+const activeExpertAvatarBroken = ref(false)
 const activeExpertLabel = computed<string>(() => {
   const e = activeExpert.value
   if (e) return e.title || e.name
   // Fall back to the raw id when the catalog hasn't loaded the active expert
   // (e.g. selected on another surface). Empty = no expert.
   return activeExpertId.value || ''
+})
+const activeExpertAvatar = computed<string>(() => {
+  if (activeExpertAvatarBroken.value) return ''
+  return activeExpert.value?.avatar || ''
+})
+const activeExpertInitial = computed<string>(() => {
+  const src = (activeExpert.value?.name || activeExpert.value?.title || activeExpertId.value || '?').trim()
+  return src ? Array.from(src)[0] : '?'
 })
 const expertOptions = computed(() => [
   { label: t('chat.expertSlot.none'), value: '' },
@@ -484,6 +493,12 @@ watch(
   () => profilesStore.activeProfileName,
   () => {
     void loadExpertsForSlot()
+  },
+)
+watch(
+  [activeExpertId, () => activeExpert.value?.avatar],
+  () => {
+    activeExpertAvatarBroken.value = false
   },
 )
 
@@ -1041,7 +1056,11 @@ function isImage(type: string): boolean {
               :aria-label="`${t('chat.expertSlot.tooltip')}: ${activeExpertLabel || t('chat.expertSlot.none')}`"
             >
               <template #icon>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <span v-if="activeExpertId && activeExpertAvatar" class="expert-slot-avatar">
+                  <img :src="activeExpertAvatar" :alt="activeExpertLabel" @error="activeExpertAvatarBroken = true" />
+                </span>
+                <span v-else-if="activeExpertId" class="expert-slot-avatar fallback">{{ activeExpertInitial }}</span>
+                <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
                   <circle cx="9" cy="7" r="4"/>
                   <path d="M19 8v6M22 11h-6"/>
@@ -1389,8 +1408,37 @@ function isImage(type: string): boolean {
 }
 
 .expert-slot-button {
+  min-width: 24px;
+
   &.active {
     color: $accent-primary;
+  }
+}
+
+.expert-slot-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: $bg-card;
+  border: 1px solid $border-color;
+  color: $text-primary;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  &.fallback {
+    background: $bg-primary;
   }
 }
 

@@ -49,6 +49,10 @@ export interface ExpertListResult {
   profile_name?: string
 }
 
+const BROKER_ASSET_PREFIX = '/api/run-broker/plugin-assets/'
+const WEBUI_ASSET_PREFIX = '/api/hermes/plugin-assets/'
+const ASSET_COMPONENT_RE = /^[A-Za-z0-9_.:-]{1,180}$/
+
 export class BrokerUnavailableError extends Error {
   status: number
   constructor(message: string, status = 503) {
@@ -94,6 +98,15 @@ function coerceGovernance(raw: ExpertRowDict['governance']): ExpertGovernance | 
   return Object.keys(gov).length ? gov : undefined
 }
 
+export function brokerAssetUrlToWebUrl(raw: string): string {
+  if (!raw.startsWith(BROKER_ASSET_PREFIX)) return raw
+  const parts = raw.slice(BROKER_ASSET_PREFIX.length).split('/')
+  if (parts.length !== 2 || !parts.every((part) => ASSET_COMPONENT_RE.test(part))) {
+    return raw
+  }
+  return WEBUI_ASSET_PREFIX + parts.join('/')
+}
+
 /** Map one broker expert row → the WebUI ExpertEntry (persona stripped). */
 export function mapExpertRow(r: ExpertRowDict): ExpertEntry {
   const entry: ExpertEntry = {
@@ -102,7 +115,7 @@ export function mapExpertRow(r: ExpertRowDict): ExpertEntry {
   }
   if (r.title) entry.title = String(r.title)
   if (r.tagline) entry.tagline = String(r.tagline)
-  if (r.avatar) entry.avatar = String(r.avatar)
+  if (r.avatar) entry.avatar = brokerAssetUrlToWebUrl(String(r.avatar))
   if (r.category) entry.category = String(r.category)
   const tags = strArray(r.display_tags)
   if (tags) entry.display_tags = tags

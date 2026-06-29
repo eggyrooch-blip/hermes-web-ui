@@ -51,6 +51,7 @@ const tagMappings = {
   'routes/hermes/providers.ts': { name: 'Providers', description: 'Model provider management' },
   'routes/hermes/skills.ts': { name: 'Skills', description: 'Skill browsing and management' },
   'routes/hermes/plugins.ts': { name: 'Plugins', description: 'Plugin browsing and management' },
+  'routes/hermes/experts.ts': { name: 'Experts', description: 'Expert catalog and managed plugin assets' },
   'routes/hermes/memory.ts': { name: 'Memory', description: 'Agent memory files' },
   'routes/hermes/logs.ts': { name: 'Logs', description: 'Log file access' },
   'routes/hermes/jobs.ts': { name: 'Jobs', description: 'Scheduled job management' },
@@ -250,10 +251,14 @@ function addEndpoint(paths, method, path, controllerMethod, tagInfo, content, ma
 }
 
 function isInternalProxyRoute(path) {
-  return path.startsWith('/api/codex-proxy/') || path.startsWith('/api/claude-code-proxy/')
+  return path.startsWith('/api/codex-proxy/')
+    || path.startsWith('/api/claude-code-proxy/')
+    || path === '/api/hermes/preview'
 }
 
 function generateParameters(openapiPath, source) {
+  if (openapiPath === '/api/hermes/download') return []
+
   const params = []
   const seen = new Set()
 

@@ -151,6 +151,23 @@ describe('chat plane access control', () => {
     expect(rejectCtx.status).toBe(200)
   })
 
+  it('allows expert catalog and plugin avatar assets in chat plane as GET-only surfaces', async () => {
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const expertsCtx = mockCtx('/api/hermes/experts', 'GET')
+    const assetCtx = mockCtx('/api/hermes/plugin-assets/keep-resource-delivery/expert.png', 'GET')
+    const blockedAssetPostCtx = mockCtx('/api/hermes/plugin-assets/keep-resource-delivery/expert.png', 'POST')
+    const next = vi.fn(async () => {})
+
+    await enforcePlaneAccess(expertsCtx, next)
+    await enforcePlaneAccess(assetCtx, next)
+    await enforcePlaneAccess(blockedAssetPostCtx, next)
+
+    expect(next).toHaveBeenCalledTimes(2)
+    expect(expertsCtx.status).toBe(200)
+    expect(assetCtx.status).toBe(200)
+    expect(blockedAssetPostCtx.status).toBe(403)
+  })
+
   it('allows owner-scoped group chat endpoints in chat plane', async () => {
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
     const listCtx = mockCtx('/api/hermes/group-chat/rooms', 'GET')

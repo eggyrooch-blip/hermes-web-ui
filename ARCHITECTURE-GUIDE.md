@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-06-26
+updated: 2026-06-29
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
@@ -14,6 +14,25 @@ related:
 ---
 
 # hermes-web-ui 架构速查 — EKKO fork
+
+> [!info] 2026-06-29 local worktree — expert plugin avatars via BFF proxy, production not published
+> `resource-expert-avatar-chat` adds the WebUI half of managed expert avatars.
+> The browser still does not call the multitenancy Run Broker directly:
+> `mapExpertRow()` rewrites broker-local avatar URLs such as
+> `/api/run-broker/plugin-assets/<plugin>/<asset>` into same-origin
+> `/api/hermes/plugin-assets/<plugin>/<asset>`, and the Koa BFF proxies that
+> image request to the Run Broker with the server-side bearer key.
+>
+> The proxy is image-only and component-safe: plugin id and asset name must be
+> simple path components, profile/user context is forwarded to the broker so
+> asset serving follows the same expert audience gate as `/api/run-broker/experts`,
+> non-image broker responses are rejected, and chat-plane access allows only
+> `GET /api/hermes/plugin-assets/*`. Expert cards and the
+> detail drawer render image avatars with broken-image fallback to initials; the
+> Chat composer's active-expert control renders the selected expert avatar next
+> to the expert title. Verification on this worktree includes focused Vitest for
+> expert registry/proxy/request-context, `npm run typecheck`, and Playwright
+> screenshots for desktop catalog/detail/chat plus mobile no-overflow.
 
 > [!success] 2026-06-26 main/production — full WebUI release and npm 11 lockfile boundary
 > `main`/`origin/main` has been deployed to the production WebUI runtime on

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ExpertInfo } from '@/api/hermes/experts'
 
@@ -16,6 +16,8 @@ const emit = defineEmits<{
 }>()
 
 const displayTitle = computed(() => props.expert.title || props.expert.name)
+const avatarBroken = ref(false)
+const hasAvatar = computed(() => !!props.expert.avatar && !avatarBroken.value)
 const initial = computed(() => {
   const src = (props.expert.name || props.expert.title || props.expert.id || '?').trim()
   return src ? Array.from(src)[0] : '?'
@@ -23,19 +25,26 @@ const initial = computed(() => {
 const skills = computed(() => props.expert.skills ?? [])
 const approvalRequired = computed(() => props.expert.governance?.approval_required ?? [])
 const envDefault = computed(() => props.expert.governance?.env_default || '')
+
+watch(() => props.expert.id, () => {
+  avatarBroken.value = false
+})
 </script>
 
 <template>
   <aside class="expert-detail-panel" role="dialog" :aria-label="displayTitle">
     <header class="detail-header">
-      <div class="detail-avatar" :class="{ 'has-image': !!expert.avatar }">
-        <img v-if="expert.avatar" :src="expert.avatar" :alt="displayTitle" />
+      <div class="detail-avatar" :class="{ 'has-image': hasAvatar }">
+        <img v-if="hasAvatar" :src="expert.avatar" :alt="displayTitle" @error="avatarBroken = true" />
         <span v-else class="avatar-initial">{{ initial }}</span>
       </div>
       <div class="detail-headings">
         <h2 class="detail-title">{{ displayTitle }}</h2>
+        <div class="detail-meta">
+          <span v-if="expert.category" class="detail-category">{{ expert.category }}</span>
+          <span v-if="active" class="detail-active">{{ t('expert.catalog.activeBadge') }}</span>
+        </div>
         <p v-if="expert.tagline" class="detail-tagline">{{ expert.tagline }}</p>
-        <p v-if="expert.category" class="detail-category">{{ expert.category }}</p>
       </div>
       <button class="detail-close" type="button" :aria-label="t('expert.detail.close')" @click="emit('close')">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -105,20 +114,23 @@ const envDefault = computed(() => props.expert.governance?.env_default || '')
 .detail-header {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid $border-color;
 }
 
 .detail-avatar {
   flex: 0 0 auto;
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
+  width: 72px;
+  height: 72px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: $bg-card;
   color: $text-primary;
-  font-size: 20px;
+  border: 1px solid $border-color;
+  font-size: 24px;
   font-weight: 600;
   overflow: hidden;
 
@@ -136,21 +148,41 @@ const envDefault = computed(() => props.expert.governance?.env_default || '')
 
 .detail-title {
   margin: 0;
-  font-size: 18px;
-  line-height: 24px;
+  font-size: 20px;
+  line-height: 26px;
   color: $text-primary;
 }
 
+.detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
 .detail-tagline {
-  margin: 4px 0 0;
+  margin: 10px 0 0;
   font-size: 13px;
+  line-height: 20px;
   color: $text-secondary;
 }
 
-.detail-category {
-  margin: 4px 0 0;
+.detail-category,
+.detail-active {
+  line-height: 18px;
+  padding: 2px 8px;
+  border-radius: 6px;
   font-size: 12px;
-  color: $text-muted;
+}
+
+.detail-category {
+  border: 1px solid $border-color;
+  color: $text-secondary;
+}
+
+.detail-active {
+  background: $accent-primary;
+  color: var(--text-on-accent);
 }
 
 .detail-close {

@@ -17,6 +17,7 @@ const errored = ref(false)
 const searchQuery = ref('')
 const selected = ref<ExpertInfo | null>(null)
 const showDetail = ref(false)
+const brokenAvatarIds = ref<Set<string>>(new Set())
 
 const activeProfileName = computed(() => profilesStore.activeProfileName || '')
 
@@ -49,12 +50,23 @@ function isActive(e: ExpertInfo): boolean {
   return chatStore.activeExpertId === e.id
 }
 
+function hasAvatar(e: ExpertInfo): boolean {
+  return !!e.avatar && !brokenAvatarIds.value.has(e.id)
+}
+
+function markAvatarBroken(e: ExpertInfo) {
+  const next = new Set(brokenAvatarIds.value)
+  next.add(e.id)
+  brokenAvatarIds.value = next
+}
+
 async function loadExperts() {
   loading.value = true
   errored.value = false
   try {
     const data = await fetchExperts(activeProfileName.value || undefined)
     experts.value = data.experts
+    brokenAvatarIds.value = new Set()
   } catch {
     experts.value = []
     errored.value = true
@@ -114,17 +126,27 @@ watch(activeProfileName, () => {
           type="button"
           @click="openDetail(expert)"
         >
-          <div class="card-top">
-            <div class="card-avatar" :class="{ 'has-image': !!expert.avatar }">
-              <img v-if="expert.avatar" :src="expert.avatar" :alt="expert.title || expert.name" />
+          <div class="card-header">
+            <div class="card-avatar" :class="{ 'has-image': hasAvatar(expert) }">
+              <img
+                v-if="hasAvatar(expert)"
+                :src="expert.avatar"
+                :alt="expert.title || expert.name"
+                @error="markAvatarBroken(expert)"
+              />
               <span v-else class="avatar-initial">{{ initialOf(expert) }}</span>
             </div>
-            <div class="card-badges">
-              <span v-if="isAiHubExpert(expert)" class="card-source-badge">{{ t('expert.catalog.aihubBadge') }}</span>
-              <span v-if="isActive(expert)" class="card-active-badge">{{ t('expert.catalog.activeBadge') }}</span>
+            <div class="card-identity">
+              <div class="card-title-row">
+                <h3 class="card-title">{{ expert.title || expert.name }}</h3>
+                <span v-if="isActive(expert)" class="card-active-badge">{{ t('expert.catalog.activeBadge') }}</span>
+              </div>
+              <div class="card-meta-row">
+                <span v-if="expert.category" class="card-category">{{ expert.category }}</span>
+                <span v-if="isAiHubExpert(expert)" class="card-source-badge">{{ t('expert.catalog.aihubBadge') }}</span>
+              </div>
             </div>
           </div>
-          <h3 class="card-title">{{ expert.title || expert.name }}</h3>
           <p v-if="expert.tagline" class="card-tagline">{{ expert.tagline }}</p>
           <div v-if="expert.display_tags?.length" class="card-tags">
             <span v-for="tag in expert.display_tags" :key="tag" class="card-tag">{{ tag }}</span>
@@ -184,18 +206,19 @@ watch(activeProfileName, () => {
 
 .catalog-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
 }
 
 .expert-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 16px;
+  gap: 12px;
+  min-height: 170px;
+  padding: 18px;
   text-align: left;
   border: 1px solid $border-color;
-  border-radius: $radius-md;
+  border-radius: 8px;
   background: $bg-card;
   cursor: pointer;
   transition:
@@ -211,20 +234,22 @@ watch(activeProfileName, () => {
 
   &.active {
     border-color: $accent-primary;
-    box-shadow: 0 0 0 1px $accent-primary;
+    box-shadow: 0 0 0 1px rgba(var(--accent-primary-rgb), 0.65);
   }
 }
 
-.card-top {
+.card-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
 }
 
 .card-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
+  flex: 0 0 auto;
+  width: 54px;
+  height: 54px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -241,12 +266,33 @@ watch(activeProfileName, () => {
   }
 }
 
-.card-badges {
+.card-identity {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.card-title-row,
+.card-meta-row {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  min-width: 0;
+}
+
+.card-title {
+  margin: 0;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 15px;
+  line-height: 21px;
+  color: $text-primary;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-active-badge {
@@ -267,17 +313,20 @@ watch(activeProfileName, () => {
   color: #4a90d9;
 }
 
-.card-title {
-  margin: 0;
-  font-size: 14px;
-  line-height: 20px;
-  color: $text-primary;
+.card-category {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid $border-color;
+  color: $text-secondary;
 }
 
 .card-tagline {
   margin: 0;
-  font-size: 12px;
-  line-height: 17px;
+  min-height: 40px;
+  font-size: 13px;
+  line-height: 20px;
   color: $text-secondary;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -290,14 +339,14 @@ watch(activeProfileName, () => {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 2px;
+  margin-top: auto;
 }
 
 .card-tag {
   font-size: 11px;
-  line-height: 16px;
-  padding: 1px 8px;
-  border-radius: 999px;
+  line-height: 18px;
+  padding: 2px 9px;
+  border-radius: 6px;
   background: $bg-primary;
   color: $text-muted;
 }

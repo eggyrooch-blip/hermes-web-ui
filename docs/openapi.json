@@ -41,6 +41,10 @@
       "description": "File download"
     },
     {
+      "name": "Experts",
+      "description": "Expert catalog and managed plugin assets"
+    },
+    {
       "name": "Files",
       "description": "Hermes file browser"
     },
@@ -4201,6 +4205,32 @@
         }
       }
     },
+    "/api/hermes/experts": {
+      "get": {
+        "tags": [
+          "Experts"
+        ],
+        "summary": "List experts",
+        "description": "GET /api/hermes/experts",
+        "operationId": "list",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
     "/api/hermes/files/copy": {
       "post": {
         "tags": [
@@ -7809,6 +7839,50 @@
             "description": "Not found"
           }
         }
+      }
+    },
+    "/api/hermes/plugin-assets/{pluginId}/{assetName}": {
+      "get": {
+        "tags": [
+          "Experts"
+        ],
+        "summary": "Get :assetName",
+        "description": "GET /api/hermes/plugin-assets/:pluginId/:assetName",
+        "operationId": "asset",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "pluginId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "assetName",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
       }
     },
     "/api/hermes/plugins": {
