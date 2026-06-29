@@ -1,4 +1,4 @@
-import { Readable } from 'stream'
+import { Readable } from 'node:stream'
 import type { Context } from 'koa'
 import { config } from '../../../config'
 import {

@@ -1,4 +1,4 @@
-import { Readable } from 'stream'
+import { Readable } from 'node:stream'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mkdirMock = vi.hoisted(() => vi.fn())

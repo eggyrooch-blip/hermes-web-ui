@@ -1,6 +1,6 @@
 import http from 'http'
 import { brotliDecompressSync, gunzipSync } from 'zlib'
-import { Readable } from 'stream'
+import { Readable } from 'node:stream'
 import Koa from 'koa'
 import { describe, expect, it } from 'vitest'
 import {

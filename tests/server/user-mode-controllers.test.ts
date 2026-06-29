@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { mkdtempSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { Readable } from 'stream'
+import { Readable } from 'node:stream'
 
 const originalEnv = process.env
 let baseDir = ''

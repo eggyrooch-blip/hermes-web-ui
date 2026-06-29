@@ -1,5 +1,5 @@
 import type { Context, Middleware } from 'koa'
-import type { Readable } from 'stream'
+import type { Readable } from 'node:stream'
 import {
   brotliCompressSync,
   constants as zlibConstants,

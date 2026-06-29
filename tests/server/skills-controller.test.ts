@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { Readable } from 'stream'
+import { Readable } from 'node:stream'
 
 const mockGetSkillUsageStatsFromDb = vi.hoisted(() => vi.fn())
 const mockGetActiveProfileName = vi.hoisted(() => vi.fn())
