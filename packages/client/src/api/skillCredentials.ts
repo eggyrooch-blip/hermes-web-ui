@@ -8,6 +8,7 @@ export interface SkillCredentialAction {
   label: string
   command?: string
   description?: string
+  env?: string
 }
 
 export interface SkillCredentialEntry {
@@ -63,10 +64,13 @@ export async function fetchSkillCredentials(profile?: string, opts?: { fresh?: b
   return request(withProfile('/api/auth/skill-credentials', profile, opts?.fresh ? { fresh: '1' } : undefined))
 }
 
-export async function startSkillCredentialAuth(id: string, profile?: string): Promise<SkillCredentialStartResponse> {
+export async function startSkillCredentialAuth(id: string, profile?: string, opts?: { env?: string }): Promise<SkillCredentialStartResponse> {
+  const body: Record<string, string> = {}
+  const env = opts?.env?.trim()
+  if (env) body.env = env
   return request(withProfile(`/api/auth/skill-credentials/${encodeURIComponent(id)}/start`, profile), {
     method: 'POST',
-    body: JSON.stringify({}),
+    body: JSON.stringify(body),
     skipAuthRedirect: true,
   })
 }

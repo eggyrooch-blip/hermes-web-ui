@@ -1088,7 +1088,14 @@ export async function skillCredentialStart(ctx: Context) {
       ctx.body = { error: 'credential id is required' }
       return
     }
-    const normalized = id.toLowerCase() === 'lark_cli' ? 'lark-cli' : id.toLowerCase()
+    const rawNormalized = id.toLowerCase()
+    const normalized = rawNormalized === 'lark_cli'
+      ? 'lark-cli'
+      : rawNormalized === 'kep_cli_online'
+        ? 'kep-cli-online'
+        : rawNormalized === 'kep_cli_pre'
+          ? 'kep-cli-pre'
+          : rawNormalized
     if (normalized === 'lark-cli') {
       if (!user) {
         ctx.status = 401
@@ -1118,13 +1125,17 @@ export async function skillCredentialStart(ctx: Context) {
       })
       return
     }
-    if (normalized === 'kep-cli' || normalized === 'keep-cli') {
+    if (normalized === 'kep-cli' || normalized === 'keep-cli' || normalized === 'kep-cli-online' || normalized === 'kep-cli-pre') {
+      const body = (ctx.request.body || {}) as { env?: unknown }
+      const bodyEnv = typeof body.env === 'string' ? body.env.trim() : ''
+      const env = bodyEnv || (normalized === 'kep-cli-pre' ? 'pre' : normalized === 'kep-cli-online' ? 'online' : '')
       ctx.status = 200
       ctx.body = await startKepCliAuth({
         id,
         profileName,
         profileDir: getProfileDir(profileName),
         publicOrigin: externalRequestOrigin(ctx),
+        ...(env ? { env } : {}),
       })
       return
     }

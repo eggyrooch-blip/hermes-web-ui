@@ -125,6 +125,25 @@ related:
 > standard pull/build/restart path and explicit flag enablement before this
 > adapter changes live behavior.
 
+> [!info] 2026-06-29 local branch — kep-cli connector auth is split by env
+> The connector broker now exposes `kep-cli-online` and `kep-cli-pre` as two
+> visible credentials instead of one ambiguous `kep-cli` row. WebUI must preserve
+> each row's `action.env`, group both rows under Internal systems, pass the env
+> from `CredentialsView` to `startSkillCredentialAuth()`, and POST it in the
+> start body. The BFF also infers `pre` / `online` from the credential id when the
+> body is omitted; legacy `kep-cli` / `keep-cli` remain compatibility aliases for
+> `online`.
+>
+> Local fallback behavior mirrors the broker contract: `listSkillCredentialStatuses()`
+> returns both `kep-cli online` and `kep-cli pre`; `startKepCliAuth()` uses
+> `kep-auth --profile <profile> --env <env> login`; session keys are
+> profile+env-scoped; and `kepAuthStatus()` checks the selected env. This prevents
+> a `pre` card from opening an `online` login flow while still letting users auth
+> either window independently. Verification on this branch: focused Vitest for
+> `connector-registry-client`, `api`, `credentials-view`, and `skill-credentials`
+> passed 89 tests; `vue-tsc --noEmit` and server `tsc --noEmit` passed. Production
+> is not published from this branch.
+
 > [!info] 2026-06-18 本机已验证 — upstream rebaseline 后企业入口收口
 > `sidebar-enterprise-chrome` 已在本机合入 main；运行代码变更截止 `d999692b`（继 `3275161e` 服务端显式 profile 过滤后，`1cda2536` 把聊天侧栏 profile 下拉改成同步 frontend active profile 的真实切换器，`d999692b` 稳定全量 Vitest gate），并已重建、重启本机 launchd `com.hermes.ekko-webui` 的 `dist/server/index.js`；生产尚未发布，GitHub 尚未 push/finalize。边界是 WebUI 适配层，不改 Hermes Agent，不把员工运维/升级入口暴露到普通用户。
 >
@@ -1178,6 +1197,7 @@ CLAUDE.md 写过：dev 模式下"`hermes` CLI 必须在 `$PATH`"——确实，s
 ## Changelog
 
 - 2026-06-24：修复 WebUI `HERMES_WEBUI_RUN_BROKER=1` 下历史会话打开/Socket.IO resume 读成 0 条消息的问题。根因是 legacy `BrokerRunController.loadSessionStateFromDb()` 仍优先读取 Hermes profile `state.db`，而 WebUI chat-plane 的 `api_server` 会话权威数据在 `HERMES_WEB_UI_HOME/hermes-web-ui.db`；因此像 `mqqp3wbly94h7d` 这种本地 WebUI 历史会话在列表和分页详情里存在，但 socket resume 会变成空上下文。修复为 broker resume 在当前 socket profile 匹配且 local row `source=api_server` 时先读取 WebUI local session store，否则按当前 profile fallback 到 profile `state.db`，保持 CLI/imported Hermes history 兼容；运行期 `sessionMap` 与 Socket.IO room 都按 profile scoped key 分桶，避免同名 session id 跨 profile hydrate/replay/live event 串流；broker follow-up 完成后的 usage 计算复用同一 profile-aware detail loader，避免本地会话缺 profile `state.db` 时把 usage 覆写成 0/0。回归：新增 `tests/server/broker-controller-resume-local-store.test.ts`，并通过 focused `broker-controller-resume-local-store/run-chat-load-state/run-chat-broker/sessions-controller/session-detail-db` 5 files / 51 passed；`npm run build` passed；补丁分支 built server 在本机临时 `:18935` 上 `/health` 返回 ok，带本地短期 admin JWT 调 `/api/hermes/sessions/conversations/mqqp3wbly94h7d/messages/paginated?profile=feishu_g41a5b5g&limit=5` 返回 `total=39/count=5/hasMore=true`。当前仅本机待合入 main，生产未发布。
+- 2026-06-29：本地分支 `kep-cli-pre-auth` 将 WebUI 连接器里的 `kep-cli` 拆成 `kep-cli online` / `kep-cli pre` 两个可独立授权的凭证页。前端保留 broker row 的 `action.env` 并 POST 到 `/api/auth/skill-credentials/:id/start`；BFF 也能从 `kep-cli-online` / `kep-cli-pre` id 推导 env，分别启动 profile-scoped `kep-auth --env online|pre login`。本地 fallback status 同时返回两个 row，skill 声明 `--env pre` 时只把 `required_by` 挂到 pre，不把 online 登录态误报成 pre 可用。回归：`tests/server/connector-registry-client.test.ts tests/client/api.test.ts tests/client/credentials-view.test.ts tests/server/skill-credentials.test.ts` 为 89 passed；client/server typecheck 通过。生产未发布。
 - 2026-06-23：修复 WebUI chat-plane 图片附件进入 multitenancy Run Broker 后丢失/误导工具路径的问题。chat-plane 上传文件实际落在 routed profile 的 `workspace/uploads`，multitenancy AIAgent 子进程 cwd 也是该 `workspace`；此前 `buildRunBrokerRequest()` 把 ContentBlock 直接 `JSON.stringify` 为 broker `content`，`metadata.input` 虽含多模态结构但当前 AIAgent 子进程不消费，导致模型只能看到 JSON/文件名并让工具去 `/home/hermes` 或按 basename 搜图。第一版把工具路径改成 `/workspace/uploads/...`，但本地 Mac runtime 没有 `/workspace` mount，且模型容易把图片识别派给异步 `delegate_task`，子任务结果不会自动回写 WebUI 会话。broker 当前用户消息和 replayed user history 现在把 image/file ContentBlock 渲染为工具可读上下文，路径使用 profile workspace cwd 可读的相对 `uploads/...`，图片块额外提示直接调用 `vision_analyze(image_url="uploads/...")`，不要用 `delegate_task` 做图片识别；Responses metadata input 仍保留。回归：`npm run test -- tests/server/run-chat-broker.test.ts tests/server/run-chat-content-blocks.test.ts tests/server/chat-attachment-path.test.ts` 为 17 passed；`npm run build` passed；本机 main `2bfb16fd` 已重启验证，生产待发布。
 - 2026-05-22：ftask `webui-latex-rendering` 修复 WebUI Markdown 公式原样显示，并已发布生产。根因是 `MarkdownRenderer.vue` 只使用 `markdown-it`、代码高亮、Mermaid 与文件卡渲染，没有数学公式 renderer；user_d 生产会话 `<session-id>` 中的 `$$S(x,y)=...$$` 和 `$r_{x,k}$` 因此被当普通文本显示。修复在 markdown-it token 阶段接入 KaTeX，支持 `$...$`、`\(...\)`、`$$...$$`、`\[...\]`，并保持代码 fence 内 `$...$` 不渲染。回归：`npm test -- tests/client/markdown-rendering.test.ts` 为 `28 passed`；`npm run build` 成功。GitHub/生产已包含代码提交 `6a5b015`、gotcha 记录 `53e0813` 与发布文档；生产 `<prod-home>/code/hermes-web-ui` 从发布前 `325a00b` fast-forward，备份为 `<prod-home>/backups/webui-latex-rendering-20260522-151333`，`pnpm install` / `pnpm run build` 成功，`hermes-web-ui.service` 已重启，`/health` 返回 ok，构建产物中已包含 KaTeX JS/CSS/font。
 - 2026-05-20：补齐 WebUI Run Broker 对 profile-local skills 的运行态注入。凭证页显示 token 可用不等于聊天模型能触发 skill；此前 WebUI/Run Broker 的 slash rewrite 在 broker 进程 shared `HERMES_HOME` 下扫描 skills，找不到只安装在 `profiles/<profile>/skills` 内的 `kep-hades-cli` / `keep-record`，所以 `/hades get ...` 和自然语言 Keep 记录会被模型当普通文本。WebUI BFF 现在在构造 `/api/run-broker/runs` 请求前用当前 request profile 扫描 `skills/**/SKILL.md`，尊重 `config.yaml skills.disabled`，对 `/hades ...` 等 profile-local skill slash 直接改写为带完整 skill 内容和绝对 skill directory 的 invocation；对明显命中 `preload: true` / `lazyLoad: false` 的 Keep-record/Hades 自然语言请求，把相关 profile skill 内容注入本次 `metadata.instructions`。这样凭证页、Skills 页和聊天运行时使用同一 profile 事实源。验证：`pnpm vitest run tests/server/run-chat-broker.test.ts tests/server/group-chat-agent-broker.test.ts tests/server/skill-credentials.test.ts tests/client/credentials-view.test.ts tests/client/api.test.ts` 为 40 passed；生产未发布。

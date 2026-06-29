@@ -17,6 +17,7 @@ import { getDownloadUrl } from '../../packages/client/src/api/hermes/download'
 import { uploadFiles } from '../../packages/client/src/api/hermes/files'
 import { importSkill } from '../../packages/client/src/api/hermes/skills'
 import { batchDeleteSessions, importHermesSession } from '../../packages/client/src/api/hermes/sessions'
+import { startSkillCredentialAuth } from '../../packages/client/src/api/skillCredentials'
 import router from '@/router'
 
 function fakeJwt(payload: Record<string, unknown>) {
@@ -123,6 +124,16 @@ describe('API Client', () => {
 
       const [, options] = mockFetch.mock.calls[0]
       expect(options.headers['X-Hermes-Profile']).toBeUndefined()
+    })
+
+    it('sends the target credential environment when starting skill credential auth', async () => {
+      mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => ({ id: 'kep-cli-pre' }) })
+
+      await startSkillCredentialAuth('kep-cli-pre', 'feishu_user_a', { env: 'pre' } as any)
+
+      const [url, options] = mockFetch.mock.calls[0]
+      expect(url).toBe('/api/auth/skill-credentials/kep-cli-pre/start?profile=feishu_user_a')
+      expect(JSON.parse(options.body)).toEqual({ env: 'pre' })
     })
 
     it('adds the active shared agent header to session collection requests', async () => {

@@ -32,6 +32,9 @@ interface KepAuthCallbackSession {
 
 const KEP_AUTH_CALLBACK_TTL_MS = 10 * 60 * 1000
 const FEISHU_PROJECT_CREDENTIAL_ID = 'feishu-project'
+const KEP_CLI_CREDENTIAL_ID = 'kep-cli'
+const KEP_CLI_ONLINE_CREDENTIAL_ID = 'kep-cli-online'
+const KEP_CLI_PRE_CREDENTIAL_ID = 'kep-cli-pre'
 const MEEGLE_DEFAULT_HOST = 'project.feishu.cn'
 const activeKepAuthLogins = new Map<string, KepAuthLoginSession>()
 const activeKepAuthCallbacks = new Map<string, KepAuthCallbackSession>()
@@ -42,6 +45,7 @@ export interface SkillCredentialAction {
   label: string
   command?: string
   description?: string
+  env?: string
 }
 
 export interface SkillCredentialEntry {
@@ -74,6 +78,7 @@ export interface SkillCredentialStartOptions {
   profileName: string
   profileDir: string
   publicOrigin?: string
+  env?: string
 }
 
 interface ProfileSkill {
@@ -113,7 +118,7 @@ export interface KeepRecordCompleteResult {
 }
 
 export interface KepCliAuthStartResult {
-  id: 'kep-cli'
+  id: string
   status: 'auth_pending'
   verification_uri: string
   action: SkillCredentialAction
@@ -136,9 +141,11 @@ export async function listSkillCredentialStatuses(options: ListSkillCredentialOp
   const profileDir = options.profileDir
   const skills = scanProfileSkills(profileDir)
   const requiredBy = credentialRequirementsById(skills)
-  const [feishuProject, kepCli] = await Promise.all([
+  const kepTargetEnv = kepCliTargetEnv(skills)
+  const [feishuProject, kepCliOnline, kepCliPre] = await Promise.all([
     feishuProjectStatus(profileDir, profileName, requiredBy.get(FEISHU_PROJECT_CREDENTIAL_ID)),
-    kepCliStatus(profileDir, profileName, skills, requiredBy.get('kep-cli')),
+    kepCliStatus(profileDir, profileName, skills, kepTargetEnv === 'online' ? requiredBy.get(KEP_CLI_CREDENTIAL_ID) : undefined, 'online'),
+    kepCliStatus(profileDir, profileName, skills, kepTargetEnv === 'pre' ? requiredBy.get(KEP_CLI_CREDENTIAL_ID) : undefined, 'pre'),
   ])
   return {
     profile_name: profileName,
@@ -146,7 +153,8 @@ export async function listSkillCredentialStatuses(options: ListSkillCredentialOp
       larkCliStatus(options, requiredBy.get('lark-cli')),
       feishuProject,
       keepRecordStatus(profileDir, skills),
-      kepCli,
+      kepCliOnline,
+      kepCliPre,
       gitlabStatus(profileDir, skills),
     ],
   }
@@ -207,7 +215,7 @@ export function detectSkillCredentialRequirements(input: SkillCredentialRequirem
 
   if (needsLark) required.push('lark-cli')
   if (needsFeishuProject) required.push(FEISHU_PROJECT_CREDENTIAL_ID)
-  if (needsKep) required.push('kep-cli')
+  if (needsKep) required.push(KEP_CLI_CREDENTIAL_ID)
   if (needsKeepRecord) required.push('keep-record')
   if (needsGitlab) required.push('gitlab')
   return required
@@ -259,13 +267,15 @@ export async function getSkillCredentialStartAction(options: SkillCredentialStar
       },
     }
   }
-  if (id === 'kep-cli') {
+  if (isKepCliCredentialId(id)) {
+    const envName = kepCliEnvFromId(id) || 'online'
     return {
-      id,
+      id: kepCliCredentialIdForEnv(envName),
       action: {
         kind: 'oauth_url',
-        label: '认证 kep-cli',
+        label: `认证 kep-cli ${envName}`,
         description: 'Start kep-cli OAuth from WebUI. The browser authorization callback is handled by the profile-scoped kep-auth process.',
+        env: envName,
       },
     }
   }
@@ -467,13 +477,15 @@ export async function startKepCliAuth(options: SkillCredentialStartOptions): Pro
     err.status = 404
     throw err
   }
+  const envName = normalizeKepCliEnv(options.env || kepCliEnvFromId(options.id))
+  const credentialId = kepCliCredentialIdForEnv(envName)
 
-  const sessionKey = `${options.profileName}:online`
+  const sessionKey = `${options.profileName}:${envName}`
   const existing = activeKepAuthLogins.get(sessionKey)
   if (existing && !existing.child.killed) existing.child.kill()
   deleteKepAuthCallbacksForSessionKey(sessionKey)
 
-  const child = spawn(bin, ['--profile', options.profileName, '--env', 'online', 'login'], {
+  const child = spawn(bin, ['--profile', options.profileName, '--env', envName, 'login'], {
     cwd: options.profileDir,
     env: kepAuthEnv(options.profileDir, options.profileName, false),
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -489,13 +501,14 @@ export async function startKepCliAuth(options: SkillCredentialStartOptions): Pro
     sessionKey,
   })
   return {
-    id: 'kep-cli',
+    id: credentialId,
     status: 'auth_pending',
     verification_uri: verificationUri,
     action: {
       kind: 'oauth_url',
-      label: '打开 kep-cli 认证',
+      label: `打开 kep-cli ${envName} 认证`,
       description: 'Complete kep-cli OAuth in the browser. The CLI callback writes the token into the current Hermes profile home.',
+      env: envName,
     },
   }
 }
@@ -948,33 +961,40 @@ function keepRecordSdkExists(nodeModulesDir: string): boolean {
   return text.includes('"@keepclaw/skill-sdk"') || text.includes('"name"')
 }
 
-async function kepCliStatus(profileDir: string, profileName: string, skills = scanProfileSkills(profileDir), requiredBy?: string[]): Promise<SkillCredentialEntry> {
+async function kepCliStatus(
+  profileDir: string,
+  profileName: string,
+  skills = scanProfileSkills(profileDir),
+  requiredBy?: string[],
+  envName: 'online' | 'pre' = 'online',
+): Promise<SkillCredentialEntry> {
   const skill = findKepCliSkill(skills)
   const installed = Boolean(skill) || Boolean(requiredBy?.length)
   const keyringDir = join(profileDir, 'home', '.kep-cli', 'keyring-fallback')
-  const hasToken = safeList(keyringDir).some(name => name.includes(`token-key:online:${profileName}`) || name.includes('token-key:online:'))
-  const liveStatus = installed ? await kepAuthStatus(profileDir, profileName, skill) : null
+  const hasToken = safeList(keyringDir).some(name => name.includes(`token-key:${envName}:${profileName}`) || name.includes(`token-key:${envName}:`))
+  const liveStatus = installed ? await kepAuthStatus(profileDir, profileName, skill, envName) : null
   const connected = liveStatus?.state === 'logged_in'
   const account = safeAccountHint(liveStatus?.account)
   const needsAuth = liveStatus?.state === 'not_logged_in' || (liveStatus === null && !hasToken)
   return {
-    id: 'kep-cli',
-    title: 'kep-cli',
+    id: kepCliCredentialIdForEnv(envName),
+    title: `kep-cli ${envName}`,
     provider: 'keep',
     installed,
     status: connected ? 'authenticated' : installed && needsAuth ? 'needs_auth' : installed && hasToken ? 'unknown' : 'missing',
     account_hint: connected ? account : undefined,
     detail: connected
-      ? 'kep-auth status verified this profile login.'
+      ? `kep-auth status verified this profile ${envName} login.`
       : liveStatus?.state === 'not_logged_in'
-        ? 'kep-auth status reports this profile is not logged in.'
+        ? `kep-auth status reports this profile is not logged in to ${envName}.`
         : installed && hasToken
-          ? 'kep-cli credential material exists, but live status could not be verified.'
-          : installed ? `${skill?.name || 'kep-cli skill'} requires kep-cli login for this profile.` : 'No kep-cli backed skill is installed for this profile.',
+          ? `kep-cli ${envName} credential material exists, but live status could not be verified.`
+          : installed ? `${skill?.name || 'kep-cli skill'} requires kep-cli ${envName} login for this profile.` : `No kep-cli ${envName} backed skill is installed for this profile.`,
     required_by: requiredBy,
     action: {
       kind: 'oauth_url',
       label: connected ? '重新认证' : '认证',
+      env: envName,
     },
   }
 }
@@ -1074,8 +1094,39 @@ function findKepCliSkill(skills: ProfileSkill[]): ProfileSkill | undefined {
     const text = skill.text.toLowerCase()
     return skill.name === 'kep-hades-cli' ||
       skill.tags.includes('kep-cli') ||
-      (text.includes('kep-auth') && text.includes('--env online'))
+      (text.includes('kep-auth') && (text.includes('--env online') || text.includes('--env pre')))
   })
+}
+
+function normalizeKepCliEnv(value: unknown): 'online' | 'pre' {
+  return String(value || '').trim().toLowerCase() === 'pre' ? 'pre' : 'online'
+}
+
+function kepCliCredentialIdForEnv(envName: 'online' | 'pre'): string {
+  return envName === 'pre' ? KEP_CLI_PRE_CREDENTIAL_ID : KEP_CLI_ONLINE_CREDENTIAL_ID
+}
+
+function kepCliEnvFromId(id: string): 'online' | 'pre' | undefined {
+  const normalized = normalizeId(id)
+  if (normalized === KEP_CLI_PRE_CREDENTIAL_ID) return 'pre'
+  if (normalized === KEP_CLI_ONLINE_CREDENTIAL_ID || normalized === KEP_CLI_CREDENTIAL_ID) return 'online'
+  return undefined
+}
+
+function isKepCliCredentialId(id: string): boolean {
+  return kepCliEnvFromId(id) !== undefined
+}
+
+function kepCliTargetEnv(skills: ProfileSkill[]): 'online' | 'pre' {
+  for (const skill of skills) {
+    const text = skill.text.toLowerCase()
+    const isKepSkill = skill.name === 'kep-hades-cli' ||
+      skill.tags.includes('kep-cli') ||
+      text.includes('kep-auth')
+    if (!isKepSkill) continue
+    if (/(^|\s)--env\s+pre(\s|$)/.test(text) || /env_default:\s*pre/.test(text)) return 'pre'
+  }
+  return 'online'
 }
 
 function findGitlabSkill(skills: ProfileSkill[]): ProfileSkill | undefined {
@@ -1107,7 +1158,9 @@ function safeDirEntries(path: string): Dirent[] {
 function normalizeId(id: string): string {
   const normalized = String(id || '').trim().toLowerCase()
   if (normalized === 'lark_cli') return 'lark-cli'
-  if (normalized === 'keep-cli') return 'kep-cli'
+  if (normalized === 'kep_cli_online') return KEP_CLI_ONLINE_CREDENTIAL_ID
+  if (normalized === 'kep_cli_pre') return KEP_CLI_PRE_CREDENTIAL_ID
+  if (normalized === 'keep-cli') return KEP_CLI_CREDENTIAL_ID
   if (normalized === 'feishu_project_mcp' || normalized === 'feishu-project' || normalized === 'feishu-project-mcp' || normalized === 'meegle' || normalized === 'meegle-cli') return FEISHU_PROJECT_CREDENTIAL_ID
   return normalized
 }
@@ -1145,11 +1198,11 @@ function safeAccountHint(value: unknown): string | undefined {
   return trimmed || undefined
 }
 
-async function kepAuthStatus(profileDir: string, profileName: string, skill?: ProfileSkill): Promise<KepAuthStatus | null> {
+async function kepAuthStatus(profileDir: string, profileName: string, skill?: ProfileSkill, envName: 'online' | 'pre' = 'online'): Promise<KepAuthStatus | null> {
   const bin = process.env.HERMES_KEP_AUTH_BIN || kepAuthBin(profileDir, skill)
   if (!existsSync(bin)) return null
   try {
-    const { stdout, stderr } = await execFileAsync(bin, ['--profile', profileName, '--env', 'online', 'status'], {
+    const { stdout, stderr } = await execFileAsync(bin, ['--profile', profileName, '--env', envName, 'status'], {
       cwd: profileDir,
       env: {
         ...kepAuthEnv(profileDir, profileName, true),

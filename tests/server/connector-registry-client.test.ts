@@ -71,15 +71,24 @@ describe('mapConnectorToEntry', () => {
     expect(e.status).toBe('unknown')
     expect(e.action.kind).toBe('manual')
   })
+
+  it('preserves connector action env so WebUI starts the intended kep-cli environment', async () => {
+    const { mapConnectorToEntry } = await import(MODULE)
+    const e = mapConnectorToEntry(brokerConnector({
+      id: 'kep-cli-pre',
+      action: { kind: 'oauth_url', label: '认证 pre', env: 'pre' },
+    }))
+    expect(e.action).toMatchObject({ kind: 'oauth_url', label: '认证 pre', env: 'pre' })
+  })
 })
 
 describe('failSafeResult', () => {
-  it('returns all 5 canonical connectors as error — NEVER authenticated', async () => {
+  it('returns all canonical connectors as error — NEVER authenticated', async () => {
     const { failSafeResult } = await import(MODULE)
     const r = failSafeResult('p1')
     expect(r.profile_name).toBe('p1')
     expect(r.credentials.map((c: any) => c.id)).toEqual(
-      ['lark-cli', 'feishu-project', 'keep-record', 'kep-cli', 'gitlab'])
+      ['lark-cli', 'feishu-project', 'keep-record', 'kep-cli-online', 'kep-cli-pre', 'gitlab'])
     expect(r.credentials.every((c: any) => c.status === 'error')).toBe(true)
     expect(r.credentials.some((c: any) => c.status === 'authenticated')).toBe(false)
   })
@@ -148,14 +157,14 @@ describe('shadowDiff (redacted)', () => {
     const local = {
       profile_name: 'p1',
       credentials: [
-        { id: 'kep-cli', title: 'kep-cli', provider: 'keep', installed: true, status: 'needs_auth',
+        { id: 'kep-cli-online', title: 'kep-cli online', provider: 'keep', installed: true, status: 'needs_auth',
           account_hint: 'alice@x', action: { kind: 'oauth_url', label: 'a' }, required_by: ['s1'] },
       ],
     }
     const broker = {
       profile_name: 'p1',
       credentials: [
-        { id: 'kep-cli', title: 'kep-cli', provider: 'keep', installed: true, status: 'authenticated',
+        { id: 'kep-cli-online', title: 'kep-cli online', provider: 'keep', installed: true, status: 'authenticated',
           action: { kind: 'oauth_url', label: 'a' }, required_by: ['s1', 's2'] },
       ],
     }

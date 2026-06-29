@@ -100,14 +100,23 @@ describe('CredentialsView', () => {
           action: { kind: 'skill_flow', label: '扫码认证', command: '/keep-record auth' },
         },
         {
-          id: 'kep-cli',
-          title: 'kep-cli',
+          id: 'kep-cli-online',
+          title: 'kep-cli online',
+          provider: 'keep',
+          installed: true,
+          status: 'authenticated',
+          detail: 'online ready',
+          required_by: ['aidock-helper', 'keep-login-skill'],
+          action: { kind: 'oauth_url', label: '重新认证', env: 'online' },
+        },
+        {
+          id: 'kep-cli-pre',
+          title: 'kep-cli pre',
           provider: 'keep',
           installed: true,
           status: 'needs_auth',
-          detail: 'login required',
-          required_by: ['aidock-helper', 'keep-login-skill'],
-          action: { kind: 'oauth_url', label: '认证' },
+          detail: 'pre login required',
+          action: { kind: 'oauth_url', label: '认证', env: 'pre' },
         },
         {
           id: 'gitlab',
@@ -139,7 +148,7 @@ describe('CredentialsView', () => {
 
     expect(fetchSkillCredentialsMock).toHaveBeenCalledWith('feishu_g41a5b5g')
     expect(wrapper.find('.header-title').text()).toBe('Connectors')
-    expect(wrapper.findAll('.credential-card')).toHaveLength(5)
+    expect(wrapper.findAll('.credential-card')).toHaveLength(6)
     expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('Internal systems')
     expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('Lark-cli')
     expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('飞书项目')
@@ -154,7 +163,8 @@ describe('CredentialsView', () => {
     expect(wrapper.text()).toContain('Keep-record')
     expect(wrapper.text()).toContain('待验证')
     expect(wrapper.text()).toContain('Keep User')
-    expect(wrapper.text()).toContain('kep-cli')
+    expect(wrapper.text()).toContain('kep-cli online')
+    expect(wrapper.text()).toContain('kep-cli pre')
     expect(wrapper.text()).toContain('飞书项目')
     expect(wrapper.text()).toContain('飞书项目需要授权后才能查询和更新工作项。')
     expect(wrapper.text()).not.toContain('MCP')
@@ -312,24 +322,55 @@ describe('CredentialsView', () => {
     expect(startSkillCredentialAuthMock).toHaveBeenCalledWith('lark-cli', 'feishu_g41a5b5g')
   })
 
-  it('opens the OAuth authorization URL returned by kep-cli start', async () => {
-    const authWindow = { opener: {}, location: { href: '' } } as any
-    const openSpy = vi.spyOn(window, 'open').mockReturnValue(authWindow)
+  it('passes a credential action env through when starting kep-cli auth', async () => {
+    fetchSkillCredentialsMock.mockResolvedValueOnce({
+      profile_name: 'feishu_g41a5b5g',
+      credentials: [
+        {
+          id: 'kep-cli-pre',
+          title: 'kep-cli pre',
+          provider: 'keep',
+          installed: true,
+          status: 'needs_auth',
+          detail: 'pre 未登录；online 已登录。',
+          action: { kind: 'oauth_url', label: '认证 pre', env: 'pre' },
+        },
+      ],
+    })
     startSkillCredentialAuthMock.mockResolvedValueOnce({
-      id: 'kep-cli',
+      id: 'kep-cli-pre',
       status: 'auth_pending',
-      verification_uri: 'https://auth.example.com/?response_url=http://localhost:52237&oauth2=1',
-      action: { kind: 'oauth_url', label: '打开 kep-cli 认证' },
+      action: { kind: 'oauth_url', label: '认证 pre', env: 'pre' },
     })
     const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
     const wrapper = mount(CredentialsView)
     await new Promise(resolve => setTimeout(resolve, 0))
     await wrapper.vm.$nextTick()
 
-    await wrapper.find('[data-credential-action="kep-cli"]').trigger('click')
+    await wrapper.find('[data-credential-action="kep-cli-pre"]').trigger('click')
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(startSkillCredentialAuthMock).toHaveBeenCalledWith('kep-cli', 'feishu_g41a5b5g')
+    expect(startSkillCredentialAuthMock).toHaveBeenCalledWith('kep-cli-pre', 'feishu_g41a5b5g', { env: 'pre' })
+  })
+
+  it('opens the OAuth authorization URL returned by kep-cli start', async () => {
+    const authWindow = { opener: {}, location: { href: '' } } as any
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(authWindow)
+    startSkillCredentialAuthMock.mockResolvedValueOnce({
+      id: 'kep-cli-online',
+      status: 'auth_pending',
+      verification_uri: 'https://auth.example.com/?response_url=http://localhost:52237&oauth2=1',
+      action: { kind: 'oauth_url', label: '打开 kep-cli online 认证', env: 'online' },
+    })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-credential-action="kep-cli-online"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(startSkillCredentialAuthMock).toHaveBeenCalledWith('kep-cli-online', 'feishu_g41a5b5g', { env: 'online' })
     expect(openSpy).toHaveBeenCalledWith('about:blank', '_blank')
     expect(authWindow.opener).toBe(null)
     expect(authWindow.location.href).toBe('https://auth.example.com/?response_url=http://localhost:52237&oauth2=1')
@@ -339,21 +380,21 @@ describe('CredentialsView', () => {
     const authWindow = { opener: {}, location: { href: '' } } as any
     vi.spyOn(window, 'open').mockReturnValue(authWindow)
     startSkillCredentialAuthMock.mockResolvedValueOnce({
-      id: 'kep-cli',
+      id: 'kep-cli-online',
       status: 'auth_pending',
       verification_uri: 'https://auth.example.com/?response_url=http://localhost:52237&oauth2=1',
-      action: { kind: 'oauth_url', label: '打开 kep-cli 认证' },
+      action: { kind: 'oauth_url', label: '打开 kep-cli online 认证', env: 'online' },
     })
     const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
     const wrapper = mount(CredentialsView)
     await new Promise(resolve => setTimeout(resolve, 0))
     await wrapper.vm.$nextTick()
 
-    await wrapper.find('[data-credential-action="kep-cli"]').trigger('click')
+    await wrapper.find('[data-credential-action="kep-cli-online"]').trigger('click')
     await Promise.resolve()
     await wrapper.vm.$nextTick()
 
-    const action = wrapper.find('[data-credential-action="kep-cli"]')
+    const action = wrapper.find('[data-credential-action="kep-cli-online"]')
     expect(action.attributes('data-loading')).toBeUndefined()
   })
 

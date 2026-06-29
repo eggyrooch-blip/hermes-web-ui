@@ -55,7 +55,7 @@ const requestedProfile = computed(() => {
   return props.preferActiveProfile ? activeProfile : routeProfile.value || activeProfile
 })
 let profileWatchReady = false
-const internalCredentialIds = new Set(['lark-cli', 'feishu-project', 'keep-record', 'kep-cli'])
+const internalCredentialIds = new Set(['lark-cli', 'feishu-project', 'keep-record', 'kep-cli-online', 'kep-cli-pre'])
 const credentialGroups = computed(() => {
   const internal = credentials.value.filter(entry => internalCredentialIds.has(entry.id))
   const other = credentials.value.filter(entry => !internalCredentialIds.has(entry.id))
@@ -202,7 +202,9 @@ async function startCredential(entry: SkillCredentialEntry) {
   // and open a stale one.
   const attemptToken = ++attemptSeq
   try {
-    const result = await startSkillCredentialAuth(entry.id, requestedProfile.value)
+    const result = entry.action?.env
+      ? await startSkillCredentialAuth(entry.id, requestedProfile.value, { env: entry.action.env })
+      : await startSkillCredentialAuth(entry.id, requestedProfile.value)
     if (attemptToken !== attemptSeq) return  // a newer attempt superseded this one
     if (result.qrcode_id && result.qrcode_url) {
       qrDialog.value = {

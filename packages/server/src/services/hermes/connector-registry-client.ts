@@ -34,7 +34,8 @@ const CANONICAL_CONNECTORS: ReadonlyArray<{ id: string; title: string; provider:
   { id: 'lark-cli', title: 'Lark-cli', provider: 'lark' },
   { id: 'feishu-project', title: '飞书项目', provider: 'feishu-project' },
   { id: 'keep-record', title: 'Keep-record', provider: 'keep' },
-  { id: 'kep-cli', title: 'kep-cli', provider: 'keep' },
+  { id: 'kep-cli-online', title: 'kep-cli online', provider: 'keep' },
+  { id: 'kep-cli-pre', title: 'kep-cli pre', provider: 'keep' },
   { id: 'gitlab', title: 'GitLab', provider: 'gitlab' },
 ]
 
@@ -65,7 +66,7 @@ interface ConnectorStatusDict {
   default_identity?: string
   detail?: string
   required_by?: string[]
-  action?: { kind?: string; label?: string; command?: string; description?: string }
+  action?: { kind?: string; label?: string; command?: string; description?: string; env?: string }
   // additive control-plane fields (scope/profile/acting_identity/credential_owner/
   // runtime_policy_owner/kind/stale/expires_at) are intentionally DROPPED in the
   // SkillCredentialEntry mapping — the frontend shape stays unchanged.
@@ -84,6 +85,8 @@ function coerceAction(raw: ConnectorStatusDict['action']): SkillCredentialAction
   }
   if (raw?.command) action.command = String(raw.command)
   if (raw?.description) action.description = String(raw.description)
+  const env = String(raw?.env || '').trim().toLowerCase()
+  if (env === 'pre' || env === 'online') action.env = env
   return action
 }
 

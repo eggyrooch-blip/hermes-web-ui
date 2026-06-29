@@ -122,7 +122,8 @@ describe('skill credential status', () => {
       'lark-cli',
       'feishu-project',
       'keep-record',
-      'kep-cli',
+      'kep-cli-online',
+      'kep-cli-pre',
       'gitlab',
     ])
     expect(result.credentials.find(item => item.id === 'lark-cli')).toMatchObject({
@@ -135,7 +136,7 @@ describe('skill credential status', () => {
       installed: true,
       account_hint: 'Keep User',
     })
-    expect(result.credentials.find(item => item.id === 'kep-cli')).toMatchObject({
+    expect(result.credentials.find(item => item.id === 'kep-cli-online')).toMatchObject({
       status: 'authenticated',
       installed: true,
     })
@@ -622,7 +623,7 @@ describe('skill credential status', () => {
       installed: true,
       status: 'unknown',
     })
-    expect(result.credentials.find(item => item.id === 'kep-cli')).toMatchObject({
+    expect(result.credentials.find(item => item.id === 'kep-cli-online')).toMatchObject({
       installed: true,
       status: 'authenticated',
     })
@@ -740,7 +741,7 @@ describe('skill credential status', () => {
     })
 
     expect(result.credentials.find(item => item.id === 'lark-cli')?.required_by).toEqual(['wiki-helper'])
-    expect(result.credentials.find(item => item.id === 'kep-cli')).toMatchObject({
+    expect(result.credentials.find(item => item.id === 'kep-cli-online')).toMatchObject({
       installed: true,
       status: 'authenticated',
       required_by: ['aidock-helper'],
@@ -772,11 +773,11 @@ describe('skill credential status', () => {
       profileDir,
     })
 
-    expect(result.credentials.find(item => item.id === 'kep-cli')).toMatchObject({
+    expect(result.credentials.find(item => item.id === 'kep-cli-online')).toMatchObject({
       installed: true,
       status: 'needs_auth',
     })
-    expect(result.credentials.find(item => item.id === 'kep-cli')?.detail).not.toBe('No kep-cli backed skill is installed for this profile.')
+    expect(result.credentials.find(item => item.id === 'kep-cli-online')?.detail).not.toBe('No kep-cli online backed skill is installed for this profile.')
   })
 
   it('treats SkillHub-installed skills as kep-cli-backed even without text markers', async () => {
@@ -808,7 +809,7 @@ describe('skill credential status', () => {
       profileDir,
     })
 
-    expect(result.credentials.find(item => item.id === 'kep-cli')).toMatchObject({
+    expect(result.credentials.find(item => item.id === 'kep-cli-online')).toMatchObject({
       installed: true,
       status: 'authenticated',
       required_by: ['daily-breaking'],
@@ -839,11 +840,11 @@ describe('skill credential status', () => {
       profileDir,
     })
 
-    expect(result.credentials.find(item => item.id === 'kep-cli')).toMatchObject({
+    expect(result.credentials.find(item => item.id === 'kep-cli-online')).toMatchObject({
       installed: true,
       status: 'needs_auth',
       required_by: ['daily-breaking'],
-      detail: 'kep-auth status reports this profile is not logged in.',
+      detail: 'kep-auth status reports this profile is not logged in to online.',
     })
   })
 
@@ -860,9 +861,9 @@ describe('skill credential status', () => {
       profileDir,
     })
 
-    expect(result.credentials.find(item => item.id === 'kep-cli')).toMatchObject({
+    expect(result.credentials.find(item => item.id === 'kep-cli-online')).toMatchObject({
       status: 'needs_auth',
-      detail: 'kep-auth status reports this profile is not logged in.',
+      detail: 'kep-auth status reports this profile is not logged in to online.',
     })
     expect(JSON.stringify(result)).not.toContain('kep-secret-token')
   })
@@ -888,12 +889,52 @@ describe('skill credential status', () => {
       profileDir,
     })
 
-    expect(result.credentials.find(item => item.id === 'kep-cli')).toMatchObject({
+    expect(result.credentials.find(item => item.id === 'kep-cli-online')).toMatchObject({
       status: 'authenticated',
-      detail: 'kep-auth status verified this profile login.',
+      detail: 'kep-auth status verified this profile online login.',
       account_hint: 'user_a',
     })
     expect(JSON.stringify(result)).not.toContain('user-a@example.com')
+  })
+
+  it('checks kep-cli pre status when a profile skill declares --env pre', async () => {
+    const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = makeProfile()
+    writeFileSync(join(profileDir, 'skills', 'Keep', 'kep-hades-cli', 'SKILL.md'), [
+      '---',
+      'name: kep-hades-cli',
+      'metadata:',
+      '  hermes:',
+      '    tags: [kep-cli, hades]',
+      '---',
+      '<local-home>/.hermes/bin/kep-auth --profile "$KEP_PROFILE" --env pre status',
+    ].join('\n'), 'utf-8')
+    const kepAuth = join(profileDir, 'kep-auth')
+    writeFileSync(kepAuth, [
+      '#!/bin/sh',
+      'if [ "$4" = "pre" ]; then',
+      '  echo "env: pre"',
+      '  echo "state: valid"',
+      '  echo "operator: pre_user"',
+      '  exit 0',
+      'fi',
+      'echo "env: online"',
+      'echo "state: not logged in"',
+      'exit 3',
+    ].join('\n'), 'utf-8')
+    chmodSync(kepAuth, 0o755)
+    process.env.HERMES_KEP_AUTH_BIN = kepAuth
+
+    const result = await listSkillCredentialStatuses({
+      profileName: 'feishu_user_a',
+      profileDir,
+    })
+
+    expect(result.credentials.find(item => item.id === 'kep-cli-pre')).toMatchObject({
+      status: 'authenticated',
+      account_hint: 'pre_user',
+      action: { kind: 'oauth_url', env: 'pre' },
+    })
   })
 
   it('starts kep-cli OAuth login from WebUI and returns the browser authorization URL', async () => {
@@ -912,19 +953,51 @@ describe('skill credential status', () => {
     process.env.HERMES_KEP_AUTH_BIN = kepAuth
 
     const result = await startKepCliAuth({
-      id: 'kep-cli',
+      id: 'kep-cli-online',
       profileName: 'feishu_user_a',
       profileDir,
     })
 
     expect(result).toMatchObject({
-      id: 'kep-cli',
+      id: 'kep-cli-online',
       status: 'auth_pending',
       verification_uri: 'https://auth.example.com/?response_url=http://localhost:52237&oauth2=1',
       action: {
         kind: 'oauth_url',
-        label: '打开 kep-cli 认证',
+        label: '打开 kep-cli online 认证',
+        env: 'online',
       },
+    })
+  })
+
+  it('starts kep-cli OAuth login for pre when requested by the WebUI action', async () => {
+    const { startKepCliAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = makeProfile()
+    const kepAuth = join(profileDir, 'kep-auth')
+    writeFileSync(kepAuth, [
+      '#!/bin/sh',
+      'test "$1" = "--profile" || { echo "bad arg1=$1" >&2; exit 9; }',
+      'test "$2" = "feishu_user_a" || { echo "bad profile=$2" >&2; exit 9; }',
+      'test "$3" = "--env" || { echo "bad arg3=$3" >&2; exit 9; }',
+      'test "$4" = "pre" || { echo "bad env=$4" >&2; exit 9; }',
+      'test "$5" = "login" || { echo "bad command=$5" >&2; exit 9; }',
+      'echo "https://auth.example.com/?response_url=http://localhost:52237&oauth2=1" >&2',
+      'sleep 0.2',
+    ].join('\n'), 'utf-8')
+    chmodSync(kepAuth, 0o755)
+    process.env.HERMES_KEP_AUTH_BIN = kepAuth
+
+    const result = await startKepCliAuth({
+      id: 'kep-cli-pre',
+      profileName: 'feishu_user_a',
+      profileDir,
+      env: 'pre',
+    } as any)
+
+    expect(result).toMatchObject({
+      id: 'kep-cli-pre',
+      status: 'auth_pending',
+      action: { kind: 'oauth_url', env: 'pre' },
     })
   })
 
@@ -1299,7 +1372,7 @@ describe('skill credential status', () => {
     const brokerBody = {
       profile_name: 'preview',
       connectors: [
-        { id: 'kep-cli', title: 'kep-cli', provider: 'keep', installed: true, status: 'needs_auth', detail: 'kep-cli 登录已过期，请重新认证。', action: { kind: 'oauth_url', label: '重新认证' } },
+        { id: 'kep-cli-online', title: 'kep-cli online', provider: 'keep', installed: true, status: 'needs_auth', detail: 'kep-cli online 登录已过期，请重新认证。', action: { kind: 'oauth_url', label: '重新认证', env: 'online' } },
         { id: 'gitlab', title: 'GitLab', provider: 'gitlab', installed: true, status: 'configured', detail: 'from-broker', action: { kind: 'manual', label: '刷新' } },
       ],
     }
@@ -1320,7 +1393,7 @@ describe('skill credential status', () => {
     )
     // ...and served the broker's exp-decoded kep-cli needs_auth (NOT a local blind
     // 'authenticated'), and the broker gitlab row (detail proves it isn't local).
-    expect(ctx.body.credentials.find((c: any) => c.id === 'kep-cli')?.status).toBe('needs_auth')
+    expect(ctx.body.credentials.find((c: any) => c.id === 'kep-cli-online')?.status).toBe('needs_auth')
     expect(ctx.body.credentials.find((c: any) => c.id === 'gitlab')?.detail).toBe('from-broker')
     fetchSpy.mockRestore()
   })
