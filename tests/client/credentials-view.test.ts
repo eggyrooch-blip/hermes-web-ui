@@ -179,6 +179,40 @@ describe('CredentialsView', () => {
     expect(html).not.toContain('gitlab-secret-token')
   })
 
+  it('keeps legacy kep-cli credential rows grouped with internal systems', async () => {
+    fetchSkillCredentialsMock.mockResolvedValueOnce({
+      profile_name: 'feishu_g41a5b5g',
+      credentials: [
+        {
+          id: 'kep-cli',
+          title: 'kep-cli',
+          provider: 'keep',
+          installed: true,
+          status: 'needs_auth',
+          detail: 'legacy row',
+          action: { kind: 'oauth_url', label: '认证', env: 'online' },
+        },
+        {
+          id: 'gitlab',
+          title: 'GitLab',
+          provider: 'gitlab',
+          installed: true,
+          status: 'configured',
+          detail: 'materialized',
+          action: { kind: 'manual', label: '刷新' },
+        },
+      ],
+    })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('kep-cli')
+    expect(wrapper.find('[data-credential-group="other-credentials"]').text()).not.toContain('kep-cli')
+    expect(wrapper.find('[data-credential-group="other-credentials"]').text()).toContain('GitLab')
+  })
+
   it('paints last-known status instantly from localStorage before the live refresh resolves', async () => {
     localStorage.clear()
     const cached = {

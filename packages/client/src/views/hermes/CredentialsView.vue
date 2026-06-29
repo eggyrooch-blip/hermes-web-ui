@@ -55,7 +55,7 @@ const requestedProfile = computed(() => {
   return props.preferActiveProfile ? activeProfile : routeProfile.value || activeProfile
 })
 let profileWatchReady = false
-const internalCredentialIds = new Set(['lark-cli', 'feishu-project', 'keep-record', 'kep-cli-online', 'kep-cli-pre'])
+const internalCredentialIds = new Set(['lark-cli', 'feishu-project', 'keep-record', 'kep-cli-online', 'kep-cli-pre', 'kep-cli', 'keep-cli'])
 const credentialGroups = computed(() => {
   const internal = credentials.value.filter(entry => internalCredentialIds.has(entry.id))
   const other = credentials.value.filter(entry => !internalCredentialIds.has(entry.id))
