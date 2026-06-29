@@ -937,6 +937,62 @@ describe('skill credential status', () => {
     })
   })
 
+  it('keeps mixed kep-cli online and pre required_by on their own cards', async () => {
+    const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-kep-mixed-env-'))
+    roots.push(profileDir)
+    mkdirSync(join(profileDir, 'skills', 'Keep', 'kep-hades-cli'), { recursive: true })
+    mkdirSync(join(profileDir, 'skills', 'Keep', 'kep-trevi-delivery-orchestrate'), { recursive: true })
+    mkdirSync(join(profileDir, 'home'), { recursive: true })
+    writeFileSync(join(profileDir, 'skills', 'Keep', 'kep-hades-cli', 'SKILL.md'), [
+      '---',
+      'name: kep-hades-cli',
+      'metadata:',
+      '  hermes:',
+      '    tags: [kep-cli, hades]',
+      '---',
+      '<local-home>/.hermes/bin/kep-auth --profile "$KEP_PROFILE" --env online status',
+    ].join('\n'), 'utf-8')
+    writeFileSync(join(profileDir, 'skills', 'Keep', 'kep-trevi-delivery-orchestrate', 'SKILL.md'), [
+      '---',
+      'name: kep-trevi-delivery-orchestrate',
+      'metadata:',
+      '  hermes:',
+      '    tags: [kep-cli, trevi]',
+      '---',
+      '<local-home>/.hermes/bin/kep-auth --profile "$KEP_PROFILE" --env pre status',
+    ].join('\n'), 'utf-8')
+    const kepAuth = join(profileDir, 'kep-auth')
+    writeFileSync(kepAuth, [
+      '#!/bin/sh',
+      'if [ "$4" = "pre" ]; then',
+      '  echo "env: pre"',
+      '  echo "state: valid"',
+      '  echo "operator: pre_user"',
+      '  exit 0',
+      'fi',
+      'echo "env: online"',
+      'echo "state: valid"',
+      'echo "operator: online_user"',
+    ].join('\n'), 'utf-8')
+    chmodSync(kepAuth, 0o755)
+    process.env.HERMES_KEP_AUTH_BIN = kepAuth
+
+    const result = await listSkillCredentialStatuses({
+      profileName: 'feishu_user_a',
+      profileDir,
+    })
+
+    expect(result.credentials.find(item => item.id === 'kep-cli-online')).toMatchObject({
+      status: 'authenticated',
+      required_by: ['kep-hades-cli'],
+    })
+    expect(result.credentials.find(item => item.id === 'kep-cli-pre')).toMatchObject({
+      status: 'authenticated',
+      required_by: ['kep-trevi-delivery-orchestrate'],
+    })
+  })
+
   it('starts kep-cli OAuth login from WebUI and returns the browser authorization URL', async () => {
     const { startKepCliAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
     const profileDir = makeProfile()

@@ -141,11 +141,11 @@ export async function listSkillCredentialStatuses(options: ListSkillCredentialOp
   const profileDir = options.profileDir
   const skills = scanProfileSkills(profileDir)
   const requiredBy = credentialRequirementsById(skills)
-  const kepTargetEnv = kepCliTargetEnv(skills)
+  const kepRequiredBy = kepCliRequirementsByEnv(skills)
   const [feishuProject, kepCliOnline, kepCliPre] = await Promise.all([
     feishuProjectStatus(profileDir, profileName, requiredBy.get(FEISHU_PROJECT_CREDENTIAL_ID)),
-    kepCliStatus(profileDir, profileName, skills, kepTargetEnv === 'online' ? requiredBy.get(KEP_CLI_CREDENTIAL_ID) : undefined, 'online'),
-    kepCliStatus(profileDir, profileName, skills, kepTargetEnv === 'pre' ? requiredBy.get(KEP_CLI_CREDENTIAL_ID) : undefined, 'pre'),
+    kepCliStatus(profileDir, profileName, skills, kepRequiredBy.online, 'online'),
+    kepCliStatus(profileDir, profileName, skills, kepRequiredBy.pre, 'pre'),
   ])
   return {
     profile_name: profileName,
@@ -232,6 +232,20 @@ function credentialRequirementsById(skills: ProfileSkill[]): Map<string, string[
   }
   for (const list of result.values()) list.sort((a, b) => a.localeCompare(b))
   return result
+}
+
+function kepCliRequirementsByEnv(skills: ProfileSkill[]): Record<'online' | 'pre', string[] | undefined> {
+  const result: Record<'online' | 'pre', string[]> = { online: [], pre: [] }
+  for (const skill of skills) {
+    if (!detectSkillCredentialRequirements(skill).includes(KEP_CLI_CREDENTIAL_ID)) continue
+    const envName = kepCliEnvForSkill(skill)
+    if (!result[envName].includes(skill.name)) result[envName].push(skill.name)
+  }
+  for (const envName of ['online', 'pre'] as const) result[envName].sort((a, b) => a.localeCompare(b))
+  return {
+    online: result.online.length ? result.online : undefined,
+    pre: result.pre.length ? result.pre : undefined,
+  }
 }
 
 export async function getSkillCredentialStartAction(options: SkillCredentialStartOptions): Promise<{ id: string; action: SkillCredentialAction }> {
@@ -1117,16 +1131,9 @@ function isKepCliCredentialId(id: string): boolean {
   return kepCliEnvFromId(id) !== undefined
 }
 
-function kepCliTargetEnv(skills: ProfileSkill[]): 'online' | 'pre' {
-  for (const skill of skills) {
-    const text = skill.text.toLowerCase()
-    const isKepSkill = skill.name === 'kep-hades-cli' ||
-      skill.tags.includes('kep-cli') ||
-      text.includes('kep-auth')
-    if (!isKepSkill) continue
-    if (/(^|\s)--env\s+pre(\s|$)/.test(text) || /env_default:\s*pre/.test(text)) return 'pre'
-  }
-  return 'online'
+function kepCliEnvForSkill(skill: ProfileSkill): 'online' | 'pre' {
+  const text = skill.text.toLowerCase()
+  return /(^|\s)--env\s+pre(\s|$)/.test(text) || /env_default:\s*pre/.test(text) ? 'pre' : 'online'
 }
 
 function findGitlabSkill(skills: ProfileSkill[]): ProfileSkill | undefined {
