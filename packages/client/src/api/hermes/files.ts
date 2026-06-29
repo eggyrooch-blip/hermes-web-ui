@@ -105,3 +105,14 @@ export function getFileDownloadUrl(relativePath: string, fileName?: string): str
   if (token) params.set('token', token)
   return `${base}/api/hermes/download?${params.toString()}`
 }
+
+export function getFilePreviewUrl(relativePath: string, fileName?: string): string {
+  const base = getBaseUrlValue()
+  const params = new URLSearchParams({ path: relativePath })
+  if (fileName) params.set('name', fileName)
+  const profileName = getActiveProfileName()
+  if (profileName) params.set('profile', profileName)
+  const token = getApiKey()
+  if (token) params.set('token', token)
+  return `${base}/api/hermes/preview?${params.toString()}`
+}

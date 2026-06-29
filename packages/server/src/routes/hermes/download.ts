@@ -71,6 +71,18 @@ function getMimeType(fileName: string): string {
   return MIME_MAP[ext] || 'application/octet-stream'
 }
 
+const statusMap: Record<string, number> = {
+  missing_path: 400,
+  invalid_path: 400,
+  not_found: 404,
+  ENOENT: 404,
+  permission_denied: 403,
+  file_too_large: 413,
+  unsupported_backend: 501,
+  backend_error: 502,
+  backend_timeout: 504,
+}
+
 /**
  * Chat-plane multi-tenant isolation: relative paths that point at a profile's
  * runtime config or materialized credentials must never be downloadable, even
@@ -145,6 +157,49 @@ async function getDownloadTarget(ctx: Context, filePath: string): Promise<{
   }
 }
 
+async function resolveAndReadHermesFile(
+  ctx: Context,
+  filePath: string,
+  fileName?: string,
+): Promise<{ data: Buffer, name: string, mime: string }> {
+  const relative = !isAbsolute(filePath)
+  if (relative && isChatPlaneRequest(ctx) && isChatPlaneSensitiveRelative(filePath)) {
+    throw Object.assign(
+      new Error('Cannot download sensitive file'),
+      { code: 'permission_denied' },
+    )
+  }
+  if (relative && isSensitivePath(filePath)) {
+    throw Object.assign(
+      new Error('Cannot download sensitive file'),
+      { code: 'permission_denied' },
+    )
+  }
+
+  const target = await getDownloadTarget(ctx, filePath)
+
+  let data: Buffer
+  if (target.useLocalUploadProvider || target.forceLocalRoot) {
+    data = await localProvider.readFile(target.validPath)
+  } else {
+    const provider = await createFileProvider(legacyProfile(ctx))
+    data = await provider.readFile(target.validPath)
+  }
+
+  const name = fileName || basename(target.validPath)
+  return {
+    data,
+    name,
+    mime: getMimeType(name),
+  }
+}
+
+function applyDownloadRouteError(ctx: Context, err: any): void {
+  const code = err.code || 'unknown'
+  ctx.status = statusMap[code] || 500
+  ctx.body = { error: err.message, code }
+}
+
 downloadRoutes.get('/api/hermes/download', async (ctx) => {
   const filePath = ctx.query.path as string | undefined
   const fileName = ctx.query.name as string | undefined
@@ -155,61 +210,38 @@ downloadRoutes.get('/api/hermes/download', async (ctx) => {
     return
   }
 
-  // Block sensitive relative paths (profile config / materialized credentials)
-  // before any resolution. Absolute paths skip this (chat plane confines them to
-  // the upload dir below; admin plane validates them directly).
-  const relative = !isAbsolute(filePath)
-  if (relative && isChatPlaneRequest(ctx) && isChatPlaneSensitiveRelative(filePath)) {
-    ctx.status = 403
-    ctx.body = { error: 'Cannot download sensitive file', code: 'permission_denied' }
-    return
-  }
-  if (relative && isSensitivePath(filePath)) {
-    ctx.status = 403
-    ctx.body = { error: 'Cannot download sensitive file', code: 'permission_denied' }
-    return
-  }
-
   try {
-    const target = await getDownloadTarget(ctx, filePath)
-
-    // Choose provider: always use local for upload directory files
-    let data: Buffer
-    if (target.useLocalUploadProvider) {
-      data = await localProvider.readFile(target.validPath)
-    } else if (target.forceLocalRoot) {
-      // Chat-plane workspace read: the resolved path is already confined to the
-      // bound profile's workspace; the local provider reads it as an absolute path.
-      data = await localProvider.readFile(target.validPath)
-    } else {
-      const provider = await createFileProvider(legacyProfile(ctx))
-      data = await provider.readFile(target.validPath)
-    }
-
-    // Determine filename and MIME type
-    const name = fileName || basename(target.validPath)
-    const mime = getMimeType(name)
-
-    // Set response headers
+    const { data, name, mime } = await resolveAndReadHermesFile(ctx, filePath, fileName)
     ctx.set('Content-Type', mime)
     ctx.set('Content-Disposition', `attachment; filename="${encodeURIComponent(name)}"; filename*=UTF-8''${encodeURIComponent(name)}`)
     ctx.set('Content-Length', String(data.length))
     ctx.set('Cache-Control', 'no-cache')
     ctx.body = data
   } catch (err: any) {
-    const code = err.code || 'unknown'
-    const statusMap: Record<string, number> = {
-      missing_path: 400,
-      invalid_path: 400,
-      not_found: 404,
-      ENOENT: 404,
-      permission_denied: 403,
-      file_too_large: 413,
-      unsupported_backend: 501,
-      backend_error: 502,
-      backend_timeout: 504,
-    }
-    ctx.status = statusMap[code] || 500
-    ctx.body = { error: err.message, code }
+    applyDownloadRouteError(ctx, err)
+  }
+})
+
+downloadRoutes.get('/api/hermes/preview', async (ctx) => {
+  const filePath = ctx.query.path as string | undefined
+  const fileName = ctx.query.name as string | undefined
+
+  if (!filePath) {
+    ctx.status = 400
+    ctx.body = { error: 'Missing path parameter', code: 'missing_path' }
+    return
+  }
+
+  try {
+    const { data, mime } = await resolveAndReadHermesFile(ctx, filePath, fileName)
+    ctx.set('Content-Type', mime)
+    ctx.set('Content-Disposition', 'inline')
+    ctx.set('Content-Length', String(data.length))
+    ctx.set('X-Frame-Options', 'SAMEORIGIN')
+    ctx.set('Content-Security-Policy', "frame-ancestors 'self'")
+    ctx.set('Cache-Control', 'no-cache')
+    ctx.body = data
+  } catch (err: any) {
+    applyDownloadRouteError(ctx, err)
   }
 })

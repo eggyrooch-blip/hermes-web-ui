@@ -27,13 +27,41 @@ vi.mock('@/api/hermes/download', () => ({
 }))
 
 const previewByDisplayPath = vi.fn()
+const requestBrowserArtifact = vi.fn()
 vi.mock('@/stores/hermes/files', () => ({
-  useFilesStore: () => ({ previewByDisplayPath }),
+  isHtmlFile: (name: string) => /\.html?$/i.test(name),
+  useFilesStore: () => ({ previewByDisplayPath, requestBrowserArtifact }),
 }))
 
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
 
 describe('MarkdownRenderer workspace artifact file card', () => {
+  it('routes a workspace HTML card click to requestBrowserArtifact', async () => {
+    previewByDisplayPath.mockClear()
+    requestBrowserArtifact.mockClear()
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: '[report.html](/workspace/Downloads/report.html)' },
+    })
+
+    await wrapper.find('.markdown-file-card').trigger('click')
+
+    expect(requestBrowserArtifact).toHaveBeenCalledWith('report.html', '/workspace/Downloads/report.html')
+    expect(previewByDisplayPath).not.toHaveBeenCalled()
+  })
+
+  it('keeps non-HTML workspace cards on the file preview path', async () => {
+    previewByDisplayPath.mockClear()
+    requestBrowserArtifact.mockClear()
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: '[notes.md](/workspace/Downloads/notes.md)' },
+    })
+
+    await wrapper.find('.markdown-file-card').trigger('click')
+
+    expect(previewByDisplayPath).toHaveBeenCalledWith('/workspace/Downloads/notes.md', 'notes.md')
+    expect(requestBrowserArtifact).not.toHaveBeenCalled()
+  })
+
   it('renders a /workspace/ markdown link as a clickable file card', () => {
     const wrapper = mount(MarkdownRenderer, {
       props: { content: '文件已生成:\n\n[report.html](/workspace/Downloads/report.html)' },
@@ -65,12 +93,4 @@ describe('MarkdownRenderer workspace artifact file card', () => {
     expect(wrapper.find('.markdown-file-card').exists()).toBe(false)
   })
 
-  it('routes a workspace HTML card click to previewByDisplayPath (panel preview, not download)', async () => {
-    previewByDisplayPath.mockClear()
-    const wrapper = mount(MarkdownRenderer, {
-      props: { content: '[report.html](/workspace/Downloads/report.html)' },
-    })
-    await wrapper.find('.markdown-file-card').trigger('click')
-    expect(previewByDisplayPath).toHaveBeenCalledWith('/workspace/Downloads/report.html', 'report.html')
-  })
 })

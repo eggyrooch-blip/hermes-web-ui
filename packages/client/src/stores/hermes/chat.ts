@@ -686,6 +686,39 @@ export const useChatStore = defineStore('chat', () => {
   const activeSession = ref<Session | null>(null)
   const messages = computed<Message[]>(() => activeSession.value?.messages || [])
 
+  // Produced artifacts of the active session, derived from assistant `MEDIA:`
+  // directive lines that point inside the profile workspace. Mirrors
+  // MarkdownRenderer.preprocessMediaDirectives: the workspace-relative path is
+  // re-encoded per segment (so it round-trips through the download/preview URL),
+  // while `name` keeps the decoded basename for display. First-seen order,
+  // deduped by path. Pure/client-only — no fetch.
+  const sessionArtifacts = computed<{ name: string, path: string }[]>(() => {
+    const out: { name: string, path: string }[] = []
+    const seen = new Set<string>()
+    const marker = '/workspace/'
+    const mediaLine = /(^|\n)[ \t]*MEDIA:([^\r\n]+)/g
+    for (const message of activeSession.value?.messages || []) {
+      if (message.role !== 'assistant') continue
+      const content = message.content
+      if (!content || !content.includes('MEDIA:')) continue
+      mediaLine.lastIndex = 0
+      let match: RegExpExecArray | null
+      while ((match = mediaLine.exec(content)) !== null) {
+        const target = match[2].trim()
+        const idx = target.indexOf(marker)
+        if (idx === -1) continue
+        const rel = target.slice(idx + marker.length).replace(/^\/+/, '')
+        if (!rel) continue
+        const name = rel.split('/').filter(Boolean).pop() || rel
+        const path = marker + rel.split('/').map(encodeURIComponent).join('/')
+        if (seen.has(path)) continue
+        seen.add(path)
+        out.push({ name, path })
+      }
+    }
+    return out
+  })
+
   // Active expert overlay (专家广场). Selected from the composer's expert slot;
   // when set, the run submission carries `expert_id` so the multitenancy layer
   // injects the expert persona overlay for that run only. Persisted to
@@ -3548,6 +3581,7 @@ export const useChatStore = defineStore('chat', () => {
     setActiveExpert,
     focusMessageId,
     messages,
+    sessionArtifacts,
     isStreaming,
     isRunActive,
     isSessionLive,

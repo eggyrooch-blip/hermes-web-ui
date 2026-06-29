@@ -18,7 +18,7 @@ import {
   SUPPORT_PREVIEW_FILE_TYPES,
 } from './mermaidRenderer'
 import { downloadFile, getDownloadUrl, fetchFileText } from '@/api/hermes/download'
-import { useFilesStore } from '@/stores/hermes/files'
+import { useFilesStore, isHtmlFile } from '@/stores/hermes/files'
 
 const LATEX_FENCE_LANGS = new Set(['latex', 'tex', 'math', 'katex'])
 const PREVIEW_AREA_WIDTH = 'min(800px, 100vw)'
@@ -447,7 +447,15 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
       const ext = fileName?.split('.').pop()?.toLowerCase()
       if (SUPPORT_PREVIEW_FILE_TYPES.includes(ext || '')) {
         if (path.startsWith('/workspace/')) {
-          await useFilesStore().previewByDisplayPath(path, fileName || undefined)
+          // Chat-produced HTML artifacts open in the embedded browser (real
+          // /api/hermes/preview URL + address bar). Other previewable workspace
+          // files keep the in-panel srcdoc/file preview.
+          if (isHtmlFile(fileName || '')) {
+            const artifactName = fileName || decodeURIComponent(path.split('/').pop() || '')
+            useFilesStore().requestBrowserArtifact(artifactName, path)
+          } else {
+            await useFilesStore().previewByDisplayPath(path, fileName || undefined)
+          }
         } else {
           previewTextFile(path, fileName || '')
         }

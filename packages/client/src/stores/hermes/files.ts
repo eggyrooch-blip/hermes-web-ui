@@ -109,7 +109,7 @@ export function isPreviewableFile(name: string): boolean {
   return isImageFile(name) || isMarkdownFile(name) || isTextFile(name)
 }
 
-function decodeDisplayPathSegments(p: string): string {
+export function decodeDisplayPathSegments(p: string): string {
   return p
     .split('/')
     .map((segment) => {
@@ -152,6 +152,8 @@ export const useFilesStore = defineStore('files', () => {
     language?: string
   } | null>(null)
   const previewPanelRequestedAt = ref(0)
+  const browserArtifactRequest = ref<{ name: string, path: string } | null>(null)
+  const browserArtifactRequestedAt = ref(0)
 
   const pathSegments = computed(() => {
     if (!currentPath.value) return []
@@ -301,6 +303,11 @@ export const useFilesStore = defineStore('files', () => {
     previewPanelRequestedAt.value = previewPanelRequestedAt.value + 1
   }
 
+  function requestBrowserArtifact(name: string, path: string) {
+    browserArtifactRequest.value = { name, path }
+    browserArtifactRequestedAt.value = browserArtifactRequestedAt.value + 1
+  }
+
   function closePreview() { previewFile.value = null }
 
   async function createDir(name: string, targetPath = currentPath.value) {
@@ -367,10 +374,11 @@ export const useFilesStore = defineStore('files', () => {
     currentPath, entries, loading, sortBy, sortOrder,
     editingFile, previewFile,
     previewPanelRequestedAt,
+    browserArtifactRequest, browserArtifactRequestedAt,
     pathSegments, sortedEntries, hasUnsavedChanges,
     fetchEntries, navigateTo, navigateUp,
     openEditor, saveEditor, closeEditor,
-    openPreview, previewByDisplayPath, closePreview,
+    openPreview, previewByDisplayPath, requestBrowserArtifact, closePreview,
     createDir, createFile, deleteEntry, renameEntry, copyEntry,
     uploadFiles, setSort,
   }

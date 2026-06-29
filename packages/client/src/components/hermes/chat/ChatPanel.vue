@@ -38,7 +38,7 @@ import ConversationMonitorPane from "./ConversationMonitorPane.vue";
 import MessageList from "./MessageList.vue";
 import SessionListItem from "./SessionListItem.vue";
 import OutlinePanel from "./OutlinePanel.vue";
-import FilesPanel from "./FilesPanel.vue";
+import DetailPanel from "./DetailPanel.vue";
 import TerminalPanel from "./TerminalPanel.vue";
 import PageSidebarNav from "@/components/layout/PageSidebarNav.vue";
 import SidebarUserCard from "@/components/layout/SidebarUserCard.vue";
@@ -226,6 +226,11 @@ watch(showToolPanel, async (visible) => {
 watch(() => filesStore.previewPanelRequestedAt, () => {
   showToolPanel.value = true;
   activeToolPanel.value = "files";
+});
+// A chat HTML-artifact click requests the embedded browser; open the tool panel
+// so DetailPanel mounts and (via its onMounted) loads the artifact in 浏览器 mode.
+watch(() => filesStore.browserArtifactRequestedAt, () => {
+  showToolPanel.value = true;
 });
 
 const showRenameModal = ref(false);
@@ -1819,31 +1824,8 @@ async function handleSessionModelCustomSubmit() {
               @pointerdown="startToolResize"
             />
             <div class="chat-tool-panel-inner">
-              <div class="chat-tool-tabs" role="tablist">
-                <button
-                  class="chat-tool-tab"
-                  :class="{ active: activeToolPanel === 'files' }"
-                  type="button"
-                  role="tab"
-                  :aria-selected="activeToolPanel === 'files'"
-                  @click="activeToolPanel = 'files'"
-                >
-                  {{ t("drawer.files") }}
-                </button>
-                <button
-                  v-if="false"
-                  class="chat-tool-tab"
-                  :class="{ active: activeToolPanel === 'terminal' }"
-                  type="button"
-                  role="tab"
-                  :aria-selected="activeToolPanel === 'terminal'"
-                  @click="activeToolPanel = 'terminal'"
-                >
-                  {{ t("drawer.terminal") }}
-                </button>
-              </div>
               <div class="chat-tool-content">
-                <FilesPanel v-show="activeToolPanel === 'files'" />
+                <DetailPanel />
                 <TerminalPanel
                   v-show="activeToolPanel === 'terminal'"
                   :visible="showToolPanel && activeToolPanel === 'terminal'"
@@ -2623,38 +2605,6 @@ async function handleSessionModelCustomSubmit() {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-}
-
-.chat-tool-tabs {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  gap: 6px;
-  padding: 8px 10px;
-  border-bottom: 1px solid $border-color;
-}
-
-.chat-tool-tab {
-  height: 30px;
-  padding: 0 12px;
-  border: none;
-  border-radius: $radius-sm;
-  background: transparent;
-  color: $text-secondary;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
-  transition: all $transition-fast;
-
-  &:hover {
-    color: $text-primary;
-    background: rgba(var(--accent-primary-rgb), 0.06);
-  }
-
-  &.active {
-    color: var(--accent-primary);
-    background: rgba(var(--accent-primary-rgb), 0.12);
-  }
 }
 
 .chat-tool-content {
