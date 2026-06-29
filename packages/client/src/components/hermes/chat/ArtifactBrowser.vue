@@ -20,31 +20,34 @@ const cursor = ref(-1)
 
 const current = computed<ArtifactEntry | null>(() => history.value[cursor.value] ?? null)
 const previewUrl = computed<string>(() => current.value?.url ?? '')
+
+// The address bar must NOT show the auth token (it's a bearer credential — a
+// visible/screenshot-able super-admin JWT is a leak). Strip the token query
+// param for display only; the iframe src (previewUrl) keeps it for auth.
+const displayUrl = computed<string>(() => {
+  const url = previewUrl.value
+  if (!url) return ''
+  const [base, query] = url.split('?')
+  if (!query) return url
+  const kept = query.split('&').filter(kv => !/^token=/i.test(kv)).join('&')
+  return kept ? `${base}?${kept}` : base
+})
 const canGoBack = computed<boolean>(() => cursor.value > 0)
 const canGoForward = computed<boolean>(() => cursor.value < history.value.length - 1)
 
-async function resolveArtifactUrl(name: string, displayPath: string): Promise<string> {
-  // The display path segments are encodeURIComponent-encoded; decode before
-  // handing to getFilePreviewUrl (which re-encodes via URLSearchParams).
-  // Two server planes root the files API differently (mirrors files store
-  // previewByDisplayPath): chat-plane (Feishu) roots at the workspace, so the
-  // workspace-relative form works; admin plane roots at the profile home, so it
-  // needs the `workspace/` prefix. Try the chat-plane form, fall back to the
-  // admin form if it 404s — so the embedded browser works on either plane.
-  const rel = decodeDisplayPathSegments(displayPath.replace(/^\/workspace\//, ''))
-  const chatPlaneUrl = getFilePreviewUrl(rel, name)
-  try {
-    const res = await fetch(chatPlaneUrl, { method: 'HEAD' })
-    if (res.ok) return chatPlaneUrl
-  } catch {
-    /* fall through to the admin form */
-  }
-  const adminRel = decodeDisplayPathSegments('workspace/' + rel.replace(/^workspace\//, ''))
-  return getFilePreviewUrl(adminRel, name)
+function artifactToUrl(name: string, displayPath: string): string {
+  // Display path is `/workspace/<rel>`, encodeURIComponent-encoded per segment;
+  // decode before getFilePreviewUrl re-encodes. Keep the `workspace/` prefix and
+  // send a single uniform form: the server normalizes it — chat plane (Feishu)
+  // strips one leading `workspace/` (it already roots at the workspace dir),
+  // admin plane resolves `workspace/<rel>` against profile-home/workspace. So one
+  // path form works on both; no client-side plane probing needed.
+  const rel = decodeDisplayPathSegments(displayPath.replace(/^\//, ''))
+  return getFilePreviewUrl(rel, name)
 }
 
-async function load(artifact: { name: string, path: string }): Promise<void> {
-  const url = await resolveArtifactUrl(artifact.name, artifact.path)
+function load(artifact: { name: string, path: string }): void {
+  const url = artifactToUrl(artifact.name, artifact.path)
   // Navigating to a new artifact truncates any forward history.
   if (cursor.value < history.value.length - 1) {
     history.value = history.value.slice(0, cursor.value + 1)
@@ -94,8 +97,8 @@ defineExpose({ load })
         class="artifact-browser-address"
         type="text"
         readonly
-        :value="previewUrl"
-        :title="previewUrl"
+        :value="displayUrl"
+        :title="displayUrl"
       >
     </div>
     <div class="artifact-browser-viewport">

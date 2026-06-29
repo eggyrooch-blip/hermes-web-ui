@@ -142,10 +142,16 @@ async function getDownloadTarget(ctx: Context, filePath: string): Promise<{
   // unowned caller-supplied selectors via ownerOwnsProfile(openid, profile).
   const workspaceDir = join(getRequestProfileDir(ctx), 'workspace')
   await mkdir(workspaceDir, { recursive: true })
-  const normalized = normalize(filePath).replace(/\\/g, '/')
+  let normalized = normalize(filePath).replace(/\\/g, '/')
   if (normalized.startsWith('..') || normalized.includes('/../') || normalized.startsWith('/')) {
     throw Object.assign(new Error('Invalid file path'), { code: 'invalid_path' })
   }
+  // Artifact display paths (from MEDIA: lines / the embedded browser) carry a
+  // `workspace/` prefix, but the chat plane already roots at the workspace dir —
+  // so a literal `workspace/foo.html` would resolve to workspace/workspace/foo.html
+  // (404). Strip one leading `workspace/` so the display path and the API path
+  // line up. Normal relative downloads (no prefix) are unaffected.
+  normalized = normalized.replace(/^workspace\//, '')
   const resolved = join(workspaceDir, normalized)
   if (!isPathWithin(resolved, workspaceDir)) {
     throw Object.assign(new Error('Path traversal detected'), { code: 'invalid_path' })

@@ -96,6 +96,19 @@ describe('preview route', () => {
     expect(ctx.body).toEqual(Buffer.from('<html><body>preview</body></html>'))
   })
 
+  it('chat-plane strips a leading workspace/ so artifact display paths resolve under the workspace root (not workspace/workspace)', async () => {
+    isChatPlaneRequestMock.mockReturnValue(true)
+    provider.readFile.mockResolvedValue(Buffer.from('<html>ostrich</html>'))
+    const ctx = createCtx({ path: 'workspace/ostrich-bike.html', name: 'ostrich-bike.html' })
+
+    await runPreviewRoute(ctx)
+
+    // Must read <profileWorkspace>/ostrich-bike.html, NOT <profileWorkspace>/workspace/ostrich-bike.html
+    expect(provider.readFile).toHaveBeenCalledWith('/tmp/hermes-preview-profile/workspace/ostrich-bike.html')
+    expect(ctx.status).toBe(200)
+    expect(ctx.headers['Content-Disposition']).toBe('inline')
+  })
+
   it('rejects chat-plane sensitive relative paths', async () => {
     isChatPlaneRequestMock.mockReturnValue(true)
     const ctx = createCtx({ path: 'config.yaml' })
