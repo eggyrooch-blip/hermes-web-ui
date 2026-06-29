@@ -97,6 +97,23 @@ describe('chat plane access control', () => {
     expect(fileCtx.status).toBe(200)
   })
 
+  it('allows inline artifact preview alongside download in chat plane', async () => {
+    // Regression: the embedded browser / 详情面板 GETs /api/hermes/preview. It
+    // shares download's workspace-confined resolution, so it MUST be allowed in
+    // chat plane — otherwise feishu users get 403 on every artifact preview.
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const previewCtx = mockCtx('/api/hermes/preview', 'GET')
+    const downloadCtx = mockCtx('/api/hermes/download', 'GET')
+    const next = vi.fn(async () => {})
+
+    await enforcePlaneAccess(previewCtx, next)
+    await enforcePlaneAccess(downloadCtx, next)
+
+    expect(next).toHaveBeenCalledTimes(2)
+    expect(previewCtx.status).toBe(200)
+    expect(downloadCtx.status).toBe(200)
+  })
+
   it('allows only the profile-local skill file editor write in chat plane', async () => {
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
     const editCtx = mockCtx('/api/hermes/skills/file', 'PUT')

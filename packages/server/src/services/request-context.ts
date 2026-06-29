@@ -276,6 +276,10 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   if (path === '/api/hermes/mcp/servers' && method === 'GET') return false
   if (path === '/api/hermes/memory') return method !== 'GET' && method !== 'POST'
   if (path.startsWith('/api/hermes/download')) return false
+  // Inline preview of workspace artifacts (embedded browser / 详情面板). Shares
+  // resolveAndReadHermesFile with download → identical chat-plane confinement
+  // (workspace-rooted, sensitive-path blocklist), so it's safe to allow here.
+  if (path.startsWith('/api/hermes/preview')) return false
   if (path.startsWith('/api/hermes/v1/') || path.startsWith('/v1/')) return false
   if (path === '/api/hermes/available-models') return false
 
