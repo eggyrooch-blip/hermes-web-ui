@@ -25,7 +25,11 @@ import type {
   SkillCredentialState,
 } from './skill-credentials'
 
-const DEFAULT_TIMEOUT_MS = 8000
+// Broker /connectors does live per-connector CLI checks; a cold (uncached) read
+// measures ~11s on prod (the slowest single reader). 8s aborted every cold call,
+// collapsing the whole panel to the fail-safe ("检测失败"). 20s clears the cold
+// read; the broker caches the result, so warm reads stay ~instant.
+const DEFAULT_TIMEOUT_MS = 20000
 
 // Canonical first-party connector ids, in display order. Mirrors the broker's
 // builtin.CONNECTOR_ORDER — used only to build the fail-safe error result when
