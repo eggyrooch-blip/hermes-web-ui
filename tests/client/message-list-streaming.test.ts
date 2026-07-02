@@ -5,6 +5,7 @@ import { mount } from '@vue/test-utils'
 const chatStoreMock = vi.hoisted(() => ({
   messages: [] as Array<Record<string, any>>,
   activeSessionId: 'session-1',
+  activeSession: null as Record<string, any> | null,
   queuedUserMessages: new Map<string, any[]>(),
   focusMessageId: null as string | null,
   isRunActive: false,
@@ -46,6 +47,7 @@ describe('MessageList streaming display', () => {
   beforeEach(() => {
     chatStoreMock.messages = []
     chatStoreMock.activeSessionId = 'session-1'
+    chatStoreMock.activeSession = null
     chatStoreMock.queuedUserMessages = new Map()
     chatStoreMock.focusMessageId = null
     chatStoreMock.isRunActive = false
@@ -83,6 +85,22 @@ describe('MessageList streaming display', () => {
 
     const avatar = wrapper.get('img.thinking-avatar')
     expect(avatar.attributes('src')).toBe(expertAvatar)
+  })
+
+  it('does not use the selected expert avatar for a live coding-agent thinking indicator', () => {
+    const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
+    chatStoreMock.isRunActive = true
+    chatStoreMock.activeExpertAvatar = expertAvatar
+    chatStoreMock.activeSession = { id: 'session-1', source: 'coding_agent', agent: 'codex', codingAgentId: 'codex' }
+    chatStoreMock.messages = [
+      { id: 'u1', role: 'user', content: 'hello', timestamp: Date.now() },
+    ]
+
+    const wrapper = mount(MessageList)
+
+    const avatar = wrapper.get('img.thinking-avatar')
+    expect(avatar.attributes('src')).not.toBe(expertAvatar)
+    expect(avatar.attributes('src')).toContain('thinking.gif')
   })
 
   it('shows current tool calls in the streaming tool panel while the run is active', () => {
