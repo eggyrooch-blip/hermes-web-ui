@@ -1708,6 +1708,19 @@ export class BrokerRunController {
         : { messages: [], isWorking: false, events: [], queue: [] }
       this.setSessionState(sessionId, profile, state)
     }
+    // Concurrency guard: the failed run that produced the re-auth card has
+    // already completed (it emitted done), so isWorking is normally false here.
+    // If another run is genuinely in-flight on this session, do NOT clobber its
+    // shared SessionState (abortController / responseRun / isWorking) — bail and
+    // let the user retry once the session is idle.
+    if (state.isWorking) {
+      this.nsp.to(this.sessionRoom(sessionId, profile)).emit('run.failed', {
+        event: 'run.failed',
+        session_id: sessionId,
+        error: 'A run is already in progress; retry re-authorization when it finishes.',
+      })
+      return
+    }
     state.isWorking = true
     state.events = []
     state.profile = profile

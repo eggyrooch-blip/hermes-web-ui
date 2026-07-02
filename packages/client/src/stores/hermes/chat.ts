@@ -2291,6 +2291,9 @@ export const useChatStore = defineStore('chat', () => {
               case 'clarify.requested':
                 setPendingClarify({ ...e, session_id: sid })
                 break
+              case 'auth.required':
+                setPendingReauth({ ...e, session_id: sid })
+                break
               case 'clarify.resolved':
                 clearPendingClarify({ ...e, session_id: sid })
                 break
@@ -2618,6 +2621,11 @@ export const useChatStore = defineStore('chat', () => {
 
             case 'clarify.requested': {
               setPendingClarify(evt)
+              break
+            }
+
+            case 'auth.required': {
+              setPendingReauth(evt)
               break
             }
 
@@ -3443,6 +3451,7 @@ export const useChatStore = defineStore('chat', () => {
       onRunQueued: (evt) => handleEvent(evt),
       onClarifyRequested: (evt) => handleEvent(evt),
       onClarifyResolved: (evt) => handleEvent(evt),
+      onAuthRequired: (evt) => handleEvent(evt),
     })
 
     // No need to emit resume here — switchSession already did it.

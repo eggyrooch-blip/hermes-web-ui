@@ -159,6 +159,7 @@ const sessionEventHandlers = new Map<string, {
   onPeerUserMessage?: (event: RunEvent) => void
   onClarifyRequested?: (event: RunEvent) => void
   onClarifyResolved?: (event: RunEvent) => void
+  onAuthRequired?: (event: RunEvent) => void
 }>()
 
 const peerUserMessageHandlers = new Set<(event: RunEvent) => void>()
@@ -489,6 +490,16 @@ function globalClarifyRequestedHandler(event: RunEvent): void {
   }
 }
 
+function globalAuthRequiredHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onAuthRequired) {
+    handlers.onAuthRequired(event)
+  }
+}
+
 function globalClarifyResolvedHandler(event: RunEvent): void {
   const sid = event.session_id
   if (!sid) return
@@ -533,6 +544,7 @@ export function registerSessionHandlers(
     onPeerUserMessage?: (event: RunEvent) => void
     onClarifyRequested?: (event: RunEvent) => void
     onClarifyResolved?: (event: RunEvent) => void
+    onAuthRequired?: (event: RunEvent) => void
   }
 ): () => void {
   sessionEventHandlers.set(sessionId, handlers)
@@ -695,6 +707,7 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
     chatRunSocket.on('approval.resolved', globalApprovalResolvedHandler)
     chatRunSocket.on('run.peer_user_message', globalPeerUserMessageHandler)
     chatRunSocket.on('clarify.requested', globalClarifyRequestedHandler)
+    chatRunSocket.on('auth.required', globalAuthRequiredHandler)
     chatRunSocket.on('clarify.resolved', globalClarifyResolvedHandler)
 
     // Compression events
