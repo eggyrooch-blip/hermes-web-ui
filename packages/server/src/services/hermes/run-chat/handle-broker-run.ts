@@ -722,13 +722,20 @@ function appendBrokerFailureMessage(
 
 export async function handleBrokerRun(
   socket: Socket,
-  data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string; expert_id?: string },
+  data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string; expert_id?: string; replay_run_id?: string },
   profile: string,
   runMarker: string | undefined,
   emit: (event: string, payload: any) => void,
   context: HandleBrokerRunContext,
 ) {
   const { input, session_id, model, provider, instructions, expert_id } = data
+  // Replay mode: re-run the request the broker parked under this run_id after a
+  // credential expiry. We hit the broker's replay endpoint (no request body —
+  // the broker holds the original) and relay its frames back over THIS socket,
+  // reusing the identical SSE→map→emit machinery a normal run uses so the
+  // replayed answer streams into the same chat session.
+  const replayRunId = typeof data.replay_run_id === 'string' ? data.replay_run_id.trim() : ''
+  const isReplay = replayRunId.length > 0
   const brokerUrl = config.runBrokerUrl
   if (!brokerUrl) {
     const queueLen = session_id ? context.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
@@ -745,8 +752,8 @@ export async function handleBrokerRun(
 
   const ownerOpenId = (socket.data?.user?.openid as string | undefined)?.trim()
   const agentId = (socket.data?.agentId as string | undefined)?.trim()
-  const sessionRow = session_id ? getSession(session_id) : null
-  const request = await buildRunBrokerRequest({
+  const sessionRow = (!isReplay && session_id) ? getSession(session_id) : null
+  const request = isReplay ? null : await buildRunBrokerRequest({
     input,
     profile,
     ownerOpenId,
@@ -775,17 +782,23 @@ export async function handleBrokerRun(
   }
 
   try {
-    const res = await fetch(`${brokerUrl}/api/run-broker/runs`, {
-      method: 'POST',
-      headers: buildRunBrokerHeaders({
-        runBrokerKey: config.runBrokerKey,
-        ownerOpenId,
-        agentId,
-        expertId: expert_id,
-      }),
-      body: JSON.stringify(request),
-      signal: abortController.signal,
-    })
+    const res = isReplay
+      ? await fetch(`${brokerUrl}/api/run-broker/credentials/replay/${encodeURIComponent(replayRunId)}`, {
+        method: 'POST',
+        headers: buildRunBrokerHeaders({ runBrokerKey: config.runBrokerKey, ownerOpenId, agentId, expertId: expert_id }),
+        signal: abortController.signal,
+      })
+      : await fetch(`${brokerUrl}/api/run-broker/runs`, {
+        method: 'POST',
+        headers: buildRunBrokerHeaders({
+          runBrokerKey: config.runBrokerKey,
+          ownerOpenId,
+          agentId,
+          expertId: expert_id,
+        }),
+        body: JSON.stringify(request),
+        signal: abortController.signal,
+      })
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       const queueLen = session_id ? context.sessionMap.get(session_id)?.queue?.length ?? 0 : 0

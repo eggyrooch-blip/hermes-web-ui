@@ -872,6 +872,17 @@ export class BrokerRunController {
         })
       }
     })
+
+    // Re-auth loop: after the user re-authorizes an expired connector, replay the
+    // parked request through the SAME socket-run relay so the answer streams back
+    // into this chat session (the broker holds the original request; we do not
+    // resend it from the client).
+    socket.on('credential.replay', async (data: { session_id?: string; run_id?: string }) => {
+      const sessionId = String(data.session_id || '').trim()
+      const runId = String(data.run_id || '').trim()
+      if (!sessionId || !runId) return
+      await this.handleReplay(socket, sessionId, runId, profile)
+    })
   }
   private handleMessage(messages: SessionMessage[], sid: string): any[] {
     let _messages = []
@@ -1667,7 +1678,7 @@ export class BrokerRunController {
 
   private async handleBrokerRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string; expert_id?: string },
+    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string; expert_id?: string; replay_run_id?: string },
     profile: string,
     runMarker: string | undefined,
     emit: (event: string, payload: any) => void,
@@ -1680,6 +1691,34 @@ export class BrokerRunController {
       dequeueNextQueuedRun: (socket, sessionId) => this.dequeueNextQueuedRun(socket, sessionId, profile),
       buildInput: buildResponsesInput,
     })
+  }
+
+  /**
+   * Replay the request the broker parked under `runId` (credential re-auth loop).
+   * Unlike handleRun, no user message is appended — the original request is
+   * already in the transcript — the replayed run just streams its answer back
+   * into the session via the shared broker-run relay.
+   */
+  private async handleReplay(socket: Socket, sessionId: string, runId: string, profile: string) {
+    const runMarker = `resp_run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+    let state = this.getSessionState(sessionId, profile)
+    if (!state) {
+      state = getSession(sessionId)
+        ? await this.loadSessionStateFromDb(sessionId, profile)
+        : { messages: [], isWorking: false, events: [], queue: [] }
+      this.setSessionState(sessionId, profile, state)
+    }
+    state.isWorking = true
+    state.events = []
+    state.profile = profile
+    socket.join(this.sessionRoom(sessionId, profile))
+
+    const emit = (event: string, payload: any) => {
+      this.nsp.to(this.sessionRoom(sessionId, profile)).emit(event, { ...payload, session_id: sessionId })
+    }
+    if (config.webuiRunBroker) {
+      await this.handleBrokerRun(socket, { input: '', session_id: sessionId, replay_run_id: runId }, profile, runMarker, emit)
+    }
   }
 
 

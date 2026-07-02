@@ -81,15 +81,3 @@ export async function completeSkillCredentialAuth(id: string, qrcodeId: string, 
     body: JSON.stringify({ qrcode_id: qrcodeId }),
   })
 }
-
-/**
- * Ask the broker (via the webui proxy) to replay the original request it parked
- * when a connector's credential expired mid-run, keyed by that run's id. Used by
- * the in-chat re-auth card after the user re-authorizes. Server-side replay —
- * the client does not resend the message itself.
- */
-export async function replayCredentialRun(runId: string, profile?: string): Promise<void> {
-  await request(withProfile(`/api/hermes/credentials/replay/${encodeURIComponent(runId)}`, profile), {
-    method: 'POST',
-  })
-}

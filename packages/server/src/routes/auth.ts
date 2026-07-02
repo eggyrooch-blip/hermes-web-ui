@@ -33,6 +33,5 @@ authProtectedRoutes.get('/api/auth/skill-credentials', ctrl.skillCredentialsStat
 authProtectedRoutes.post('/api/auth/skill-credentials/:id/start', ctrl.skillCredentialStart)
 authProtectedRoutes.post('/api/auth/skill-credentials/:id/bind-token', ctrl.skillCredentialBindToken)
 authProtectedRoutes.post('/api/auth/skill-credentials/:id/complete', ctrl.skillCredentialComplete)
-authProtectedRoutes.post('/api/hermes/credentials/replay/:runId', ctrl.credentialReplay)
 authProtectedRoutes.get('/api/auth/locked-ips', ctrl.listLockedIps)
 authProtectedRoutes.delete('/api/auth/locked-ips', ctrl.unlockIpHandler)

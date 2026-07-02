@@ -2,7 +2,6 @@ import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSe
 import { deleteSession as deleteSessionApi, fetchSessionMessagesPage, fetchSessions, setSessionModel, type HermesMessage, type ProviderApiMode, type SessionSummary } from '@/api/hermes/sessions'
 import { getActiveProfileName, getActiveExpertId, setActiveExpertId } from '@/api/client'
 import { getDownloadUrl } from '@/api/hermes/download'
-import { replayCredentialRun } from '@/api/skillCredentials'
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { useAppStore } from './app'
@@ -1857,26 +1856,20 @@ export const useChatStore = defineStore('chat', () => {
 
   /**
    * After the user re-authorizes the connector, ask the broker to replay the
-   * original request (server-side). Sets the card to a retrying state; the
-   * replayed run streams back its own frames, and the card is cleared.
+   * original request over the SAME chat-run socket, so the replayed answer
+   * streams back into this session (the broker holds the original request; the
+   * client never resends it). Emits and clears the card — the streaming answer
+   * arrives as ordinary run frames.
    */
-  async function triggerReauthReplay(sessionId: string): Promise<void> {
+  function triggerReauthReplay(sessionId: string): void {
     const current = pendingReauths.value.get(sessionId)
     if (!current || current.retrying) return
+    const socket = getChatRunSocket(runtimeTransport())
+    if (!socket) return
     pendingReauths.value.set(sessionId, { ...current, retrying: true })
     pendingReauths.value = new Map(pendingReauths.value)
-    try {
-      await replayCredentialRun(current.runId)
-      clearPendingReauth(sessionId)
-    } catch (err) {
-      // Leave the card up (not retrying) so the user can retry authorization.
-      const still = pendingReauths.value.get(sessionId)
-      if (still) {
-        pendingReauths.value.set(sessionId, { ...still, retrying: false })
-        pendingReauths.value = new Map(pendingReauths.value)
-      }
-      throw err
-    }
+    socket.emit('credential.replay', { session_id: sessionId, run_id: current.runId })
+    clearPendingReauth(sessionId)
   }
 
   function clearPendingInteractions(sessionId: string) {
