@@ -84,6 +84,9 @@ export interface Session {
   agentNativeSessionId?: string
   codingAgentId?: 'claude-code' | 'codex'
   codingAgentMode?: 'global' | 'scoped'
+  expertId?: string
+  expertLabel?: string
+  expertAvatar?: string
   messages: Message[]
   createdAt: number
   updatedAt: number
@@ -2018,6 +2021,11 @@ export const useChatStore = defineStore('chat', () => {
         reasoning_effort: sessionSource === 'coding_agent' ? undefined : activeSession.value?.reasoningEffort || undefined,
         // Active expert overlay (专家广场). Coding Agent runs never carry it.
         expert_id: sessionSource === 'coding_agent' ? undefined : (activeExpertId.value || undefined),
+      }
+      if (runPayload.expert_id && activeSession.value) {
+        activeSession.value.expertId = runPayload.expert_id
+        activeSession.value.expertLabel = activeExpertLabel.value || runPayload.expert_id
+        activeSession.value.expertAvatar = activeExpertAvatar.value || undefined
       }
       if (shouldSendInitialSessionConfig && activeSession.value) {
         activeSession.value.messageCount = Math.max(activeSession.value.messageCount || 0, 1)
