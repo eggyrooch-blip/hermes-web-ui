@@ -5,6 +5,8 @@
 
 import { addMessage } from '../../../db/hermes/session-store'
 import { logger } from '../../logger'
+import { getProfileDir } from '../hermes-profile'
+import { rewriteAssistantMediaDirectives } from '../media-directives'
 import { summarizeToolArguments, responseFunctionCallToToolCall } from './response-utils'
 import type { SessionState, ResponseRunState } from './types'
 
@@ -345,6 +347,16 @@ export function flushResponseRunToDb(state: SessionState, sessionId: string) {
   for (const msg of state.messages) {
     if (msg.runMarker !== run.runMarker) continue
     if (msg.role === 'user') continue
+    // Mirror broker-controller.flushResponseRunToDb: publish MEDIA: artifacts
+    // (copy into workspace/Downloads and rewrite to a `/workspace/...` link)
+    // BEFORE persisting. Without this, the DB keeps the raw absolute-path
+    // MEDIA line and reloaded history renders no downloadable file card.
+    if (msg.role === 'assistant' && state.profile && msg.content) {
+      msg.content = rewriteAssistantMediaDirectives({
+        content: msg.content,
+        profileDir: getProfileDir(state.profile),
+      })
+    }
     addMessage({
       session_id: sessionId,
       role: msg.role,

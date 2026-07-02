@@ -168,6 +168,17 @@ async function resolveAndReadHermesFile(
   filePath: string,
   fileName?: string,
 ): Promise<{ data: Buffer, name: string, mime: string }> {
+  // Chat-plane display paths (MEDIA rewrites / file cards / embedded browser)
+  // arrive as `/workspace/<rel>`. Normalize to a workspace-relative path HERE,
+  // before the sensitive-path checks below, so the blocklist and traversal
+  // guards all run against the stripped form — stripping inside
+  // getDownloadTarget instead would let `/workspace/credentials/token` bypass
+  // isChatPlaneSensitiveRelative. Exact-prefix match only: `/workspace`,
+  // `/workspace/` (empty rest) and `/workspace-not/x` are left untouched.
+  if (isChatPlaneRequest(ctx) && filePath.startsWith('/workspace/')) {
+    const rel = filePath.slice('/workspace/'.length)
+    if (rel) filePath = rel
+  }
   const relative = !isAbsolute(filePath)
   if (relative && isChatPlaneRequest(ctx) && isChatPlaneSensitiveRelative(filePath)) {
     throw Object.assign(
