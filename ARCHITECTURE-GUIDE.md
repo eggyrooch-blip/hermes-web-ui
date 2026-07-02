@@ -15,8 +15,8 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
-> [!info] 2026-07-02 worktree — active expert avatar also drives live chat assistant avatars
-> `expert-chat-avatar` extends the managed expert avatar UI from the composer
+> [!success] 2026-07-02 main/production — active expert avatar also drives live chat assistant avatars
+> `expert-chat-avatar` is published in `main@ac45a1a`. It extends the managed expert avatar UI from the composer
 > chip into the live chat transcript. `ChatInput` stores the selected expert's
 > display label/avatar in the chat store after loading `/api/hermes/experts`;
 > `MessageItem` and `MessageList` may use that avatar only for the active,
@@ -24,10 +24,11 @@ related:
 > `session` prop and Codex/Claude coding-agent sessions keep their existing
 > Hermes/Codex/Claude fallback logos.
 >
-> Verification for this worktree: focused Vitest for MessageItem,
-> MessageList, and active-expert profile switching; Playwright e2e selecting
-> a resource-delivery expert, sending a message, asserting `expert_id`, and
-> capturing the live Thinking avatar; `npm run build` passed.
+> Verification: focused Vitest for MessageItem, MessageList, and
+> active-expert profile switching; Playwright e2e selecting a
+> resource-delivery expert, sending a message, asserting `expert_id`, and
+> capturing the live Thinking avatar; production focused Vitest/build passed,
+> WebUI health passed, and the served bundle contains `activeExpertAvatar`.
 
 > [!info] 2026-06-29 local worktree — expert plugin avatars via BFF proxy, production not published
 > `resource-expert-avatar-chat` adds the WebUI half of managed expert avatars.
