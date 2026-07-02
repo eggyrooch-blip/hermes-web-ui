@@ -1295,6 +1295,8 @@ export class BrokerRunController {
       provider?: string
       instructions?: string
       expert_id?: string
+      expert_label?: string
+      expert_avatar?: string
       queue_id?: string
     },
     profile: string,
@@ -1365,6 +1367,8 @@ export class BrokerRunController {
         provider: data.provider,
         instructions: data.instructions,
         expert_id: data.expert_id,
+        expert_label: data.expert_label,
+        expert_avatar: data.expert_avatar,
       }, profile)
     }
     return true

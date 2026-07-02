@@ -1,15 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const getSessionDetailMock = vi.hoisted(() => vi.fn())
+const getSessionMock = vi.hoisted(() => vi.fn())
+const addMessageMock = vi.hoisted(() => vi.fn())
 const getSessionDetailFromDbMock = vi.hoisted(() => vi.fn())
 const getSessionDetailFromDbWithProfileMock = vi.hoisted(() => vi.fn())
 const getCompressionSnapshotMock = vi.hoisted(() => vi.fn())
+const parseBrokerSessionCommandMock = vi.hoisted(() => vi.fn(() => null))
+const runBrokerSessionCommandMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
-  getSession: vi.fn(),
+  getSession: getSessionMock,
   getSessionDetail: getSessionDetailMock,
   createSession: vi.fn(),
-  addMessage: vi.fn(),
+  addMessage: addMessageMock,
   updateSessionStats: vi.fn(),
 }))
 
@@ -78,10 +82,10 @@ vi.mock('../../packages/server/src/db/hermes/users-store', () => ({
 
 vi.mock('../../packages/server/src/services/hermes/run-chat/handle-broker-run', () => ({
   handleBrokerRun: vi.fn(),
-  parseBrokerSessionCommand: vi.fn(() => null),
+  parseBrokerSessionCommand: parseBrokerSessionCommandMock,
   respondToBrokerClarify: vi.fn(),
   runBrokerGoalEvaluate: vi.fn(),
-  runBrokerSessionCommand: vi.fn(),
+  runBrokerSessionCommand: runBrokerSessionCommandMock,
 }))
 
 vi.mock('../../packages/server/src/services/hermes/model-context', () => ({
@@ -94,6 +98,9 @@ describe('BrokerRunController local session resume', () => {
     getCompressionSnapshotMock.mockReturnValue(null)
     getSessionDetailFromDbMock.mockResolvedValue(null)
     getSessionDetailFromDbWithProfileMock.mockResolvedValue(null)
+    parseBrokerSessionCommandMock.mockReturnValue(null)
+    runBrokerSessionCommandMock.mockReset()
+    getSessionMock.mockReturnValue({ id: 'local-session', profile: 'feishu_g41a5b5g', source: 'cli' })
     getSessionDetailMock.mockReturnValue({
       id: 'local-session',
       profile: 'feishu_g41a5b5g',
@@ -144,6 +151,50 @@ describe('BrokerRunController local session resume', () => {
     expect(state.messages).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ content: '历史问题' }),
     ]))
+  })
+
+  it('keeps expert display metadata when a broker plan command starts a hidden run', async () => {
+    parseBrokerSessionCommandMock.mockReturnValue({ raw: '/plan build campaign', name: 'plan', args: 'build campaign' })
+    runBrokerSessionCommandMock.mockResolvedValue({
+      handled: true,
+      command: 'plan',
+      action: 'plan',
+      kickoff_prompt: 'expanded plan prompt',
+    })
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    const emit = vi.fn()
+    ;(controller as any).nsp = { to: vi.fn(() => ({ emit })) }
+    const handleRun = vi.spyOn(controller as any, 'handleRun').mockResolvedValue(undefined)
+    const socket = {
+      connected: true,
+      data: {},
+      emit: vi.fn(),
+      join: vi.fn(),
+    }
+
+    await (controller as any).handleBrokerSessionCommand(socket, {
+      input: '/plan build campaign',
+      session_id: 'session-expert-plan',
+      model: 'test-model',
+      provider: 'test-provider',
+      expert_id: 'keep-resource-delivery',
+      expert_label: '资源投放专家',
+      expert_avatar: '/api/hermes/plugin-assets/keep-resource-delivery/expert.png',
+    }, 'research')
+
+    expect(addMessageMock).toHaveBeenCalledWith(expect.objectContaining({
+      session_id: 'session-expert-plan',
+      role: 'command',
+      content: '/plan build campaign',
+    }))
+    expect(handleRun).toHaveBeenCalledWith(socket, expect.objectContaining({
+      input: 'expanded plan prompt',
+      session_id: 'session-expert-plan',
+      expert_id: 'keep-resource-delivery',
+      expert_label: '资源投放专家',
+      expert_avatar: '/api/hermes/plugin-assets/keep-resource-delivery/expert.png',
+    }), 'research')
   })
 
   it('falls back to profile state.db when the matching local-store row is not api_server', async () => {
