@@ -93,6 +93,31 @@ describe('MessageItem agent avatar', () => {
     expect(avatar.attributes('alt')).toBe('资源投放专家')
   })
 
+  it('renders a persisted expert avatar from the message session prop', () => {
+    const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
+    const chat = useChatStore()
+    chat.activeSession = { id: 'active-normal', profile: '孙可' } as any
+    chat.setActiveExpert(null)
+
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: { id: 'h-expert', role: 'assistant', content: '', timestamp: Date.now() } satisfies Message,
+        session: {
+          id: 'history-expert',
+          profile: '孙可',
+          source: 'cli',
+          expertAvatar,
+          expertLabel: '资源投放专家',
+          expertId: 'keep-resource-delivery',
+        } as any,
+      },
+    })
+
+    const avatar = wrapper.get('img.msg-avatar')
+    expect(avatar.attributes('src')).toBe(expertAvatar)
+    expect(avatar.attributes('alt')).toBe('资源投放专家')
+  })
+
   it('renders a DIFFERENT (per-agent) logo for a coding-agent session', () => {
     const wrapper = mountAssistant({ id: 's2', profile: '孙可', source: 'coding_agent', agent: 'codex', codingAgentId: 'codex' })
     const avatar = wrapper.get('img.msg-avatar')

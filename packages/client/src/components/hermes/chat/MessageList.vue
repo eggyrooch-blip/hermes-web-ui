@@ -73,11 +73,11 @@ function stopThinkingTimer() {
 
 const isThinkingIndicatorVisible = computed(() => chatStore.isRunActive || !!chatStore.abortState);
 const formattedThinkingElapsed = computed(() => formatElapsed(thinkingElapsedMs.value));
-const thinkingAvatar = computed(() =>
-  chatStore.activeSession?.source !== "coding_agent" && chatStore.activeExpertAvatar
-    ? chatStore.activeExpertAvatar
-    : thinkingImage
-);
+const thinkingAvatar = computed(() => {
+  const session = chatStore.activeSession;
+  if (session?.source === "coding_agent") return thinkingImage;
+  return session?.expertAvatar || chatStore.activeExpertAvatar || thinkingImage;
+});
 
 const currentToolCalls = computed(() => {
   const msgs = chatStore.messages;

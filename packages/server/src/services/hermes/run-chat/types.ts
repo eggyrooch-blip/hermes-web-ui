@@ -52,6 +52,9 @@ export interface QueuedRun {
   api_mode?: string
   originSocketId?: string
   goalContinuation?: boolean
+  expert_id?: string
+  expert_label?: string
+  expert_avatar?: string
 }
 
 export interface SessionState {

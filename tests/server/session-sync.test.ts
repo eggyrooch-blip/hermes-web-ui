@@ -76,4 +76,48 @@ describe('session-sync', () => {
     expect(row?.agent).toBe('agent-shared')
     expect(row?.user_id).toBe('ou_viewer')
   })
+
+  it('persists expert display metadata on the session row', async () => {
+    await initTestDb()
+    const { createSession, getSession, getSessionDetail, listSessions, updateSession } =
+      await import('../../packages/server/src/db/hermes/session-store')
+    const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
+
+    createSession({
+      id: 'expert-session-1',
+      profile: 'research',
+      source: 'cli',
+      title: 'resource delivery run',
+    } as any)
+
+    updateSession('expert-session-1', {
+      expert_id: 'keep-resource-delivery',
+      expert_label: '资源投放专家',
+      expert_avatar: expertAvatar,
+    } as any)
+
+    expect(getSession('expert-session-1')).toMatchObject({
+      expert_id: 'keep-resource-delivery',
+      expert_label: '资源投放专家',
+      expert_avatar: expertAvatar,
+    })
+    expect(listSessions('research')[0]).toMatchObject({
+      expert_id: 'keep-resource-delivery',
+      expert_label: '资源投放专家',
+      expert_avatar: expertAvatar,
+    })
+    expect(getSessionDetail('expert-session-1')).toMatchObject({
+      expert_id: 'keep-resource-delivery',
+      expert_label: '资源投放专家',
+      expert_avatar: expertAvatar,
+    })
+
+    updateSession('expert-session-1', { title: 'renamed resource delivery run' } as any)
+    expect(getSession('expert-session-1')).toMatchObject({
+      title: 'renamed resource delivery run',
+      expert_id: 'keep-resource-delivery',
+      expert_label: '资源投放专家',
+      expert_avatar: expertAvatar,
+    })
+  })
 })

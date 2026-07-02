@@ -10,7 +10,7 @@ const expertAvatar = `data:image/svg+xml,${encodeURIComponent(`
 </svg>
 `)}`
 
-function sessionSummary(id: string, title: string, lastActive: number) {
+function sessionSummary(id: string, title: string, lastActive: number, extra: Record<string, unknown> = {}) {
   return {
     id,
     profile: 'research',
@@ -33,6 +33,7 @@ function sessionSummary(id: string, title: string, lastActive: number) {
     estimated_cost_usd: 0,
     actual_cost_usd: null,
     cost_status: 'estimated',
+    ...extra,
   }
 }
 
@@ -73,7 +74,7 @@ async function waitForRun(page: Page) {
   return handle.jsonValue() as Promise<any>
 }
 
-test('uses the selected expert avatar for the live Hermes thinking indicator', async ({ page }) => {
+test('persists the selected expert avatar across session switching and reloads', async ({ page }) => {
   await authenticate(page, TEST_ACCESS_KEY, 'research')
   const resumes = {
     'session-expert': resumePayload('session-expert', 'Expert session seed'),
@@ -83,11 +84,12 @@ test('uses the selected expert avatar for the live Hermes thinking indicator', a
     window.localStorage.setItem('hermes_active_session_research', 'session-expert')
     ;(window as any).__PW_CHAT_SOCKET_RESUMES__ = payload
   }, resumes)
+  const sessions = [
+    sessionSummary('session-expert', 'Expert seeded chat', 200),
+    sessionSummary('session-other', 'Other seeded chat', 100),
+  ]
   const api = await mockHermesApi(page, {
-    sessions: [
-      sessionSummary('session-expert', 'Expert seeded chat', 200),
-      sessionSummary('session-other', 'Other seeded chat', 100),
-    ],
+    sessions,
     experts: [
       {
         id: 'keep-resource-delivery',
@@ -101,18 +103,18 @@ test('uses the selected expert avatar for the live Hermes thinking indicator', a
   })
   await mockChatSocket(page)
 
+  await page.goto('/#/hermes/chat?surface=expert')
+  await page.locator('.expert-card', { hasText: '资源投放专家' }).click()
+  await page.locator('.action-primary').click()
   await page.goto('/#/hermes/chat')
-
-  await page.locator('.expert-slot-button').click()
-  await page.mouse.move(10, 10)
-  await expect(page.getByText('Active expert: No expert')).toHaveCount(0)
-  await page.locator('.n-base-select-option', { hasText: '资源投放专家' }).click()
   await expect(page.locator('.expert-slot-button img')).toHaveAttribute('src', expertAvatar)
 
   await sendChatMessage(page, '启动资源投放')
   const run = await waitForRun(page)
 
   expect(run.expert_id).toBe('keep-resource-delivery')
+  expect(run.expert_label).toBe('资源投放专家')
+  expect(run.expert_avatar).toBe(expertAvatar)
   await page.evaluate((sid) => {
     const socket = (window as any).__PW_CHAT_SOCKET__.latest
     socket.__trigger('run.started', { event: 'run.started', session_id: sid, run_id: 'run-expert-avatar' })
@@ -121,6 +123,13 @@ test('uses the selected expert avatar for the live Hermes thinking indicator', a
   await expect(page.locator('.thinking-avatar')).toHaveAttribute('src', expertAvatar)
   await expect(page.locator('.session-item.active .session-item-agent-logo')).toHaveAttribute('src', expertAvatar)
   await page.locator('.session-item', { hasText: 'Other seeded chat' }).click()
+  await expect(page.locator('.session-item', { hasText: 'Expert seeded chat' }).locator('.session-item-agent-logo')).toHaveAttribute('src', expertAvatar)
+  sessions[0] = sessionSummary('session-expert', 'Expert seeded chat', 250, {
+    expert_id: 'keep-resource-delivery',
+    expert_label: '资源投放专家',
+    expert_avatar: expertAvatar,
+  })
+  await page.reload()
   await expect(page.locator('.session-item', { hasText: 'Expert seeded chat' }).locator('.session-item-agent-logo')).toHaveAttribute('src', expertAvatar)
   const artifactDir = process.env.FTASK_ARTIFACT_DIR || 'test-results'
   await page.screenshot({

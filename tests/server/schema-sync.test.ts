@@ -135,6 +135,9 @@ describe('Database Schema Synchronization', () => {
       expect(sessionsCols.has('source')).toBe(true)
       expect(sessionsCols.has('agent_session_id')).toBe(true)
       expect(sessionsCols.has('agent_native_session_id')).toBe(true)
+      expect(sessionsCols.has('expert_id')).toBe(true)
+      expect(sessionsCols.has('expert_label')).toBe(true)
+      expect(sessionsCols.has('expert_avatar')).toBe(true)
     })
   })
 

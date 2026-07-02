@@ -19,6 +19,7 @@ import {
   getSessionDetail,
   createSession,
   addMessage,
+  updateSession,
   updateSessionStats,
 } from '../../db/hermes/session-store'
 import { getSessionDetailFromDb, getSessionDetailFromDbWithProfile } from '../../db/hermes/sessions-db'
@@ -390,6 +391,8 @@ interface QueuedRun {
   provider?: string
   instructions?: string
   expert_id?: string
+  expert_label?: string
+  expert_avatar?: string
   profile: string
 }
 
@@ -751,6 +754,8 @@ export class BrokerRunController {
       provider?: string
       instructions?: string
       expert_id?: string
+      expert_label?: string
+      expert_avatar?: string
       queue_id?: string
     }) => {
       if (config.webuiRunBroker && data.session_id && !data.__skipSessionCommand && parseBrokerSessionCommand(data.input)) {
@@ -767,6 +772,8 @@ export class BrokerRunController {
             provider: data.provider,
             instructions: data.instructions,
             expert_id: data.expert_id,
+            expert_label: data.expert_label,
+            expert_avatar: data.expert_avatar,
             profile,
           })
           this.nsp.to(this.sessionRoom(data.session_id, profile)).emit('run.queued', {
@@ -1051,7 +1058,7 @@ export class BrokerRunController {
 
   private async handleRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; model?: string; provider?: string; instructions?: string; expert_id?: string },
+    data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; model?: string; provider?: string; instructions?: string; expert_id?: string; expert_label?: string; expert_avatar?: string },
     profile: string,
     skipUserMessage = false,
   ) {
@@ -1113,6 +1120,19 @@ export class BrokerRunController {
           content: inputStr,
           timestamp: now,
         })
+      }
+
+      const cleanExpertId = typeof expert_id === 'string' ? expert_id.trim() : ''
+      if (cleanExpertId) {
+        updateSession(session_id, {
+          expert_id: cleanExpertId,
+          expert_label: typeof data.expert_label === 'string' && data.expert_label.trim()
+            ? data.expert_label.trim()
+            : cleanExpertId,
+          expert_avatar: typeof data.expert_avatar === 'string' && data.expert_avatar.trim()
+            ? data.expert_avatar.trim()
+            : null,
+        } as any)
       }
 
       socket.join(this.sessionRoom(session_id, profile))
@@ -1497,6 +1517,8 @@ export class BrokerRunController {
       provider: next.provider,
       instructions: next.instructions,
       expert_id: next.expert_id,
+      expert_label: next.expert_label,
+      expert_avatar: next.expert_avatar,
     }, next.profile || fallbackProfile, true)
     return true
   }
@@ -1544,6 +1566,8 @@ export class BrokerRunController {
         provider: next.provider,
         instructions: next.instructions,
         expert_id: next.expert_id,
+        expert_label: next.expert_label,
+        expert_avatar: next.expert_avatar,
       }, next.profile || profile || 'default', true)
       return
     }

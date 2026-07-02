@@ -81,7 +81,10 @@ function openDetail(expert: ExpertInfo) {
 }
 
 function activateExpert(expert: ExpertInfo) {
-  chatStore.setActiveExpert(expert.id)
+  chatStore.setActiveExpert(expert.id, {
+    label: expert.title || expert.name || expert.id,
+    avatar: expert.avatar || '',
+  })
   showDetail.value = false
 }
 

@@ -42,6 +42,18 @@ related:
 > focused regression, expert-chat Playwright e2e, local and production builds,
 > production health checks, served bundle grep, and WebUI journal error scan all
 > passed.
+>
+> `expert-session-persistent-avatar` is the durable follow-up for the reload/server
+> restart gap. New WebUI local `sessions` rows have nullable `expert_id`,
+> `expert_label`, and `expert_avatar` fields. When a non-coding-agent socket run
+> carries `expert_id`, WebUI persists that display metadata on the session row;
+> runs without `expert_id` do not clear existing expert metadata. Session list and
+> detail APIs return these fields, the chat store maps them to
+> `Session.expertId/expertLabel/expertAvatar`, and sidebar rows, history/live
+> assistant avatars, plus the Thinking indicator prefer the session's persisted
+> avatar before falling back to the transient active expert. Expert activation
+> from both ChatInput and ExpertCatalogView passes label/avatar. There is still
+> no old-session backfill and no separate table.
 
 > [!info] 2026-06-29 local worktree — expert plugin avatars via BFF proxy, production not published
 > `resource-expert-avatar-chat` adds the WebUI half of managed expert avatars.

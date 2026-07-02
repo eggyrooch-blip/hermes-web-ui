@@ -451,6 +451,9 @@ function mapHermesSession(s: SessionSummary): Session {
     agent: s.agent || undefined,
     agentSessionId: s.agent_session_id || undefined,
     agentNativeSessionId: s.agent_native_session_id || undefined,
+    expertId: s.expert_id || undefined,
+    expertLabel: s.expert_label || undefined,
+    expertAvatar: s.expert_avatar || undefined,
     codingAgentId,
     codingAgentMode,
     messages: [],
@@ -893,6 +896,9 @@ export const useChatStore = defineStore('chat', () => {
           existing.inputTokens = fresh.inputTokens
           existing.outputTokens = fresh.outputTokens
           existing.workspace = fresh.workspace
+          existing.expertId = fresh.expertId
+          existing.expertLabel = fresh.expertLabel
+          existing.expertAvatar = fresh.expertAvatar
           // messageTotal: keep the larger of server count vs what we've loaded,
           // so we don't shrink below already-rendered messages mid-session.
           if (fresh.messageTotal != null) {
@@ -2021,6 +2027,12 @@ export const useChatStore = defineStore('chat', () => {
         reasoning_effort: sessionSource === 'coding_agent' ? undefined : activeSession.value?.reasoningEffort || undefined,
         // Active expert overlay (专家广场). Coding Agent runs never carry it.
         expert_id: sessionSource === 'coding_agent' ? undefined : (activeExpertId.value || undefined),
+        expert_label: sessionSource === 'coding_agent' || !activeExpertId.value
+          ? undefined
+          : activeExpertLabel.value || activeExpertId.value,
+        expert_avatar: sessionSource === 'coding_agent' || !activeExpertId.value
+          ? undefined
+          : activeExpertAvatar.value || undefined,
       }
       if (runPayload.expert_id && activeSession.value) {
         activeSession.value.expertId = runPayload.expert_id

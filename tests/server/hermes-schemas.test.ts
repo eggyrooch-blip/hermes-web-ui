@@ -46,6 +46,9 @@ describe('Hermes schema initialization', () => {
     const sessionCols = db.prepare(`PRAGMA table_info("${SESSIONS_TABLE}")`).all() as Array<{ name: string }>
     expect(sessionCols.some(c => c.name === 'source')).toBe(true)
     expect(sessionCols.some(c => c.name === 'agent')).toBe(true)
+    expect(sessionCols.some(c => c.name === 'expert_id')).toBe(true)
+    expect(sessionCols.some(c => c.name === 'expert_label')).toBe(true)
+    expect(sessionCols.some(c => c.name === 'expert_avatar')).toBe(true)
 
     const userCols = db.prepare(`PRAGMA table_info("${USERS_TABLE}")`).all() as Array<{ name: string }>
     expect(userCols.some(c => c.name === 'id')).toBe(true)

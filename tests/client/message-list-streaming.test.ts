@@ -87,6 +87,26 @@ describe('MessageList streaming display', () => {
     expect(avatar.attributes('src')).toBe(expertAvatar)
   })
 
+  it('uses the persisted active session expert avatar for the live thinking indicator', () => {
+    const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
+    chatStoreMock.isRunActive = true
+    chatStoreMock.activeExpertAvatar = ''
+    chatStoreMock.activeSession = {
+      id: 'session-1',
+      source: 'cli',
+      expertAvatar,
+      expertLabel: '资源投放专家',
+    }
+    chatStoreMock.messages = [
+      { id: 'u1', role: 'user', content: 'hello', timestamp: Date.now() },
+    ]
+
+    const wrapper = mount(MessageList)
+
+    const avatar = wrapper.get('img.thinking-avatar')
+    expect(avatar.attributes('src')).toBe(expertAvatar)
+  })
+
   it('does not use the selected expert avatar for a live coding-agent thinking indicator', () => {
     const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
     chatStoreMock.isRunActive = true

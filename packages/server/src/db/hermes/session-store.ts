@@ -15,6 +15,9 @@ export interface HermesSessionRow {
   agent_mode: string
   agent_session_id: string
   agent_native_session_id: string
+  expert_id: string | null
+  expert_label: string | null
+  expert_avatar: string | null
   user_id: string | null
   model: string
   provider: string
@@ -95,6 +98,9 @@ function mapSessionRow(row: Record<string, unknown>): HermesSessionRow {
     agent_mode: String(row.agent_mode || ''),
     agent_session_id: String(row.agent_session_id || ''),
     agent_native_session_id: String(row.agent_native_session_id || ''),
+    expert_id: row.expert_id != null ? String(row.expert_id) : null,
+    expert_label: row.expert_label != null ? String(row.expert_label) : null,
+    expert_avatar: row.expert_avatar != null ? String(row.expert_avatar) : null,
     user_id: row.user_id != null ? String(row.user_id) : null,
     model: String(row.model || ''),
     provider: String(row.provider || ''),
@@ -163,6 +169,7 @@ export function createSession(data: {
       id: data.id, profile: data.profile || 'default', source, agent,
       agent_mode: data.agent_mode || '',
       agent_session_id: data.agent_session_id || '', agent_native_session_id: data.agent_native_session_id || '',
+      expert_id: null, expert_label: null, expert_avatar: null,
       user_id: null, model: data.model || '', provider: data.provider || '', title: data.title || null,
       started_at: now, ended_at: null, end_reason: null,
       message_count: 0, tool_call_count: 0,

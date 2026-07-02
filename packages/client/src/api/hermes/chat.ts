@@ -40,6 +40,8 @@ export interface StartRunRequest {
    *  the default Hermes persona. Also forwarded as the `X-Hermes-Expert-Id`
    *  request header by the run transport. */
   expert_id?: string
+  expert_label?: string
+  expert_avatar?: string
 }
 
 export interface StartRunResponse {
