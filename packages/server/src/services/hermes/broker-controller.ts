@@ -752,13 +752,13 @@ export class BrokerRunController {
       __skipSessionCommand?: boolean
       __hideUserMessage?: boolean
       session_id?: string
+      source?: ChatRunSource
       model?: string
       provider?: string
       instructions?: string
       expert_id?: string
       expert_label?: string
       expert_avatar?: string
-      source?: ChatRunSource
       queue_id?: string
     }) => {
       if (config.webuiRunBroker && data.session_id && !data.__skipSessionCommand && parseBrokerSessionCommand(data.input)) {
@@ -1297,6 +1297,7 @@ export class BrokerRunController {
     data: {
       input: string | ContentBlock[]
       session_id?: string
+      source?: ChatRunSource
       model?: string
       provider?: string
       instructions?: string
@@ -1369,6 +1370,7 @@ export class BrokerRunController {
         __skipSessionCommand: true,
         __hideUserMessage: true,
         session_id: sessionId,
+        source: data.source,
         model: data.model,
         provider: data.provider,
         instructions: data.instructions,

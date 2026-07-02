@@ -200,6 +200,44 @@ describe('BrokerRunController local session resume', () => {
     }), 'research')
   })
 
+  it('forwards source when a broker plan command starts a hidden run', async () => {
+    parseBrokerSessionCommandMock.mockReturnValue({ raw: '/plan build campaign', name: 'plan', args: 'build campaign' })
+    runBrokerSessionCommandMock.mockResolvedValue({
+      handled: true,
+      command: 'plan',
+      action: 'plan',
+      kickoff_prompt: 'expanded plan prompt',
+    })
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    ;(controller as any).nsp = { to: vi.fn(() => ({ emit: vi.fn() })) }
+    const handleRun = vi.spyOn(controller as any, 'handleRun').mockResolvedValue(undefined)
+    const socket = {
+      connected: true,
+      data: {},
+      emit: vi.fn(),
+      join: vi.fn(),
+    }
+
+    await (controller as any).handleBrokerSessionCommand(socket, {
+      input: '/plan build campaign',
+      session_id: 'coding-plan-session',
+      source: 'coding_agent',
+      model: 'codex',
+      provider: 'codex',
+      expert_id: 'keep-resource-delivery',
+      expert_label: '资源投放专家',
+      expert_avatar: '/api/hermes/plugin-assets/keep-resource-delivery/expert.png',
+    }, 'research')
+
+    expect(handleRun).toHaveBeenCalledWith(socket, expect.objectContaining({
+      input: 'expanded plan prompt',
+      session_id: 'coding-plan-session',
+      source: 'coding_agent',
+      expert_id: 'keep-resource-delivery',
+    }), 'research')
+  })
+
   it('does not persist expert metadata on coding-agent socket runs', async () => {
     getSessionMock.mockReturnValue({ id: 'coding-session', profile: 'research', source: 'coding_agent' })
     const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
