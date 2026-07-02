@@ -80,6 +80,19 @@ describe('MessageItem agent avatar', () => {
     expect(avatar.attributes('src')).not.toBe(userPhoto)
   })
 
+  it('renders the selected expert avatar for a normal active Hermes session', () => {
+    const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
+    const chat = useChatStore()
+    chat.setActiveExpert('keep-resource-delivery')
+    ;(chat as any).activeExpertAvatar = expertAvatar
+    ;(chat as any).activeExpertLabel = '资源投放专家'
+
+    const wrapper = mountAssistant({ id: 's-expert', profile: '孙可' })
+    const avatar = wrapper.get('img.msg-avatar')
+    expect(avatar.attributes('src')).toBe(expertAvatar)
+    expect(avatar.attributes('alt')).toBe('资源投放专家')
+  })
+
   it('renders a DIFFERENT (per-agent) logo for a coding-agent session', () => {
     const wrapper = mountAssistant({ id: 's2', profile: '孙可', source: 'coding_agent', agent: 'codex', codingAgentId: 'codex' })
     const avatar = wrapper.get('img.msg-avatar')

@@ -28,15 +28,17 @@ describe('chat store — central stale-expert clear on profile switch', () => {
     localStorage.clear()
   })
 
-  it('resets activeExpertId to null when the active profile changes', async () => {
+  it('resets activeExpert display state when the active profile changes', async () => {
     const chat = useChatStore()
     const profiles = useProfilesStore()
 
     // Pretend we are on profile A with a profile-A expert selected in the composer.
     profiles.activeProfileName = 'profile-a'
     await nextTick()
-    chat.setActiveExpert('expert-from-a')
+    chat.setActiveExpert('expert-from-a', { avatar: '/expert-a.png', label: 'Expert A' })
     expect(chat.activeExpertId).toBe('expert-from-a')
+    expect(chat.activeExpertAvatar).toBe('/expert-a.png')
+    expect(chat.activeExpertLabel).toBe('Expert A')
 
     // Switch to profile B — the central watcher (NOT a component watcher) must
     // clear the stale selection even though ChatInput/ExpertCatalogView are
@@ -45,6 +47,8 @@ describe('chat store — central stale-expert clear on profile switch', () => {
     await nextTick()
 
     expect(chat.activeExpertId).toBeNull()
+    expect(chat.activeExpertAvatar).toBe('')
+    expect(chat.activeExpertLabel).toBe('')
     // and it must not survive in localStorage either
     expect(localStorage.getItem('hermes_active_expert_id')).toBeNull()
   })

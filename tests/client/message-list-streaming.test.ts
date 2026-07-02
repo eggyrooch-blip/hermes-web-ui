@@ -8,6 +8,7 @@ const chatStoreMock = vi.hoisted(() => ({
   queuedUserMessages: new Map<string, any[]>(),
   focusMessageId: null as string | null,
   isRunActive: false,
+  activeExpertAvatar: '',
   abortState: null as any,
   compressionState: null as any,
   removeQueuedMessage: vi.fn(),
@@ -48,6 +49,7 @@ describe('MessageList streaming display', () => {
     chatStoreMock.queuedUserMessages = new Map()
     chatStoreMock.focusMessageId = null
     chatStoreMock.isRunActive = false
+    chatStoreMock.activeExpertAvatar = ''
     chatStoreMock.abortState = null
     chatStoreMock.compressionState = null
     vi.clearAllMocks()
@@ -67,6 +69,20 @@ describe('MessageList streaming display', () => {
     // Upstream rebaseline replaced the fork's <video class="thinking-video"> with an
     // <img class="thinking-avatar"> (thinking.gif) inside the streaming indicator.
     expect(wrapper.find('.thinking-avatar').exists()).toBe(true)
+  })
+
+  it('uses the selected expert avatar for the live thinking indicator', () => {
+    const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
+    chatStoreMock.isRunActive = true
+    chatStoreMock.activeExpertAvatar = expertAvatar
+    chatStoreMock.messages = [
+      { id: 'u1', role: 'user', content: 'hello', timestamp: Date.now() },
+    ]
+
+    const wrapper = mount(MessageList)
+
+    const avatar = wrapper.get('img.thinking-avatar')
+    expect(avatar.attributes('src')).toBe(expertAvatar)
   })
 
   it('shows current tool calls in the streaming tool panel while the run is active', () => {

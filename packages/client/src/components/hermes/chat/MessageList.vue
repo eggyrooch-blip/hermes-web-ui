@@ -73,6 +73,7 @@ function stopThinkingTimer() {
 
 const isThinkingIndicatorVisible = computed(() => chatStore.isRunActive || !!chatStore.abortState);
 const formattedThinkingElapsed = computed(() => formatElapsed(thinkingElapsedMs.value));
+const thinkingAvatar = computed(() => chatStore.activeExpertAvatar || thinkingImage);
 
 const currentToolCalls = computed(() => {
   const msgs = chatStore.messages;
@@ -430,7 +431,7 @@ defineExpose({
         <div v-if="isThinkingIndicatorVisible" class="streaming-indicator">
           <div class="thinking-status">
             <img
-              :src="thinkingImage"
+              :src="thinkingAvatar"
               alt=""
               aria-hidden="true"
               class="thinking-avatar"

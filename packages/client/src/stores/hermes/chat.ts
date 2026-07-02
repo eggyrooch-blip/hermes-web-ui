@@ -725,10 +725,21 @@ export const useChatStore = defineStore('chat', () => {
   // localStorage so the selection survives navigation/reload (cleared by
   // setActiveExpertId(null)).
   const activeExpertId = ref<string | null>(getActiveExpertId())
-  function setActiveExpert(expertId: string | null) {
+  const activeExpertAvatar = ref('')
+  const activeExpertLabel = ref('')
+  function setActiveExpertDisplay(display: { avatar?: string; label?: string } | null) {
+    activeExpertAvatar.value = display?.avatar?.trim() || ''
+    activeExpertLabel.value = display?.label?.trim() || ''
+  }
+  function setActiveExpert(expertId: string | null, display?: { avatar?: string; label?: string }) {
     const next = expertId && expertId.trim() ? expertId.trim() : null
     activeExpertId.value = next
     setActiveExpertId(next)
+    if (!next) {
+      setActiveExpertDisplay(null)
+    } else {
+      setActiveExpertDisplay(display ?? { label: next })
+    }
   }
 
   // CENTRAL stale-expert guard. Experts are profile-scoped, so a selection made
@@ -3578,7 +3589,10 @@ export const useChatStore = defineStore('chat', () => {
     activeSessionId,
     activeSession,
     activeExpertId,
+    activeExpertAvatar,
+    activeExpertLabel,
     setActiveExpert,
+    setActiveExpertDisplay,
     focusMessageId,
     messages,
     sessionArtifacts,

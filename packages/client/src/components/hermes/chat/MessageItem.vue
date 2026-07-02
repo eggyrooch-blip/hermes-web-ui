@@ -190,6 +190,9 @@ const voiceSettings = useVoiceSettings();
 // passed by history lists) and falling back to the active chat session.
 const agentLogo = computed(() => {
   const session = props.session ?? chatStore.activeSession;
+  if (!props.session && session?.source !== "coding_agent" && chatStore.activeExpertAvatar) {
+    return { label: chatStore.activeExpertLabel || chatStore.activeExpertId || "Expert", src: chatStore.activeExpertAvatar };
+  }
   if (session?.source === "coding_agent") {
     if (session.codingAgentId === "codex" || session.agent === "codex") {
       return { label: "Codex", src: "/coding-agents/codex-openai.png" };

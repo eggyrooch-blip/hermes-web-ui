@@ -83,7 +83,11 @@ const expertOptions = computed(() => [
   ...experts.value.map(e => ({ label: e.title || e.name, value: e.id })),
 ])
 function onExpertChange(value: string | null | undefined) {
-  chatStore.setActiveExpert(value || null)
+  const expert = experts.value.find(e => e.id === value)
+  chatStore.setActiveExpert(value || null, expert ? {
+    avatar: expert.avatar || '',
+    label: expert.title || expert.name || expert.id,
+  } : undefined)
 }
 async function loadExpertsForSlot() {
   try {
@@ -499,6 +503,16 @@ watch(
   [activeExpertId, () => activeExpert.value?.avatar],
   () => {
     activeExpertAvatarBroken.value = false
+    if (!activeExpertId.value) {
+      chatStore.setActiveExpertDisplay(null)
+      return
+    }
+    if (activeExpert.value) {
+      chatStore.setActiveExpertDisplay({
+        avatar: activeExpert.value.avatar || '',
+        label: activeExpert.value.title || activeExpert.value.name || activeExpert.value.id,
+      })
+    }
   },
 )
 
