@@ -51,6 +51,7 @@ import {
 } from './run-chat/handle-broker-run'
 import { extractResponseText, responseFunctionCallToToolCall, summarizeToolArguments } from './run-chat/response-utils'
 import { readSseFrames } from './run-chat/sse-utils'
+import type { ChatRunSource } from './run-chat/types'
 import { rewriteAssistantMediaDirectives } from './media-directives'
 
 /**
@@ -387,6 +388,7 @@ interface SessionMessage {
 interface QueuedRun {
   queue_id: string
   input: string | ContentBlock[]
+  source?: ChatRunSource
   model?: string
   provider?: string
   instructions?: string
@@ -756,6 +758,7 @@ export class BrokerRunController {
       expert_id?: string
       expert_label?: string
       expert_avatar?: string
+      source?: ChatRunSource
       queue_id?: string
     }) => {
       if (config.webuiRunBroker && data.session_id && !data.__skipSessionCommand && parseBrokerSessionCommand(data.input)) {
@@ -768,6 +771,7 @@ export class BrokerRunController {
           state.queue.push({
             queue_id: data.queue_id || `queue_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
             input: data.input,
+            source: data.source,
             model: data.model,
             provider: data.provider,
             instructions: data.instructions,
@@ -1058,7 +1062,7 @@ export class BrokerRunController {
 
   private async handleRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; model?: string; provider?: string; instructions?: string; expert_id?: string; expert_label?: string; expert_avatar?: string },
+    data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; source?: ChatRunSource; model?: string; provider?: string; instructions?: string; expert_id?: string; expert_label?: string; expert_avatar?: string },
     profile: string,
     skipUserMessage = false,
   ) {
@@ -1087,6 +1091,7 @@ export class BrokerRunController {
       state.events = []
       state.profile = profile
 
+      const existingSession = getSession(session_id)
       if (!data.__hideUserMessage) {
         // Convert ContentBlock[] to string for storage
         const inputStr = contentBlocksToString(input)
@@ -1100,7 +1105,7 @@ export class BrokerRunController {
         })
 
         // Create session in local DB if it doesn't exist
-        if (!getSession(session_id)) {
+        if (!existingSession) {
           const previewText = extractTextForPreview(input)
           const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
           createSession({
@@ -1123,7 +1128,8 @@ export class BrokerRunController {
       }
 
       const cleanExpertId = typeof expert_id === 'string' ? expert_id.trim() : ''
-      if (cleanExpertId) {
+      const isCodingAgentRun = data.source === 'coding_agent' || existingSession?.source === 'coding_agent'
+      if (cleanExpertId && !isCodingAgentRun) {
         updateSession(session_id, {
           expert_id: cleanExpertId,
           expert_label: typeof data.expert_label === 'string' && data.expert_label.trim()
@@ -1517,6 +1523,7 @@ export class BrokerRunController {
     void this.handleRun(socket, {
       input: next.input,
       session_id: sessionId,
+      source: next.source,
       model: next.model,
       provider: next.provider,
       instructions: next.instructions,
@@ -1566,6 +1573,7 @@ export class BrokerRunController {
       void this.handleRun(socket, {
         input: next.input,
         session_id: sessionId,
+        source: next.source,
         model: next.model,
         provider: next.provider,
         instructions: next.instructions,

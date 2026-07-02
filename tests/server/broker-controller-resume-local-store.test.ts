@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const getSessionDetailMock = vi.hoisted(() => vi.fn())
 const getSessionMock = vi.hoisted(() => vi.fn())
 const addMessageMock = vi.hoisted(() => vi.fn())
+const updateSessionMock = vi.hoisted(() => vi.fn())
 const getSessionDetailFromDbMock = vi.hoisted(() => vi.fn())
 const getSessionDetailFromDbWithProfileMock = vi.hoisted(() => vi.fn())
 const getCompressionSnapshotMock = vi.hoisted(() => vi.fn())
@@ -14,6 +15,7 @@ vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSessionDetail: getSessionDetailMock,
   createSession: vi.fn(),
   addMessage: addMessageMock,
+  updateSession: updateSessionMock,
   updateSessionStats: vi.fn(),
 }))
 
@@ -100,6 +102,7 @@ describe('BrokerRunController local session resume', () => {
     getSessionDetailFromDbWithProfileMock.mockResolvedValue(null)
     parseBrokerSessionCommandMock.mockReturnValue(null)
     runBrokerSessionCommandMock.mockReset()
+    updateSessionMock.mockReset()
     getSessionMock.mockReturnValue({ id: 'local-session', profile: 'feishu_g41a5b5g', source: 'cli' })
     getSessionDetailMock.mockReturnValue({
       id: 'local-session',
@@ -195,6 +198,32 @@ describe('BrokerRunController local session resume', () => {
       expert_label: '资源投放专家',
       expert_avatar: '/api/hermes/plugin-assets/keep-resource-delivery/expert.png',
     }), 'research')
+  })
+
+  it('does not persist expert metadata on coding-agent socket runs', async () => {
+    getSessionMock.mockReturnValue({ id: 'coding-session', profile: 'research', source: 'coding_agent' })
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    ;(controller as any).nsp = { to: vi.fn(() => ({ emit: vi.fn() })) }
+    const socket = {
+      connected: true,
+      data: {},
+      emit: vi.fn(),
+      join: vi.fn(),
+    }
+
+    await (controller as any).handleRun(socket, {
+      input: 'coding run',
+      session_id: 'coding-session',
+      source: 'coding_agent',
+      model: 'codex',
+      provider: 'codex',
+      expert_id: 'keep-resource-delivery',
+      expert_label: '资源投放专家',
+      expert_avatar: '/api/hermes/plugin-assets/keep-resource-delivery/expert.png',
+    }, 'research')
+
+    expect(updateSessionMock).not.toHaveBeenCalled()
   })
 
   it('falls back to profile state.db when the matching local-store row is not api_server', async () => {
