@@ -14,6 +14,7 @@ interface MockHermesApiOptions {
   tokenValidationStatus?: number
   initialProfileName?: 'default' | 'research'
   sessions?: unknown[]
+  experts?: unknown[]
 }
 
 const sampleModelGroup = {
@@ -248,6 +249,14 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
           },
         ],
         archived: [],
+      }))
+      return
+    }
+
+    if (pathname === '/api/hermes/experts') {
+      await route.fulfill(jsonResponse({
+        experts: options.experts ?? [],
+        profile_name: activeProfileName,
       }))
       return
     }

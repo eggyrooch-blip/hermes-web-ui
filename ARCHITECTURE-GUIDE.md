@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-06-29
+updated: 2026-07-02
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
@@ -14,6 +14,20 @@ related:
 ---
 
 # hermes-web-ui 架构速查 — EKKO fork
+
+> [!info] 2026-07-02 worktree — active expert avatar also drives live chat assistant avatars
+> `expert-chat-avatar` extends the managed expert avatar UI from the composer
+> chip into the live chat transcript. `ChatInput` stores the selected expert's
+> display label/avatar in the chat store after loading `/api/hermes/experts`;
+> `MessageItem` and `MessageList` may use that avatar only for the active,
+> non-`coding_agent` Hermes chat path. History renders that pass an explicit
+> `session` prop and Codex/Claude coding-agent sessions keep their existing
+> Hermes/Codex/Claude fallback logos.
+>
+> Verification for this worktree: focused Vitest for MessageItem,
+> MessageList, and active-expert profile switching; Playwright e2e selecting
+> a resource-delivery expert, sending a message, asserting `expert_id`, and
+> capturing the live Thinking avatar; `npm run build` passed.
 
 > [!info] 2026-06-29 local worktree — expert plugin avatars via BFF proxy, production not published
 > `resource-expert-avatar-chat` adds the WebUI half of managed expert avatars.
