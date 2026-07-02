@@ -651,6 +651,74 @@ describe('chat store user-mode model selection', () => {
     })
   })
 
+  it('does not reuse a selected expert after switching to an ordinary Hermes session', async () => {
+    const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
+    fetchSessionsMock.mockResolvedValue([
+      {
+        id: 'expert-session',
+        source: 'api_server',
+        model: 'm',
+        title: 'expert',
+        started_at: 100,
+        ended_at: null,
+        last_active: 100,
+        message_count: 0,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        profile: 'tester',
+        expert_id: 'keep-resource-delivery',
+        expert_label: '资源投放专家',
+        expert_avatar: expertAvatar,
+      },
+      {
+        id: 'ordinary-session',
+        source: 'api_server',
+        model: 'm',
+        title: 'ordinary',
+        started_at: 101,
+        ended_at: null,
+        last_active: 101,
+        message_count: 0,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        profile: 'tester',
+      },
+    ])
+    const store = useChatStore()
+
+    await store.loadSessions('tester', 'expert-session')
+    store.setActiveExpert('keep-resource-delivery', {
+      avatar: expertAvatar,
+      label: '资源投放专家',
+    })
+    await store.switchSession('ordinary-session')
+
+    expect(store.activeExpertId).toBeNull()
+    await store.sendMessage('ordinary hello')
+
+    const runPayload = startRunViaSocketMock.mock.calls[0][0]
+    expect(runPayload.session_id).toBe('ordinary-session')
+    expect(runPayload.expert_id).toBeUndefined()
+    expect(runPayload.expert_label).toBeUndefined()
+    expect(runPayload.expert_avatar).toBeUndefined()
+  })
+
   it('renders subagent run events as a delegate_task tool card', async () => {
     const store = useChatStore()
     store.newChat()

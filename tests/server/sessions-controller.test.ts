@@ -259,6 +259,9 @@ describe('session conversations controller', () => {
       cost_status: '',
       preview: 'preview',
       workspace: null,
+      expert_id: 'keep-resource-delivery',
+      expert_label: '资源投放专家',
+      expert_avatar: '/api/hermes/plugin-assets/keep-resource-delivery/expert.png',
     }])
 
     const mod = await import('../../packages/server/src/controllers/hermes/sessions')
@@ -267,7 +270,14 @@ describe('session conversations controller', () => {
 
     expect(localListSessionsMock).toHaveBeenCalledWith(undefined, undefined, 5)
     expect(listConversationSummariesMock).not.toHaveBeenCalled()
-    expect(ctx.body.sessions[0]).toMatchObject({ id: 'local-conversation', source: 'cli', title: 'Local' })
+    expect(ctx.body.sessions[0]).toMatchObject({
+      id: 'local-conversation',
+      source: 'cli',
+      title: 'Local',
+      expert_id: 'keep-resource-delivery',
+      expert_label: '资源投放专家',
+      expert_avatar: '/api/hermes/plugin-assets/keep-resource-delivery/expert.png',
+    })
   })
 
   it('lists all account-accessible single-chat sessions when only the active profile header is present', async () => {

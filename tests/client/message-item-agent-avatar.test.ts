@@ -80,17 +80,32 @@ describe('MessageItem agent avatar', () => {
     expect(avatar.attributes('src')).not.toBe(userPhoto)
   })
 
-  it('renders the selected expert avatar for a normal active Hermes session', () => {
+  it('renders the persisted expert avatar for a normal active Hermes session', () => {
     const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
-    const chat = useChatStore()
-    chat.setActiveExpert('keep-resource-delivery')
-    ;(chat as any).activeExpertAvatar = expertAvatar
-    ;(chat as any).activeExpertLabel = '资源投放专家'
-
-    const wrapper = mountAssistant({ id: 's-expert', profile: '孙可' })
+    const wrapper = mountAssistant({
+      id: 's-expert',
+      profile: '孙可',
+      expertId: 'keep-resource-delivery',
+      expertLabel: '资源投放专家',
+      expertAvatar,
+    })
     const avatar = wrapper.get('img.msg-avatar')
     expect(avatar.attributes('src')).toBe(expertAvatar)
     expect(avatar.attributes('alt')).toBe('资源投放专家')
+  })
+
+  it('does not let the global active expert avatar leak into a normal session', () => {
+    const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
+    const chat = useChatStore()
+    chat.setActiveExpert('keep-resource-delivery', {
+      avatar: expertAvatar,
+      label: '资源投放专家',
+    })
+
+    const wrapper = mountAssistant({ id: 's-normal', profile: '孙可' })
+    const avatar = wrapper.get('img.msg-avatar')
+    expect(avatar.attributes('src')).toBe('/coding-agents/hermes.png')
+    expect(avatar.attributes('alt')).toBe('Hermes')
   })
 
   it('renders a persisted expert avatar from the message session prop', () => {

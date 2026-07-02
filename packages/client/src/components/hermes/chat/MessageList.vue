@@ -76,7 +76,7 @@ const formattedThinkingElapsed = computed(() => formatElapsed(thinkingElapsedMs.
 const thinkingAvatar = computed(() => {
   const session = chatStore.activeSession;
   if (session?.source === "coding_agent") return thinkingImage;
-  return session?.expertAvatar || chatStore.activeExpertAvatar || thinkingImage;
+  return session?.expertAvatar || thinkingImage;
 });
 
 const currentToolCalls = computed(() => {

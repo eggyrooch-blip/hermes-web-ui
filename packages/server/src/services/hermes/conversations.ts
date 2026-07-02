@@ -40,6 +40,9 @@ export interface ConversationSummary {
   agent_mode?: string
   agent_session_id?: string
   agent_native_session_id?: string
+  expert_id?: string | null
+  expert_label?: string | null
+  expert_avatar?: string | null
   model: string
   provider?: string
   title: string | null

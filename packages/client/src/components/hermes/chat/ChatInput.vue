@@ -54,9 +54,9 @@ function onReasoningEffortChange(value: string | null | undefined) {
   chatStore.setSessionReasoningEffort(sid, value || '')
 }
 
-// --- Expert overlay slot (专家广场) -----------------------------------------
-// Selecting an expert here makes the NEXT run carry `expert_id` so the
-// multitenancy layer injects the expert persona overlay (ephemeral per run).
+// --- Expert slot (专家广场) -------------------------------------------------
+// Selecting an expert here stamps the active non-coding session; future runs
+// carry the session's persisted expert metadata.
 const experts = ref<ExpertInfo[]>([])
 const activeExpertId = computed<string | null>(() => chatStore.activeExpertId)
 const activeExpert = computed<ExpertInfo | null>(

@@ -199,9 +199,6 @@ const agentLogo = computed(() => {
   if (session?.expertAvatar) {
     return { label: session.expertLabel || session.expertId || "Expert", src: session.expertAvatar };
   }
-  if (!props.session && chatStore.activeExpertAvatar) {
-    return { label: chatStore.activeExpertLabel || chatStore.activeExpertId || "Expert", src: chatStore.activeExpertAvatar };
-  }
   return { label: "Hermes", src: "/coding-agents/hermes.png" };
 });
 

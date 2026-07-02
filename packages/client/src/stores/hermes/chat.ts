@@ -725,17 +725,29 @@ export const useChatStore = defineStore('chat', () => {
     return out
   })
 
-  // Active expert overlay (专家广场). Selected from the composer's expert slot;
-  // when set, the run submission carries `expert_id` so the multitenancy layer
-  // injects the expert persona overlay for that run only. Persisted to
-  // localStorage so the selection survives navigation/reload (cleared by
-  // setActiveExpertId(null)).
+  // Active expert selection (专家广场). The composer chip mirrors the current
+  // session's persisted expert metadata; selecting an expert stamps the active
+  // non-coding session so subsequent run submissions carry the session's
+  // `expert_id/expert_label/expert_avatar`.
   const activeExpertId = ref<string | null>(getActiveExpertId())
   const activeExpertAvatar = ref('')
   const activeExpertLabel = ref('')
   function setActiveExpertDisplay(display: { avatar?: string; label?: string } | null) {
     activeExpertAvatar.value = display?.avatar?.trim() || ''
     activeExpertLabel.value = display?.label?.trim() || ''
+  }
+  function applyActiveExpertToSession(
+    session: Session | null | undefined,
+    expertId = activeExpertId.value,
+    display: { avatar?: string; label?: string } = {
+      avatar: activeExpertAvatar.value,
+      label: activeExpertLabel.value,
+    },
+  ) {
+    if (!session || !expertId || isCodingAgentLikeSession(session)) return
+    session.expertId = expertId
+    session.expertLabel = display.label?.trim() || expertId
+    session.expertAvatar = display.avatar?.trim() || undefined
   }
   function setActiveExpert(expertId: string | null, display?: { avatar?: string; label?: string }) {
     const next = expertId && expertId.trim() ? expertId.trim() : null
@@ -744,8 +756,20 @@ export const useChatStore = defineStore('chat', () => {
     if (!next) {
       setActiveExpertDisplay(null)
     } else {
-      setActiveExpertDisplay(display ?? { label: next })
+      const nextDisplay = display ?? { label: next }
+      setActiveExpertDisplay(nextDisplay)
+      applyActiveExpertToSession(activeSession.value, next, nextDisplay)
     }
+  }
+  function syncActiveExpertFromSession(session: Session | null | undefined) {
+    if (session?.expertId && !isCodingAgentLikeSession(session)) {
+      setActiveExpert(session.expertId, {
+        label: session.expertLabel || session.expertId,
+        avatar: session.expertAvatar || '',
+      })
+      return
+    }
+    setActiveExpert(null)
   }
 
   // CENTRAL stale-expert guard. Experts are profile-scoped, so a selection made
@@ -926,6 +950,7 @@ export const useChatStore = defineStore('chat', () => {
       if (activeId) {
         const again = sessions.value.find(s => s.id === activeId)
         if (again && activeSession.value !== again) activeSession.value = again
+        if (again) syncActiveExpertFromSession(again)
       }
     } catch (err) {
       console.error('Failed to refresh session list:', err)
@@ -952,6 +977,10 @@ export const useChatStore = defineStore('chat', () => {
       target.messageCount = detail.total
       target.hasMoreBefore = detail.hasMore
       if (detail.session.title) target.title = detail.session.title
+      target.expertId = detail.session.expert_id || undefined
+      target.expertLabel = detail.session.expert_label || undefined
+      target.expertAvatar = detail.session.expert_avatar || undefined
+      if (activeSessionId.value === sid) syncActiveExpertFromSession(target)
       return true
     } catch (err) {
       console.error('Failed to refresh active session:', err)
@@ -1032,6 +1061,7 @@ export const useChatStore = defineStore('chat', () => {
     if (legacyActiveKey) removeItem(legacyActiveKey)
     activeSession.value = sessions.value.find(s => s.id === sessionId) || null
     clearSessionCompletedUnread(sessionId)
+    syncActiveExpertFromSession(activeSession.value)
 
     if (!activeSession.value) return
 
@@ -1255,6 +1285,7 @@ export const useChatStore = defineStore('chat', () => {
       apiKey: options.apiKey,
       apiMode: options.apiMode,
     })
+    if (!codingAgentId) applyActiveExpertToSession(session)
     void switchSession(session.id)
     return session
   }
@@ -1904,6 +1935,7 @@ export const useChatStore = defineStore('chat', () => {
 
     if (!activeSession.value) {
       const session = createSession()
+      applyActiveExpertToSession(session)
       switchSession(session.id)
     }
 
@@ -1991,6 +2023,15 @@ export const useChatStore = defineStore('chat', () => {
         : isCodingAgentSession
           ? 'coding_agent'
           : 'cli'
+      const expertIdForRun = sessionSource === 'coding_agent'
+        ? undefined
+        : activeSession.value?.expertId || undefined
+      const expertLabelForRun = expertIdForRun
+        ? activeSession.value?.expertLabel || activeExpertLabel.value || expertIdForRun
+        : undefined
+      const expertAvatarForRun = expertIdForRun
+        ? activeSession.value?.expertAvatar || activeExpertAvatar.value || undefined
+        : undefined
       const codingAgentId: 'claude-code' | 'codex' =
         activeSession.value?.codingAgentId ||
         (activeSession.value?.agent === 'codex' ? 'codex' : 'claude-code')
@@ -2025,19 +2066,14 @@ export const useChatStore = defineStore('chat', () => {
         // Per-session reasoning effort override. Coding Agent runners do not
         // consume this setting yet, so keep their payloads explicit.
         reasoning_effort: sessionSource === 'coding_agent' ? undefined : activeSession.value?.reasoningEffort || undefined,
-        // Active expert overlay (专家广场). Coding Agent runs never carry it.
-        expert_id: sessionSource === 'coding_agent' ? undefined : (activeExpertId.value || undefined),
-        expert_label: sessionSource === 'coding_agent' || !activeExpertId.value
-          ? undefined
-          : activeExpertLabel.value || activeExpertId.value,
-        expert_avatar: sessionSource === 'coding_agent' || !activeExpertId.value
-          ? undefined
-          : activeExpertAvatar.value || undefined,
+        expert_id: expertIdForRun,
+        expert_label: expertLabelForRun,
+        expert_avatar: expertAvatarForRun,
       }
       if (runPayload.expert_id && activeSession.value) {
         activeSession.value.expertId = runPayload.expert_id
-        activeSession.value.expertLabel = activeExpertLabel.value || runPayload.expert_id
-        activeSession.value.expertAvatar = activeExpertAvatar.value || undefined
+        activeSession.value.expertLabel = runPayload.expert_label || runPayload.expert_id
+        activeSession.value.expertAvatar = runPayload.expert_avatar || undefined
       }
       if (shouldSendInitialSessionConfig && activeSession.value) {
         activeSession.value.messageCount = Math.max(activeSession.value.messageCount || 0, 1)

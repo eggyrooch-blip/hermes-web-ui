@@ -73,10 +73,11 @@ describe('MessageList streaming display', () => {
     expect(wrapper.find('.thinking-avatar').exists()).toBe(true)
   })
 
-  it('uses the selected expert avatar for the live thinking indicator', () => {
+  it('does not use the global active expert avatar for an ordinary live thinking indicator', () => {
     const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
     chatStoreMock.isRunActive = true
     chatStoreMock.activeExpertAvatar = expertAvatar
+    chatStoreMock.activeSession = { id: 'session-1', source: 'cli' }
     chatStoreMock.messages = [
       { id: 'u1', role: 'user', content: 'hello', timestamp: Date.now() },
     ]
@@ -84,7 +85,8 @@ describe('MessageList streaming display', () => {
     const wrapper = mount(MessageList)
 
     const avatar = wrapper.get('img.thinking-avatar')
-    expect(avatar.attributes('src')).toBe(expertAvatar)
+    expect(avatar.attributes('src')).not.toBe(expertAvatar)
+    expect(avatar.attributes('src')).toContain('thinking.gif')
   })
 
   it('uses the persisted active session expert avatar for the live thinking indicator', () => {
