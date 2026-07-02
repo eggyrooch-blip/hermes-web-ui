@@ -270,6 +270,35 @@ describe('run-chat broker compatibility module', () => {
     }))
   })
 
+  it('maps an auth_required frame to an auth.required chat event', () => {
+    expect(mapRunBrokerFrameForChat({
+      kind: 'auth_required',
+      run_id: 'sig-run-9',
+      payload: { connector_id: 'lark-cli', provider: 'feishu', run_id: 'sig-run-9' },
+    })).toEqual(expect.objectContaining({
+      type: 'emit',
+      event: 'auth.required',
+      payload: expect.objectContaining({
+        event: 'auth.required',
+        run_id: 'sig-run-9',
+        connector_id: 'lark-cli',
+        provider: 'feishu',
+      }),
+    }))
+  })
+
+  it('ignores an auth_required frame without a connector_id', () => {
+    expect(mapRunBrokerFrameForChat({ kind: 'auth_required', run_id: 'r', payload: {} }))
+      .toEqual({ type: 'ignore' })
+  })
+
+  it('does not emit auth.required for a normal content frame', () => {
+    const mapped = mapRunBrokerFrameForChat({ kind: 'content', run_id: 'r', text: 'hi' })
+    expect(mapped.type).toBe('emit')
+    expect((mapped as any).event).toBe('message.delta')
+    expect((mapped as any).event).not.toBe('auth.required')
+  })
+
   it('parses multi-line SSE data frames', async () => {
     const encoder = new TextEncoder()
     const stream = new ReadableStream<Uint8Array>({

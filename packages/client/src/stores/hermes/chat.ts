@@ -2,6 +2,7 @@ import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSe
 import { deleteSession as deleteSessionApi, fetchSessionMessagesPage, fetchSessions, setSessionModel, type HermesMessage, type ProviderApiMode, type SessionSummary } from '@/api/hermes/sessions'
 import { getActiveProfileName, getActiveExpertId, setActiveExpertId } from '@/api/client'
 import { getDownloadUrl } from '@/api/hermes/download'
+import { replayCredentialRun } from '@/api/skillCredentials'
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { useAppStore } from './app'
@@ -72,6 +73,16 @@ export interface PendingClarify {
   choices: string[] | null
   timeoutMs: number
   requestedAt: number
+}
+
+export interface PendingReauth {
+  sessionId: string
+  runId: string
+  connectorId: string
+  provider: string
+  requestedAt: number
+  /** true once the user authorized and the broker replay was kicked off */
+  retrying: boolean
 }
 
 export interface Session {
@@ -609,6 +620,12 @@ export const useChatStore = defineStore('chat', () => {
     return sid ? pendingClarifies.value.get(sid) || null : null
   })
 
+  const pendingReauths = ref<Map<string, PendingReauth>>(new Map())
+  const activePendingReauth = computed(() => {
+    const sid = activeSessionId.value
+    return sid ? pendingReauths.value.get(sid) || null : null
+  })
+
   // 自动播放语音开关
   const autoPlaySpeechEnabled = ref(false)
 
@@ -654,6 +671,7 @@ export const useChatStore = defineStore('chat', () => {
     queuedUserMessages.value = new Map()
     pendingApprovals.value = new Map()
     pendingClarifies.value = new Map()
+    pendingReauths.value = new Map()
     streamStates.value = new Map()
     serverWorking.value = new Set()
     sessionsLoaded.value = false
@@ -1158,6 +1176,8 @@ export const useChatStore = defineStore('chat', () => {
                 setPendingClarify({ ...e, session_id: sessionId } as RunEvent)
               } else if (e.event === 'clarify.resolved') {
                 clearPendingClarify({ ...e, session_id: sessionId } as RunEvent)
+              } else if (e.event === 'auth.required') {
+                setPendingReauth({ ...e, session_id: sessionId } as RunEvent)
               } else if (e.event === 'run.failed') {
                 addAgentErrorMessage(sessionId, e.error)
                 serverWorking.value.delete(sessionId)
@@ -1811,6 +1831,52 @@ export const useChatStore = defineStore('chat', () => {
     if (clarifyId && current.clarifyId !== clarifyId) return
     pendingClarifies.value.delete(sid)
     pendingClarifies.value = new Map(pendingClarifies.value)
+  }
+
+  function setPendingReauth(evt: RunEvent) {
+    const sid = evt.session_id
+    const runId = String((evt as any).run_id || '')
+    const connectorId = String((evt as any).connector_id || '')
+    if (!sid || !runId || !connectorId) return
+    pendingReauths.value.set(sid, {
+      sessionId: sid,
+      runId,
+      connectorId,
+      provider: String((evt as any).provider || ''),
+      requestedAt: Date.now(),
+      retrying: false,
+    })
+    pendingReauths.value = new Map(pendingReauths.value)
+  }
+
+  function clearPendingReauth(sessionId: string) {
+    if (!sessionId || !pendingReauths.value.has(sessionId)) return
+    pendingReauths.value.delete(sessionId)
+    pendingReauths.value = new Map(pendingReauths.value)
+  }
+
+  /**
+   * After the user re-authorizes the connector, ask the broker to replay the
+   * original request (server-side). Sets the card to a retrying state; the
+   * replayed run streams back its own frames, and the card is cleared.
+   */
+  async function triggerReauthReplay(sessionId: string): Promise<void> {
+    const current = pendingReauths.value.get(sessionId)
+    if (!current || current.retrying) return
+    pendingReauths.value.set(sessionId, { ...current, retrying: true })
+    pendingReauths.value = new Map(pendingReauths.value)
+    try {
+      await replayCredentialRun(current.runId)
+      clearPendingReauth(sessionId)
+    } catch (err) {
+      // Leave the card up (not retrying) so the user can retry authorization.
+      const still = pendingReauths.value.get(sessionId)
+      if (still) {
+        pendingReauths.value.set(sessionId, { ...still, retrying: false })
+        pendingReauths.value = new Map(pendingReauths.value)
+      }
+      throw err
+    }
   }
 
   function clearPendingInteractions(sessionId: string) {
@@ -3667,6 +3733,9 @@ export const useChatStore = defineStore('chat', () => {
     pendingApprovals,
     activePendingApproval,
     activePendingClarify,
+    activePendingReauth,
+    triggerReauthReplay,
+    clearPendingReauth,
     removeQueuedMessage,
     isLoadingSessions,
     sessionsLoaded,

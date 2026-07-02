@@ -533,6 +533,28 @@ export function mapRunBrokerFrameForChat(parsed: any, frameEvent?: string): RunB
     }
   }
 
+  if (brokerKind === 'auth_required') {
+    // A connector's credential expired mid-run. The broker parked the original
+    // request keyed by run_id + exposes a replay endpoint; surface a structured
+    // event so the chat UI renders an inline re-auth card instead of leaving the
+    // failure as free-form assistant text.
+    const connectorId = String(parsed?.connector_id || payload.connector_id || '')
+    if (!connectorId) return { type: 'ignore' }
+    return {
+      type: 'emit',
+      event: 'auth.required',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'auth.required',
+        run_id: runId,
+        response_id: responseId,
+        connector_id: connectorId,
+        provider: String(parsed?.provider || payload.provider || ''),
+      },
+    }
+  }
+
   if (brokerKind === 'done' || brokerKind === 'run.completed') {
     return {
       type: 'terminal',

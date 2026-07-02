@@ -23,6 +23,7 @@ import {
   type UserStatus,
 } from '../db/hermes/users-store'
 import { issueUserJwt } from '../middleware/user-auth'
+import { buildRunBrokerHeaders } from '../services/hermes/run-chat/handle-broker-run'
 import { getProfileDir, listProfileNamesFromDisk } from '../services/hermes/hermes-profile'
 import { startOutboundRelayClient } from '../services/global-agent/outbound-relay-client'
 import { config, parseBool } from '../config'
@@ -1224,6 +1225,42 @@ export async function kepCliCallback(ctx: Context) {
   } catch (err: any) {
     ctx.status = typeof err?.status === 'number' ? err.status : 500
     ctx.body = { error: err?.message || 'kep-cli OAuth callback failed' }
+  }
+}
+
+/**
+ * POST /api/hermes/credentials/replay/:runId
+ * After the user re-authorizes a connector whose credential expired mid-run,
+ * ask the broker to re-run the ORIGINAL request it parked under this run_id.
+ * The replay itself happens server-side in the broker (avoids client-side
+ * double-execution); this route only proxies, forwarding the caller's verified
+ * owner identity so the broker's tenant check pins the replay to its owner.
+ */
+export async function credentialReplay(ctx: Context) {
+  try {
+    const runId = String(ctx.params?.runId || '').trim()
+    if (!runId) {
+      ctx.status = 400
+      ctx.body = { error: 'run_id is required' }
+      return
+    }
+    const user = getOptionalFeishuUser(ctx)
+    // Forward the verified owner open-id (never a client-supplied profile) so the
+    // broker replay endpoint's owner-scoped tenant check matches the stash owner.
+    const headers = buildRunBrokerHeaders({
+      runBrokerKey: config.runBrokerKey,
+      ownerOpenId: user?.openid,
+    })
+    const res = await fetch(
+      brokerUrl(`/api/run-broker/credentials/replay/${encodeURIComponent(runId)}`),
+      { method: 'POST', headers },
+    )
+    ctx.status = res.status
+    ctx.type = res.headers.get('content-type')?.includes('text/event-stream') ? 'text/event-stream' : (res.headers.get('content-type') || 'application/json')
+    ctx.body = await res.text()
+  } catch (err: any) {
+    ctx.status = typeof err?.status === 'number' ? err.status : 500
+    ctx.body = { error: err?.message || 'credential replay failed' }
   }
 }
 

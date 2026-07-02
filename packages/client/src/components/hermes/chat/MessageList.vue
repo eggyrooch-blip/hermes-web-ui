@@ -21,6 +21,7 @@ import { NButton, NInput } from "naive-ui";
 import VirtualMessageList from "./VirtualMessageList.vue";
 import MessageItem from "./MessageItem.vue";
 import { LIVE_CHAT_MAX_LOADED_MESSAGES, useChatStore } from "@/stores/hermes/chat";
+import { startSkillCredentialAuth, fetchSkillCredentials } from "@/api/skillCredentials";
 import thinkingImage from "@/assets/thinking.gif";
 import { useToolTraceVisibility } from "@/composables/useToolTraceVisibility";
 
@@ -148,8 +149,43 @@ const queuedMessages = computed(() => {
 });
 const visibleApproval = computed(() => chatStore.activePendingApproval);
 const visibleClarify = computed(() => chatStore.activePendingClarify);
+const visibleReauth = computed(() => chatStore.activePendingReauth);
 const clarifyResponse = ref("");
-const hasFloatingPrompt = computed(() => !!visibleApproval.value || !!visibleClarify.value);
+const hasFloatingPrompt = computed(() => !!visibleApproval.value || !!visibleClarify.value || !!visibleReauth.value);
+
+const CONNECTOR_DISPLAY_NAMES: Record<string, string> = {
+  "lark-cli": "Lark CLI",
+};
+const reauthConnectorName = computed(() =>
+  CONNECTOR_DISPLAY_NAMES[visibleReauth.value?.connectorId || ""] || (visibleReauth.value?.connectorId || ""),
+);
+
+// Re-auth card: reuse the SAME auth API CredentialsView uses (no duplicated
+// auth logic), open the device-flow / OAuth window, poll connector status until
+// the credential is live, then ask the broker to replay the parked request.
+async function handleReauth() {
+  const card = visibleReauth.value;
+  if (!card || card.retrying) return;
+  const connectorId = card.connectorId;
+  const sessionId = card.sessionId;
+  try {
+    const started = await startSkillCredentialAuth(connectorId);
+    if (started?.verification_uri) window.open(started.verification_uri, "_blank", "noopener");
+    // Poll until the connector reports authenticated (bounded), then replay.
+    const deadline = Date.now() + 120000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2500));
+      const status = await fetchSkillCredentials(undefined, { fresh: true }).catch(() => null);
+      const entry = status?.credentials?.find((c) => c.id === connectorId);
+      if (entry && entry.status === "authenticated") {
+        await chatStore.triggerReauthReplay(sessionId);
+        return;
+      }
+    }
+  } catch {
+    // Leave the card up so the user can retry; do not swallow into a broken loop.
+  }
+}
 const virtualListPadding = computed(() => {
   if (queuedMessages.value.length > 0 && hasFloatingPrompt.value) return "20px 20px 380px";
   if (queuedMessages.value.length > 0 || hasFloatingPrompt.value) return "20px 20px 260px";
@@ -628,7 +664,7 @@ defineExpose({
       </svg>
     </button>
     <div
-      v-if="visibleApproval || visibleClarify || queuedMessages.length > 0"
+      v-if="visibleApproval || visibleClarify || visibleReauth || queuedMessages.length > 0"
       class="message-float-stack"
     >
       <Transition name="queue-float">
@@ -744,6 +780,40 @@ defineExpose({
             />
             <NButton size="small" type="primary" @click="handleClarify()">
               {{ t("chat.clarifySubmit") }}
+            </NButton>
+          </div>
+        </div>
+      </Transition>
+      <Transition name="approval-float">
+        <div
+          v-if="!visibleApproval && !visibleClarify && visibleReauth"
+          class="approval-float-panel"
+          data-testid="reauth-card"
+        >
+          <div class="float-panel-header">
+            <span class="approval-float-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+            </span>
+            <span>{{ t("chat.reauthKicker") }}</span>
+          </div>
+          <div class="approval-float-title">{{ t("chat.reauthTitle") }}</div>
+          <div class="approval-float-desc">
+            {{ t("chat.reauthDesc", { connector: reauthConnectorName }) }}
+          </div>
+          <div class="approval-float-actions">
+            <NButton
+              size="small"
+              type="primary"
+              :loading="visibleReauth.retrying"
+              :disabled="visibleReauth.retrying"
+              data-testid="reauth-action"
+              @click="handleReauth"
+            >
+              <span v-if="visibleReauth.retrying" data-testid="reauth-retrying">{{ t("chat.reauthRetrying") }}</span>
+              <span v-else>{{ t("chat.reauthAction", { connector: reauthConnectorName }) }}</span>
             </NButton>
           </div>
         </div>
