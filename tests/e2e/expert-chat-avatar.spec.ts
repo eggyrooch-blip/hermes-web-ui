@@ -60,6 +60,7 @@ test('uses the selected expert avatar for the live Hermes thinking indicator', a
   }, run.session_id)
 
   await expect(page.locator('.thinking-avatar')).toHaveAttribute('src', expertAvatar)
+  await expect(page.locator('.session-item.active .session-item-agent-logo')).toHaveAttribute('src', expertAvatar)
   const artifactDir = process.env.FTASK_ARTIFACT_DIR || 'test-results'
   await page.screenshot({
     path: path.join(artifactDir, 'expert-chat-avatar-thinking.png'),

@@ -2,7 +2,7 @@
 import { computed, ref, onUnmounted } from 'vue'
 import { NPopconfirm, NCheckbox, NTooltip } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import type { Session } from '@/stores/hermes/chat'
+import { useChatStore, type Session } from '@/stores/hermes/chat'
 import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
@@ -32,6 +32,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const chatStore = useChatStore()
 const profilesStore = useProfilesStore()
 const profileName = computed(() => props.session.profile || 'default')
 const profileAvatar = computed(() => profilesStore.profiles.find(profile => profile.name === profileName.value)?.avatar)
@@ -52,6 +53,9 @@ const sessionAgentLogo = computed(() => {
       return { label: 'Codex', src: '/coding-agents/codex-openai.png' }
     }
     return { label: 'Claude Code', src: '/coding-agents/claude-code.svg' }
+  }
+  if (props.active && chatStore.activeExpertAvatar) {
+    return { label: chatStore.activeExpertLabel || chatStore.activeExpertId || 'Expert', src: chatStore.activeExpertAvatar }
   }
   return { label: 'Hermes', src: '/coding-agents/hermes.png' }
 })

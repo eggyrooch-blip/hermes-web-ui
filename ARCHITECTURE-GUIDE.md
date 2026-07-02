@@ -29,6 +29,13 @@ related:
 > resource-delivery expert, sending a message, asserting `expert_id`, and
 > capturing the live Thinking avatar; production focused Vitest/build passed,
 > WebUI health passed, and the served bundle contains `activeExpertAvatar`.
+>
+> Follow-up `expert-sidebar-active-avatar`: the active chat sidebar row reuses
+> the same active expert avatar for its agent logo, but only while that row is
+> active and not a coding-agent session. Inactive/history rows remain Hermes;
+> Codex/Claude rows keep their per-agent logos. This intentionally avoids
+> pretending old sessions know which expert was selected before session-level
+> expert metadata is persisted.
 
 > [!info] 2026-06-29 local worktree — expert plugin avatars via BFF proxy, production not published
 > `resource-expert-avatar-chat` adds the WebUI half of managed expert avatars.

@@ -8,10 +8,20 @@ const profileStoreMocks = vi.hoisted(() => ({
   profiles: [] as any[],
 }))
 
+const chatStoreMocks = vi.hoisted(() => ({
+  activeExpertAvatar: '',
+  activeExpertLabel: '',
+  activeExpertId: null as string | null,
+}))
+
 vi.mock('@/stores/hermes/app', () => ({
   useAppStore: () => ({
     profileModelGroups: [],
   }),
+}))
+
+vi.mock('@/stores/hermes/chat', () => ({
+  useChatStore: () => chatStoreMocks,
 }))
 
 vi.mock('@/stores/hermes/profiles', () => ({
@@ -56,6 +66,9 @@ const session = {
 describe('SessionListItem', () => {
   beforeEach(() => {
     profileStoreMocks.profiles = []
+    chatStoreMocks.activeExpertAvatar = ''
+    chatStoreMocks.activeExpertLabel = ''
+    chatStoreMocks.activeExpertId = null
   })
 
   it('renders normal mode as a link to the session route', () => {
@@ -203,6 +216,45 @@ describe('SessionListItem', () => {
     const logo = wrapper.get('.session-item-agent-logo')
     expect(logo.attributes('src')).toBe('/coding-agents/hermes.png')
     expect(logo.attributes('alt')).toBe('Hermes')
+  })
+
+  it('renders the selected expert avatar for the active Hermes session row only', () => {
+    const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
+    chatStoreMocks.activeExpertAvatar = expertAvatar
+    chatStoreMocks.activeExpertLabel = '资源投放专家'
+    chatStoreMocks.activeExpertId = 'keep-resource-delivery'
+
+    const activeWrapper = mount(SessionListItem, {
+      props: {
+        session: { ...session, source: 'cli', agent: 'hermes' },
+        active: true,
+        pinned: false,
+        canDelete: true,
+      },
+      global: {
+        stubs: { ProfileAvatar: avatarStub },
+      },
+    })
+
+    const activeLogo = activeWrapper.get('.session-item-agent-logo')
+    expect(activeLogo.attributes('src')).toBe(expertAvatar)
+    expect(activeLogo.attributes('alt')).toBe('资源投放专家')
+
+    const inactiveWrapper = mount(SessionListItem, {
+      props: {
+        session: { ...session, id: 's2', source: 'cli', agent: 'hermes' },
+        active: false,
+        pinned: false,
+        canDelete: true,
+      },
+      global: {
+        stubs: { ProfileAvatar: avatarStub },
+      },
+    })
+
+    const inactiveLogo = inactiveWrapper.get('.session-item-agent-logo')
+    expect(inactiveLogo.attributes('src')).toBe('/coding-agents/hermes.png')
+    expect(inactiveLogo.attributes('alt')).toBe('Hermes')
   })
 
   it('renders the Claude Code logo for Claude coding agent sessions', () => {
