@@ -7,6 +7,7 @@ const getConversationDetailMock = vi.fn()
 const listSessionSummariesMock = vi.fn()
 const getSessionDetailFromDbMock = vi.fn()
 const getSessionDetailFromDbWithProfileMock = vi.fn()
+const getSessionDetailPaginatedFromDbWithProfileMock = vi.fn()
 const getExactSessionDetailFromDbWithProfileMock = vi.fn()
 const getUsageStatsFromDbMock = vi.fn()
 const getSessionMock = vi.fn()
@@ -14,6 +15,7 @@ const deleteHermesSessionForProfileMock = vi.fn()
 const localListSessionsMock = vi.fn()
 const localListSessionsByAgentMock = vi.fn()
 const localGetSessionDetailMock = vi.fn()
+const localGetSessionDetailPaginatedMock = vi.fn()
 const localSearchSessionsMock = vi.fn()
 const localSearchSessionsByAgentMock = vi.fn()
 const localDeleteSessionMock = vi.fn()
@@ -67,6 +69,7 @@ vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
   searchSessionSummaries: vi.fn(),
   getSessionDetailFromDb: getSessionDetailFromDbMock,
   getSessionDetailFromDbWithProfile: getSessionDetailFromDbWithProfileMock,
+  getSessionDetailPaginatedFromDbWithProfile: getSessionDetailPaginatedFromDbWithProfileMock,
   getExactSessionDetailFromDbWithProfile: getExactSessionDetailFromDbWithProfileMock,
   getUsageStatsFromDb: getUsageStatsFromDbMock,
 }))
@@ -77,6 +80,7 @@ vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   searchSessions: localSearchSessionsMock,
   searchSessionsByAgent: localSearchSessionsByAgentMock,
   getSessionDetail: localGetSessionDetailMock,
+  getSessionDetailPaginated: localGetSessionDetailPaginatedMock,
   deleteSession: localDeleteSessionMock,
   renameSession: localRenameSessionMock,
   createSession: localCreateSessionMock,
@@ -158,6 +162,7 @@ describe('session conversations controller', () => {
     listSessionSummariesMock.mockReset()
     getSessionDetailFromDbMock.mockReset()
     getSessionDetailFromDbWithProfileMock.mockReset()
+    getSessionDetailPaginatedFromDbWithProfileMock.mockReset()
     getExactSessionDetailFromDbWithProfileMock.mockReset()
     getUsageStatsFromDbMock.mockReset()
     getSessionMock.mockReset()
@@ -165,6 +170,7 @@ describe('session conversations controller', () => {
     localListSessionsMock.mockReset()
     localListSessionsByAgentMock.mockReset()
     localGetSessionDetailMock.mockReset()
+    localGetSessionDetailPaginatedMock.mockReset()
     localSearchSessionsMock.mockReset()
     localSearchSessionsByAgentMock.mockReset()
     localDeleteSessionMock.mockReset()
@@ -858,6 +864,44 @@ describe('session conversations controller', () => {
       visible_count: 1,
       thread_session_count: 1,
     })
+  })
+
+  it('returns expert metadata from paginated local conversation detail', async () => {
+    localGetSessionDetailPaginatedMock.mockReturnValue({
+      session: {
+        id: 'expert-session',
+        profile: 'default',
+        source: 'api_server',
+        model: 'custom:litellm-sre/tencent-',
+        title: '资源投放',
+        started_at: 1,
+        ended_at: null,
+        last_active: 2,
+        message_count: 1,
+        input_tokens: 10,
+        output_tokens: 20,
+        expert_id: 'keep-resource-delivery',
+        expert_label: '资源投放专家',
+        expert_avatar: '/api/hermes/plugin-assets/keep-resource-delivery/expert.png',
+      },
+      messages: [{ id: 1, session_id: 'expert-session', role: 'assistant', content: 'ok', timestamp: 2 }],
+      total: 1,
+      offset: 0,
+      limit: 150,
+      hasMore: false,
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { params: { id: 'expert-session' }, query: {}, state: {}, body: null }
+    await mod.getConversationMessagesPaginated(ctx)
+
+    expect(localGetSessionDetailPaginatedMock).toHaveBeenCalledWith('expert-session', 0, 150)
+    expect(ctx.body.session).toEqual(expect.objectContaining({
+      id: 'expert-session',
+      expert_id: 'keep-resource-delivery',
+      expert_label: '资源投放专家',
+      expert_avatar: '/api/hermes/plugin-assets/keep-resource-delivery/expert.png',
+    }))
   })
 
   it('treats missing conversation message arrays as empty', async () => {

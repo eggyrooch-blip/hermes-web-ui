@@ -1321,6 +1321,11 @@ export async function getConversationMessagesPaginated(ctx: any) {
     return
   }
   const session = { ...result.session, profile: (result.session as any).profile || profile || 'default' }
+  const expertSession = session as typeof session & {
+    expert_id?: string | null
+    expert_label?: string | null
+    expert_avatar?: string | null
+  }
   if (await denySessionAccessAsync(ctx, session)) return
 
   ctx.body = {
@@ -1336,6 +1341,9 @@ export async function getConversationMessagesPaginated(ctx: any) {
       message_count: session.message_count,
       input_tokens: session.input_tokens,
       output_tokens: session.output_tokens,
+      expert_id: expertSession.expert_id ?? null,
+      expert_label: expertSession.expert_label ?? null,
+      expert_avatar: expertSession.expert_avatar ?? null,
     },
     messages: result.messages,
     total: result.total,
