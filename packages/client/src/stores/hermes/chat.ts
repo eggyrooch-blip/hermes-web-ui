@@ -1866,6 +1866,12 @@ export const useChatStore = defineStore('chat', () => {
     if (!current || current.retrying) return
     const socket = getChatRunSocket(runtimeTransport())
     if (!socket) return
+    // Defer if a run is still streaming client-side on this session: the forced
+    // re-attach below (resumeServerWorkingRun) no-ops while streamStates.has(sid)
+    // is true, so firing now would race that sibling run's cleanup (~1 RTT) and
+    // could drop the replayed frames. Keep the card so the user retries once the
+    // session is idle — strictly safe, no silent loss.
+    if (streamStates.value.has(sessionId)) return
     pendingReauths.value.set(sessionId, { ...current, retrying: true })
     pendingReauths.value = new Map(pendingReauths.value)
     // The original (failed) run already emitted `done`, which unregistered this
