@@ -1868,7 +1868,18 @@ export const useChatStore = defineStore('chat', () => {
     if (!socket) return
     pendingReauths.value.set(sessionId, { ...current, retrying: true })
     pendingReauths.value = new Map(pendingReauths.value)
-    socket.emit('credential.replay', { session_id: sessionId, run_id: current.runId })
+    // The original (failed) run already emitted `done`, which unregistered this
+    // session's socket handlers. Re-attach BEFORE emitting so the replayed run's
+    // frames — the answer AND any run.failed on 404/403/broker-down — are
+    // actually received; otherwise the card vanishes with nothing on screen.
+    serverWorking.value.add(sessionId)
+    resumeServerWorkingRun(sessionId, true)
+    socket.emit('credential.replay', {
+      session_id: sessionId,
+      run_id: current.runId,
+      connector_id: current.connectorId,
+      provider: current.provider,
+    })
     clearPendingReauth(sessionId)
   }
 
@@ -3735,6 +3746,7 @@ export const useChatStore = defineStore('chat', () => {
     pendingApprovals,
     activePendingApproval,
     activePendingClarify,
+    pendingReauths,
     activePendingReauth,
     triggerReauthReplay,
     clearPendingReauth,

@@ -877,11 +877,14 @@ export class BrokerRunController {
     // parked request through the SAME socket-run relay so the answer streams back
     // into this chat session (the broker holds the original request; we do not
     // resend it from the client).
-    socket.on('credential.replay', async (data: { session_id?: string; run_id?: string }) => {
+    socket.on('credential.replay', async (data: { session_id?: string; run_id?: string; connector_id?: string; provider?: string }) => {
       const sessionId = String(data.session_id || '').trim()
       const runId = String(data.run_id || '').trim()
       if (!sessionId || !runId) return
-      await this.handleReplay(socket, sessionId, runId, profile)
+      await this.handleReplay(socket, sessionId, runId, profile, {
+        connectorId: String(data.connector_id || ''),
+        provider: String(data.provider || ''),
+      })
     })
   }
   private handleMessage(messages: SessionMessage[], sid: string): any[] {
@@ -1699,7 +1702,13 @@ export class BrokerRunController {
    * already in the transcript — the replayed run just streams its answer back
    * into the session via the shared broker-run relay.
    */
-  private async handleReplay(socket: Socket, sessionId: string, runId: string, profile: string) {
+  private async handleReplay(
+    socket: Socket,
+    sessionId: string,
+    runId: string,
+    profile: string,
+    card?: { connectorId: string; provider: string },
+  ) {
     const runMarker = `resp_run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
     let state = this.getSessionState(sessionId, profile)
     if (!state) {
@@ -1710,15 +1719,21 @@ export class BrokerRunController {
     }
     // Concurrency guard: the failed run that produced the re-auth card has
     // already completed (it emitted done), so isWorking is normally false here.
-    // If another run is genuinely in-flight on this session, do NOT clobber its
-    // shared SessionState (abortController / responseRun / isWorking) — bail and
-    // let the user retry once the session is idle.
+    // If another run is genuinely in-flight (e.g. the user sent a follow-up
+    // during the 120s auth window), do NOT clobber its shared SessionState AND
+    // do NOT emit a session-scoped run.failed (that would tear down the innocent
+    // sibling run's tools/messages). Instead re-surface the re-auth card so the
+    // user can retry once the session is idle — non-destructive.
     if (state.isWorking) {
-      this.nsp.to(this.sessionRoom(sessionId, profile)).emit('run.failed', {
-        event: 'run.failed',
-        session_id: sessionId,
-        error: 'A run is already in progress; retry re-authorization when it finishes.',
-      })
+      if (card?.connectorId) {
+        this.nsp.to(this.sessionRoom(sessionId, profile)).emit('auth.required', {
+          event: 'auth.required',
+          session_id: sessionId,
+          run_id: runId,
+          connector_id: card.connectorId,
+          provider: card.provider,
+        })
+      }
       return
     }
     state.isWorking = true

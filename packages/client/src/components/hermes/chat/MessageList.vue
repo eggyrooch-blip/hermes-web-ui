@@ -163,11 +163,18 @@ const reauthConnectorName = computed(() =>
 // Re-auth card: reuse the SAME auth API CredentialsView uses (no duplicated
 // auth logic), open the device-flow / OAuth window, poll connector status until
 // the credential is live, then ask the broker to replay the parked request.
+// Guards: an in-flight set prevents double-click re-entry (the card's own
+// `retrying` flag is only set after the poll succeeds, so it can't gate the
+// window); the poll stops early if the card is cleared or the user navigates
+// away, so it can't zombie-poll or fire a stale replay.
+const reauthInFlight = new Set<string>();
 async function handleReauth() {
   const card = visibleReauth.value;
   if (!card || card.retrying) return;
   const connectorId = card.connectorId;
   const sessionId = card.sessionId;
+  if (reauthInFlight.has(sessionId)) return;
+  reauthInFlight.add(sessionId);
   try {
     const started = await startSkillCredentialAuth(connectorId);
     if (started?.verification_uri) window.open(started.verification_uri, "_blank", "noopener");
@@ -175,15 +182,20 @@ async function handleReauth() {
     const deadline = Date.now() + 120000;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 2500));
+      // Stop if the card for this session is gone (cleared / navigated away).
+      const live = chatStore.pendingReauths?.get?.(sessionId);
+      if (!live || live.runId !== card.runId) return;
       const status = await fetchSkillCredentials(undefined, { fresh: true }).catch(() => null);
       const entry = status?.credentials?.find((c) => c.id === connectorId);
       if (entry && entry.status === "authenticated") {
-        await chatStore.triggerReauthReplay(sessionId);
+        chatStore.triggerReauthReplay(sessionId);
         return;
       }
     }
   } catch {
     // Leave the card up so the user can retry; do not swallow into a broken loop.
+  } finally {
+    reauthInFlight.delete(sessionId);
   }
 }
 const virtualListPadding = computed(() => {
