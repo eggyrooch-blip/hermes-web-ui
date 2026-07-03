@@ -182,9 +182,12 @@ async function handleReauth() {
     const deadline = Date.now() + 120000;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 2500));
-      // Stop if the card for this session is gone (cleared / navigated away).
+      // Stop if the card for this session is gone, or the user navigated away to
+      // another session/profile (activeSessionId changed). The latter also
+      // prevents a stale cross-profile replay: fetchSkillCredentials reads the
+      // ACTIVE profile, so polling must not outlive the session it belongs to.
       const live = chatStore.pendingReauths?.get?.(sessionId);
-      if (!live || live.runId !== card.runId) return;
+      if (!live || live.runId !== card.runId || chatStore.activeSessionId !== sessionId) return;
       const status = await fetchSkillCredentials(undefined, { fresh: true }).catch(() => null);
       const entry = status?.credentials?.find((c) => c.id === connectorId);
       if (entry && entry.status === "authenticated") {

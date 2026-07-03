@@ -984,6 +984,10 @@ export function startRunViaSocket(
       if (closed) return
       onEvent(evt)
     },
+    onAuthRequired: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
   }
 
   // Register handlers in the global session map
