@@ -47,6 +47,7 @@ const CHAT_RUN_EVENTS = [
   'approval.resolved',
   'clarify.requested',
   'clarify.resolved',
+  'auth.required',
   'peer.user.message',
 ]
 
@@ -186,7 +187,7 @@ export async function runOnce(ctx: Context) {
           })
           return
         }
-        if (eventName === 'approval.requested' || eventName === 'clarify.requested') {
+        if (eventName === 'approval.requested' || eventName === 'clarify.requested' || eventName === 'auth.required') {
           finish(409, {
             ok: false,
             status: 'requires_action',

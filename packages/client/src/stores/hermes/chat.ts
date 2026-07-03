@@ -3256,6 +3256,11 @@ export const useChatStore = defineStore('chat', () => {
           break
         }
 
+        case 'auth.required': {
+          setPendingReauth(evt)
+          break
+        }
+
         case 'clarify.resolved': {
           clearPendingClarify(evt)
           break

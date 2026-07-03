@@ -215,6 +215,9 @@ export class GlobalAgentServer {
     socket.on('clarify.respond', (payload: unknown) => {
       void this.emitFrontendChatEvent(socket, 'clarify.respond', payload)
     })
+    socket.on('credential.replay', (payload: unknown) => {
+      void this.emitFrontendChatEvent(socket, 'credential.replay', payload)
+    })
     socket.on('disconnect', () => {
       this.frontendClients.delete(socket.id)
       for (const [bridgeId, ownerSocketId] of this.bridgeOwners.entries()) {
