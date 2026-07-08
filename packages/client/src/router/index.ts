@@ -35,6 +35,14 @@ const router = createRouter({
       component: () => import('@/views/hermes/HistoryView.vue'),
     },
     {
+      // Console — any logged-in Feishu user (developer plane is default-all).
+      // The ops plane inside is gated server-side by requireConsoleAdmin, so no
+      // requiresSuperAdmin meta here (that flag is dead for Feishu users anyway).
+      path: '/hermes/console',
+      name: 'hermes.console',
+      component: () => import('@/views/hermes/ConsoleView.vue'),
+    },
+    {
       path: '/hermes/global-agent',
       name: 'hermes.globalAgent',
       component: () => import('@/views/hermes/GlobalAgentView.vue'),
