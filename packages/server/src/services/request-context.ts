@@ -105,7 +105,7 @@ export function verifyTrustedFeishuHeaders(ctx: Context): ({ ok: true } & Truste
   }
 }
 
-function candidateMultitenancyDbs(): string[] {
+export function candidateMultitenancyDbs(): string[] {
   const configured = config.multitenancyDb
   const base = resolve(homedir(), '.hermes')
   return Array.from(new Set([

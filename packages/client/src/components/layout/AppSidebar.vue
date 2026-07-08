@@ -12,7 +12,7 @@ import LanguageSwitch from "@/components/layout/LanguageSwitch.vue";
 import ThemeSwitch from "@/components/layout/ThemeSwitch.vue";
 import SidebarUserCard from "@/components/layout/SidebarUserCard.vue";
 import { fetchCurrentUser } from "@/api/auth";
-import { getStoredUsername, isStoredSuperAdmin } from "@/api/client";
+import { getStoredUsername, isStoredSuperAdmin, isServerSessionAuthMode } from "@/api/client";
 
 const { t } = useI18n();
 const route = useRoute();
@@ -23,6 +23,10 @@ const selectedKey = computed(() => {
   return route.name as string;
 });
 const isSuperAdmin = computed(() => isStoredSuperAdmin());
+// Console is for Feishu-session users (developer default, union_id admin). Hide it
+// from web-plane (username/password) sessions, which carry no openid and would only
+// get 401s from /api/console/* — the server guards it either way; this hides the dead link.
+const showConsole = computed(() => isServerSessionAuthMode());
 const showToolsGroup = computed(() => {
   return isSuperAdmin.value && (
     hasRoute('hermes.plugins') ||
@@ -117,6 +121,13 @@ onMounted(() => {
           </svg>
         </div>
         <div v-show="!isGroupCollapsed('agent')" class="nav-group-items">
+          <RouteLinkItem v-if="showConsole" class="nav-item" :to="{ name: 'hermes.console' }" :active="selectedKey === 'hermes.console'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M3 9h18M8 14l2 2-2 2" />
+            </svg>
+            <span>Console</span>
+          </RouteLinkItem>
           <RouteLinkItem class="nav-item" :to="{ name: 'hermes.files' }" :active="selectedKey === 'hermes.files'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
