@@ -49,11 +49,12 @@ function stubFetch() {
   })
 }
 
-async function makeApp(sessionUser: Record<string, unknown> | null) {
+async function makeApp(sessionUser: Record<string, unknown> | null, opts: { noBrokerKey?: boolean } = {}) {
   vi.resetModules()
   process.env.HERMES_CONSOLE_ADMINS_FILE = adminsFile
   process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
-  process.env.HERMES_RUN_BROKER_KEY = 'master-key-secret'
+  if (opts.noBrokerKey) delete process.env.HERMES_RUN_BROKER_KEY
+  else process.env.HERMES_RUN_BROKER_KEY = 'master-key-secret'
   const { consoleRoutes } = await import('../../packages/server/src/routes/hermes/console')
   const app = new Koa()
   app.use(async (ctx, next) => { ctx.state.user = sessionUser ?? undefined; await next() })
@@ -135,6 +136,18 @@ describe('console BFF + RBAC (integration)', () => {
       expect(new URL(brokerCalls[0].url).searchParams.get('q')).toBe('open-self')
       expect(body.api_catalog.length).toBe(4)
     } finally { server.close() }
+  })
+
+  it('is fail-closed: no master key → 503, request never reaches the broker', async () => {
+    seedAdmins(['ou-admin'])
+    const { server, base } = await makeApp({ openid: 'open-a', unionId: 'ou-admin' }, { noBrokerKey: true })
+    try {
+      const r = await fetch(base + '/api/console/overview')
+      expect(r.status).toBe(503)
+      expect(brokerCalls.length).toBe(0) // never forwarded a keyless request
+    } finally {
+      server.close()
+    }
   })
 
   it('dev/me requires a session', async () => {
