@@ -159,11 +159,8 @@ export function buildBrokerMessagesForSession(messages: SessionMessage[]): Array
       continue
     }
     if (role === 'assistant') {
-      const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : []
       if (content.trim()) {
         brokerMessages.push({ role: 'assistant', content })
-      } else if (toolCalls.length) {
-        brokerMessages.push({ role: 'assistant', content: '', tool_calls: toolCalls })
       }
       continue
     }

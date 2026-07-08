@@ -74,4 +74,32 @@ describe('run chat content blocks', () => {
       ].join('\n'),
     }])
   })
+
+  it('does not replay empty assistant tool-call frames as broker history', () => {
+    const messages = buildBrokerMessagesForSession([
+      { id: 1, session_id: 's1', role: 'user', content: '查一下投放效果', timestamp: 1 },
+      {
+        id: 2,
+        session_id: 's1',
+        role: 'assistant',
+        content: '',
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'execute_code', arguments: '{"preview":"query"}' },
+        }],
+        timestamp: 2,
+      },
+      { id: 3, session_id: 's1', role: 'tool', content: '', tool_call_id: 'call_1', timestamp: 3 },
+      { id: 4, session_id: 's1', role: 'assistant', content: 'online 已登录。', timestamp: 4 },
+      { id: 5, session_id: 's1', role: 'tool', content: '{"ok":true}', tool_call_id: 'call_2', timestamp: 5 },
+    ])
+
+    expect(messages).toEqual([
+      { role: 'user', content: '查一下投放效果' },
+      { role: 'assistant', content: 'online 已登录。' },
+      { role: 'user', content: '[Tool result: {"ok":true}]' },
+    ])
+    expect(JSON.stringify(messages)).not.toContain('tool_calls')
+  })
 })
