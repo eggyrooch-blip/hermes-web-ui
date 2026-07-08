@@ -79,6 +79,12 @@ function credKind(s: string): 'ok' | 'warn' | 'mut' {
   if (s === 'missing' || s === 'unknown') return 'mut'
   return 'warn' // needs_auth / error / anything else → attention
 }
+
+function agentKindLabel(kind: unknown): string {
+  if (kind === 'user') return '档案'
+  if (kind === 'group') return '群'
+  return 'Agent'
+}
 </script>
 
 <template>
@@ -120,7 +126,7 @@ function credKind(s: string): 'ok' | 'warn' | 'mut' {
         </div>
         <div class="cpanel">
           <h3>需要关注</h3>
-          <table v-if="reauth.length"><tr v-for="r in reauth" :key="r.open_id"><td><span :class="pill('warn')">凭证</span></td><td class="cmono">{{ r.profile }}</td><td>{{ r.reason }}</td></tr></table>
+          <table v-if="reauth.length"><tbody><tr v-for="r in reauth" :key="r.open_id"><td><span :class="pill('warn')">凭证</span></td><td class="cmono">{{ r.profile }}</td><td>{{ r.reason }}</td></tr></tbody></table>
           <div v-else class="cempty">当前无异常</div>
         </div>
       </section>
@@ -132,22 +138,22 @@ function credKind(s: string): 'ok' | 'warn' | 'mut' {
         <div class="cpanel">
           <h3>共 {{ pf.total }} 条</h3>
           <table v-if="pf.items.length">
-            <tr><th>名称</th><th>profile</th><th>类型</th><th>open_id</th></tr>
-            <tr v-for="it in pf.items" :key="it.profile" class="crow" @click="openDetail(it.profile)">
+            <thead><tr><th>名称</th><th>profile</th><th>类型</th><th>open_id</th></tr></thead>
+            <tbody><tr v-for="it in pf.items" :key="it.profile" class="crow" @click="openDetail(it.profile)">
               <td>{{ it.display_label || '—' }}</td><td class="cmono">{{ it.profile }}</td><td>{{ it.kind }}</td><td class="cmono">{{ (it.open_id||'—') }}</td>
-            </tr>
+            </tr></tbody>
           </table>
           <div v-else class="cempty">回车列出全部,或输入关键词</div>
         </div>
         <div v-if="pfDetail" class="cpanel">
           <h3>{{ pfDetail.profile_name }} <span class="clink" @click="pfDetail=null">收起</span></h3>
           <table>
-            <tr><th>连接器</th><th>状态</th><th>到期</th></tr>
-            <tr v-for="c in (pfDetail.connectors||[])" :key="c.id"><td>{{ c.title || c.id }}</td><td><span :class="pill(credKind(c.status))">{{ c.status }}</span></td><td class="cmono">{{ c.expires_at || '—' }}</td></tr>
+            <thead><tr><th>连接器</th><th>状态</th><th>到期</th></tr></thead>
+            <tbody><tr v-for="c in (pfDetail.connectors||[])" :key="c.id"><td>{{ c.title || c.id }}</td><td><span :class="pill(credKind(c.status))">{{ c.status }}</span></td><td class="cmono">{{ c.expires_at || '—' }}</td></tr></tbody>
           </table>
           <table v-if="(pfDetail.recent_errors||[]).length" style="margin-top:10px">
-            <tr><th>最近错误(仅类别)</th><th>平台</th></tr>
-            <tr v-for="(e,i) in pfDetail.recent_errors" :key="i"><td><span :class="pill('warn')">{{ e.category }}</span></td><td>{{ e.platform }}</td></tr>
+            <thead><tr><th>最近错误(仅类别)</th><th>平台</th></tr></thead>
+            <tbody><tr v-for="(e,i) in pfDetail.recent_errors" :key="i"><td><span :class="pill('warn')">{{ e.category }}</span></td><td>{{ e.platform }}</td></tr></tbody>
           </table>
         </div>
       </section>
@@ -157,16 +163,19 @@ function credKind(s: string): 'ok' | 'warn' | 'mut' {
         <h1 class="ch1">Agent 接入(ingest)</h1>
         <p class="csub">同步 / 异步两种模式;key 与 owner/profile/agent 服务端绑定。owner 从你的飞书会话派生,看不到别人的。</p>
         <div class="ccards" v-if="dev">
-          <div class="ccard ok"><div class="ck">我的可用 Agent</div><div class="cv">{{ (dev.agents||[]).length }} <small>个</small></div></div>
+          <div class="ccard ok"><div class="ck">我名下全部 <small>档案 / Agent / 群</small></div><div class="cv">{{ (dev.agents||[]).length }} <small>个</small></div></div>
           <div class="ccard ok"><div class="ck">可用接口</div><div class="cv">{{ (dev.api_catalog||[]).length }} <small>个</small></div></div>
         </div>
         <div class="cpanel">
-          <h3>我的可用 Agent</h3>
-          <table v-if="(dev?.agents||[]).length"><tr><th>名称</th><th>profile</th><th>状态</th></tr>
-            <tr v-for="a in dev.agents" :key="a.profile"><td>{{ a.name }}</td><td class="cmono">{{ a.profile }}</td><td><span :class="pill(a.active?'ok':'mut')">{{ a.active?'可用':'停用' }}</span></td></tr>
+          <h3>我名下全部 <span class="kind-help">档案 / Agent / 群</span></h3>
+          <table v-if="(dev?.agents||[]).length"><thead><tr><th>类型</th><th>名称</th><th>profile</th><th>状态</th></tr></thead>
+            <tbody><tr v-for="a in dev.agents" :key="a.profile">
+              <td><span class="kind-badge" :class="`kind-${a.kind || 'agent'}`">{{ agentKindLabel(a.kind) }}</span></td>
+              <td>{{ a.name }}</td><td class="cmono">{{ a.profile }}</td><td><span :class="pill(a.active?'ok':'mut')">{{ a.active?'可用':'停用' }}</span></td>
+            </tr></tbody>
           </table>
           <div v-else-if="dev?.agents_unavailable" class="cempty">Agent 列表暂时不可用(稍后重试);下方接口文档不受影响。</div>
-          <div v-else class="cempty">你名下暂无 agent</div>
+          <div v-else class="cempty">你名下暂无档案 / Agent / 群</div>
         </div>
         <div class="cpanel">
           <h3>我的 ingest key <button class="cbtn" disabled title="M3 落地">+ 生成新 key(自助 · M3)</button></h3>
@@ -229,7 +238,7 @@ function credKind(s: string): 'ok' | 'warn' | 'mut' {
 .ccards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
 .ccard { background: #fff; border: 1px solid #F2F2F2; border-radius: 6px; padding: 16px 18px; }
 .ccard.crit { border-left: 3px solid #E63A30; } .ccard.warn { border-left: 3px solid #FEC833; } .ccard.ok { border-left: 3px solid #24C789; }
-.ck { font-size: 12px; color: #666; } .cv { font-size: 30px; font-weight: 800; color: #000; font-variant-numeric: tabular-nums; margin-top: 4px; }
+.ck { font-size: 12px; color: #666; } .ck small { color: #999; font-size: 11px; margin-left: 4px; } .cv { font-size: 30px; font-weight: 800; color: #000; font-variant-numeric: tabular-nums; margin-top: 4px; }
 .cv small { font-size: 12px; font-weight: 400; color: #999; }
 .cpanel { background: #fff; border: 1px solid #F2F2F2; border-radius: 6px; padding: 0 0 4px; margin-bottom: 14px; }
 .cpanel h3 { font-size: 13px; margin: 0; padding: 12px 16px; border-bottom: 1px solid #F2F2F2; font-weight: 600; color: #000; }
@@ -245,6 +254,11 @@ tr:last-child td { border-bottom: 0; }
 .csearch { margin-bottom: 12px; } .csearch input { width: 100%; max-width: 420px; border: 1px solid #F2F2F2; background: #fff; border-radius: 17px; padding: 8px 16px; font: inherit; outline: none; }
 .pill-ok { background: #E0FDF0; color: #0E9A68; } .pill-warn { background: #FFF7DB; color: #B98A00; } .pill-crit { background: #FFE9E7; color: #E63A30; } .pill-mut { background: #F2F2F2; color: #666; }
 [class^="pill-"] { display: inline-block; font-size: 11px; border-radius: 10px; padding: 1px 9px; }
+.kind-help { color: #999; font-size: 11px; font-weight: 400; margin-left: 6px; }
+.kind-badge { display: inline-block; min-width: 34px; text-align: center; font-size: 11px; border-radius: 10px; padding: 1px 9px; background: #F2F2F2; color: #666; }
+.kind-user { background: #E0FDF0; color: #0E9A68; }
+.kind-agent { background: #EEF2FF; color: #3A56C5; }
+.kind-group { background: #FFF7DB; color: #B98A00; }
 .cbtn { border: 1px solid #F2F2F2; background: #FAFAFA; color: #ccc; border-radius: 15px; padding: 3px 12px; font-size: 12px; float: right; margin: -2px 0; }
 .cnote { font-size: 12px; color: #666; background: #FAFAFA; border-radius: 2px; padding: 10px 14px; margin: 12px 16px; }
 .ckv { display: grid; grid-template-columns: 70px 1fr; gap: 6px 14px; padding: 12px 16px; font-size: 13px; }

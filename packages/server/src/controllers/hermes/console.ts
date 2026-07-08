@@ -144,7 +144,7 @@ const API_CATALOG = [
 ]
 
 /**
- * Developer self-view: the caller's own agents + the API catalog. The owner is
+ * Developer self-view: the caller's own owner fleet + the API catalog. The owner is
  * the SESSION open_id — never a client parameter (§8c A5). Uses the dedicated
  * owner-column endpoint (/console/agents) — the text search of /console/profiles
  * does NOT match owner_open_id, so q=<open_id> would surface zero agents.
@@ -173,7 +173,7 @@ export async function devMe(ctx: Context): Promise<void> {
     // positively carry THIS session's owner to survive.
     agents = items
       .filter((r) => r.owner_open_id === openid)
-      .map((r) => ({ name: r.display_label || r.profile || r.user_id, profile: r.profile, active: r.active }))
+      .map((r) => ({ name: r.display_label || r.profile || r.user_id, profile: r.profile, kind: r.kind, active: r.active }))
   } else {
     // broker error OR a 200 with available:false (routing-DB unreadable) → the
     // list is genuinely unknown, not empty. Show "temporarily unavailable", never

@@ -43,8 +43,10 @@ function stubFetch() {
         const owner = u.searchParams.get('owner')
         return { owner_open_id: owner, available: true, items: owner === 'open-self'
           ? [
-              { profile: 'ag_mine', owner_open_id: 'open-self', display_label: 'MINE', active: 1 },
-              { profile: 'ag_leak', owner_open_id: 'open-other', display_label: 'LEAK', active: 1 },
+              { profile: 'feishu_self', owner_open_id: 'open-self', display_label: 'ME', kind: 'user', active: 1 },
+              { profile: 'ag_mine', owner_open_id: 'open-self', display_label: 'MINE', kind: 'agent', active: 1 },
+              { profile: 'group_mine', owner_open_id: 'open-self', display_label: 'GROUP', kind: 'group', active: 1 },
+              { profile: 'ag_leak', owner_open_id: 'open-other', display_label: 'LEAK', kind: 'agent', active: 1 },
             ]
           : [] }
       }
@@ -125,7 +127,7 @@ describe('console BFF + RBAC (integration)', () => {
     } finally { server.close() }
   })
 
-  it('dev/me returns only the session owner\'s agents and ignores ?owner= (A5 self-scope)', async () => {
+  it('dev/me returns only the session owner\'s active fleet with kind and ignores ?owner= (A5 self-scope)', async () => {
     seedAdmins([]) // developer plane needs no admin
     const { server, base } = await makeApp({ openid: 'open-self', unionId: 'ou-dev' })
     try {
@@ -135,8 +137,9 @@ describe('console BFF + RBAC (integration)', () => {
       const body = await r.json()
       expect(body.developer.open_id).toBe('open-self')
       const names = body.agents.map((a: any) => a.name)
-      expect(names).toEqual(['MINE'])              // only own agent
+      expect(names).toEqual(['ME', 'MINE', 'GROUP']) // only own active fleet
       expect(names).not.toContain('LEAK')           // defense-in-depth drops mismatched owner
+      expect(body.agents.map((a: any) => a.kind)).toEqual(['user', 'agent', 'group'])
       // owner-column endpoint scoped by the SESSION open_id, not the client param
       expect(new URL(brokerCalls[0].url).pathname).toContain('/console/agents')
       expect(new URL(brokerCalls[0].url).searchParams.get('owner')).toBe('open-self')

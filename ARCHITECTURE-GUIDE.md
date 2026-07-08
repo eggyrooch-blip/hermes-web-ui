@@ -15,6 +15,15 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
+> [!info] 2026-07-08 local worktree — Console developer self-view shows full owner fleet
+> `/hermes/console` developer mode still calls the BFF endpoint
+> `/api/console/dev/me`, and that BFF still derives owner identity from the
+> authenticated Feishu session instead of browser query parameters. The owner
+> panel now labels the surface as `我名下全部（档案 / Agent / 群）`, displays every
+> backend-returned active owner row, and renders `kind=user|agent|group` as
+> `档案` / `Agent` / `群`. It remains a visibility surface only; ingest key
+> dispatch semantics and admin RBAC are unchanged.
+
 > [!info] 2026-07-08 local worktree — lark-cli device-flow session polling, production not published
 > `webui-lark-device-poll` fixes the browser half of the `lark-cli` connector
 > auth flow. The BFF already returns the Run Broker Feishu UAT `session_id`
