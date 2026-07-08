@@ -24,7 +24,6 @@ import {
 } from '../db/hermes/users-store'
 import { issueUserJwt } from '../middleware/user-auth'
 import { getProfileDir, listProfileNamesFromDisk } from '../services/hermes/hermes-profile'
-import { resolveConsoleRole } from '../services/console-rbac'
 import { startOutboundRelayClient } from '../services/global-agent/outbound-relay-client'
 import { config, parseBool } from '../config'
 import { logger } from '../services/logger'
@@ -126,9 +125,6 @@ export async function currentUser(ctx: Context) {
       requiresCredentialChange: process.env.HERMES_DESKTOP === 'true'
         ? false
         : user.username === DEFAULT_USERNAME && verifyPassword(DEFAULT_PASSWORD, user.password_hash),
-      // Server-authoritative console role — drives the /console nav gating.
-      // Client rendering is convenience only; the real gate is requireConsoleAdmin.
-      consoleRole: resolveConsoleRole(ctx),
       ...feishuIdentity,
     },
   }
