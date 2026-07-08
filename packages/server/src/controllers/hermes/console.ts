@@ -29,21 +29,15 @@ async function brokerGet(
   brokerPath: string,
   query?: URLSearchParams,
 ): Promise<unknown | null> {
-  // Fail-closed: without a broker URL *or* a master key, refuse to forward at all.
-  // Never send a keyless request — the BFF must not rely on the broker's own 401
-  // as its only guard (a misconfigured deploy would otherwise proxy unauthenticated
-  // traffic to the fleet data plane). No key → 503, request never leaves the box.
-  if (!config.runBrokerUrl || !config.runBrokerKey) {
+  if (!config.runBrokerUrl) {
     ctx.status = 503
-    ctx.body = { error: 'Console broker is not configured' }
+    ctx.body = { error: 'HERMES_RUN_BROKER_URL is required for the console' }
     return null
   }
   const search = query?.toString()
   const url = `${config.runBrokerUrl.replace(/\/+$/, '')}${brokerPath}${search ? `?${search}` : ''}`
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${config.runBrokerKey}`,
-  }
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
   let res: Response
   try {
     res = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(BROKER_TIMEOUT_MS) })

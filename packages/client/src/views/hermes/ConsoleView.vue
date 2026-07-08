@@ -8,7 +8,7 @@ import { ref, onMounted, computed } from 'vue'
 type Role = 'admin' | 'developer'
 const role = ref<Role>('developer')
 const me = ref<{ name?: string; openid?: string; unionId?: string }>({})
-const screen = ref<'overview' | 'profiles' | 'ingest' | 'releases' | 'guide'>('ingest')
+const screen = ref<'overview' | 'profiles' | 'ingest' | 'guide'>('ingest')
 const loading = ref(false)
 const err = ref('')
 
@@ -87,7 +87,6 @@ function credKind(s: string) { return s?.includes('auth') ? 'ok' : (s === 'missi
 
       <div class="cnavlab">开发者 <span class="cnavtag">全员默认</span></div>
       <button class="cnav" :class="{on: screen==='ingest'}" @click="go('ingest')">Agent 接入</button>
-      <button class="cnav" :class="{on: screen==='releases'}" @click="go('releases')">我的发布物</button>
       <button class="cnav" :class="{on: screen==='guide'}" @click="go('guide')">发布指引</button>
 
       <div class="cfoot">
@@ -169,15 +168,6 @@ function credKind(s: string) { return s?.includes('auth') ? 'ok' : (s === 'missi
           <h3><span :class="pill('mut')">{{ a.method }}</span> {{ a.name }} <span class="cmono csrc">{{ a.path }}</span></h3>
           <div class="ckv"><b>用途</b><span>{{ a.purpose }}</span><b>鉴权</b><span class="cmono">{{ a.auth }}</span></div>
           <pre class="ccode">{{ a.example }}</pre>
-        </div>
-      </section>
-
-      <!-- 我的发布物 (developer, M3 占位) -->
-      <section v-if="screen==='releases'">
-        <h1 class="ch1">我的发布物</h1>
-        <p class="csub">只看你名下 skill 的装机结果:版本 / 覆盖 / 失败明细。按发布者归属过滤(M3 落地)。</p>
-        <div class="cpanel"><h3>我发布的 skill</h3>
-          <div class="cempty">M3 依赖:skillhub_events 加 publisher 归属映射(声明式 ownership map);未覆盖的旧事件只给 admin 看(fail-closed)。此处为占位。</div>
         </div>
       </section>
 
