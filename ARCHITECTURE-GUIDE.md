@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-07-02
+updated: 2026-07-08
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
@@ -14,6 +14,28 @@ related:
 ---
 
 # hermes-web-ui 架构速查 — EKKO fork
+
+> [!info] 2026-07-08 local worktree — lark-cli device-flow session polling, production not published
+> `webui-lark-device-poll` fixes the browser half of the `lark-cli` connector
+> auth flow. The BFF already returns the Run Broker Feishu UAT `session_id`
+> from `POST /api/auth/skill-credentials/lark-cli/start`, and already exposes
+> `GET /api/auth/feishu/uat/sessions/:sessionId` to exchange the completed
+> device-flow session into profile-scoped `feishu/uat` credentials. The bug was
+> in `CredentialsView`: it opened the Feishu authorization URL but only polled
+> generic connector status, so completing the Feishu page could leave WebUI with
+> no stored user credential.
+>
+> The client now polls the Feishu UAT session for `lark-cli` starts that include
+> `session_id`; `pending` continues polling, `success` fresh-loads connector
+> status and closes the popup only after the row is actually
+> `authenticated/configured`, and `error/expired` reports a retryable failure.
+> OAuth URL flows without a Feishu UAT `session_id`, QR flows, and env-aware
+> `kep-cli` starts keep their previous behavior. Verification on this worktree:
+> focused `credentials-view`/API Vitest passed 49 tests, including
+> pending→success, JSON expired/error, HTTP-level poll failure, and
+> already-authenticated re-auth focus paths;
+> full `bun run test` passed 304 files / 2240 tests with 2 skipped, and
+> `npm run build` passed. This is not yet pushed or published to production.
 
 > [!success] 2026-07-02 main/production — active expert avatar also drives live chat assistant avatars
 > `expert-chat-avatar` is published in `main@ac45a1a`. It extends the managed expert avatar UI from the composer

@@ -17,7 +17,7 @@ import { getDownloadUrl } from '../../packages/client/src/api/hermes/download'
 import { uploadFiles } from '../../packages/client/src/api/hermes/files'
 import { importSkill } from '../../packages/client/src/api/hermes/skills'
 import { batchDeleteSessions, importHermesSession } from '../../packages/client/src/api/hermes/sessions'
-import { startSkillCredentialAuth } from '../../packages/client/src/api/skillCredentials'
+import { pollFeishuUatSession, startSkillCredentialAuth } from '../../packages/client/src/api/skillCredentials'
 import router from '@/router'
 
 function fakeJwt(payload: Record<string, unknown>) {
@@ -134,6 +134,16 @@ describe('API Client', () => {
       const [url, options] = mockFetch.mock.calls[0]
       expect(url).toBe('/api/auth/skill-credentials/kep-cli-pre/start?profile=feishu_user_a')
       expect(JSON.parse(options.body)).toEqual({ env: 'pre' })
+    })
+
+    it('polls a Feishu UAT auth session with the requested profile', async () => {
+      mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => ({ status: 'success' }) })
+
+      await pollFeishuUatSession('session/with spaces', 'feishu_user_a')
+
+      const [url, options] = mockFetch.mock.calls[0]
+      expect(url).toBe('/api/auth/feishu/uat/sessions/session%2Fwith%20spaces?profile=feishu_user_a')
+      expect(options.method).toBeUndefined()
     })
 
     it('adds the active shared agent header to session collection requests', async () => {

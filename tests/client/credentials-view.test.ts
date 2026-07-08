@@ -5,11 +5,15 @@ import { mount } from '@vue/test-utils'
 const fetchSkillCredentialsMock = vi.hoisted(() => vi.fn())
 const startSkillCredentialAuthMock = vi.hoisted(() => vi.fn())
 const completeSkillCredentialAuthMock = vi.hoisted(() => vi.fn())
+const pollFeishuUatSessionMock = vi.hoisted(() => vi.fn())
+const messageSuccessMock = vi.hoisted(() => vi.fn())
+const messageErrorMock = vi.hoisted(() => vi.fn())
 const routeQuery = vi.hoisted(() => ({} as Record<string, string>))
 
 vi.mock('@/api/skillCredentials', () => ({
   completeSkillCredentialAuth: completeSkillCredentialAuthMock,
   fetchSkillCredentials: fetchSkillCredentialsMock,
+  pollFeishuUatSession: pollFeishuUatSessionMock,
   startSkillCredentialAuth: startSkillCredentialAuthMock,
 }))
 
@@ -40,8 +44,8 @@ vi.mock('naive-ui', async () => {
   return {
     ...actual,
     useMessage: () => ({
-      success: vi.fn(),
-      error: vi.fn(),
+      success: messageSuccessMock,
+      error: messageErrorMock,
       info: vi.fn(),
     }),
     NButton: {
@@ -453,6 +457,196 @@ describe('CredentialsView', () => {
     expect(openSpy).toHaveBeenCalledWith('about:blank', '_blank')
     expect(authWindow.opener).toBe(null)
     expect(authWindow.location.href).toBe('https://project.feishu.cn/oauth/device?user_code=ABCD-1234')
+  })
+
+  it('polls the Feishu UAT device-flow session returned by lark-cli start', async () => {
+    const authWindow = { opener: {}, location: { href: '' }, closed: false, close: vi.fn() } as any
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(authWindow)
+    const row = (status: string) => [
+      {
+        id: 'lark-cli',
+        title: 'Lark-cli',
+        provider: 'lark',
+        installed: true,
+        status,
+        detail: status === 'authenticated' ? 'ready' : 'needs auth',
+        action: { kind: 'feishu_device_flow', label: status === 'authenticated' ? '重新授权' : '授权' },
+      },
+    ]
+    fetchSkillCredentialsMock
+      .mockResolvedValueOnce({ profile_name: 'feishu_g41a5b5g', credentials: row('needs_auth') })
+      .mockResolvedValueOnce({ profile_name: 'feishu_g41a5b5g', credentials: row('authenticated') })
+    startSkillCredentialAuthMock.mockResolvedValueOnce({
+      id: 'lark-cli',
+      status: 'pending',
+      session_id: 'uat-session-1',
+      verification_uri: 'https://accounts.feishu.cn/device?user_code=ABCD-1234',
+      action: { kind: 'feishu_device_flow', label: '授权' },
+    })
+    pollFeishuUatSessionMock
+      .mockResolvedValueOnce({ status: 'pending' })
+      .mockResolvedValueOnce({ status: 'success' })
+
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    vi.useFakeTimers()
+    try {
+      await wrapper.find('[data-credential-action="lark-cli"]').trigger('click')
+      await Promise.resolve()
+
+      expect(openSpy).toHaveBeenCalledWith('about:blank', '_blank')
+      expect(authWindow.location.href).toBe('https://accounts.feishu.cn/device?user_code=ABCD-1234')
+
+      await vi.advanceTimersByTimeAsync(2_500)
+      expect(pollFeishuUatSessionMock).toHaveBeenCalledTimes(1)
+      expect(fetchSkillCredentialsMock).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(2_500)
+      await wrapper.vm.$nextTick()
+
+      expect(pollFeishuUatSessionMock).toHaveBeenCalledTimes(2)
+      expect(pollFeishuUatSessionMock).toHaveBeenLastCalledWith('uat-session-1', 'feishu_g41a5b5g')
+      expect(fetchSkillCredentialsMock).toHaveBeenLastCalledWith('feishu_g41a5b5g', { fresh: true })
+      expect(authWindow.close).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports Feishu UAT session expiry without marking lark-cli authenticated', async () => {
+    const authWindow = { opener: {}, location: { href: '' }, closed: false, close: vi.fn() } as any
+    vi.spyOn(window, 'open').mockReturnValue(authWindow)
+    fetchSkillCredentialsMock.mockResolvedValueOnce({
+      profile_name: 'feishu_g41a5b5g',
+      credentials: [
+        {
+          id: 'lark-cli',
+          title: 'Lark-cli',
+          provider: 'lark',
+          installed: true,
+          status: 'needs_auth',
+          detail: 'needs auth',
+          action: { kind: 'feishu_device_flow', label: '授权' },
+        },
+      ],
+    })
+    startSkillCredentialAuthMock.mockResolvedValueOnce({
+      id: 'lark-cli',
+      status: 'pending',
+      session_id: 'uat-session-expired',
+      verification_uri: 'https://accounts.feishu.cn/device?user_code=ABCD-1234',
+      action: { kind: 'feishu_device_flow', label: '授权' },
+    })
+    pollFeishuUatSessionMock.mockResolvedValueOnce({ status: 'expired', error: '授权会话已过期' })
+
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    vi.useFakeTimers()
+    try {
+      await wrapper.find('[data-credential-action="lark-cli"]').trigger('click')
+      await Promise.resolve()
+
+      await vi.advanceTimersByTimeAsync(2_500)
+      await wrapper.vm.$nextTick()
+
+      expect(messageErrorMock).toHaveBeenCalledWith('授权会话已过期')
+      expect(fetchSkillCredentialsMock).toHaveBeenCalledTimes(1)
+      expect(authWindow.close).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports HTTP-level Feishu UAT poll failures instead of silently ending', async () => {
+    const authWindow = { opener: {}, location: { href: '' }, closed: false, close: vi.fn() } as any
+    vi.spyOn(window, 'open').mockReturnValue(authWindow)
+    fetchSkillCredentialsMock.mockResolvedValueOnce({
+      profile_name: 'feishu_g41a5b5g',
+      credentials: [
+        {
+          id: 'lark-cli',
+          title: 'Lark-cli',
+          provider: 'lark',
+          installed: true,
+          status: 'needs_auth',
+          detail: 'needs auth',
+          action: { kind: 'feishu_device_flow', label: '授权' },
+        },
+      ],
+    })
+    startSkillCredentialAuthMock.mockResolvedValueOnce({
+      id: 'lark-cli',
+      status: 'pending',
+      session_id: 'uat-session-404',
+      verification_uri: 'https://accounts.feishu.cn/device?user_code=ABCD-1234',
+      action: { kind: 'feishu_device_flow', label: '授权' },
+    })
+    pollFeishuUatSessionMock.mockRejectedValueOnce(new Error('授权会话不存在'))
+
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    vi.useFakeTimers()
+    try {
+      await wrapper.find('[data-credential-action="lark-cli"]').trigger('click')
+      await Promise.resolve()
+
+      await vi.advanceTimersByTimeAsync(2_500)
+      await wrapper.vm.$nextTick()
+
+      expect(messageErrorMock).toHaveBeenCalledWith('授权会话不存在')
+      expect(fetchSkillCredentialsMock).toHaveBeenCalledTimes(1)
+      expect(authWindow.close).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not close a lark-cli re-auth popup from a stale authenticated focus refresh', async () => {
+    const authWindow = { opener: {}, location: { href: '' }, closed: false, close: vi.fn() } as any
+    vi.spyOn(window, 'open').mockReturnValue(authWindow)
+    fetchSkillCredentialsMock.mockResolvedValueOnce({
+      profile_name: 'feishu_g41a5b5g',
+      credentials: [
+        {
+          id: 'lark-cli',
+          title: 'Lark-cli',
+          provider: 'lark',
+          installed: true,
+          status: 'authenticated',
+          detail: 'ready from previous auth',
+          action: { kind: 'feishu_device_flow', label: '重新授权' },
+        },
+      ],
+    })
+    startSkillCredentialAuthMock.mockResolvedValueOnce({
+      id: 'lark-cli',
+      status: 'pending',
+      session_id: 'uat-session-reauth',
+      verification_uri: 'https://accounts.feishu.cn/device?user_code=ABCD-1234',
+      action: { kind: 'feishu_device_flow', label: '重新授权' },
+    })
+    pollFeishuUatSessionMock.mockResolvedValueOnce({ status: 'pending' })
+
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-credential-action="lark-cli"]').trigger('click')
+    await Promise.resolve()
+    window.dispatchEvent(new Event('focus'))
+    await Promise.resolve()
+
+    expect(authWindow.close).not.toHaveBeenCalled()
   })
 
   it('renders and completes Keep-record QR auth without exposing token values', async () => {

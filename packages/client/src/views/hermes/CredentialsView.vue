@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { NButton, NModal, NSpin, useMessage } from 'naive-ui'
-import { completeSkillCredentialAuth, fetchSkillCredentials, startSkillCredentialAuth } from '@/api/skillCredentials'
+import { completeSkillCredentialAuth, fetchSkillCredentials, pollFeishuUatSession, startSkillCredentialAuth } from '@/api/skillCredentials'
 import type { SkillCredentialEntry, SkillCredentialsResponse } from '@/api/skillCredentials'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { readCachedConnectorStatus, writeCachedConnectorStatus } from '@/utils/connector-status-cache'
@@ -41,6 +41,7 @@ const oauthPollingId = ref('')
 let authWindow: Window | null = null
 let authWindowOwnerId = ''
 let authWindowToken = 0
+let authWindowSessionId = ''
 let attemptSeq = 0
 // Set on unmount so an in-flight poll stops touching a torn-down component.
 let pollAbort = false
@@ -151,6 +152,7 @@ function closeAuthWindow(token?: number) {
   authWindow = null
   authWindowOwnerId = ''
   authWindowToken = 0
+  authWindowSessionId = ''
 }
 
 function sleep(ms: number) {
@@ -171,13 +173,26 @@ function credentialAuthSucceeded(id: string) {
   return credential?.status === 'authenticated' || credential?.status === 'configured'
 }
 
-async function pollCredentialAfterOAuth(id: string, token: number) {
+async function pollCredentialAfterOAuth(id: string, token: number, sessionId = '') {
   oauthPollingId.value = id
   try {
     for (let attempt = 0; attempt < 18; attempt += 1) {
       await sleep(2_500)
       if (pollAbort) return  // component unmounted — stop touching it
       if (token !== attemptSeq) return  // superseded by a newer attempt or a profile switch
+      if (sessionId && id === 'lark-cli') {
+        const session = await pollFeishuUatSession(sessionId, requestedProfile.value)
+        if (pollAbort) return
+        if (token !== attemptSeq) return
+        if (session.status === 'pending') continue
+        if (session.status === 'success') {
+          await refreshCredentials(true)
+          if (credentialAuthSucceeded(id)) closeAuthWindow(token)
+          return
+        }
+        message.error(session.error || 'Lark-cli 授权未完成，请重试')
+        return
+      }
       await refreshCredentials(true)  // fresh: bypass the broker cache to see the new login
       if (credentialAuthSucceeded(id)) {
         closeAuthWindow(token)  // close only THIS attempt's popup, on genuine success
@@ -185,7 +200,10 @@ async function pollCredentialAfterOAuth(id: string, token: number) {
       }
       if (credentialReachedTerminalAuthState(id)) return  // settled but not success (待验证) → stop, leave popup
     }
-  } catch {
+  } catch (err: any) {
+    if (sessionId && id === 'lark-cli' && !pollAbort && token === attemptSeq) {
+      message.error(err?.message || 'Lark-cli 授权状态检查失败，请重试')
+    }
     // The manual refresh button remains available if a background poll fails.
   } finally {
     // Only clear the indicator if THIS poll is still the current attempt — a superseded
@@ -221,13 +239,14 @@ async function startCredential(entry: SkillCredentialEntry) {
       authWindow = window.open('about:blank', '_blank')
       authWindowOwnerId = authWindow ? entry.id : ''
       authWindowToken = authWindow ? attemptToken : 0
+      authWindowSessionId = authWindow ? result.session_id || '' : ''
       if (authWindow) {
         authWindow.opener = null
         authWindow.location.href = result.verification_uri
       } else {
         window.location.assign(result.verification_uri)
       }
-      void pollCredentialAfterOAuth(entry.id, attemptToken)
+      void pollCredentialAfterOAuth(entry.id, attemptToken, result.session_id || '')
       message.success(result.user_code ? `${entry.title}: ${result.user_code}` : `${entry.title} 认证流程已启动`)
       return
     }
@@ -267,6 +286,10 @@ function handleWindowFocus() {
   if (!authWindowToken) return  // no active popup awaiting auth
   const id = authWindowOwnerId
   const token = authWindowToken
+  // A lark-cli device-flow session has its own broker-backed poll. Do not let
+  // a focus refresh close the popup from a stale already-authenticated row during
+  // re-auth; only the session poll may close it after this attempt succeeds.
+  if (id === 'lark-cli' && authWindowSessionId) return
   void refreshCredentials(true).then(() => {
     if (credentialAuthSucceeded(id)) closeAuthWindow(token)  // only close THIS attempt's popup, on success
   }).catch(() => { /* manual refresh stays available */ })

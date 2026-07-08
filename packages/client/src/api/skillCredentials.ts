@@ -49,6 +49,12 @@ export interface SkillCredentialCompleteResponse {
   account_hint?: string
 }
 
+export interface FeishuUatSessionResponse {
+  session_id?: string
+  status: 'pending' | 'success' | 'error' | 'expired' | string
+  error?: string
+}
+
 function withProfile(path: string, profile?: string, extra?: Record<string, string>): string {
   const search = new URLSearchParams()
   const value = profile?.trim()
@@ -80,4 +86,8 @@ export async function completeSkillCredentialAuth(id: string, qrcodeId: string, 
     method: 'POST',
     body: JSON.stringify({ qrcode_id: qrcodeId }),
   })
+}
+
+export async function pollFeishuUatSession(sessionId: string, profile?: string): Promise<FeishuUatSessionResponse> {
+  return request(withProfile(`/api/auth/feishu/uat/sessions/${encodeURIComponent(sessionId)}`, profile))
 }
