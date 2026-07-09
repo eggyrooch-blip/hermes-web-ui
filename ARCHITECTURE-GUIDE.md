@@ -15,6 +15,24 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
+> [!info] 2026-07-09 local worktree — inline workspace path preview, production not published
+> `webui-inline-path-preview` makes chat message file references clickable
+> without changing the preview/download API. `MarkdownRenderer` now converts
+> inline code containing `/workspace/<rel>` or an absolute path with a
+> `/workspace/` segment into the existing `.markdown-file-card` DOM contract,
+> exposing only the `/workspace/<rel>` display path. Fenced code blocks,
+> HTTP(S) URLs, directory-like paths, and non-workspace host paths are left
+> alone.
+>
+> `MessageItem` passes session `workspace.diff` file metadata into assistant
+> message rendering. A uniquely matched changed basename can render as a file
+> chip with a compact diff badge only when the assistant message `runId`
+> matches the diff card `run_id`; basename collisions are intentionally not
+> linkified. The badge reuses the existing
+> `fetchWorkspaceRunChangeFile()` patch path and the existing diff highlighter.
+> This is a local worktree change only; it is not pushed or published to
+> production.
+
 > [!info] 2026-07-09 local worktree — selective upstream harvest, production not published
 > `upstream-selective-harvest` selectively ports the upstream fixes/features
 > that fit this fork's enterprise WebUI boundary: bridge terminal-error

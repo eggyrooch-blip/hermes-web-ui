@@ -20,8 +20,9 @@ vi.mock('naive-ui', async (importOriginal) => {
   }
 })
 
+const downloadFile = vi.hoisted(() => vi.fn(() => Promise.resolve()))
 vi.mock('@/api/hermes/download', () => ({
-  downloadFile: vi.fn(),
+  downloadFile,
   getDownloadUrl: vi.fn((path: string) => `/download?path=${encodeURIComponent(path)}`),
   fetchFileText: vi.fn(),
 }))
@@ -36,6 +37,120 @@ vi.mock('@/stores/hermes/files', () => ({
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
 
 describe('MarkdownRenderer workspace artifact file card', () => {
+  it('renders an inline absolute workspace path as a display-path file card', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'Open `/Users/kite/.hermes/profiles/sunke/workspace/reports/report.html` now.',
+      },
+    })
+
+    const card = wrapper.find('.markdown-file-card')
+    expect(card.exists()).toBe(true)
+    expect(card.attributes('data-path')).toBe('/workspace/reports/report.html')
+    expect(card.attributes('data-filename')).toBe('report.html')
+    expect(wrapper.text()).not.toContain('/Users/kite/.hermes')
+  })
+
+  it('renders an inline /workspace/ display path as a file card and escapes attributes', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'Open `/workspace/reports/a"b.txt` now.',
+      },
+    })
+
+    const card = wrapper.find('.markdown-file-card')
+    expect(card.exists()).toBe(true)
+    expect(card.attributes('data-path')).toBe('/workspace/reports/a"b.txt')
+    expect(card.attributes('data-filename')).toBe('a"b.txt')
+  })
+
+  it('routes an inline previewable /workspace/ path through previewByDisplayPath', async () => {
+    previewByDisplayPath.mockClear()
+    requestBrowserArtifact.mockClear()
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'Open `/workspace/reports/notes.md` now.',
+      },
+    })
+
+    await wrapper.find('.markdown-file-card').trigger('click')
+
+    expect(previewByDisplayPath).toHaveBeenCalledWith('/workspace/reports/notes.md', 'notes.md')
+    expect(requestBrowserArtifact).not.toHaveBeenCalled()
+  })
+
+  it('downloads an inline non-previewable /workspace/ file card', async () => {
+    downloadFile.mockClear()
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'Open `/workspace/reports/archive.zip` now.',
+      },
+    })
+
+    await wrapper.find('.markdown-file-card').trigger('click')
+
+    expect(downloadFile).toHaveBeenCalledWith('/workspace/reports/archive.zip', 'archive.zip')
+  })
+
+  it('does not render fenced workspace paths or URLs as file cards', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: [
+          '```',
+          '/workspace/reports/report.html',
+          '```',
+          '`https://example.com/report.html`',
+        ].join('\n'),
+      },
+    })
+
+    expect(wrapper.find('.markdown-file-card').exists()).toBe(false)
+  })
+
+  it('does not render directory-like or extensionless inline workspace paths as file cards', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '`/workspace/reports/` `/workspace/reports/README`',
+      },
+    })
+
+    expect(wrapper.find('.markdown-file-card').exists()).toBe(false)
+  })
+
+  it('renders a unique workspace diff basename as a file card with a diff badge', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'Updated **app.ts**.',
+        workspaceDiffFiles: [{
+          id: 7,
+          path: 'src/app.ts',
+          change_id: 'change-1',
+          session_id: 'session-1',
+        }],
+      },
+    })
+
+    const card = wrapper.find('.markdown-file-card')
+    expect(card.exists()).toBe(true)
+    expect(card.attributes('data-path')).toBe('/workspace/src/app.ts')
+    expect(card.attributes('data-filename')).toBe('app.ts')
+    expect(wrapper.find('.markdown-file-diff-btn').exists()).toBe(true)
+  })
+
+  it('does not linkify an ambiguous workspace diff basename', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'Updated app.ts.',
+        workspaceDiffFiles: [
+          { id: 7, path: 'src/app.ts', change_id: 'change-1', session_id: 'session-1' },
+          { id: 8, path: 'tests/app.ts', change_id: 'change-1', session_id: 'session-1' },
+        ],
+      },
+    })
+
+    expect(wrapper.find('.markdown-file-card').exists()).toBe(false)
+  })
+
   it('routes a workspace HTML card click to requestBrowserArtifact', async () => {
     previewByDisplayPath.mockClear()
     requestBrowserArtifact.mockClear()

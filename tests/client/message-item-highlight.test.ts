@@ -26,6 +26,18 @@ vi.mock('vue-i18n', () => ({
 }))
 
 vi.mock('naive-ui', () => ({
+  NDrawer: {
+    props: ['show', 'width'],
+    template: '<div v-if="show" class="n-drawer-stub" :data-width="width"><slot /></div>',
+  },
+  NDrawerContent: {
+    props: ['title', 'closable', 'bodyContentStyle'],
+    template: '<section class="n-drawer-content-stub"><slot /></section>',
+  },
+  NSpin: {
+    props: ['show'],
+    template: '<div class="n-spin-stub"><slot /></div>',
+  },
   useMessage: () => ({
     error: vi.fn(),
     success: vi.fn(),
@@ -497,5 +509,111 @@ describe('MessageItem tool details', () => {
     expect(patch.find('.code-lang').text()).toBe('diff')
     expect(patch.find('.hljs-unified-diff').exists()).toBe(true)
     expect(patch.find('.diff-line-added .diff-line-content').text()).toBe('+const value = 2')
+  })
+
+  it('uses session workspace diff files to linkify assistant bare filenames and load patches', async () => {
+    fetchWorkspaceRunChangeFileMock.mockResolvedValue({
+      id: 7,
+      change_id: 'change-1',
+      session_id: 'session-1',
+      path: 'src/app.ts',
+      old_path: null,
+      change_type: 'modified',
+      additions: 2,
+      deletions: 1,
+      size_before: 10,
+      size_after: 11,
+      patch_bytes: UNIFIED_DIFF_SAMPLE.length,
+      truncated: false,
+      binary: false,
+      created_at: 2,
+      patch: UNIFIED_DIFF_SAMPLE,
+    })
+    const wrapper = mount(MessageItem, {
+      props: {
+        session: {
+          id: 'session-1',
+          profile: 'travel',
+          messages: [{
+            id: 'workspace-change:change-1',
+            role: 'command',
+            content: '',
+            timestamp: Date.now(),
+            commandAction: 'workspace.diff',
+            commandData: {
+              change_id: 'change-1',
+              session_id: 'session-1',
+              run_id: 'run-1',
+              files: [{
+                id: 7,
+                path: 'src/app.ts',
+                change_type: 'modified',
+                additions: 2,
+                deletions: 1,
+              }],
+            },
+          }],
+        } as any,
+        message: {
+          id: 'assistant-1',
+          role: 'assistant',
+          content: 'Changed **app.ts**.',
+          timestamp: Date.now(),
+          runId: 'run-1',
+        } satisfies Message,
+      },
+    })
+
+    const card = wrapper.find('.markdown-file-card')
+    expect(card.exists()).toBe(true)
+    expect(card.attributes('data-path')).toBe('/workspace/src/app.ts')
+
+    await wrapper.find('.markdown-file-diff-btn').trigger('click')
+    await Promise.resolve()
+
+    expect(fetchWorkspaceRunChangeFileMock).toHaveBeenCalledWith('session-1', 'change-1', 7, 'travel')
+    const patch = wrapper.find('.workspace-diff-patch')
+    expect(patch.exists()).toBe(true)
+    expect(patch.find('.hljs-unified-diff').exists()).toBe(true)
+  })
+
+  it('does not linkify assistant bare filenames from workspace diffs in another run', () => {
+    const wrapper = mount(MessageItem, {
+      props: {
+        session: {
+          id: 'session-1',
+          profile: 'travel',
+          messages: [{
+            id: 'workspace-change:change-2',
+            role: 'command',
+            content: '',
+            timestamp: Date.now(),
+            commandAction: 'workspace.diff',
+            commandData: {
+              change_id: 'change-2',
+              session_id: 'session-1',
+              run_id: 'run-2',
+              files: [{
+                id: 8,
+                path: 'src/app.ts',
+                change_type: 'modified',
+                additions: 1,
+                deletions: 0,
+              }],
+            },
+          }],
+        } as any,
+        message: {
+          id: 'assistant-older',
+          role: 'assistant',
+          content: 'Earlier note mentioned **app.ts**.',
+          timestamp: Date.now(),
+          runId: 'run-1',
+        } satisfies Message,
+      },
+    })
+
+    expect(wrapper.find('.markdown-file-card').exists()).toBe(false)
+    expect(wrapper.text()).toContain('app.ts')
   })
 })

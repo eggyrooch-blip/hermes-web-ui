@@ -59,14 +59,29 @@ function renderLatexFence(content: string): string {
   })}</div>`
 }
 
+type WorkspaceDiffInlineFile = {
+  id: number
+  path: string
+  change_id?: string | null
+  session_id?: string | null
+  additions?: number
+  deletions?: number
+}
+
 const props = withDefaults(defineProps<{
     content: string
     mentionNames?: string[]
     headingIdPrefix?: string
+    workspaceDiffFiles?: WorkspaceDiffInlineFile[]
 }>(), {
     mentionNames: () => [],
     headingIdPrefix: '',
+    workspaceDiffFiles: () => [],
 })
+
+const emit = defineEmits<{
+  (e: 'workspace-diff-file-click', file: WorkspaceDiffInlineFile): void
+}>()
 
 const { t } = useI18n()
 const message = useMessage()
@@ -98,6 +113,8 @@ md.use(markdownItKatex, {
 })
 
 const defaultFenceRenderer = md.renderer.rules.fence?.bind(md.renderer.rules)
+const defaultCodeInlineRenderer = md.renderer.rules.code_inline?.bind(md.renderer.rules)
+const defaultTextRenderer = md.renderer.rules.text?.bind(md.renderer.rules)
 
 md.renderer.rules.fence = (tokens, idx, options, env, self) => {
   const token = tokens[idx]
@@ -114,6 +131,32 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
   }
 
   return self.renderToken(tokens, idx, options)
+}
+
+md.renderer.rules.code_inline = (tokens, idx, options, env, self) => {
+  const file = workspaceDisplayPath(tokens[idx].content)
+  if (file) {
+    return renderFileCard(file.path, file.fileName, {
+      inline: true,
+      diffFile: findWorkspaceDiffFileByDisplayPath(file.path),
+    })
+  }
+
+  if (defaultCodeInlineRenderer) {
+    return defaultCodeInlineRenderer(tokens, idx, options, env, self)
+  }
+  return self.renderToken(tokens, idx, options)
+}
+
+md.renderer.rules.text = (tokens, idx, options, env, self) => {
+  if (!isInsideLinkToken(tokens, idx)) {
+    const rendered = renderWorkspaceDiffText(tokens[idx].content)
+    if (rendered) return rendered
+  }
+  if (defaultTextRenderer) {
+    return defaultTextRenderer(tokens, idx, options, env, self)
+  }
+  return escapeHtml(tokens[idx].content)
 }
 
 const markdownBody = ref<HTMLElement | null>(null)
@@ -137,6 +180,129 @@ function isLocalFilePath(path: string): boolean {
 
 function normalizeLocalFilePath(path: string): string {
   return /^[a-zA-Z]:\\/.test(path) ? path.replace(/\\/g, '/') : path
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function fileNameFromPath(path: string): string {
+  return path.split('/').filter(Boolean).pop() || path
+}
+
+function hasFileExtension(path: string): boolean {
+  const clean = path.split('?')[0].split('#')[0]
+  const name = fileNameFromPath(clean)
+  return /\.[^./]+$/.test(name)
+}
+
+function workspaceDisplayPath(raw: string): { path: string; fileName: string } | null {
+  const value = raw.trim()
+  if (!value || /^https?:\/\//i.test(value)) return null
+  const marker = '/workspace/'
+  const idx = value.indexOf(marker)
+  if (idx === -1) return null
+  const rel = value.slice(idx + marker.length).replace(/^\/+/, '')
+  if (!rel || rel.endsWith('/') || !hasFileExtension(rel)) return null
+  return {
+    path: `${marker}${rel}`,
+    fileName: fileNameFromPath(rel),
+  }
+}
+
+function displayPathForDiffFile(file: WorkspaceDiffInlineFile): string {
+  return `/workspace/${String(file.path || '').replace(/^\/+/, '')}`
+}
+
+const workspaceDiffByBasename = computed(() => {
+  const map = new Map<string, WorkspaceDiffInlineFile | null>()
+  for (const file of props.workspaceDiffFiles || []) {
+    const path = String(file.path || '').replace(/^\/+/, '')
+    if (!path || !hasFileExtension(path)) continue
+    const basename = fileNameFromPath(path)
+    const existing = map.get(basename)
+    if (existing === undefined) {
+      map.set(basename, { ...file, path })
+    } else if (existing && existing.path !== path) {
+      map.set(basename, null)
+    }
+  }
+  return map
+})
+
+function findWorkspaceDiffFileByDisplayPath(path: string): WorkspaceDiffInlineFile | null {
+  const rel = path.replace(/^\/workspace\/+/, '')
+  for (const file of workspaceDiffByBasename.value.values()) {
+    if (file && file.path === rel) return file
+  }
+  return null
+}
+
+function renderFileCard(path: string, fileName: string, options: {
+  inline?: boolean
+  diffFile?: WorkspaceDiffInlineFile | null
+} = {}): string {
+  const tag = options.inline ? 'span' : 'div'
+  const inlineClass = options.inline ? ' markdown-inline-file-card' : ''
+  const card = `<${tag} class="markdown-file-card${inlineClass}" data-path="${escapeHtml(path)}" data-filename="${escapeHtml(fileName)}" title="${escapeHtml(t('download.downloadFile'))}">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <polyline points="14 2 14 8 20 8" />
+      </svg>
+      <span class="att-name">${escapeHtml(fileName)}</span>
+      <button class="att-download-btn" type="button" title="${escapeHtml(t('download.downloadFile'))}" aria-label="${escapeHtml(t('download.downloadFile'))}">
+        <svg class="att-download-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+      </button>
+    </${tag}>`
+  const diffFile = options.diffFile
+  if (!diffFile) return card
+  return `<span class="markdown-inline-file-chip">${card}<button class="markdown-file-diff-btn" type="button" data-workspace-diff-file-id="${escapeHtml(String(diffFile.id))}" data-workspace-diff-change-id="${escapeHtml(String(diffFile.change_id || ''))}" data-workspace-diff-session-id="${escapeHtml(String(diffFile.session_id || ''))}" title="${escapeHtml(t('chat.workspaceDiffTitle'))}" aria-label="${escapeHtml(t('chat.workspaceDiffTitle'))}">Δ</button></span>`
+}
+
+function isInsideLinkToken(tokens: any[], idx: number): boolean {
+  for (let i = idx - 1; i >= 0; i -= 1) {
+    if (tokens[i]?.type === 'link_close') return false
+    if (tokens[i]?.type === 'link_open') return true
+  }
+  return false
+}
+
+function renderWorkspaceDiffText(text: string): string | null {
+  const entries = [...workspaceDiffByBasename.value.entries()]
+    .filter((entry): entry is [string, WorkspaceDiffInlineFile] => !!entry[1])
+    .sort((a, b) => b[0].length - a[0].length)
+  if (entries.length === 0) return null
+
+  const byName = new Map(entries)
+  const pattern = entries.map(([name]) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+  const re = new RegExp(`(^|[^\\w.-])(${pattern})(?=$|[^\\w.-])`, 'g')
+  let html = ''
+  let last = 0
+  let matched = false
+
+  text.replace(re, (match, prefix: string, basename: string, offset: number) => {
+    const start = offset + prefix.length
+    const file = byName.get(basename)
+    if (!file) return match
+    matched = true
+    html += escapeHtml(text.slice(last, start))
+    html += renderFileCard(displayPathForDiffFile(file), basename, { inline: true, diffFile: file })
+    last = start + basename.length
+    return match
+  })
+
+  if (!matched) return null
+  html += escapeHtml(text.slice(last))
+  return html
 }
 
 const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov'])
@@ -240,20 +406,7 @@ const renderedHtml = computed(() => {
     }
 
     // Other files: render as file card
-    return `<div class="markdown-file-card" data-path="${path}" data-filename="${fileName}" title="${t('download.downloadFile')}">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-        <polyline points="14 2 14 8 20 8" />
-      </svg>
-      <span class="att-name">${fileName}</span>
-      <button class="att-download-btn" type="button" title="${t('download.downloadFile')}" aria-label="${t('download.downloadFile')}">
-        <svg class="att-download-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-          <polyline points="7 10 12 15 17 10" />
-          <line x1="12" y1="15" x2="12" y2="3" />
-        </svg>
-      </button>
-    </div>`
+    return renderFileCard(path, fileName)
   })
 
   if (props.mentionNames && props.mentionNames.length > 0) {
@@ -422,6 +575,22 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
   if (img) {
     event.preventDefault()
     previewUrl.value = img.src
+    return
+  }
+
+  const diffButton = target.closest('.markdown-file-diff-btn') as HTMLElement | null
+  if (diffButton) {
+    event.preventDefault()
+    event.stopPropagation()
+    const fileId = diffButton.getAttribute('data-workspace-diff-file-id')
+    const changeId = diffButton.getAttribute('data-workspace-diff-change-id') || ''
+    const sessionId = diffButton.getAttribute('data-workspace-diff-session-id') || ''
+    const file = (props.workspaceDiffFiles || []).find(candidate =>
+      String(candidate.id) === fileId
+      && String(candidate.change_id || '') === changeId
+      && String(candidate.session_id || '') === sessionId
+    )
+    if (file) emit('workspace-diff-file-click', file)
     return
   }
 
@@ -745,6 +914,36 @@ function closeTextPreview(): void {
     .att-download-btn:hover .att-download-icon {
       opacity: 1;
     }
+  }
+
+  .markdown-inline-file-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    vertical-align: middle;
+  }
+
+  .markdown-file-card.markdown-inline-file-card {
+    margin: 0 2px;
+    padding: 2px 6px;
+    vertical-align: middle;
+  }
+
+  .markdown-file-diff-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    font-family: $font-code;
+    font-size: 11px;
+    line-height: 1;
+    color: var(--accent-primary, #4f7cff);
+    background: rgba(var(--accent-primary-rgb), 0.08);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.18);
+    border-radius: 999px;
+    cursor: pointer;
   }
 
   blockquote {

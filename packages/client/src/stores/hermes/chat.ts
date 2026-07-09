@@ -63,6 +63,7 @@ export interface Message {
   commandData?: Record<string, unknown>
   finishReason?: string | null
   runMarker?: string | null
+  runId?: string | null
 }
 
 export interface PendingApproval {
@@ -295,6 +296,22 @@ function readRunMarker(value: unknown): string | null | undefined {
   if (Object.prototype.hasOwnProperty.call(record, 'run_marker')) {
     return typeof record.run_marker === 'string' || record.run_marker == null
       ? record.run_marker as string | null
+      : undefined
+  }
+  return undefined
+}
+
+function readRunId(value: unknown): string | null | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Record<string, unknown>
+  if (Object.prototype.hasOwnProperty.call(record, 'runId')) {
+    return typeof record.runId === 'string' || record.runId == null
+      ? record.runId as string | null
+      : undefined
+  }
+  if (Object.prototype.hasOwnProperty.call(record, 'run_id')) {
+    return typeof record.run_id === 'string' || record.run_id == null
+      ? record.run_id as string | null
       : undefined
   }
   return undefined
@@ -1516,6 +1533,11 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function tagAssistantRun(message: Message, runId?: string | null, runMarker?: string | null) {
+    if (runId && !message.runId) message.runId = runId
+    if (runMarker && !message.runMarker) message.runMarker = runMarker
+  }
+
   function settleRunningTools(sessionId: string, status: 'done' | 'error') {
     const msgs = getSessionMsgs(sessionId)
     msgs.forEach((m, i) => {
@@ -2308,6 +2330,7 @@ export const useChatStore = defineStore('chat', () => {
       let activeAssistantMessageId: string | null = null
       let reasoningAssistantMessageId: string | null = null
       let activeRunMarker: string | null = null
+      let activeRunId: string | null = null
       // Tool cards created during the CURRENT run — scope existingTool lookups
       // so a repeated broker tool_call_id can't re-target an older run's card.
       let currentRunToolMsgIds = new Set<string>()
@@ -2322,6 +2345,7 @@ export const useChatStore = defineStore('chat', () => {
         activeAssistantMessageId = null
         reasoningAssistantMessageId = null
         activeRunMarker = null
+        activeRunId = null
       }
 
       const applyReconnectResume = (data: ResumeSessionPayload) => {
@@ -2477,6 +2501,8 @@ export const useChatStore = defineStore('chat', () => {
         (evt: RunEvent) => {
           const eventRunMarker = readRunMarker(evt)
           if (eventRunMarker) activeRunMarker = eventRunMarker
+          const eventRunId = readRunId(evt)
+          if (eventRunId) activeRunId = eventRunId
           switch (evt.event) {
             case 'run.started':
               clearSessionCompletedUnread(sid)
@@ -2491,6 +2517,7 @@ export const useChatStore = defineStore('chat', () => {
               currentRunToolMsgIds = new Set<string>()
               closeStreamingAssistant()
               activeRunMarker = readRunMarker(evt) ?? null
+              activeRunId = readRunId(evt) ?? null
               if ((evt as any).queue_length > 0) {
                 queueLengths.value.set(sid, (evt as any).queue_length)
               } else {
@@ -2606,6 +2633,7 @@ export const useChatStore = defineStore('chat', () => {
                 : null
               if (last?.role === 'assistant') {
                 last.reasoning = (last.reasoning || '') + text
+                tagAssistantRun(last, activeRunId, activeRunMarker)
                 reasoningAssistantMessageId = last.id
                 noteReasoningStart(last.id)
               } else {
@@ -2617,6 +2645,8 @@ export const useChatStore = defineStore('chat', () => {
                   timestamp: Date.now(),
                   isStreaming: true,
                   reasoning: text,
+                  runMarker: activeRunMarker,
+                  runId: activeRunId,
                 })
                 activeAssistantMessageId = newId
                 reasoningAssistantMessageId = newId
@@ -2659,6 +2689,7 @@ export const useChatStore = defineStore('chat', () => {
                 // 若之前有 reasoning 累积，则 content 到达即视为推理结束。
                 if (last.reasoning) noteReasoningEnd(last.id)
                 last.content = next
+                tagAssistantRun(last, activeRunId, activeRunMarker)
               } else {
                 const newId = uid()
                 const nextContent = evt.delta || ''
@@ -2669,6 +2700,8 @@ export const useChatStore = defineStore('chat', () => {
                   content: nextContent,
                   timestamp: Date.now(),
                   isStreaming: true,
+                  runMarker: activeRunMarker,
+                  runId: activeRunId,
                 })
                 activeAssistantMessageId = newId
               }
@@ -2840,6 +2873,8 @@ export const useChatStore = defineStore('chat', () => {
                   if (parsedContentTrimmed || !existingContentTrimmed) {
                     updateMessage(sid, lastAssistant.id, {
                       content: parsedContent,
+                      runMarker: lastAssistant.runMarker ?? activeRunMarker,
+                      runId: lastAssistant.runId ?? activeRunId,
                     })
                     finalOutputTrimmed = parsedContentTrimmed
                     if (parsedContentTrimmed) {
@@ -2853,6 +2888,8 @@ export const useChatStore = defineStore('chat', () => {
                   if ((evt as any).parsed_reasoning) {
                     updateMessage(sid, lastAssistant.id, {
                       reasoning: (evt as any).parsed_reasoning,
+                      runMarker: lastAssistant.runMarker ?? activeRunMarker,
+                      runId: lastAssistant.runId ?? activeRunId,
                     })
                   }
                 } else if (parsedContentTrimmed) {
@@ -2862,6 +2899,8 @@ export const useChatStore = defineStore('chat', () => {
                     content: parsedContent,
                     reasoning: typeof (evt as any).parsed_reasoning === 'string' ? (evt as any).parsed_reasoning : undefined,
                     timestamp: Date.now(),
+                    runMarker: activeRunMarker,
+                    runId: activeRunId,
                   })
                   finalOutputTrimmed = parsedContentTrimmed
                   runProducedAssistantText = true
@@ -2878,6 +2917,8 @@ export const useChatStore = defineStore('chat', () => {
                     role: 'assistant',
                     content: finalOutput,
                     timestamp: Date.now(),
+                    runMarker: activeRunMarker,
+                    runId: activeRunId,
                   })
                   runProducedAssistantText = true
                   runProducedAssistantContent = true
@@ -2944,6 +2985,7 @@ export const useChatStore = defineStore('chat', () => {
               activeAssistantMessageId = null
               reasoningAssistantMessageId = null
               activeRunMarker = null
+              activeRunId = null
               updateSessionTitle(sid)
               break
             }
@@ -2968,6 +3010,7 @@ export const useChatStore = defineStore('chat', () => {
               activeAssistantMessageId = null
               reasoningAssistantMessageId = null
               activeRunMarker = null
+              activeRunId = null
               break
             }
 
@@ -2994,6 +3037,7 @@ export const useChatStore = defineStore('chat', () => {
           activeAssistantMessageId = null
           reasoningAssistantMessageId = null
           activeRunMarker = null
+          activeRunId = null
           updateSessionTitle(sid)
         },
         // onError
@@ -3010,6 +3054,7 @@ export const useChatStore = defineStore('chat', () => {
           activeAssistantMessageId = null
           reasoningAssistantMessageId = null
           activeRunMarker = null
+          activeRunId = null
         },
         undefined,
         { onReconnectResume: applyReconnectResume, transport: runtimeTransport() },
@@ -3057,6 +3102,7 @@ export const useChatStore = defineStore('chat', () => {
     let activeAssistantMessageId: string | null = null
     let reasoningAssistantMessageId: string | null = null
     let activeRunMarker: string | null = null
+    let activeRunId: string | null = null
     // Tool cards created during the CURRENT run. Broker reuses tool_call_id
     // across runs; matching by id alone would re-target a tool card from an
     // earlier run. Scope existingTool lookups to this set so each run only
@@ -3082,6 +3128,7 @@ export const useChatStore = defineStore('chat', () => {
       activeAssistantMessageId = null
       reasoningAssistantMessageId = null
       activeRunMarker = null
+      activeRunId = null
     }
 
     const initializeResumedAssistantState = () => {
@@ -3109,6 +3156,8 @@ export const useChatStore = defineStore('chat', () => {
       if (evt.session_id && evt.session_id !== sid) return
       const eventRunMarker = readRunMarker(evt)
       if (eventRunMarker) activeRunMarker = eventRunMarker
+      const eventRunId = readRunId(evt)
+      if (eventRunId) activeRunId = eventRunId
       switch (evt.event) {
         case 'run.queued': {
           handleRunQueuedEvent(sid, evt)
@@ -3148,6 +3197,7 @@ export const useChatStore = defineStore('chat', () => {
           currentRunToolMsgIds = new Set<string>()
           closeStreamingAssistant()
           activeRunMarker = readRunMarker(evt) ?? null
+          activeRunId = readRunId(evt) ?? null
           if ((evt as any).queue_length > 0) {
             queueLengths.value.set(sid, (evt as any).queue_length)
           } else {
@@ -3237,6 +3287,7 @@ export const useChatStore = defineStore('chat', () => {
             : null
           if (last?.role === 'assistant') {
             last.reasoning = (last.reasoning || '') + text
+            tagAssistantRun(last, activeRunId, activeRunMarker)
             reasoningAssistantMessageId = last.id
             noteReasoningStart(last.id)
           } else {
@@ -3248,6 +3299,8 @@ export const useChatStore = defineStore('chat', () => {
               timestamp: Date.now(),
               isStreaming: true,
               reasoning: text,
+              runMarker: activeRunMarker,
+              runId: activeRunId,
             })
             activeAssistantMessageId = newId
             reasoningAssistantMessageId = newId
@@ -3282,6 +3335,7 @@ export const useChatStore = defineStore('chat', () => {
             noteThinkingDelta(last.id, prev, next)
             if (last.reasoning) noteReasoningEnd(last.id)
             last.content = next
+            tagAssistantRun(last, activeRunId, activeRunMarker)
           } else {
             const newId = uid()
             const nextContent = evt.delta || ''
@@ -3292,6 +3346,8 @@ export const useChatStore = defineStore('chat', () => {
               content: nextContent,
               timestamp: Date.now(),
               isStreaming: true,
+              runMarker: activeRunMarker,
+              runId: activeRunId,
             })
             activeAssistantMessageId = newId
           }
@@ -3461,6 +3517,8 @@ export const useChatStore = defineStore('chat', () => {
               if (parsedContentTrimmed || !existingContentTrimmed) {
                 updateMessage(sid, lastAssistant.id, {
                   content: parsedContent,
+                  runMarker: lastAssistant.runMarker ?? activeRunMarker,
+                  runId: lastAssistant.runId ?? activeRunId,
                 })
                 finalOutputTrimmed = parsedContentTrimmed
                 if (parsedContentTrimmed) {
@@ -3474,6 +3532,8 @@ export const useChatStore = defineStore('chat', () => {
               if ((evt as any).parsed_reasoning) {
                 updateMessage(sid, lastAssistant.id, {
                   reasoning: (evt as any).parsed_reasoning,
+                  runMarker: lastAssistant.runMarker ?? activeRunMarker,
+                  runId: lastAssistant.runId ?? activeRunId,
                 })
               }
             } else if (parsedContentTrimmed) {
@@ -3483,6 +3543,8 @@ export const useChatStore = defineStore('chat', () => {
                 content: parsedContent,
                 reasoning: typeof (evt as any).parsed_reasoning === 'string' ? (evt as any).parsed_reasoning : undefined,
                 timestamp: Date.now(),
+                runMarker: activeRunMarker,
+                runId: activeRunId,
               })
               finalOutputTrimmed = parsedContentTrimmed
               runProducedAssistantText = true
@@ -3498,6 +3560,8 @@ export const useChatStore = defineStore('chat', () => {
                 role: 'assistant',
                 content: finalOutput,
                 timestamp: Date.now(),
+                runMarker: activeRunMarker,
+                runId: activeRunId,
               })
               runProducedAssistantText = true
               runProducedAssistantContent = true
@@ -3548,12 +3612,14 @@ export const useChatStore = defineStore('chat', () => {
             activeAssistantMessageId = null
             reasoningAssistantMessageId = null
             activeRunMarker = null
+            activeRunId = null
           } else {
             markSessionCompletedUnread(sid, true)
             // More runs pending — reset for next run but don't cleanup
             activeAssistantMessageId = null
             reasoningAssistantMessageId = null
             activeRunMarker = null
+            activeRunId = null
           }
           updateSessionTitle(sid)
           break
@@ -3583,6 +3649,7 @@ export const useChatStore = defineStore('chat', () => {
           activeAssistantMessageId = null
           reasoningAssistantMessageId = null
           activeRunMarker = null
+          activeRunId = null
           break
         }
 
