@@ -1304,7 +1304,11 @@ export const useChatStore = defineStore('chat', () => {
       apiKey: options.apiKey,
       apiMode: options.apiMode,
     })
-    if (!codingAgentId) applyActiveExpertToSession(session)
+    // ponytail: do NOT stamp the active/sticky expert onto a brand-new chat.
+    // "+新对话" is a fresh-start gesture; switchSession() below runs
+    // syncActiveExpertFromSession(), which clears the expert for a session that
+    // has none. Pre-stamping here defeated that guard and force-selected the
+    // last-browsed/activated expert on every new chat (prod bug, sunke profile).
     void switchSession(session.id)
     return session
   }

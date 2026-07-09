@@ -14,13 +14,16 @@ const resumeSessionMock = vi.hoisted(() => vi.fn((_sessionId: string, onResumed:
   onResumed({ messages: [], isWorking: false, events: [] })
   return { disconnect: vi.fn() }
 }))
+// Real setActiveExpertId(null) does localStorage.removeItem — spy on it so we can
+// prove the store persists the sticky-clear, not just the in-memory ref.
+const setActiveExpertIdMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/client', () => ({
   getApiKey: vi.fn(() => ''),
   isUserMode: isUserModeMock,
   getActiveProfileName: () => 'default',
   getActiveExpertId: () => null,
-  setActiveExpertId: () => {},
+  setActiveExpertId: setActiveExpertIdMock,
 }))
 
 vi.mock('@/stores/hermes/app', () => ({
@@ -714,6 +717,39 @@ describe('chat store user-mode model selection', () => {
 
     const runPayload = startRunViaSocketMock.mock.calls[0][0]
     expect(runPayload.session_id).toBe('ordinary-session')
+    expect(runPayload.expert_id).toBeUndefined()
+    expect(runPayload.expert_label).toBeUndefined()
+    expect(runPayload.expert_avatar).toBeUndefined()
+  })
+
+  it('does not carry the active expert into a brand-new chat (+新对话)', async () => {
+    // Repro of the sunke-profile prod bug: an expert was active (activated in
+    // 专家广场 or promoted by browsing an old expert chat), then "+新对话"
+    // force-selected that expert on the fresh chat the user never chose it for.
+    const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
+    const store = useChatStore()
+
+    // setActiveExpert is exactly what syncActiveExpertFromSession() calls when
+    // you merely view an old expert session, so this faithfully simulates the
+    // "browsed an expert chat → it became the sticky global default" state.
+    store.setActiveExpert('keep-resource-delivery', {
+      avatar: expertAvatar,
+      label: '资源投放专家',
+    })
+    expect(store.activeExpertId).toBe('keep-resource-delivery')
+
+    setActiveExpertIdMock.mockClear()
+    const session = store.newChat()
+    // Fresh chat must be clean: no expert stamped, composer chip cleared, and
+    // the sticky default persisted-cleared (setActiveExpertId(null) → the real
+    // api/client does localStorage.removeItem) — not just the in-memory ref.
+    expect(session.expertId).toBeUndefined()
+    expect(store.activeExpertId).toBeNull()
+    expect(setActiveExpertIdMock).toHaveBeenLastCalledWith(null)
+
+    await store.sendMessage('你是谁')
+    const runPayload = startRunViaSocketMock.mock.calls[0][0]
+    expect(runPayload.session_id).toBe(session.id)
     expect(runPayload.expert_id).toBeUndefined()
     expect(runPayload.expert_label).toBeUndefined()
     expect(runPayload.expert_avatar).toBeUndefined()
