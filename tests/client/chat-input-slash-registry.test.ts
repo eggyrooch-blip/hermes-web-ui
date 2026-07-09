@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { shallowMount, flushPromises } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 
 // Slash registry behavior (RESTORED after the upstream rebaseline regressed it):
 //   - the `/` picker merges the in-component built-in `bridgeCommands` with the
@@ -112,6 +113,7 @@ function findCommandItem(wrapper: any, name: string) {
 
 describe('ChatInput slash registry', () => {
   beforeEach(() => {
+    setActivePinia(createPinia())
     vi.clearAllMocks()
     localStorage.clear()
     chatStoreMock.activeSession = { id: 's1', source: 'cli', profile: 'owner_sync_profile' }

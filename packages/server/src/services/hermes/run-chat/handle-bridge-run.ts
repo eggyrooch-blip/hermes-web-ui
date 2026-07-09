@@ -34,11 +34,22 @@ import { markAbortCompleted } from './abort'
 import { writeModelRunProfileToken } from './model-run-prompt'
 import type { AuthenticatedUser } from '../../../middleware/user-auth'
 import { ensureHermesRunWorkspace } from './workspace'
+import { completeWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint, type WorkspaceRunCheckpointHandle } from './workspace-diff-tracker'
+import type { WorkspaceRunChangeSummary } from '../../../db/hermes/workspace-run-changes-store'
 
 const BRIDGE_USAGE_FLUSH_DELAY_MS = 200
 const BRIDGE_TITLE_EVENT_POLL_INTERVAL_MS = 500
 const BRIDGE_TITLE_EVENT_POLL_TIMEOUT_MS = 45_000
 const BRIDGE_GOAL_EVALUATE_TIMEOUT_MS = 120_000
+
+function workspaceDiffCompletedPayload(change: WorkspaceRunChangeSummary): Record<string, unknown> {
+  return { event: 'workspace.diff.completed', ...change }
+}
+
+function explicitBridgeWorkspace(requested?: string | null): string {
+  const requestedWorkspace = String(requested || '').trim()
+  return requestedWorkspace
+}
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
@@ -115,9 +126,17 @@ function shouldPollBridgeGeneratedTitle(sessionId: string): boolean {
 }
 
 function looksLikeAgentFailure(value: string): boolean {
-  return /\bAPI call failed after\b/i.test(value)
-    || /\bHTTP\s+(?:4\d\d|5\d\d)\b/i.test(value)
-    || /\b(?:401|403|429|500|502|503|504)\b/.test(value) && /\b(?:unauthorized|forbidden|rate limit|unavailable|failed|error)\b/i.test(value)
+  const text = value.replace(/\s+/g, ' ').trim()
+  if (!text) return false
+
+  return /\bAPI call failed after\b/i.test(text)
+    || /\b(?:401|403)\b.{0,100}\b(?:unauthorized|forbidden|authentication|auth|invalid api key|permission denied)\b/i.test(text)
+    || /\b(?:unauthorized|forbidden|authentication|auth|invalid api key|permission denied)\b.{0,100}\b(?:401|403)\b/i.test(text)
+    || /\b429\b.{0,100}\b(?:rate limit|too many requests|quota)\b/i.test(text)
+    || /\b(?:rate limit|too many requests|quota)\b.{0,100}\b429\b/i.test(text)
+    || /\b(?:500|502|503|504)\b.{0,100}\b(?:server error|bad gateway|service unavailable|gateway timeout|upstream|provider|request failed|api)\b/i.test(text)
+    || /\b(?:server error|bad gateway|service unavailable|gateway timeout|upstream|provider|request failed|api)\b.{0,100}\b(?:500|502|503|504)\b/i.test(text)
+    || /(?:无可用渠道|渠道不可用|认证失败|鉴权失败|额度不足|余额不足|请求失败|接口调用失败|限流)/i.test(text)
 }
 
 export function bridgeTerminalError(chunk: Pick<AgentBridgeOutput, 'status' | 'error' | 'result'>): string | null {
@@ -127,19 +146,21 @@ export function bridgeTerminalError(chunk: Pick<AgentBridgeOutput, 'status' | 'e
   const resultError = result
     ? stringValue(result.error)
       || stringValue(result.exception)
-      || stringValue(result.message)
     : ''
+  const resultMessage = result ? stringValue(result.message) : ''
   const finalResponse = result ? stringValue(result.final_response) : ''
 
   if (chunk.status === 'error') {
-    return stringValue(chunk.error) || resultError || finalResponse || 'Agent run failed'
+    return stringValue(chunk.error) || resultError || resultMessage || finalResponse || 'Agent run failed'
   }
 
   if (result?.failed === true || result?.completed === false) {
-    return resultError || finalResponse || 'Agent reported failure'
+    return resultError || resultMessage || finalResponse || 'Agent reported failure'
   }
 
+  if (result?.completed === true) return null
   if (resultError) return resultError
+  if (!finalResponse && resultMessage && looksLikeAgentFailure(resultMessage)) return resultMessage
   if (finalResponse && looksLikeAgentFailure(finalResponse)) return finalResponse
 
   return null
@@ -318,6 +339,7 @@ export async function handleBridgeRun(
     : getSystemPrompt()
   const sessionRow = getSession(session_id)
   const workspace = await ensureHermesRunWorkspace(profile, sessionRow?.workspace || data.workspace)
+  const diffWorkspace = explicitBridgeWorkspace(data.workspace) ? workspace : ''
   if (sessionRow && !sessionRow.workspace) updateSession(session_id, { workspace })
   const sessionModel = sessionRow?.model || ''
   const sessionProvider = sessionRow?.provider || ''
@@ -437,6 +459,29 @@ export async function handleBridgeRun(
       socket.emit(event, tagged)
     }
   }
+  let workspaceDiffRunId = ''
+  let workspaceDiffCheckpoint: WorkspaceRunCheckpointHandle | null = null
+  let workspaceDiffCompleted = false
+  const emitWorkspaceDiffCompleted = () => {
+    if (!diffWorkspace || workspaceDiffCompleted) return
+    if (!workspaceDiffRunId && !workspaceDiffCheckpoint) return
+    workspaceDiffCompleted = true
+    if (!workspaceDiffRunId) {
+      completeWorkspaceRunCheckpoint({
+        sessionId: session_id,
+        workspace: diffWorkspace,
+        checkpoint: workspaceDiffCheckpoint,
+      })
+      return
+    }
+    const change = completeWorkspaceRunCheckpoint({
+      sessionId: session_id,
+      runId: workspaceDiffRunId,
+      workspace: diffWorkspace,
+      ...(workspaceDiffCheckpoint ? { checkpoint: workspaceDiffCheckpoint } : {}),
+    })
+    if (change) emit('workspace.diff.completed', workspaceDiffCompletedPayload(change))
+  }
 
   const history = await buildCompressedHistory(
     session_id, profile,
@@ -492,6 +537,12 @@ export async function handleBridgeRun(
       hasInstructions: Boolean(fullInstructions),
       multimodalInput: isContentBlockArray(input),
     }, '[chat-run-socket] starting CLI bridge run')
+    workspaceDiffCheckpoint = diffWorkspace
+      ? startWorkspaceRunCheckpoint({
+          sessionId: session_id,
+          workspace: diffWorkspace,
+        })
+      : null
     const started = await bridge.chat(
       session_id,
       bridgeInput as AgentBridgeMessage,
@@ -507,6 +558,7 @@ export async function handleBridgeRun(
       },
     )
     state.runId = started.run_id
+    workspaceDiffRunId = started.run_id
     bridgeLogger.info({
       sessionId: session_id,
       runId: started.run_id,
@@ -544,6 +596,7 @@ export async function handleBridgeRun(
         currentInputTokens,
         shouldPersistUserMessage && displayRole === 'user',
         data.model_groups,
+        emitWorkspaceDiffCompleted,
       )
       if (chunk.done) {
         sawTerminalChunk = true
@@ -587,11 +640,18 @@ export async function handleBridgeRun(
         currentInputTokens,
         shouldPersistUserMessage && displayRole === 'user',
         data.model_groups,
+        emitWorkspaceDiffCompleted,
       )
     }
   } catch (err: any) {
-    if (state.activeRunMarker !== runMarker) return
-    if (!state.isWorking) return
+    if (state.activeRunMarker !== runMarker) {
+      emitWorkspaceDiffCompleted()
+      return
+    }
+    if (!state.isWorking) {
+      emitWorkspaceDiffCompleted()
+      return
+    }
     const queueLen = state.queue?.length ?? 0
     state.isWorking = false
     state.isAborting = false
@@ -620,6 +680,7 @@ export async function handleBridgeRun(
       outputTokens: errUsage.outputTokens,
       profile,
     })
+    emitWorkspaceDiffCompleted()
     emit('run.failed', {
       event: 'run.failed',
       error: message,
@@ -874,6 +935,7 @@ async function applyBridgeChunkAsync(
   currentInputTokens = 0,
   currentInputIncludedInDb = true,
   modelGroups?: RunModelGroup[],
+  emitWorkspaceDiffCompleted?: () => void,
 ): Promise<void> {
   if (state.activeRunMarker !== runMarker) {
     bridgeLogger.info({
@@ -1207,6 +1269,7 @@ async function applyBridgeChunkAsync(
       runId: chunk.run_id,
       status: chunk.status,
     }, '[chat-run-socket][abort] completing CLI bridge abort after terminal chunk')
+    emitWorkspaceDiffCompleted?.()
     await markAbortCompleted(
       nsp,
       socket,
@@ -1269,6 +1332,7 @@ async function applyBridgeChunkAsync(
     contextTokens,
     queue_remaining: state.queue.length,
   }
+  emitWorkspaceDiffCompleted?.()
   emit(eventName, payload)
 
   if (!terminalError) {

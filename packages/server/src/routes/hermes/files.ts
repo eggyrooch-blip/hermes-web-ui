@@ -11,6 +11,7 @@ import {
 import { requireSuperAdminOrChatPlane } from '../../middleware/user-auth'
 import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 import { MultipartParseError, parseMultipartBoundary, parseMultipartFilename, splitMultipart } from '../../lib/multipart'
+import { isNearestExistingRealPathWithin } from '../../services/hermes/hermes-path'
 
 function requestedProfile(ctx: any): string | undefined {
   return ctx.state?.profile?.name
@@ -77,6 +78,27 @@ function denySensitivePath(ctx: Context, relativePath: string, action = 'access'
   return true
 }
 
+async function assertWorkspaceRealPath(absPath: string, rootDir?: string): Promise<void> {
+  if (!rootDir) return
+  if (await isNearestExistingRealPathWithin(absPath, rootDir)) return
+  throw Object.assign(new Error('Path escapes workspace'), { code: 'permission_denied' })
+}
+
+async function filterWorkspaceEntries<T extends { path: string; name: string }>(
+  ctx: any,
+  entries: T[],
+  rootDir?: string,
+): Promise<T[]> {
+  const filtered: T[] = []
+  for (const entry of entries) {
+    if (isSensitivePath(entry.path || entry.name)) continue
+    const absPath = resolveFilePath(ctx, entry.path, rootDir)
+    if (rootDir && !(await isNearestExistingRealPathWithin(absPath, rootDir))) continue
+    filtered.push(entry)
+  }
+  return filtered
+}
+
 export const fileRoutes = new Router()
 
 function handleError(ctx: any, err: any) {
@@ -106,9 +128,9 @@ fileRoutes.get('/api/hermes/files/list', async (ctx) => {
   try {
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(ctx, relativePath, rootDir)
+    await assertWorkspaceRealPath(absPath, rootDir)
     const provider = await createRequestFileProvider(ctx, rootDir)
-    const entries = (await provider.listDir(absPath))
-      .filter(entry => !isSensitivePath(entry.path || entry.name))
+    const entries = await filterWorkspaceEntries(ctx, await provider.listDir(absPath), rootDir)
     entries.sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
       return a.name.localeCompare(b.name)
@@ -131,6 +153,7 @@ fileRoutes.get('/api/hermes/files/stat', async (ctx) => {
   try {
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(ctx, relativePath, rootDir)
+    await assertWorkspaceRealPath(absPath, rootDir)
     const provider = await createRequestFileProvider(ctx, rootDir)
     const info = await provider.stat(absPath)
     ctx.body = withAbsolutePath(ctx, info, rootDir)
@@ -151,6 +174,7 @@ fileRoutes.get('/api/hermes/files/read', requireSuperAdminOrChatPlane, async (ct
   try {
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(ctx, relativePath, rootDir)
+    await assertWorkspaceRealPath(absPath, rootDir)
     const provider = await createRequestFileProvider(ctx, rootDir)
     const data = await provider.readFile(absPath)
     if (data.length > MAX_EDIT_SIZE) {
@@ -182,6 +206,7 @@ fileRoutes.put('/api/hermes/files/write', requireSuperAdminOrChatPlane, async (c
     }
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(ctx, relativePath, rootDir)
+    await assertWorkspaceRealPath(absPath, rootDir)
     const provider = await createRequestFileProvider(ctx, rootDir)
     await provider.writeFile(absPath, buf)
     ctx.body = { ok: true, path: relativePath }
@@ -205,6 +230,7 @@ fileRoutes.delete('/api/hermes/files/delete', requireSuperAdminOrChatPlane, asyn
   try {
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(ctx, relativePath, rootDir)
+    await assertWorkspaceRealPath(absPath, rootDir)
     const provider = await createRequestFileProvider(ctx, rootDir)
     if (recursive) {
       await provider.deleteDir(absPath)
@@ -231,6 +257,8 @@ fileRoutes.post('/api/hermes/files/rename', requireSuperAdminOrChatPlane, async 
     const rootDir = await getFileRootDir(ctx)
     const absOld = resolveFilePath(ctx, oldPath, rootDir)
     const absNew = resolveFilePath(ctx, newPath, rootDir)
+    await assertWorkspaceRealPath(absOld, rootDir)
+    await assertWorkspaceRealPath(absNew, rootDir)
     const provider = await createRequestFileProvider(ctx, rootDir)
     await provider.renameFile(absOld, absNew)
     ctx.body = { ok: true }
@@ -251,6 +279,7 @@ fileRoutes.post('/api/hermes/files/mkdir', requireSuperAdminOrChatPlane, async (
   try {
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(ctx, relativePath, rootDir)
+    await assertWorkspaceRealPath(absPath, rootDir)
     const provider = await createRequestFileProvider(ctx, rootDir)
     await provider.mkDir(absPath)
     ctx.body = { ok: true }
@@ -273,6 +302,8 @@ fileRoutes.post('/api/hermes/files/copy', requireSuperAdminOrChatPlane, async (c
     const rootDir = await getFileRootDir(ctx)
     const absSrc = resolveFilePath(ctx, srcPath, rootDir)
     const absDest = resolveFilePath(ctx, destPath, rootDir)
+    await assertWorkspaceRealPath(absSrc, rootDir)
+    await assertWorkspaceRealPath(absDest, rootDir)
     const provider = await createRequestFileProvider(ctx, rootDir)
     await provider.copyFile(absSrc, absDest)
     ctx.body = { ok: true }
@@ -340,8 +371,14 @@ fileRoutes.post('/api/hermes/files/upload', requireSuperAdminOrChatPlane, async 
       return
     }
 
-    const absPath = resolveFilePath(ctx, filePath, rootDir)
-    await provider.writeFile(absPath, data)
+    try {
+      const absPath = resolveFilePath(ctx, filePath, rootDir)
+      await assertWorkspaceRealPath(absPath, rootDir)
+      await provider.writeFile(absPath, data)
+    } catch (err: any) {
+      handleError(ctx, err)
+      return
+    }
     results.push({ name: filename, path: filePath })
   }
 

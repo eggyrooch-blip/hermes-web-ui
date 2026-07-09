@@ -871,6 +871,7 @@ const contextMenuOptions = computed(() => {
   options.push({ label: t("chat.openSessionInNewTab"), key: "open-link" })
   options.push({ label: t("chat.copySessionLink"), key: "copy-link" })
   options.push({ label: t("chat.copySessionId"), key: "copy-id" })
+  options.push({ label: t("chat.archive"), key: "archive" })
   return options
 });
 
@@ -911,6 +912,14 @@ async function handleContextMenuSelect(key: string) {
     copySessionId(contextSessionId.value);
   } else if (key === "open-link") {
     openSessionInNewTab(contextSessionId.value);
+  } else if (key === "archive") {
+    const archived = await chatStore.archiveSession(contextSessionId.value);
+    if (archived) {
+      sessionBrowserPrefsStore.removePinned(contextSessionId.value);
+      message.success(t("chat.sessionArchived"));
+    } else {
+      message.error(t("chat.archiveFailed"));
+    }
   } else if (parseExportKey(key)) {
     const { mode, ext } = parseExportKey(key)!;
     const loadingMsg = mode === "compressed" ? message.loading(t("chat.exportCompressing"), { duration: 0 }) : null;

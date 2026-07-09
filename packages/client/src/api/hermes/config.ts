@@ -12,6 +12,7 @@ export interface DisplayConfig {
   inline_diffs?: boolean
   show_cost?: boolean
   skin?: string
+  chat_input_height?: number
 }
 
 export interface AgentConfig {

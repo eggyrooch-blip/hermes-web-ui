@@ -9,7 +9,9 @@ const startRunViaSocketMock = vi.hoisted(() => vi.fn(() => ({ abort: vi.fn() }))
 const respondClarifyMock = vi.hoisted(() => vi.fn())
 const fetchSessionMock = vi.hoisted(() => vi.fn())
 const fetchSessionMessagesPageMock = vi.hoisted(() => vi.fn())
+const fetchWorkspaceRunChangesMock = vi.hoisted(() => vi.fn(() => Promise.resolve([])))
 const fetchSessionsMock = vi.hoisted(() => vi.fn(() => Promise.resolve([])))
+const setSessionArchivedMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)))
 const resumeSessionMock = vi.hoisted(() => vi.fn((_sessionId: string, onResumed: (data: any) => void) => {
   onResumed({ messages: [], isWorking: false, events: [] })
   return { disconnect: vi.fn() }
@@ -58,10 +60,12 @@ vi.mock('@/api/hermes/chat', () => ({
 vi.mock('@/api/hermes/sessions', () => ({
   deleteSession: vi.fn(),
   fetchSession: fetchSessionMock,
+  fetchWorkspaceRunChanges: fetchWorkspaceRunChangesMock,
   // Upstream rebaseline: refreshActiveSession now pulls via the paginated
   // messages endpoint instead of fetchSession.
   fetchSessionMessagesPage: fetchSessionMessagesPageMock,
   fetchSessions: fetchSessionsMock,
+  setSessionArchived: setSessionArchivedMock,
   setSessionModel: setSessionModelMock,
 }))
 
@@ -84,6 +88,8 @@ describe('chat store user-mode model selection', () => {
     isUserModeMock.mockReturnValue(false)
     fetchSessionsMock.mockResolvedValue([])
     fetchSessionMock.mockResolvedValue(null)
+    fetchWorkspaceRunChangesMock.mockResolvedValue([])
+    setSessionArchivedMock.mockResolvedValue(true)
     resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
       onResumed({ messages: [], isWorking: false, events: [] })
       return { disconnect: vi.fn() }
@@ -354,6 +360,133 @@ describe('chat store user-mode model selection', () => {
     expect(store.compressionState).toBeNull()
   })
 
+  it('adds one workspace diff card from live events and ignores duplicates', async () => {
+    const store = useChatStore()
+    store.newChat()
+
+    await store.sendMessage('change files')
+
+    const onEvent = startRunViaSocketMock.mock.calls[0][1]
+    const event = {
+      event: 'workspace.diff.completed',
+      session_id: store.activeSession!.id,
+      change_id: 'change-1',
+      run_id: 'run-1',
+      source: 'run',
+      workspace: 'project',
+      workspace_kind: 'git',
+      started_at: 1,
+      finished_at: 2,
+      files_changed: 1,
+      additions: 2,
+      deletions: 1,
+      truncated: false,
+      total_patch_bytes: 42,
+      created_at: 2,
+      files: [{
+        id: 7,
+        change_id: 'change-1',
+        session_id: store.activeSession!.id,
+        path: 'src/app.ts',
+        old_path: null,
+        change_type: 'modified',
+        additions: 2,
+        deletions: 1,
+        size_before: 10,
+        size_after: 12,
+        patch_bytes: 42,
+        truncated: false,
+        binary: false,
+        created_at: 2,
+        patch: 'diff --git a/src/app.ts b/src/app.ts',
+        patch_body: 'secret patch',
+        diff: 'secret diff',
+        content: 'secret content',
+      }],
+    }
+
+    onEvent(event)
+    onEvent(event)
+
+    const cards = store.activeSession!.messages.filter(m => m.commandAction === 'workspace.diff')
+    expect(cards).toHaveLength(1)
+    expect(cards[0]).toMatchObject({
+      id: 'workspace-change:change-1',
+      role: 'command',
+      commandData: expect.objectContaining({
+        change_id: 'change-1',
+        files_changed: 1,
+        additions: 2,
+        deletions: 1,
+      }),
+    })
+    expect(cards[0].commandData?.files).toEqual([
+      expect.objectContaining({
+        path: 'src/app.ts',
+        patch_bytes: 42,
+      }),
+    ])
+    expect(JSON.stringify(cards[0].commandData?.files)).not.toContain('secret')
+    expect(cards[0].commandData?.files).toEqual([
+      expect.not.objectContaining({
+        patch: expect.anything(),
+        patch_body: expect.anything(),
+        diff: expect.anything(),
+        content: expect.anything(),
+      }),
+    ])
+  })
+
+  it('restores workspace diff cards after refreshing a session without duplicating existing cards', async () => {
+    const store = useChatStore()
+    store.newChat()
+    const sessionId = store.activeSession!.id
+    const restoredMessages = [{ id: 1, role: 'user', content: 'hello', timestamp: 1 }]
+    fetchSessionMessagesPageMock.mockResolvedValue({
+      session: { id: sessionId, title: 'workspace session' },
+      messages: restoredMessages,
+      total: restoredMessages.length,
+      offset: 0,
+      limit: 150,
+      hasMore: false,
+    })
+    fetchWorkspaceRunChangesMock.mockResolvedValue([{
+      change_id: 'change-restore',
+      session_id: sessionId,
+      run_id: 'run-1',
+      source: 'run',
+      workspace: 'project',
+      workspace_kind: 'filesystem',
+      started_at: 1,
+      finished_at: 2,
+      files_changed: 2,
+      additions: 3,
+      deletions: 1,
+      truncated: false,
+      total_patch_bytes: 64,
+      created_at: 2,
+      files: [
+        { id: 8, change_id: 'change-restore', session_id: sessionId, path: 'src/a.ts', old_path: null, change_type: 'modified', additions: 2, deletions: 1, size_before: 10, size_after: 11, patch_bytes: 32, truncated: false, binary: false, created_at: 2 },
+        { id: 9, change_id: 'change-restore', session_id: sessionId, path: 'src/b.ts', old_path: null, change_type: 'added', additions: 1, deletions: 0, size_before: null, size_after: 5, patch_bytes: 32, truncated: false, binary: false, created_at: 2 },
+      ],
+    }])
+
+    await store.refreshActiveSession()
+    await store.refreshActiveSession()
+
+    expect(fetchWorkspaceRunChangesMock).toHaveBeenCalledWith(sessionId, 'default')
+    const cards = store.activeSession!.messages.filter(m => m.commandAction === 'workspace.diff')
+    expect(cards).toHaveLength(1)
+    expect(cards[0]).toMatchObject({
+      id: 'workspace-change:change-restore',
+      commandData: expect.objectContaining({
+        files_changed: 2,
+        workspace_kind: 'filesystem',
+      }),
+    })
+    expect(store.activeSession!.messages.map(m => m.id)).toEqual(['1', 'workspace-change:change-restore'])
+  })
+
   it('keeps a tool run as one thinking message, tool card, then one streamed result message', async () => {
     const store = useChatStore()
     store.newChat()
@@ -612,6 +745,61 @@ describe('chat store user-mode model selection', () => {
     expect(store.activeSession?.profile).toBe('tester')
     // Upstream rebaseline added a transport arg ('chat-run') to resumeSession.
     expect(resumeSessionMock).toHaveBeenCalledWith('session-2', expect.any(Function), 'tester', 'chat-run')
+  })
+
+  it('archives a session and removes it from the normal session list', async () => {
+    fetchSessionsMock.mockResolvedValue([
+      {
+        id: 'session-1',
+        source: 'api_server',
+        model: 'm',
+        title: 'first',
+        started_at: 100,
+        ended_at: null,
+        last_active: 100,
+        message_count: 0,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        profile: 'tester',
+      },
+      {
+        id: 'session-2',
+        source: 'api_server',
+        model: 'm',
+        title: 'second',
+        started_at: 101,
+        ended_at: null,
+        last_active: 101,
+        message_count: 0,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        profile: 'tester',
+      },
+    ])
+    const store = useChatStore()
+    await store.loadSessions('tester', 'session-1')
+
+    await expect(store.archiveSession('session-1')).resolves.toBe(true)
+
+    expect(setSessionArchivedMock).toHaveBeenCalledWith('session-1', true, 'tester')
+    expect(store.sessions.map(session => session.id)).toEqual(['session-2'])
+    expect(store.activeSessionId).toBe('session-2')
   })
 
   it('maps persisted expert metadata from session summaries', async () => {

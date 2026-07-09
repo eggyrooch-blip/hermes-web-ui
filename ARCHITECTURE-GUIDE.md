@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-07-08
+updated: 2026-07-09
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
@@ -14,6 +14,24 @@ related:
 ---
 
 # hermes-web-ui 架构速查 — EKKO fork
+
+> [!info] 2026-07-09 local worktree — selective upstream harvest, production not published
+> `upstream-selective-harvest` selectively ports the upstream fixes/features
+> that fit this fork's enterprise WebUI boundary: bridge terminal-error
+> false-positive guarding, session archive/local-only History visibility,
+> workspace symlink path containment, read-only workspace diff summary cards,
+> and configurable chat input height for desktop while keeping mobile auto
+> height. The workspace diff surface is intentionally read-only: cards store
+> summary fields only, fetch patch detail on demand, and do not add edit/write
+> actions from the card.
+>
+> Areas 7/8 were not absorbed in this task. Upstream plugin management would
+> expand ordinary-user maintenance surface; upstream skills usage would pull in
+> profile `state.db` stats and editing/reload behavior. Keep those as separate
+> tasks only if a concrete Hermes gap is approved. Local verification passed
+> focused Vitest suites, `bun run test` (309 files / 2346 passed / 2 skipped),
+> `npm run build`, and Playwright screenshots for chat input height plus
+> workspace diff card/detail. This is not pushed or published to production.
 
 > [!info] 2026-07-08 local worktree — Console developer self-view shows full owner fleet
 > `/hermes/console` developer mode still calls the BFF endpoint

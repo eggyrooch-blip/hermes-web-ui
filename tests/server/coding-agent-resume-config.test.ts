@@ -159,6 +159,7 @@ describe('coding agent resumed session config', () => {
 
     const launch = startRunMock.mock.calls[0][0]
     expect(launch.workspaceDir).toBe(originalWorkspace)
+    expect(launch.workspaceExplicit).toBe(false)
     expect(launch.agentNativeSessionId).toBe('')
     expect(launch.nativeResume).toBe(false)
     expect(updateSessionMock).toHaveBeenCalledWith('session-1', expect.objectContaining({

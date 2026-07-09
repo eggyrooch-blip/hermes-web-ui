@@ -18,6 +18,7 @@ export interface HermesSessionRow {
   expert_id: string | null
   expert_label: string | null
   expert_avatar: string | null
+  is_archived: boolean
   user_id: string | null
   model: string
   provider: string
@@ -101,6 +102,7 @@ function mapSessionRow(row: Record<string, unknown>): HermesSessionRow {
     expert_id: row.expert_id != null ? String(row.expert_id) : null,
     expert_label: row.expert_label != null ? String(row.expert_label) : null,
     expert_avatar: row.expert_avatar != null ? String(row.expert_avatar) : null,
+    is_archived: Number(row.is_archived || 0) === 1,
     user_id: row.user_id != null ? String(row.user_id) : null,
     model: String(row.model || ''),
     provider: String(row.provider || ''),
@@ -170,6 +172,7 @@ export function createSession(data: {
       agent_mode: data.agent_mode || '',
       agent_session_id: data.agent_session_id || '', agent_native_session_id: data.agent_native_session_id || '',
       expert_id: null, expert_label: null, expert_avatar: null,
+      is_archived: false,
       user_id: null, model: data.model || '', provider: data.provider || '', title: data.title || null,
       started_at: now, ended_at: null, end_reason: null,
       message_count: 0, tool_call_count: 0,
@@ -262,10 +265,23 @@ export function renameSession(id: string, title: string): boolean {
   return result.changes > 0
 }
 
-export function listSessions(profile?: string, source?: string, limit = 2000): HermesSessionRow[] {
+export function setSessionArchived(id: string, archived: boolean): boolean {
+  if (!isSqliteAvailable()) return false
+  const db = getDb()!
+  const result = db.prepare(`UPDATE ${SESSIONS_TABLE} SET is_archived = ? WHERE id = ?`).run(archived ? 1 : 0, id)
+  return result.changes > 0
+}
+
+export function listSessions(
+  profile?: string,
+  source?: string,
+  limit = 2000,
+  options: { includeArchived?: boolean } = {},
+): HermesSessionRow[] {
   if (!isSqliteAvailable()) return []
   const db = getDb()!
   const profileFilter = profile?.trim()
+  const includeArchived = options.includeArchived === true
 
   // Use a subquery to generate preview from first user message if not set
   const sql = `
@@ -286,6 +302,7 @@ export function listSessions(profile?: string, source?: string, limit = 2000): H
     WHERE 1 = 1
       ${profileFilter ? 'AND s.profile = ?' : ''}
       ${source ? 'AND s.source = ?' : ''}
+      ${includeArchived ? '' : 'AND COALESCE(s.is_archived, 0) = 0'}
     ORDER BY s.last_active DESC
     LIMIT ?
   `
@@ -305,7 +322,7 @@ export function listSessions(profile?: string, source?: string, limit = 2000): H
 
 export function listSessionsByAgent(
   agentId: string,
-  options: { userId?: string; source?: string; limit?: number } = {},
+  options: { userId?: string; source?: string; limit?: number; includeArchived?: boolean } = {},
 ): HermesSessionRow[] {
   if (!isSqliteAvailable()) return []
   const agentFilter = agentId.trim()
@@ -331,6 +348,7 @@ export function listSessionsByAgent(
     WHERE s.agent = ?
       ${userId ? 'AND s.user_id = ?' : ''}
       ${options.source ? 'AND s.source = ?' : ''}
+      ${options.includeArchived ? '' : 'AND COALESCE(s.is_archived, 0) = 0'}
     ORDER BY s.last_active DESC
     LIMIT ?
   `
@@ -358,6 +376,7 @@ export function searchSessions(profile: string | null | undefined, query: string
     `SELECT * FROM ${SESSIONS_TABLE}
      WHERE 1 = 1
        ${profileFilter ? 'AND profile = ?' : ''}
+       AND COALESCE(is_archived, 0) = 0
        AND (
        LOWER(title) LIKE ? OR LOWER(preview) LIKE ?
        OR id IN (SELECT DISTINCT session_id FROM ${MESSAGES_TABLE} WHERE LOWER(content) LIKE ? OR LOWER(COALESCE(tool_name, '')) LIKE ?)
@@ -414,7 +433,7 @@ export function searchSessions(profile: string | null | undefined, query: string
 export function searchSessionsByAgent(
   agentId: string,
   query: string,
-  options: { userId?: string; source?: string; limit?: number } = {},
+  options: { userId?: string; source?: string; limit?: number; includeArchived?: boolean } = {},
 ): HermesSessionSearchRow[] {
   if (!isSqliteAvailable()) return []
   const agentFilter = agentId.trim()
@@ -423,7 +442,7 @@ export function searchSessionsByAgent(
   const limit = options.limit && options.limit > 0 ? options.limit : 20
   const trimmed = query.trim()
   if (!trimmed) {
-    return listSessionsByAgent(agentFilter, { userId, source: options.source, limit })
+    return listSessionsByAgent(agentFilter, { userId, source: options.source, limit, includeArchived: options.includeArchived })
       .map(s => ({ ...s, snippet: s.preview || '', matched_message_id: null }))
   }
   const db = getDb()!
@@ -434,6 +453,7 @@ export function searchSessionsByAgent(
      WHERE agent = ?
        ${userId ? 'AND user_id = ?' : ''}
        ${options.source ? 'AND source = ?' : ''}
+       ${options.includeArchived ? '' : 'AND COALESCE(is_archived, 0) = 0'}
        AND (
        LOWER(title) LIKE ? OR LOWER(preview) LIKE ?
        OR id IN (SELECT DISTINCT session_id FROM ${MESSAGES_TABLE} WHERE LOWER(content) LIKE ? OR LOWER(COALESCE(tool_name, '')) LIKE ?)

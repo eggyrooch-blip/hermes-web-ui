@@ -16,7 +16,14 @@ import { getApiKey, setApiKey, clearApiKey, hasApiKey, canAccessProtectedRoutes,
 import { getDownloadUrl } from '../../packages/client/src/api/hermes/download'
 import { uploadFiles } from '../../packages/client/src/api/hermes/files'
 import { importSkill } from '../../packages/client/src/api/hermes/skills'
-import { batchDeleteSessions, importHermesSession } from '../../packages/client/src/api/hermes/sessions'
+import {
+  batchDeleteSessions,
+  fetchWorkspaceRunChange,
+  fetchWorkspaceRunChangeFile,
+  fetchWorkspaceRunChanges,
+  importHermesSession,
+  setSessionArchived,
+} from '../../packages/client/src/api/hermes/sessions'
 import { pollFeishuUatSession, startSkillCredentialAuth } from '../../packages/client/src/api/skillCredentials'
 import router from '@/router'
 
@@ -373,6 +380,48 @@ describe('API Client', () => {
       const [url, options] = mockFetch.mock.calls[0]
       expect(url).toBe('/api/hermes/sessions/hermes/cli-1/import?profile=travel')
       expect(options.method).toBe('POST')
+    })
+
+    it('posts archive and unarchive requests with the session profile', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ok: true, archived: true }),
+      })
+
+      await setSessionArchived('session-1', true, 'travel')
+      await setSessionArchived('session-1', false, 'travel')
+
+      expect(mockFetch.mock.calls[0][0]).toBe('/api/hermes/sessions/session-1/archive?profile=travel')
+      expect(mockFetch.mock.calls[0][1].method).toBe('POST')
+      expect(mockFetch.mock.calls[1][0]).toBe('/api/hermes/sessions/session-1/unarchive?profile=travel')
+      expect(mockFetch.mock.calls[1][1].method).toBe('POST')
+    })
+
+    it('fetches workspace run changes with encoded ids and explicit profile', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ changes: [{ change_id: 'change/1' }] }),
+      })
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ change: { change_id: 'change/1' } }),
+      })
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ file: { id: 7, patch: '@@ -1 +1 @@' } }),
+      })
+
+      await expect(fetchWorkspaceRunChanges('session/with spaces', 'travel')).resolves.toEqual([{ change_id: 'change/1' }])
+      await expect(fetchWorkspaceRunChange('session/with spaces', 'change/1', 'travel')).resolves.toEqual({ change_id: 'change/1' })
+      await expect(fetchWorkspaceRunChangeFile('session/with spaces', 'change/1', 7, 'travel')).resolves.toEqual({ id: 7, patch: '@@ -1 +1 @@' })
+
+      expect(mockFetch.mock.calls[0][0]).toBe('/api/hermes/sessions/session%2Fwith%20spaces/workspace-run-changes?profile=travel')
+      expect(mockFetch.mock.calls[1][0]).toBe('/api/hermes/sessions/session%2Fwith%20spaces/workspace-run-changes/change%2F1?profile=travel')
+      expect(mockFetch.mock.calls[2][0]).toBe('/api/hermes/sessions/session%2Fwith%20spaces/workspace-run-changes/change%2F1/files/7?profile=travel')
     })
   })
 })

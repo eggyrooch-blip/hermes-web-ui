@@ -4,9 +4,27 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createTestingPinia } from '@pinia/testing'
 import { nextTick } from 'vue'
 import { useChatStore } from '@/stores/hermes/chat'
+import { useSettingsStore } from '@/stores/hermes/settings'
 import ChatInput from '@/components/hermes/chat/ChatInput.vue'
 
-const fetchSkillsMock = vi.hoisted(() => vi.fn())
+const {
+  fetchSkillsMock,
+  micRecorderState,
+  micStopMock,
+  voiceStatus,
+  voiceTranscribeAndSendMock,
+} = vi.hoisted(() => ({
+  fetchSkillsMock: vi.fn(),
+  micRecorderState: {
+    value: {
+      status: 'idle' as 'idle' | 'requesting' | 'recording' | 'stopping' | 'error',
+      error: null as Error | null,
+    },
+  },
+  micStopMock: vi.fn(),
+  voiceStatus: { value: 'idle' as 'idle' | 'capturing' | 'transcribing' | 'sending' | 'error' },
+  voiceTranscribeAndSendMock: vi.fn(),
+}))
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({ t: (key: string) => key }),
@@ -56,9 +74,78 @@ vi.mock('@/composables/useToolTraceVisibility', () => ({
   useToolTraceVisibility: () => ({ toolTraceVisible: { value: true }, toggleToolTraceVisible: vi.fn() }),
 }))
 
-function mountForSession(sessionId: string, sessionOverrides: Partial<ReturnType<typeof useChatStore>['sessions'][number]> = {}) {
+vi.mock('@/composables/useMicRecorder', () => ({
+  useMicRecorder: () => ({
+    state: micRecorderState,
+    isRecording: { value: false },
+    start: vi.fn(),
+    stop: micStopMock,
+    cancel: vi.fn(),
+  }),
+}))
+
+vi.mock('@/composables/useVoiceDialogue', () => ({
+  useVoiceDialogue: (deps: unknown) => ({
+    sessionId: 'test-voice-session',
+    events: { value: [] },
+    status: voiceStatus,
+    activeCaptureId: { value: 'capture-1' },
+    activeTurnId: { value: null },
+    transcript: { value: '' },
+    error: { value: null },
+    isBusy: { value: voiceStatus.value !== 'idle' },
+    beginCapture: vi.fn(),
+    transcribeAndSend: (captureId: string, audio: Blob) => voiceTranscribeAndSendMock(deps, captureId, audio),
+    commitTranscript: vi.fn(),
+    cancelCapture: vi.fn(),
+    markOutputStarted: vi.fn(),
+    markOutputDone: vi.fn(),
+  }),
+}))
+
+function mockViewport(matches: boolean) {
+  let currentMatches = matches
+  const listeners = new Set<(event: MediaQueryListEvent) => void>()
+  const mediaQuery = {
+    get matches() {
+      return currentMatches
+    },
+    media: '(max-width: 768px)',
+    addEventListener: vi.fn((event: string, listener: (event: MediaQueryListEvent) => void) => {
+      if (event === 'change') listeners.add(listener)
+    }),
+    removeEventListener: vi.fn((event: string, listener: (event: MediaQueryListEvent) => void) => {
+      if (event === 'change') listeners.delete(listener)
+    }),
+    addListener: vi.fn((listener: (event: MediaQueryListEvent) => void) => listeners.add(listener)),
+    removeListener: vi.fn((listener: (event: MediaQueryListEvent) => void) => listeners.delete(listener)),
+    dispatchEvent: vi.fn(),
+  } as unknown as MediaQueryList
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    value: vi.fn().mockImplementation(() => mediaQuery),
+  })
+
+  return {
+    setMatches(nextMatches: boolean) {
+      currentMatches = nextMatches
+      const event = { matches: nextMatches, media: mediaQuery.media } as MediaQueryListEvent
+      listeners.forEach(listener => listener(event))
+    },
+  }
+}
+
+function mountForSession(
+  sessionId: string,
+  sessionOverrides: Partial<ReturnType<typeof useChatStore>['sessions'][number]> = {},
+  options: { chatInputHeight?: number } = {},
+) {
   const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
   const chatStore = useChatStore()
+  const settingsStore = useSettingsStore()
+  if (options.chatInputHeight !== undefined) {
+    settingsStore.display = { chat_input_height: options.chatInputHeight }
+  }
   chatStore.sessions = [
     { id: sessionId, title: sessionId, source: 'cli', messages: [], createdAt: Date.now(), updatedAt: Date.now(), ...sessionOverrides },
   ]
@@ -70,6 +157,16 @@ function mountForSession(sessionId: string, sessionOverrides: Partial<ReturnType
 describe('ChatInput draft persistence', () => {
   beforeEach(() => {
     localStorage.clear()
+    micRecorderState.value.status = 'idle'
+    micRecorderState.value.error = null
+    micStopMock.mockReset()
+    micStopMock.mockResolvedValue(new Blob(['audio'], { type: 'audio/webm' }))
+    voiceStatus.value = 'idle'
+    voiceTranscribeAndSendMock.mockReset()
+    voiceTranscribeAndSendMock.mockImplementation(async (deps: { sendMessage: (text: string) => unknown }) => {
+      await deps.sendMessage('voice transcript')
+    })
+    mockViewport(false)
     fetchSkillsMock.mockReset()
     fetchSkillsMock.mockResolvedValue({ categories: [], archived: [] })
   })
@@ -181,5 +278,74 @@ describe('ChatInput draft persistence', () => {
     await nextTick()
 
     expect((textarea.element as HTMLTextAreaElement).value).toBe('/skill github-pr-review ')
+  })
+
+  it('uses configured desktop input height and lets drag override it until settings change', async () => {
+    const wrapper = mountForSession('session-height', {}, { chatInputHeight: 140 })
+    await nextTick()
+
+    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 140px')
+
+    Object.defineProperty(wrapper.get('.input-wrapper').element, 'clientHeight', { value: 140, configurable: true })
+    await wrapper.get('.resize-handle').trigger('mousedown', { clientY: 100 })
+    document.dispatchEvent(new MouseEvent('mousemove', { clientY: 60 }))
+    document.dispatchEvent(new MouseEvent('mouseup'))
+    await nextTick()
+
+    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 180px')
+
+    const settingsStore = useSettingsStore()
+    settingsStore.display = { chat_input_height: 120 }
+    await nextTick()
+
+    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 120px')
+  })
+
+  it('keeps mobile chat input auto-height instead of applying configured height', async () => {
+    mockViewport(true)
+    const wrapper = mountForSession('session-mobile-height', {}, { chatInputHeight: 180 })
+    await nextTick()
+
+    expect(wrapper.get('.input-wrapper').attributes('style') || '').not.toContain('height: 180px')
+  })
+
+  it('does not overwrite desktop textarea height when inserting a voice transcript', async () => {
+    voiceStatus.value = 'capturing'
+    const wrapper = mountForSession('session-voice-height', {}, { chatInputHeight: 150 })
+    await nextTick()
+
+    const textarea = wrapper.get('textarea')
+    Object.defineProperty(textarea.element, 'scrollHeight', { value: 96, configurable: true })
+
+    await wrapper.get('[data-testid="voice-record-toggle"]').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect((textarea.element as HTMLTextAreaElement).value).toBe('voice transcript')
+    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 150px')
+    expect((textarea.element as HTMLTextAreaElement).style.height).toBe('100%')
+  })
+
+  it('clears dragged desktop height after switching to mobile so input restores auto-height', async () => {
+    const viewport = mockViewport(false)
+    const wrapper = mountForSession('session-mobile-switch-height', {}, { chatInputHeight: 140 })
+    await nextTick()
+
+    Object.defineProperty(wrapper.get('.input-wrapper').element, 'clientHeight', { value: 140, configurable: true })
+    await wrapper.get('.resize-handle').trigger('mousedown', { clientY: 100 })
+    document.dispatchEvent(new MouseEvent('mousemove', { clientY: 60 }))
+    document.dispatchEvent(new MouseEvent('mouseup'))
+    await nextTick()
+    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 180px')
+
+    viewport.setMatches(true)
+    await nextTick()
+
+    const textarea = wrapper.get('textarea')
+    Object.defineProperty(textarea.element, 'scrollHeight', { value: 88, configurable: true })
+    await textarea.setValue('mobile text')
+    await nextTick()
+
+    expect((textarea.element as HTMLTextAreaElement).style.height).toBe('88px')
   })
 })

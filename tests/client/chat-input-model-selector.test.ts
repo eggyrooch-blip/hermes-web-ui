@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { shallowMount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 
 const chatStoreMock = vi.hoisted(() => ({
   activeSession: null as any,
@@ -77,6 +78,7 @@ import ChatInput from '@/components/hermes/chat/ChatInput.vue'
 
 describe('ChatInput model selector placement', () => {
   beforeEach(() => {
+    setActivePinia(createPinia())
     vi.clearAllMocks()
     localStorage.clear()
   })

@@ -14,7 +14,7 @@ import SessionListItem from '@/components/hermes/chat/SessionListItem.vue'
 import OutlinePanel from '@/components/hermes/chat/OutlinePanel.vue'
 import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
 import PageSidebarFooter from '@/components/layout/PageSidebarFooter.vue'
-import { batchDeleteSessions, deleteSession, fetchHermesSessions, fetchHermesSession, fetchSessionMessagesPage, importHermesSession, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
+import { batchDeleteSessions, deleteSession, fetchHermesSessions, fetchHermesSession, fetchSessionMessagesPage, importHermesSession, setSessionArchived, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
 
 const appStore = useAppStore()
 const profilesStore = useProfilesStore()
@@ -109,6 +109,7 @@ const contextMenuOptions = computed<DropdownOption[]>(() => {
       key: 'import-webui',
       disabled: Boolean(contextSessionSummary.value?.webui_imported),
     },
+    ...(contextSessionSummary.value?.is_archived ? [{ label: t('chat.unarchive'), key: 'unarchive' }] : []),
     { label: t(contextSessionPinned.value ? 'chat.unpin' : 'chat.pin'), key: 'pin' },
     { label: t('chat.copySessionLink'), key: 'copy-link' },
     { label: t('chat.copySessionId'), key: 'copy-id' },
@@ -161,6 +162,7 @@ function sessionFromSummary(summary: SessionSummary, messages: Session['messages
     endedAt: summary.ended_at ? summary.ended_at * 1000 : undefined,
     lastActiveAt: summary.last_active ? summary.last_active * 1000 : undefined,
     workspace: summary.workspace || undefined,
+    isArchived: summary.is_archived === true,
     messages,
   }
 }
@@ -365,6 +367,7 @@ function sessionSummaryToSession(summary: SessionSummary): Session {
     endedAt: summary.ended_at ? summary.ended_at * 1000 : undefined,
     lastActiveAt: summary.last_active ? summary.last_active * 1000 : undefined,
     workspace: summary.workspace || undefined,
+    isArchived: summary.is_archived === true,
     messages: [],
   }
 }
@@ -581,6 +584,19 @@ async function handleImportToWebUi(sessionId: string) {
   message.error(t('chat.importSessionFailed'))
 }
 
+async function handleUnarchiveSession(sessionId: string) {
+  const summary = findHistorySession(sessionId)
+  const ok = await setSessionArchived(sessionId, false, summary?.profile || null)
+  if (!ok) {
+    message.error(t('chat.unarchiveFailed'))
+    return
+  }
+  if (summary) summary.is_archived = false
+  if (historySession.value?.id === sessionId) historySession.value.isArchived = false
+  await loadHermesSessions()
+  message.success(t('chat.sessionUnarchived'))
+}
+
 async function handleContextMenuSelect(key: string) {
   showContextMenu.value = false
   if (!contextSessionId.value) return
@@ -592,6 +608,8 @@ async function handleContextMenuSelect(key: string) {
     await copySessionId(contextSessionId.value)
   } else if (key === 'import-webui') {
     await handleImportToWebUi(contextSessionId.value)
+  } else if (key === 'unarchive') {
+    await handleUnarchiveSession(contextSessionId.value)
   }
 }
 

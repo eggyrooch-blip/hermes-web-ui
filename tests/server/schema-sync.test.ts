@@ -107,7 +107,17 @@ describe('Database Schema Synchronization', () => {
 
   describe('Normal initialization - fresh database creation', () => {
     it('creates all tables with correct schemas when database does not exist', async () => {
-      const { initAllHermesTables, USAGE_TABLE, USAGE_SCHEMA, SESSIONS_TABLE, SESSIONS_SCHEMA } =
+      const {
+        initAllHermesTables,
+        USAGE_TABLE,
+        USAGE_SCHEMA,
+        SESSIONS_TABLE,
+        SESSIONS_SCHEMA,
+        WORKSPACE_RUN_CHANGES_TABLE,
+        WORKSPACE_RUN_CHANGES_SCHEMA,
+        WORKSPACE_RUN_CHANGE_FILES_TABLE,
+        WORKSPACE_RUN_CHANGE_FILES_SCHEMA,
+      } =
         await import('../../packages/server/src/db/hermes/schemas')
 
       initAllHermesTables()
@@ -138,6 +148,22 @@ describe('Database Schema Synchronization', () => {
       expect(sessionsCols.has('expert_id')).toBe(true)
       expect(sessionsCols.has('expert_label')).toBe(true)
       expect(sessionsCols.has('expert_avatar')).toBe(true)
+
+      expect(tableExists(db, WORKSPACE_RUN_CHANGES_TABLE)).toBe(true)
+      const changesCols = getTableColumns(db, WORKSPACE_RUN_CHANGES_TABLE)
+      expect(changesCols.size).toBe(Object.keys(WORKSPACE_RUN_CHANGES_SCHEMA).length)
+      expect(changesCols.has('change_id')).toBe(true)
+      expect(changesCols.has('session_id')).toBe(true)
+      expect(changesCols.has('files_changed')).toBe(true)
+      expect(changesCols.has('total_patch_bytes')).toBe(true)
+
+      expect(tableExists(db, WORKSPACE_RUN_CHANGE_FILES_TABLE)).toBe(true)
+      const filesCols = getTableColumns(db, WORKSPACE_RUN_CHANGE_FILES_TABLE)
+      expect(filesCols.size).toBe(Object.keys(WORKSPACE_RUN_CHANGE_FILES_SCHEMA).length)
+      expect(filesCols.has('change_id')).toBe(true)
+      expect(filesCols.has('path')).toBe(true)
+      expect(filesCols.has('patch')).toBe(true)
+      expect(filesCols.has('binary')).toBe(true)
     })
   })
 

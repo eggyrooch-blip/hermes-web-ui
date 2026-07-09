@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
 import { useMessage } from "naive-ui";
 import { downloadFile, getDownloadUrl } from "@/api/hermes/download";
+import { fetchWorkspaceRunChangeFile } from "@/api/hermes/sessions";
 import { copyToClipboard } from "@/utils/clipboard";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import { parseThinking, countThinkingChars } from "@/utils/thinking-parser";
@@ -44,6 +45,7 @@ const isStatusCommand = computed(() =>
   && props.message.commandAction === "status"
   && props.message.commandData?.type !== "goal"
 );
+const isWorkspaceDiffCommand = computed(() => isCommandMessage.value && props.message.commandAction === "workspace.diff");
 const statusItems = computed(() => {
   const data = props.message.commandData || {};
   return [
@@ -54,6 +56,65 @@ const statusItems = computed(() => {
     { key: "queue", value: data.queueLength ?? 0 },
     { key: "run", value: data.runId || "-" },
   ];
+});
+
+type WorkspaceDiffFile = {
+  id: number
+  path: string
+  old_path?: string | null
+  change_type?: string
+  additions?: number
+  deletions?: number
+  patch_bytes?: number
+  truncated?: boolean
+  binary?: boolean
+}
+
+const workspaceDiffData = computed(() => props.message.commandData || {});
+const workspaceDiffFiles = computed<WorkspaceDiffFile[]>(() => {
+  const files = workspaceDiffData.value.files;
+  return Array.isArray(files) ? files as WorkspaceDiffFile[] : [];
+});
+const workspaceDiffSelectedFileId = ref<number | null>(null);
+const workspaceDiffPatch = ref("");
+const workspaceDiffPatchLoading = ref(false);
+const workspaceDiffPatchError = ref("");
+
+function workspaceDiffNumber(key: string): number {
+  const value = Number(workspaceDiffData.value[key]);
+  return Number.isFinite(value) ? value : 0;
+}
+
+async function toggleWorkspaceDiffFile(file: WorkspaceDiffFile) {
+  if (!file?.id) return;
+  if (workspaceDiffSelectedFileId.value === file.id) {
+    workspaceDiffSelectedFileId.value = null;
+    workspaceDiffPatch.value = "";
+    workspaceDiffPatchError.value = "";
+    return;
+  }
+  workspaceDiffSelectedFileId.value = file.id;
+  workspaceDiffPatch.value = "";
+  workspaceDiffPatchError.value = "";
+  const sessionId = String(workspaceDiffData.value.session_id || props.session?.id || "");
+  const changeId = String(workspaceDiffData.value.change_id || "");
+  if (!sessionId || !changeId) return;
+  workspaceDiffPatchLoading.value = true;
+  try {
+    const detail = await fetchWorkspaceRunChangeFile(sessionId, changeId, file.id, props.session?.profile);
+    workspaceDiffPatch.value = detail?.patch || "";
+  } catch (err) {
+    workspaceDiffPatchError.value = err instanceof Error ? err.message : String(err || t("chat.workspaceDiffLoadFailed"));
+  } finally {
+    workspaceDiffPatchLoading.value = false;
+  }
+}
+
+const renderedWorkspaceDiffPatch = computed(() => {
+  if (!workspaceDiffPatch.value) return "";
+  return renderHighlightedCodeBlock(workspaceDiffPatch.value, "diff", t("common.copy"), {
+    formatDiffFoldLabel: (hiddenCount) => t("chat.unchangedLines", { count: hiddenCount }),
+  });
 });
 
 type DisplayContentFile = {
@@ -980,6 +1041,41 @@ onBeforeUnmount(() => {
               v-if="message.role === 'system' && message.content && !isCommandMessage"
               :content="message.content"
             />
+            <div v-if="isWorkspaceDiffCommand" class="command-result workspace-diff-card">
+              <span class="command-result-icon">Δ</span>
+              <div class="workspace-diff-main">
+                <div class="workspace-diff-header">
+                  <span class="workspace-diff-title">{{ t('chat.workspaceDiffTitle') }}</span>
+                  <span class="workspace-diff-stat">{{ workspaceDiffNumber('files_changed') }}</span>
+                  <span class="workspace-diff-stat added">+{{ workspaceDiffNumber('additions') }}</span>
+                  <span class="workspace-diff-stat removed">-{{ workspaceDiffNumber('deletions') }}</span>
+                  <span v-if="workspaceDiffData.truncated" class="workspace-diff-badge">{{ t('chat.truncated') }}</span>
+                </div>
+                <div v-if="workspaceDiffFiles.length > 0" class="workspace-diff-files">
+                  <button
+                    v-for="file in workspaceDiffFiles"
+                    :key="file.id"
+                    type="button"
+                    class="workspace-diff-file"
+                    :class="{ active: workspaceDiffSelectedFileId === file.id }"
+                    @click="toggleWorkspaceDiffFile(file)"
+                  >
+                    <span class="workspace-diff-file-path">{{ file.path }}</span>
+                    <span class="workspace-diff-file-stat added">+{{ file.additions || 0 }}</span>
+                    <span class="workspace-diff-file-stat removed">-{{ file.deletions || 0 }}</span>
+                  </button>
+                </div>
+                <div v-if="workspaceDiffPatchLoading" class="workspace-diff-state">{{ t('common.loading') }}</div>
+                <div v-else-if="workspaceDiffPatchError" class="workspace-diff-state error">{{ workspaceDiffPatchError }}</div>
+                <div
+                  v-else-if="workspaceDiffPatch"
+                  class="workspace-diff-patch"
+                  data-copy-source="workspace-diff"
+                  v-html="renderedWorkspaceDiffPatch"
+                  @click="handleToolDetailClick"
+                ></div>
+              </div>
+            </div>
             <div v-if="isStatusCommand" class="command-result command-status">
               <span class="command-result-icon">/</span>
               <div class="command-status-grid">
@@ -1264,6 +1360,103 @@ onBeforeUnmount(() => {
   color: $text-primary;
   font-family: $font-code;
   font-size: 11px;
+}
+
+.workspace-diff-card {
+  width: 100%;
+}
+
+.workspace-diff-main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.workspace-diff-header,
+.workspace-diff-files {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.workspace-diff-title {
+  color: $text-primary;
+  font-weight: 600;
+}
+
+.workspace-diff-stat,
+.workspace-diff-badge,
+.workspace-diff-file-stat {
+  font-family: $font-code;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.workspace-diff-stat,
+.workspace-diff-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(var(--accent-primary-rgb), 0.06);
+  color: $text-secondary;
+}
+
+.workspace-diff-stat.added,
+.workspace-diff-file-stat.added {
+  color: #2f9e44;
+}
+
+.workspace-diff-stat.removed,
+.workspace-diff-file-stat.removed {
+  color: #d9480f;
+}
+
+.workspace-diff-files {
+  margin-top: 8px;
+}
+
+.workspace-diff-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.12);
+  border-radius: 6px;
+  background: rgba(var(--accent-primary-rgb), 0.035);
+  color: $text-primary;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.workspace-diff-file.active {
+  border-color: rgba(var(--accent-primary-rgb), 0.34);
+  background: rgba(var(--accent-primary-rgb), 0.08);
+}
+
+.workspace-diff-file-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: $font-code;
+}
+
+.workspace-diff-state {
+  margin-top: 8px;
+  color: $text-muted;
+  font-size: 12px;
+}
+
+.workspace-diff-state.error {
+  color: $error;
+}
+
+.workspace-diff-patch {
+  margin-top: 8px;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .command-result-icon {

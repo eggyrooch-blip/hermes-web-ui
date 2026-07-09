@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 const listConversationSummariesFromDbMock = vi.fn()
 const getConversationDetailFromDbMock = vi.fn()
@@ -20,10 +23,14 @@ const localSearchSessionsMock = vi.fn()
 const localSearchSessionsByAgentMock = vi.fn()
 const localDeleteSessionMock = vi.fn()
 const localRenameSessionMock = vi.fn()
+const localSetSessionArchivedMock = vi.fn()
 const localCreateSessionMock = vi.fn()
 const localUpdateSessionMock = vi.fn()
 const localAddMessagesMock = vi.fn()
 const localUpdateSessionStatsMock = vi.fn()
+const listWorkspaceRunChangesForSessionMock = vi.fn()
+const getWorkspaceRunChangeMock = vi.fn()
+const getWorkspaceRunChangeFileMock = vi.fn()
 const getGroupChatServerMock = vi.fn()
 const getLocalUsageStatsMock = vi.fn()
 const getActiveProfileNameMock = vi.fn()
@@ -83,11 +90,18 @@ vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSessionDetailPaginated: localGetSessionDetailPaginatedMock,
   deleteSession: localDeleteSessionMock,
   renameSession: localRenameSessionMock,
+  setSessionArchived: localSetSessionArchivedMock,
   createSession: localCreateSessionMock,
   addMessages: localAddMessagesMock,
   getSession: getSessionMock,
   updateSession: localUpdateSessionMock,
   updateSessionStats: localUpdateSessionStatsMock,
+}))
+
+vi.mock('../../packages/server/src/db/hermes/workspace-run-changes-store', () => ({
+  listWorkspaceRunChangesForSession: listWorkspaceRunChangesForSessionMock,
+  getWorkspaceRunChange: getWorkspaceRunChangeMock,
+  getWorkspaceRunChangeFile: getWorkspaceRunChangeFileMock,
 }))
 
 vi.mock('../../packages/server/src/db/hermes/users-store', () => ({
@@ -175,10 +189,14 @@ describe('session conversations controller', () => {
     localSearchSessionsByAgentMock.mockReset()
     localDeleteSessionMock.mockReset()
     localRenameSessionMock.mockReset()
+    localSetSessionArchivedMock.mockReset()
     localCreateSessionMock.mockReset()
     localUpdateSessionMock.mockReset()
     localAddMessagesMock.mockReset()
     localUpdateSessionStatsMock.mockReset()
+    listWorkspaceRunChangesForSessionMock.mockReset()
+    getWorkspaceRunChangeMock.mockReset()
+    getWorkspaceRunChangeFileMock.mockReset()
     getGroupChatServerMock.mockReset()
     getGroupChatServerMock.mockReturnValue(null)
     getLocalUsageStatsMock.mockReset()
@@ -639,6 +657,175 @@ describe('session conversations controller', () => {
     expect(modelCtx.body).toEqual({ ok: true })
   })
 
+  it('lists workspace run changes for an accessible session without patch bodies', async () => {
+    getSessionMock.mockReturnValue({
+      id: 'session-diff',
+      profile: 'travel',
+      source: 'coding_agent',
+    })
+    listWorkspaceRunChangesForSessionMock.mockReturnValue([{
+      change_id: 'change-1',
+      session_id: 'session-diff',
+      run_id: 'run-1',
+      source: 'run',
+      workspace: 'project',
+      workspace_kind: 'git',
+      started_at: 1,
+      finished_at: 2,
+      files_changed: 1,
+      additions: 2,
+      deletions: 1,
+      truncated: false,
+      total_patch_bytes: 42,
+      created_at: 2,
+      files: [{
+        id: 7,
+        change_id: 'change-1',
+        session_id: 'session-diff',
+        path: 'src/app.ts',
+        old_path: null,
+        change_type: 'modified',
+        additions: 2,
+        deletions: 1,
+        size_before: 10,
+        size_after: 12,
+        patch_bytes: 42,
+        truncated: false,
+        binary: false,
+        created_at: 2,
+      }],
+    }])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { params: { id: 'session-diff' }, query: {}, body: null }
+    await mod.listWorkspaceRunChanges(ctx)
+
+    expect(listWorkspaceRunChangesForSessionMock).toHaveBeenCalledWith('session-diff')
+    expect(ctx.body).toEqual({
+      changes: [expect.objectContaining({
+        change_id: 'change-1',
+        files: [expect.not.objectContaining({ patch: expect.anything() })],
+      })],
+    })
+  })
+
+  it('returns one workspace run change summary for an accessible session', async () => {
+    getSessionMock.mockReturnValue({ id: 'session-diff', profile: 'travel' })
+    getWorkspaceRunChangeMock.mockReturnValue({
+      change_id: 'change-1',
+      session_id: 'session-diff',
+      run_id: 'run-1',
+      files: [],
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { params: { id: 'session-diff', changeId: 'change-1' }, query: {}, body: null }
+    await mod.getWorkspaceRunChange(ctx)
+
+    expect(getWorkspaceRunChangeMock).toHaveBeenCalledWith('session-diff', 'change-1')
+    expect(ctx.body).toEqual({
+      change: expect.objectContaining({
+        change_id: 'change-1',
+        session_id: 'session-diff',
+      }),
+    })
+  })
+
+  it('returns workspace run change file patch details for an accessible session', async () => {
+    getSessionMock.mockReturnValue({ id: 'session-diff', profile: 'travel' })
+    getWorkspaceRunChangeFileMock.mockReturnValue({
+      id: 7,
+      change_id: 'change-1',
+      session_id: 'session-diff',
+      path: 'src/app.ts',
+      change_type: 'modified',
+      additions: 2,
+      deletions: 1,
+      patch: '@@ -1 +1 @@',
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { params: { id: 'session-diff', changeId: 'change-1', fileId: '7' }, query: {}, body: null }
+    await mod.getWorkspaceRunChangeFile(ctx)
+
+    expect(getWorkspaceRunChangeFileMock).toHaveBeenCalledWith('session-diff', 'change-1', 7)
+    expect(ctx.body).toEqual({
+      file: expect.objectContaining({
+        id: 7,
+        patch: '@@ -1 +1 @@',
+      }),
+    })
+  })
+
+  it('rejects a shared viewer reading teammate workspace run changes', async () => {
+    stubSharedAgentRole('viewer')
+    getSessionMock.mockReturnValue(sharedAgentSession({ id: 'teammate-session' }))
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = sharedAgentCtx('ou_viewer', {
+      params: { id: 'teammate-session' },
+      query: {},
+    })
+    await mod.listWorkspaceRunChanges(ctx)
+
+    expect(ctx.status).toBe(403)
+    expect(listWorkspaceRunChangesForSessionMock).not.toHaveBeenCalled()
+  })
+
+  it('returns 404 for workspace run change reads when the session or file is missing', async () => {
+    getSessionMock.mockReturnValue(null)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const missingSessionCtx: any = { params: { id: 'missing-session' }, query: {}, body: null }
+    await mod.listWorkspaceRunChanges(missingSessionCtx)
+
+    expect(missingSessionCtx.status).toBe(404)
+    expect(missingSessionCtx.body).toEqual({ error: 'Session not found' })
+    expect(listWorkspaceRunChangesForSessionMock).not.toHaveBeenCalled()
+
+    getSessionMock.mockReturnValue({ id: 'session-diff', profile: 'travel' })
+    getWorkspaceRunChangeFileMock.mockReturnValue(null)
+    const missingFileCtx: any = { params: { id: 'session-diff', changeId: 'change-1', fileId: '7' }, query: {}, body: null }
+    await mod.getWorkspaceRunChangeFile(missingFileCtx)
+
+    expect(missingFileCtx.status).toBe(404)
+    expect(missingFileCtx.body).toEqual({ error: 'Workspace run change file not found' })
+  })
+
+  it('lists workspace-internal symlink folders and rejects external symlink folders', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'hermes-folder-picker-'))
+    const previousWorkspaceBase = process.env.WORKSPACE_BASE
+    try {
+      const base = join(root, 'base')
+      const internalTarget = join(base, 'real-folder')
+      const externalTarget = join(root, 'external-folder')
+      mkdirSync(join(internalTarget, 'child'), { recursive: true })
+      mkdirSync(join(externalTarget, 'secret-child'), { recursive: true })
+      symlinkSync(internalTarget, join(base, 'inside-link'), 'dir')
+      symlinkSync(externalTarget, join(base, 'outside-link'), 'dir')
+      process.env.WORKSPACE_BASE = base
+
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const rootCtx: any = { query: {}, body: null }
+      await mod.listWorkspaceFolders(rootCtx)
+
+      expect(rootCtx.body.folders.map((folder: any) => folder.name)).toEqual(['inside-link', 'real-folder'])
+
+      const insideCtx: any = { query: { path: 'inside-link' }, body: null }
+      await mod.listWorkspaceFolders(insideCtx)
+      expect(insideCtx.body.folders.map((folder: any) => folder.name)).toEqual(['child'])
+
+      const outsideCtx: any = { query: { path: 'outside-link' }, body: null }
+      await mod.listWorkspaceFolders(outsideCtx)
+      expect(outsideCtx.status).toBe(403)
+      expect(outsideCtx.body).toEqual({ error: 'Access denied' })
+    } finally {
+      if (previousWorkspaceBase === undefined) delete process.env.WORKSPACE_BASE
+      else process.env.WORKSPACE_BASE = previousWorkspaceBase
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('lets a shared manager delete teammate sessions', async () => {
     stubSharedAgentRole('manager')
     getSessionMock.mockReturnValue(sharedAgentSession({ id: 'teammate-session', profile: 'travel' }))
@@ -796,12 +983,350 @@ describe('session conversations controller', () => {
 
     await mod.listHermesSessions(ctx)
 
-    expect(localListSessionsMock).toHaveBeenCalledWith('travel', undefined, 2000)
+    expect(localListSessionsMock).toHaveBeenCalledWith('travel', undefined, 2000, { includeArchived: true })
     expect(listSessionSummariesMock).toHaveBeenCalledWith(undefined, 2000, 'travel')
     expect(ctx.body.sessions).toEqual([
       expect.objectContaining({ id: 'cli-1', profile: 'travel', webui_imported: true }),
       expect.objectContaining({ id: 'cli-2', profile: 'travel', webui_imported: false }),
     ])
+  })
+
+  it('includes archived and local-only coding-agent sessions in History with local archive state winning', async () => {
+    localListSessionsMock.mockReturnValue([
+      {
+        id: 'cli-1',
+        profile: 'travel',
+        source: 'cli',
+        agent: 'hermes',
+        model: 'local-model',
+        title: 'Local archived import',
+        started_at: 1,
+        ended_at: null,
+        last_active: 4,
+        message_count: 1,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        preview: 'local',
+        is_archived: true,
+      },
+      {
+        id: 'codex-local',
+        profile: 'travel',
+        source: 'coding_agent',
+        agent: 'codex',
+        agent_mode: 'scoped',
+        agent_session_id: 'codex-agent-session',
+        model: 'gpt-5',
+        title: 'Codex local only',
+        started_at: 2,
+        ended_at: null,
+        last_active: 5,
+        message_count: 2,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        preview: 'codex',
+        is_archived: false,
+      },
+    ])
+    listSessionSummariesMock.mockResolvedValue([
+      {
+        id: 'cli-1',
+        source: 'cli',
+        model: 'state-model',
+        title: 'State row',
+        started_at: 1,
+        ended_at: null,
+        last_active: 3,
+        message_count: 1,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        preview: 'state',
+      },
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { query: { profile: 'travel' }, state: {}, body: null }
+
+    await mod.listHermesSessions(ctx)
+
+    expect(localListSessionsMock).toHaveBeenCalledWith('travel', undefined, 2000, { includeArchived: true })
+    expect(ctx.body.sessions).toEqual([
+      expect.objectContaining({
+        id: 'cli-1',
+        profile: 'travel',
+        webui_imported: true,
+        is_archived: true,
+      }),
+      expect.objectContaining({
+        id: 'codex-local',
+        profile: 'travel',
+        source: 'coding_agent',
+        agent: 'codex',
+        agent_session_id: 'codex-agent-session',
+        webui_imported: true,
+        is_archived: false,
+      }),
+    ])
+  })
+
+  it('keeps archived local-only api_server sessions visible in History', async () => {
+    localListSessionsMock.mockReturnValue([
+      {
+        id: 'archived-webui',
+        profile: 'travel',
+        source: 'api_server',
+        title: 'Archived WebUI chat',
+        is_archived: true,
+      },
+    ])
+    listSessionSummariesMock.mockResolvedValue([])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { query: { profile: 'travel' }, state: {}, body: null }
+
+    await mod.listHermesSessions(ctx)
+
+    expect(ctx.body.sessions).toEqual([
+      expect.objectContaining({
+        id: 'archived-webui',
+        source: 'api_server',
+        is_archived: true,
+        webui_imported: true,
+      }),
+    ])
+  })
+
+  it('applies History source filters to local-only rows', async () => {
+    localListSessionsMock.mockReturnValue([
+      { id: 'cli-local', profile: 'travel', source: 'cli', is_archived: false },
+      { id: 'codex-local', profile: 'travel', source: 'coding_agent', is_archived: false },
+    ])
+    listSessionSummariesMock.mockResolvedValue([])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { query: { profile: 'travel', source: 'cli' }, state: {}, body: null }
+
+    await mod.listHermesSessions(ctx)
+
+    expect(localListSessionsMock).toHaveBeenCalledWith('travel', 'cli', 2000, { includeArchived: true })
+    expect(ctx.body.sessions.map((session: any) => session.id)).toEqual(['cli-local'])
+  })
+
+  it('lists only actor History sessions for a shared editor agent', async () => {
+    stubSharedAgentRole('editor')
+    localListSessionsByAgentMock.mockReturnValue([
+      sharedAgentSession({
+        id: 'own-archived-session',
+        user_id: 'ou_editor',
+        is_archived: true,
+      }),
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = sharedAgentCtx('ou_editor', {
+      query: {},
+      get: (name: string) => name.toLowerCase() === 'x-hermes-agent-id' ? 'agent-shared' : '',
+    })
+    await mod.listHermesSessions(ctx)
+
+    expect(localListSessionsByAgentMock).toHaveBeenCalledWith('agent-shared', {
+      userId: 'ou_editor',
+      source: undefined,
+      limit: 2000,
+      includeArchived: true,
+    })
+    expect(localListSessionsMock).not.toHaveBeenCalled()
+    expect(ctx.body.sessions.map((session: any) => session.id)).toEqual(['own-archived-session'])
+  })
+
+  it('lists all History sessions for a shared manager agent', async () => {
+    stubSharedAgentRole('manager')
+    localListSessionsByAgentMock.mockReturnValue([
+      sharedAgentSession({ id: 'manager-archived-session', user_id: 'ou_manager', is_archived: true }),
+      sharedAgentSession({ id: 'teammate-archived-session', user_id: 'ou_teammate', is_archived: true }),
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = sharedAgentCtx('ou_manager', {
+      query: {},
+      get: (name: string) => name.toLowerCase() === 'x-hermes-agent-id' ? 'agent-shared' : '',
+    })
+    await mod.listHermesSessions(ctx)
+
+    expect(localListSessionsByAgentMock).toHaveBeenCalledWith('agent-shared', {
+      userId: undefined,
+      source: undefined,
+      limit: 2000,
+      includeArchived: true,
+    })
+    expect(ctx.body.sessions.map((session: any) => session.id)).toEqual(['manager-archived-session', 'teammate-archived-session'])
+  })
+
+  it('lists all History sessions for an owner agent resolved by the share probe', async () => {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'http://broker.test/api/run-broker/agents/shared') {
+        return new Response(JSON.stringify({ agents: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url === 'http://broker.test/api/run-broker/agents/agent-shared/shares') {
+        return new Response(JSON.stringify({ actor_role: 'owner', shares: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response('{}', { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    localListSessionsByAgentMock.mockReturnValue([
+      sharedAgentSession({ id: 'owner-archived-session', user_id: 'ou_owner', is_archived: true }),
+      sharedAgentSession({ id: 'teammate-archived-session', user_id: 'ou_teammate', is_archived: true }),
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = sharedAgentCtx('ou_owner', {
+      query: {},
+      get: (name: string) => name.toLowerCase() === 'x-hermes-agent-id' ? 'agent-shared' : '',
+    })
+    await mod.listHermesSessions(ctx)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(localListSessionsByAgentMock).toHaveBeenCalledWith('agent-shared', {
+      userId: undefined,
+      source: undefined,
+      limit: 2000,
+      includeArchived: true,
+    })
+    expect(ctx.body.sessions.map((session: any) => session.id)).toEqual(['owner-archived-session', 'teammate-archived-session'])
+  })
+
+  it('does not fall back to profile History rows for an unshared teammate agent request', async () => {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'http://broker.test/api/run-broker/agents/shared') {
+        return new Response(JSON.stringify({ agents: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url === 'http://broker.test/api/run-broker/agents/agent-shared/shares') {
+        return new Response('{}', { status: 403, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response('{}', { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    localListSessionsMock.mockReturnValue([
+      sharedAgentSession({ id: 'profile-fallback-session', is_archived: true }),
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = sharedAgentCtx('ou_teammate', {
+      query: {},
+      get: (name: string) => name.toLowerCase() === 'x-hermes-agent-id' ? 'agent-shared' : '',
+    })
+    await mod.listHermesSessions(ctx)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(localListSessionsByAgentMock).not.toHaveBeenCalled()
+    expect(localListSessionsMock).not.toHaveBeenCalled()
+    expect(ctx.body.sessions).toEqual([])
+  })
+
+  it('archives and unarchives sessions through async session ACL', async () => {
+    getSessionMock.mockReturnValue({
+      id: 'local-session',
+      profile: 'travel',
+      source: 'api_server',
+      is_archived: false,
+    })
+    localSetSessionArchivedMock.mockReturnValue(true)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const archiveCtx: any = {
+      params: { id: 'local-session' },
+      state: { user: { id: 1, role: 'admin', profile: 'travel' } },
+      body: null,
+    }
+    await mod.archiveSession(archiveCtx)
+
+    const unarchiveCtx: any = {
+      params: { id: 'local-session' },
+      state: { user: { id: 1, role: 'admin', profile: 'travel' } },
+      body: null,
+    }
+    await mod.unarchiveSession(unarchiveCtx)
+
+    expect(localSetSessionArchivedMock).toHaveBeenCalledWith('local-session', true)
+    expect(localSetSessionArchivedMock).toHaveBeenCalledWith('local-session', false)
+    expect(archiveCtx.body).toEqual({ ok: true, archived: true })
+    expect(unarchiveCtx.body).toEqual({ ok: true, archived: false })
+  })
+
+  it('rejects a shared viewer archiving a teammate shared-agent session', async () => {
+    stubSharedAgentRole('viewer')
+    getSessionMock.mockReturnValue(sharedAgentSession({ id: 'teammate-session' }))
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = sharedAgentCtx('ou_viewer', {
+      params: { id: 'teammate-session' },
+    })
+    await mod.archiveSession(ctx)
+
+    expect(ctx.status).toBe(403)
+    expect(localSetSessionArchivedMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a shared editor archiving a teammate shared-agent session', async () => {
+    stubSharedAgentRole('editor')
+    getSessionMock.mockReturnValue(sharedAgentSession({ id: 'teammate-session' }))
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = sharedAgentCtx('ou_editor', {
+      params: { id: 'teammate-session' },
+    })
+    await mod.archiveSession(ctx)
+
+    expect(ctx.status).toBe(403)
+    expect(localSetSessionArchivedMock).not.toHaveBeenCalled()
+  })
+
+  it('lets a shared manager archive and unarchive teammate shared-agent sessions', async () => {
+    stubSharedAgentRole('manager')
+    getSessionMock.mockReturnValue(sharedAgentSession({ id: 'teammate-session' }))
+    localSetSessionArchivedMock.mockReturnValue(true)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const archiveCtx: any = sharedAgentCtx('ou_manager', {
+      params: { id: 'teammate-session' },
+    })
+    await mod.archiveSession(archiveCtx)
+
+    const unarchiveCtx: any = sharedAgentCtx('ou_manager', {
+      params: { id: 'teammate-session' },
+    })
+    await mod.unarchiveSession(unarchiveCtx)
+
+    expect(localSetSessionArchivedMock).toHaveBeenCalledWith('teammate-session', true)
+    expect(localSetSessionArchivedMock).toHaveBeenCalledWith('teammate-session', false)
+    expect(archiveCtx.body).toEqual({ ok: true, archived: true })
+    expect(unarchiveCtx.body).toEqual({ ok: true, archived: false })
   })
 
   it('searches all account-accessible single-chat sessions unless profile is explicit', async () => {

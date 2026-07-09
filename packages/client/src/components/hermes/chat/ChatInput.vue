@@ -3,6 +3,7 @@ import type { Attachment } from '@/stores/hermes/chat'
 import { useChatStore } from '@/stores/hermes/chat'
 import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
+import { useSettingsStore } from '@/stores/hermes/settings'
 import { fetchContextLength } from '@/api/hermes/sessions'
 import { setModelContext } from '@/api/hermes/model-context'
 import { fetchSkills, type SkillCategory, type SkillInfo } from '@/api/hermes/skills'
@@ -21,10 +22,12 @@ import { transcribeSpeech } from '@/api/hermes/stt'
 import type { StoredSttProvider } from '@/api/hermes/stt-settings'
 import { useSttSettings } from '@/composables/useSttSettings'
 import { useBrowserSpeechRecognition } from '@/composables/useBrowserSpeechRecognition'
+import { CHAT_INPUT_HEIGHT_MOBILE_QUERY, chatInputHeightStyle, clampChatInputHeight } from '@/utils/chat-input-height'
 
 const chatStore = useChatStore()
 const appStore = useAppStore()
 const profilesStore = useProfilesStore()
+const settingsStore = useSettingsStore()
 const { t } = useI18n()
 const message = useMessage()
 const { toolTraceVisible, toggleToolTraceVisible } = useToolTraceVisibility()
@@ -100,6 +103,7 @@ async function loadExpertsForSlot() {
 const DRAFT_STORAGE_KEY = 'hermes_chat_input_drafts_v1'
 type DraftMap = Record<string, string>
 const inputText = ref('')
+const inputWrapperRef = ref<HTMLDivElement>()
 const textareaRef = ref<HTMLTextAreaElement>()
 const commandDropdownRef = ref<HTMLDivElement>()
 const fileInputRef = ref<HTMLInputElement>()
@@ -186,7 +190,7 @@ function insertVoiceTranscriptIntoInput(text: string) {
     textarea.focus()
     textarea.setSelectionRange(nextCursorPosition, nextCursorPosition)
 
-    if (textareaHeight.value === null) {
+    if (textareaHeight.value === null && isMobileInput.value) {
       textarea.style.height = 'auto'
       textarea.style.height = `${Math.min(textarea.scrollHeight, 100)}px`
     }
@@ -383,20 +387,35 @@ async function loadSkills() {
 
 // 自定义高度拖拽
 const textareaHeight = ref<number | null>(null) // null = auto
+const isMobileInput = ref(false)
+let mobileInputQuery: MediaQueryList | null = null
+
+const inputWrapperStyle = computed(() =>
+  chatInputHeightStyle(settingsStore.display.chat_input_height, textareaHeight.value, isMobileInput.value),
+)
+const inputTextareaStyle = computed(() => (isMobileInput.value ? {} : { height: '100%' }))
+
+function syncMobileInputState() {
+  if (typeof window === 'undefined') return
+  const nextIsMobile = mobileInputQuery?.matches ?? window.innerWidth <= 768
+  isMobileInput.value = nextIsMobile
+  if (nextIsMobile) textareaHeight.value = null
+}
 
 function startResize(e: MouseEvent) {
   e.preventDefault()
+  if (isMobileInput.value) return
   const el = textareaRef.value
   if (!el) return
   // 如果当前是 auto，用实际 clientHeight 作为起始值
-  const startHeight = el.clientHeight
+  const startHeight = inputWrapperRef.value?.clientHeight || el.clientHeight
   const startY = e.clientY
 
   function onMouseMove(e: MouseEvent) {
     const deltaY = e.clientY - startY
     // 往上拖 (deltaY < 0) → 高度增加
     const newHeight = startHeight - deltaY
-    textareaHeight.value = Math.max(20, Math.min(400, Math.round(newHeight)))
+    textareaHeight.value = clampChatInputHeight(newHeight)
   }
 
   function onMouseUp() {
@@ -452,6 +471,9 @@ function saveDraftForActiveSession(value: string) {
 // 从 localStorage 读取设置
 onMounted(() => {
   loadDraftForActiveSession()
+  mobileInputQuery = window.matchMedia?.(CHAT_INPUT_HEIGHT_MOBILE_QUERY) ?? null
+  syncMobileInputState()
+  mobileInputQuery?.addEventListener?.('change', syncMobileInputState)
   const saved = localStorage.getItem('autoPlaySpeech')
   if (saved !== null) {
     autoPlaySpeech.value = saved === 'true'
@@ -459,6 +481,11 @@ onMounted(() => {
     chatStore.setAutoPlaySpeech(autoPlaySpeech.value)
   }
   void loadExpertsForSlot()
+})
+
+onUnmounted(() => {
+  mobileInputQuery?.removeEventListener?.('change', syncMobileInputState)
+  mobileInputQuery = null
 })
 
 // 监听变化并保存
@@ -470,6 +497,10 @@ watch(autoPlaySpeech, (value) => {
 
 watch(inputText, (value) => {
   saveDraftForActiveSession(value)
+})
+
+watch(() => settingsStore.display.chat_input_height, () => {
+  textareaHeight.value = null
 })
 
 watch(() => chatStore.activeSession?.id, () => {
@@ -820,7 +851,7 @@ function handleSend() {
   attachments.value = []
   slashActive.value = false
 
-  if (textareaRef.value) {
+  if (textareaRef.value && isMobileInput.value) {
     textareaRef.value.style.height = 'auto'
   }
 }
@@ -965,7 +996,7 @@ function handleInput(e: Event) {
   const el = e.target as HTMLTextAreaElement
   if (!isComposing.value) updateSlashState()
   // 用户手动拖拽自定义高度时，不覆盖
-  if (textareaHeight.value !== null) return
+  if (textareaHeight.value !== null || !isMobileInput.value) return
   el.style.height = 'auto'
   el.style.height = Math.min(el.scrollHeight, 100) + 'px'
 }
@@ -1172,8 +1203,10 @@ function isImage(type: string): boolean {
     </div>
 
     <div
+      ref="inputWrapperRef"
       class="input-wrapper"
       :class="{ 'drag-over': isDragging }"
+      :style="inputWrapperStyle"
       @dragover="handleDragOver"
       @dragenter="handleDragEnter"
       @dragleave="handleDragLeave"
@@ -1191,7 +1224,7 @@ function isImage(type: string): boolean {
         ref="textareaRef"
         v-model="inputText"
         class="input-textarea"
-        :style="textareaHeight ? { height: textareaHeight + 'px' } : {}"
+        :style="inputTextareaStyle"
         :placeholder="t('chat.inputPlaceholder')"
         rows="1"
         @keydown="handleKeydown"
@@ -1613,6 +1646,7 @@ function isImage(type: string): boolean {
   display: flex;
   align-items: center;
   gap: 10px;
+  box-sizing: border-box;
   background-color: $bg-input;
   border: 1px solid $border-color;
   border-radius: $radius-md;
@@ -1646,6 +1680,7 @@ function isImage(type: string): boolean {
 
 .input-textarea {
   flex: 1;
+  box-sizing: border-box;
   background: none;
   border: none;
   outline: none;

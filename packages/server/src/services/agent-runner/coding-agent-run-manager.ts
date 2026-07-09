@@ -10,6 +10,8 @@ import type { SessionState } from '../hermes/run-chat/types'
 import type { CanonicalResponsesEvent } from './adapters/responses-stream'
 import { mapCodingAgentResponseEvent } from './coding-agent-event-mapper'
 import { normalizeWindowsCommandPath, windowsCmdShimExecution, windowsCommandNeedsShell } from '../windows-command'
+import { completeWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint } from '../hermes/run-chat/workspace-diff-tracker'
+import type { WorkspaceRunChangeSummary } from '../../db/hermes/workspace-run-changes-store'
 
 const DEFAULT_IDLE_MS = 30 * 60 * 1000
 const TERMINAL_OUTPUT_FLUSH_MS = 120
@@ -22,6 +24,10 @@ const CODEX_REASONING_SUMMARY_ARGS = ['-c', 'model_reasoning_summary="auto"']
 const HERMES_MCP_SERVER_NAME = 'hermes-studio'
 
 let pty: any = null
+
+function workspaceDiffCompletedPayload(change: WorkspaceRunChangeSummary): Record<string, unknown> {
+  return { event: 'workspace.diff.completed', ...change }
+}
 
 function ensureNodePtySpawnHelperExecutable() {
   if (process.platform !== 'darwin') return
@@ -67,6 +73,7 @@ export interface CodingAgentRunLaunch {
   args: string[]
   shellCommand: string
   workspaceDir: string
+  workspaceExplicit?: boolean
   env?: NodeJS.ProcessEnv
   state?: SessionState
   sessionSource?: 'global_agent'
@@ -506,6 +513,7 @@ export class CodingAgentRunManager {
     this.addUserMessage(run, text)
     this.touch(run)
     this.emitTerminalStatus(run, 'Input sent to coding agent.')
+    this.startWorkspaceDiffCheckpoint(run)
     if (run.launch.agentId === 'claude-code') {
       this.startClaudePrintTurn(run, text, systemPrompt)
       return { runId: run.id }
@@ -692,6 +700,7 @@ export class CodingAgentRunManager {
     }
     run.exited = true
     run.state.isWorking = false
+    this.emitWorkspaceDiffCompleted(run)
     if (shouldReportClosed) {
       this.emitToChat(run.launch.sessionId, 'run.failed', {
         event: 'run.failed',
@@ -1608,6 +1617,7 @@ export class CodingAgentRunManager {
     run.pendingChatCompletionEvent = undefined
     run.pendingChatCompletionPayload = undefined
     const queueRemaining = run.state.queue.length
+    this.emitWorkspaceDiffCompleted(run)
     this.emitToChat(run.launch.sessionId, event, {
       ...(payload || { event }),
       ...(queueRemaining > 0 ? { queue_remaining: queueRemaining } : {}),
@@ -1654,6 +1664,29 @@ export class CodingAgentRunManager {
 
   private emitTerminalStatus(run: ManagedCodingAgentRun, text: string) {
     logger.debug({ runId: run.id, sessionId: run.launch.sessionId, text }, '[coding-agent-run] status')
+  }
+
+  private startWorkspaceDiffCheckpoint(run: ManagedCodingAgentRun) {
+    if (run.launch.workspaceExplicit !== true) return
+    const workspace = String(run.launch.workspaceDir || '').trim()
+    if (!workspace) return
+    startWorkspaceRunCheckpoint({
+      sessionId: run.launch.sessionId,
+      runId: run.id,
+      workspace,
+    })
+  }
+
+  private emitWorkspaceDiffCompleted(run: ManagedCodingAgentRun) {
+    if (run.launch.workspaceExplicit !== true) return
+    const workspace = String(run.launch.workspaceDir || '').trim()
+    if (!workspace) return
+    const change = completeWorkspaceRunCheckpoint({
+      sessionId: run.launch.sessionId,
+      runId: run.id,
+      workspace,
+    })
+    if (change) this.emitToChat(run.launch.sessionId, 'workspace.diff.completed', workspaceDiffCompletedPayload(change))
   }
 
   private bufferTerminalOutput(run: ManagedCodingAgentRun, chunk: string) {

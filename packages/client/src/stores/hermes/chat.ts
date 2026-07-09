@@ -1,5 +1,16 @@
 import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondToolApproval, onPeerUserMessage, onSessionCommand, onSessionTitleUpdated, respondClarify, type ChatRunTransport, type RunEvent, type ResumeSessionPayload, type StartRunRequest, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
-import { deleteSession as deleteSessionApi, fetchSessionMessagesPage, fetchSessions, setSessionModel, type HermesMessage, type ProviderApiMode, type SessionSummary } from '@/api/hermes/sessions'
+import {
+  deleteSession as deleteSessionApi,
+  fetchSessionMessagesPage,
+  fetchSessions,
+  fetchWorkspaceRunChanges,
+  setSessionArchived as setSessionArchivedApi,
+  setSessionModel,
+  type HermesMessage,
+  type ProviderApiMode,
+  type SessionSummary,
+  type WorkspaceRunChangeSummary,
+} from '@/api/hermes/sessions'
 import { getActiveProfileName, getActiveExpertId, setActiveExpertId } from '@/api/client'
 import { getDownloadUrl } from '@/api/hermes/download'
 import { defineStore } from 'pinia'
@@ -116,6 +127,7 @@ export interface Session {
   endedAt?: number | null
   lastActiveAt?: number
   workspace?: string | null
+  isArchived?: boolean
   /** Per-session reasoning effort override.
    * Empty string / undefined = use config.yaml default.
    * Values: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' */
@@ -130,6 +142,8 @@ interface CompressionState {
   compressed: boolean | null
   error?: string
 }
+
+type WorkspaceRunChangeLike = WorkspaceRunChangeSummary | (RunEvent & { change_id?: string })
 
 function uid(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
@@ -480,6 +494,7 @@ function mapHermesSession(s: SessionSummary): Session {
     endedAt: s.ended_at != null ? Math.round(s.ended_at * 1000) : null,
     lastActiveAt: s.last_active != null ? Math.round(s.last_active * 1000) : undefined,
     workspace: s.workspace || null,
+    isArchived: s.is_archived === true,
   }
 }
 
@@ -937,6 +952,7 @@ export const useChatStore = defineStore('chat', () => {
           existing.inputTokens = fresh.inputTokens
           existing.outputTokens = fresh.outputTokens
           existing.workspace = fresh.workspace
+          existing.isArchived = fresh.isArchived
           existing.expertId = fresh.expertId
           existing.expertLabel = fresh.expertLabel
           existing.expertAvatar = fresh.expertAvatar
@@ -997,6 +1013,7 @@ export const useChatStore = defineStore('chat', () => {
       target.expertId = detail.session.expert_id || undefined
       target.expertLabel = detail.session.expert_label || undefined
       target.expertAvatar = detail.session.expert_avatar || undefined
+      await restoreWorkspaceDiffCards(target)
       if (activeSessionId.value === sid) syncActiveExpertFromSession(target)
       return true
     } catch (err) {
@@ -1088,7 +1105,7 @@ export const useChatStore = defineStore('chat', () => {
       // Load messages via Socket.IO resume (server loads from DB if not in memory)
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error('resume timeout')), 15_000)
-        resumeSession(sessionId, (data) => {
+        resumeSession(sessionId, async (data) => {
           clearTimeout(timeout)
           if (data.session_id !== sessionId || activeSessionId.value !== sessionId) {
             resolve()
@@ -1138,6 +1155,7 @@ export const useChatStore = defineStore('chat', () => {
             }
           }
           activeSession.value = target
+          await restoreWorkspaceDiffCards(target)
           // Process replayed events (compression state etc.)
           if (data.events?.length) {
             for (const evt of data.events) {
@@ -1356,6 +1374,21 @@ export const useChatStore = defineStore('chat', () => {
     return true
   }
 
+  async function archiveSession(sessionId: string): Promise<boolean> {
+    const target = sessions.value.find(s => s.id === sessionId)
+    const ok = await setSessionArchivedApi(sessionId, true, target?.profile)
+    if (!ok) return false
+    sessions.value = sessions.value.filter(s => s.id !== sessionId)
+    if (activeSessionId.value === sessionId) {
+      if (sessions.value.length > 0) {
+        await switchSession(sessions.value[0].id)
+      } else {
+        clearActiveSession()
+      }
+    }
+    return true
+  }
+
   function getSessionMsgs(sessionId: string): Message[] {
     const s = sessions.value.find(s => s.id === sessionId)
     return s?.messages || []
@@ -1364,6 +1397,103 @@ export const useChatStore = defineStore('chat', () => {
   function addMessage(sessionId: string, msg: Message) {
     const s = sessions.value.find(s => s.id === sessionId)
     if (s) s.messages.push(msg)
+  }
+
+  function workspaceDiffMessageId(changeId: string): string {
+    return `workspace-change:${changeId}`
+  }
+
+  function workspaceDiffCardMessage(change: WorkspaceRunChangeLike): Message | null {
+    const changeId = String((change as any).change_id || '').trim()
+    const sessionId = String((change as any).session_id || '').trim()
+    if (!changeId || !sessionId) return null
+    const files = Array.isArray((change as any).files)
+      ? (change as any).files.map((file: Record<string, unknown>) => {
+          const {
+            id,
+            change_id,
+            session_id,
+            path,
+            old_path,
+            change_type,
+            additions,
+            deletions,
+            size_before,
+            size_after,
+            patch_bytes,
+            truncated,
+            binary,
+            created_at,
+          } = file
+          return {
+            id,
+            change_id,
+            session_id,
+            path,
+            old_path,
+            change_type,
+            additions,
+            deletions,
+            size_before,
+            size_after,
+            patch_bytes,
+            truncated,
+            binary,
+            created_at,
+          }
+        })
+      : []
+    const createdAt = Number((change as any).created_at || (change as any).finished_at || Date.now() / 1000)
+    const timestamp = Number.isFinite(createdAt) ? Math.round(createdAt * 1000) : Date.now()
+    const filesChanged = Number((change as any).files_changed ?? files.length)
+    const additions = Number((change as any).additions || 0)
+    const deletions = Number((change as any).deletions || 0)
+    return {
+      id: workspaceDiffMessageId(changeId),
+      role: 'command',
+      content: '',
+      timestamp,
+      systemType: 'command',
+      commandAction: 'workspace.diff',
+      commandData: {
+        change_id: changeId,
+        session_id: sessionId,
+        run_id: String((change as any).run_id || ''),
+        workspace: String((change as any).workspace || ''),
+        workspace_kind: String((change as any).workspace_kind || 'git'),
+        files_changed: filesChanged,
+        additions,
+        deletions,
+        truncated: Boolean((change as any).truncated),
+        total_patch_bytes: Number((change as any).total_patch_bytes || 0),
+        files,
+      },
+    }
+  }
+
+  function upsertWorkspaceDiffCard(sessionId: string, change: WorkspaceRunChangeLike) {
+    const s = sessions.value.find(s => s.id === sessionId)
+    if (!s) return
+    const card = workspaceDiffCardMessage({ ...change, session_id: sessionId } as WorkspaceRunChangeLike)
+    if (!card) return
+    const idx = s.messages.findIndex(m => m.id === card.id)
+    if (idx >= 0) {
+      s.messages[idx] = card
+      return
+    }
+    s.messages.push(card)
+  }
+
+  async function restoreWorkspaceDiffCards(session: Session) {
+    try {
+      const changes = await fetchWorkspaceRunChanges(session.id, session.profile)
+      session.messages = session.messages.filter(message => message.commandAction !== 'workspace.diff')
+      for (const change of changes) {
+        upsertWorkspaceDiffCard(session.id, change)
+      }
+    } catch (err) {
+      console.error('Failed to load workspace diff cards:', err)
+    }
   }
 
   function addOrUpdateSession(session: Session) {
@@ -2324,6 +2454,9 @@ export const useChatStore = defineStore('chat', () => {
               case 'agent.event':
                 handleAgentEvent(e)
                 break
+              case 'workspace.diff.completed':
+                upsertWorkspaceDiffCard(sid, e as RunEvent)
+                break
             }
           }
         }
@@ -2382,6 +2515,11 @@ export const useChatStore = defineStore('chat', () => {
 
             case 'run.reattach_failed': {
               handleAgentEvent(evt)
+              break
+            }
+
+            case 'workspace.diff.completed': {
+              upsertWorkspaceDiffCard(sid, evt)
               break
             }
 
@@ -2842,6 +2980,7 @@ export const useChatStore = defineStore('chat', () => {
               }
               break
             }
+
           }
         },
         // onDone
@@ -2988,6 +3127,11 @@ export const useChatStore = defineStore('chat', () => {
 
         case 'run.reattach_failed': {
           handleAgentEvent(evt)
+          break
+        }
+
+        case 'workspace.diff.completed': {
+          upsertWorkspaceDiffCard(sid, evt)
           break
         }
 
@@ -3451,6 +3595,7 @@ export const useChatStore = defineStore('chat', () => {
           }
           break
         }
+
       }
     }
 
@@ -3478,6 +3623,7 @@ export const useChatStore = defineStore('chat', () => {
       onClarifyRequested: (evt) => handleEvent(evt),
       onClarifyResolved: (evt) => handleEvent(evt),
       onAuthRequired: (evt) => handleEvent(evt),
+      onWorkspaceDiffCompleted: (evt) => handleEvent(evt),
     })
 
     // No need to emit resume here — switchSession already did it.
@@ -3778,6 +3924,7 @@ export const useChatStore = defineStore('chat', () => {
     addOrUpdateSession,
     clearProviderFromSessions,
     deleteSession,
+    archiveSession,
     sendMessage,
     stopStreaming,
     respondApproval,

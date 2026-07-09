@@ -15,7 +15,7 @@ import {
   isChatPlaneRequest,
 } from '../../services/request-context'
 import { getActiveProfileName } from '../../services/hermes/hermes-profile'
-import { isPathWithin } from '../../services/hermes/hermes-path'
+import { isNearestExistingRealPathWithin, isPathWithin } from '../../services/hermes/hermes-path'
 
 export const downloadRoutes = new Router()
 
@@ -155,6 +155,9 @@ async function getDownloadTarget(ctx: Context, filePath: string): Promise<{
   const resolved = join(workspaceDir, normalized)
   if (!isPathWithin(resolved, workspaceDir)) {
     throw Object.assign(new Error('Path traversal detected'), { code: 'invalid_path' })
+  }
+  if (!(await isNearestExistingRealPathWithin(resolved, workspaceDir))) {
+    throw Object.assign(new Error('Path escapes workspace'), { code: 'permission_denied' })
   }
   return {
     validPath: resolved,

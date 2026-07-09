@@ -3,8 +3,10 @@ import { computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import GroupChatPanel from '@/components/hermes/group-chat/GroupChatPanel.vue'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
+import { useSettingsStore } from '@/stores/hermes/settings'
 
 const store = useGroupChatStore()
+const settingsStore = useSettingsStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -34,6 +36,7 @@ async function syncRouteRoom() {
 
 onMounted(async () => {
     store.connect()
+    await settingsStore.fetchSettings()
     await store.loadRooms()
     await syncRouteRoom()
 })

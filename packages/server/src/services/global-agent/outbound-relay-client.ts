@@ -45,6 +45,7 @@ const CHAT_RUN_SERVER_EVENTS = [
   'tool.completed',
   'run.completed',
   'run.failed',
+  'workspace.diff.completed',
   'compression.started',
   'compression.completed',
   'abort.started',

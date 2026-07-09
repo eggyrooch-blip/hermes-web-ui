@@ -223,5 +223,17 @@ describe('GlobalAgentServer', () => {
       payload: { session_id: 's1', delta: 'hi' },
     })
     expect(frontendSocket.emit).toHaveBeenCalledWith('message.delta', { session_id: 's1', delta: 'hi' })
+
+    agentSocket.__handlers.get('socket.event')?.({
+      id: bridgeId,
+      namespace: '/chat-run',
+      event: 'workspace.diff.completed',
+      payload: { session_id: 's1', change_id: 'change-1', files_changed: 1 },
+    })
+    expect(frontendSocket.emit).toHaveBeenCalledWith('workspace.diff.completed', {
+      session_id: 's1',
+      change_id: 'change-1',
+      files_changed: 1,
+    })
   })
 })

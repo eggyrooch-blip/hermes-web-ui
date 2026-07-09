@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import { NButton, NSwitch, NSelect, useMessage } from 'naive-ui'
+import { computed } from 'vue'
+import { NButton, NSwitch, NSelect, NInputNumber, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import { useTheme, type BrightnessMode } from '@/composables/useTheme'
 import { requestCompletionNotificationPermission, showCompletionNotification, type CompletionNotificationPermissionResult } from '@/utils/completion-notification'
+import { CHAT_INPUT_HEIGHT_DEFAULT, CHAT_INPUT_HEIGHT_MAX, CHAT_INPUT_HEIGHT_MIN, clampChatInputHeight } from '@/utils/chat-input-height'
 import SettingRow from './SettingRow.vue'
 
 const settingsStore = useSettingsStore()
 const message = useMessage()
 const { t } = useI18n()
 const { brightness, setBrightness } = useTheme()
+const chatInputHeight = computed(() => clampChatInputHeight(settingsStore.display.chat_input_height ?? CHAT_INPUT_HEIGHT_DEFAULT))
 
 const themeOptions = [
   { label: t('settings.display.themeLight'), value: 'light' },
@@ -30,6 +33,10 @@ function handleThemeChange(val: string) {
   const m = val as BrightnessMode
   setBrightness(m)
   save({ skin: m })
+}
+
+function handleChatInputHeightChange(value: number | null) {
+  save({ chat_input_height: clampChatInputHeight(value) })
 }
 
 function notificationPermissionErrorKey(result: CompletionNotificationPermissionResult): string {
@@ -87,6 +94,17 @@ async function testCompletionNotification() {
     </SettingRow>
     <SettingRow :label="t('settings.display.compact')" :hint="t('settings.display.compactHint')">
       <NSwitch :value="settingsStore.display.compact" @update:value="v => save({ compact: v })" />
+    </SettingRow>
+    <SettingRow :label="t('settings.display.chatInputHeight')" :hint="t('settings.display.chatInputHeightHint')">
+      <NInputNumber
+        :value="chatInputHeight"
+        :min="CHAT_INPUT_HEIGHT_MIN"
+        :max="CHAT_INPUT_HEIGHT_MAX"
+        :step="4"
+        size="small"
+        class="input-xs"
+        @update:value="handleChatInputHeightChange"
+      />
     </SettingRow>
     <SettingRow :label="t('settings.display.showReasoning')" :hint="t('settings.display.showReasoningHint')">
       <NSwitch :value="settingsStore.display.show_reasoning" @update:value="v => save({ show_reasoning: v })" />

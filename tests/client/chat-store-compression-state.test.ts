@@ -35,6 +35,7 @@ vi.mock('@/api/hermes/sessions', () => ({
   deleteSession: vi.fn(),
   fetchSession: vi.fn(),
   fetchSessions: vi.fn(),
+  fetchWorkspaceRunChanges: vi.fn(() => Promise.resolve([])),
   setSessionModel: vi.fn(),
 }))
 

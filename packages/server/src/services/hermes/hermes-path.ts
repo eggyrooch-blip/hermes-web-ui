@@ -8,6 +8,7 @@
  */
 
 import { existsSync } from 'fs'
+import { realpath } from 'fs/promises'
 import { basename, dirname, isAbsolute, relative, resolve, join } from 'path'
 import { homedir } from 'os'
 
@@ -82,6 +83,32 @@ export function isPathWithin(targetPath: string, basePath: string): boolean {
   const target = resolve(targetPath)
   const rel = relative(comparablePath(base), comparablePath(target))
   return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel))
+}
+
+export async function realPathOrResolved(path: string): Promise<string> {
+  try {
+    return await realpath(path)
+  } catch {
+    return resolve(path)
+  }
+}
+
+export async function nearestExistingRealPath(path: string): Promise<string> {
+  let current = resolve(path)
+  while (!existsSync(current)) {
+    const parent = dirname(current)
+    if (parent === current) return current
+    current = parent
+  }
+  return realPathOrResolved(current)
+}
+
+export async function isRealPathWithin(targetPath: string, basePath: string): Promise<boolean> {
+  return isPathWithin(await realPathOrResolved(targetPath), await realPathOrResolved(basePath))
+}
+
+export async function isNearestExistingRealPathWithin(targetPath: string, basePath: string): Promise<boolean> {
+  return isPathWithin(await nearestExistingRealPath(targetPath), await realPathOrResolved(basePath))
 }
 
 export function relativePathFromBase(targetPath: string, basePath: string): string | null {

@@ -59,12 +59,52 @@ describe('bridge terminal error detection', () => {
     } as any)).toBe('分组 subrouter 下模型 test 无可用渠道（distributor）')
   })
 
+  it('surfaces explicit result errors even when failure flags are missing', () => {
+    expect(bridgeTerminalError({
+      status: 'complete',
+      result: {
+        error: 'HTTP 400: Bad Request',
+      },
+    } as any)).toBe('HTTP 400: Bad Request')
+  })
+
   it('does not flag successful complete results', () => {
     expect(bridgeTerminalError({
       status: 'complete',
       result: {
         completed: true,
         final_response: 'done',
+      },
+    } as any)).toBeNull()
+  })
+
+  it('does not flag successful results that describe HTTP 401 handling', () => {
+    expect(bridgeTerminalError({
+      status: 'complete',
+      result: {
+        completed: true,
+        final_response: 'Added handling for HTTP 401 responses and verified the login error state.',
+      },
+    } as any)).toBeNull()
+  })
+
+  it('does not flag successful results that describe HTTP 403 handling', () => {
+    expect(bridgeTerminalError({
+      status: 'complete',
+      result: {
+        completed: true,
+        final_response: 'Documented how HTTP 403 failed permission checks are displayed in the UI.',
+      },
+    } as any)).toBeNull()
+  })
+
+  it('does not treat a successful result message as an error', () => {
+    expect(bridgeTerminalError({
+      status: 'complete',
+      result: {
+        completed: true,
+        message: 'All checks passed after verifying error and failed display states.',
+        final_response: 'All checks passed.',
       },
     } as any)).toBeNull()
   })

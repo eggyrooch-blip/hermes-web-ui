@@ -237,6 +237,26 @@ describe('outbound relay client', () => {
       payload: { session_id: 's1', delta: 'hello' },
     })
 
+    localSocket.__handlers.get('workspace.diff.completed')?.({
+      event: 'workspace.diff.completed',
+      session_id: 's1',
+      change_id: 'change-1',
+      files_changed: 1,
+      files: [{ path: 'file.txt', additions: 1, deletions: 0 }],
+    })
+    expect(mockSocket.emit).toHaveBeenCalledWith('socket.event', {
+      id: 'chat-1',
+      namespace: '/chat-run',
+      event: 'workspace.diff.completed',
+      payload: {
+        event: 'workspace.diff.completed',
+        session_id: 's1',
+        change_id: 'change-1',
+        files_changed: 1,
+        files: [{ path: 'file.txt', additions: 1, deletions: 0 }],
+      },
+    })
+
     const eventAck = vi.fn()
     socketHandlers.get('socket.event')?.({
       id: 'chat-1',
@@ -279,6 +299,15 @@ describe('outbound relay client', () => {
     localSocket.__handlers.get('reasoning.delta')?.({ session_id: 's1', delta: 'thinking' })
     expect(mockSocket.emit).not.toHaveBeenCalled()
 
+    localSocket.__handlers.get('workspace.diff.completed')?.({ session_id: 's1', change_id: 'change-1', files_changed: 1 })
+    expect(mockSocket.emit).toHaveBeenCalledWith('socket.event', {
+      id: 'chat-1',
+      namespace: '/chat-run',
+      event: 'workspace.diff.completed',
+      payload: { session_id: 's1', change_id: 'change-1', files_changed: 1 },
+    })
+
+    mockSocket.emit.mockClear()
     localSocket.__handlers.get('run.completed')?.({ session_id: 's1', run_id: 'run-1' })
     expect(mockSocket.emit).toHaveBeenCalledWith('socket.event', {
       id: 'chat-1',

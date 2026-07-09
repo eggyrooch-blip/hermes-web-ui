@@ -1,7 +1,18 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+
+const workspaceDiffMocks = vi.hoisted(() => ({
+  start: vi.fn(),
+  complete: vi.fn(),
+}))
+
+vi.mock('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker', () => ({
+  startWorkspaceRunCheckpoint: workspaceDiffMocks.start,
+  completeWorkspaceRunCheckpoint: workspaceDiffMocks.complete,
+}))
+
 import {
   anthropicMessagesUrl,
   chatCompletionsUrl,
@@ -16,6 +27,12 @@ import { mapCodingAgentResponseEvent } from '../../packages/server/src/services/
 import { applyResponseStreamEvent } from '../../packages/server/src/services/hermes/run-chat/response-stream'
 import { initAllHermesTables } from '../../packages/server/src/db/hermes/schemas'
 import { addMessage, getSession, getSessionDetail, listSessions } from '../../packages/server/src/db/hermes/session-store'
+
+beforeEach(() => {
+  workspaceDiffMocks.start.mockReset()
+  workspaceDiffMocks.complete.mockReset()
+  workspaceDiffMocks.complete.mockReturnValue(null)
+})
 
 describe('agent runner endpoint resolver', () => {
   it('adds v1 for provider hosts without an API root path', () => {
@@ -1249,6 +1266,253 @@ describe('coding agent run state', () => {
     expect(manager.stop(chatSessionId, { reportClosed: false })).toBe(true)
 
     expect(emitted).toEqual([])
+  })
+
+  it('starts a workspace diff checkpoint when sending a coding-agent turn with a workspace', () => {
+    const manager = new CodingAgentRunManager()
+    const agentSessionId = `agent-session-diff-start-${Date.now()}`
+    const chatSessionId = `chat-session-diff-start-${Date.now()}`
+    const workspaceDir = process.cwd()
+    const run = {
+      id: agentSessionId,
+      launch: {
+        agentSessionId,
+        agentId: 'terminal-agent',
+        mode: 'scoped',
+        profile: 'default',
+        provider: 'test-provider',
+        model: 'test-model',
+        sessionId: chatSessionId,
+        command: 'agent',
+        args: [],
+        shellCommand: 'agent',
+        workspaceDir,
+        workspaceExplicit: true,
+      },
+      pty: { write: vi.fn() },
+      state: { messages: [], isWorking: false, events: [], queue: [] },
+      lastActiveAt: Date.now(),
+      startedAt: Date.now(),
+      exited: false,
+    }
+    ;(manager as any).runs.set(agentSessionId, run)
+    ;(manager as any).sessionIndex.set(chatSessionId, agentSessionId)
+    ;(manager as any).ensureDbSession = () => {}
+    ;(manager as any).addUserMessage = () => {}
+    ;(manager as any).touch = () => {}
+    ;(manager as any).emitTerminalStatus = () => {}
+
+    manager.send(chatSessionId, 'please change files')
+
+    expect(workspaceDiffMocks.start).toHaveBeenCalledWith({
+      sessionId: chatSessionId,
+      runId: agentSessionId,
+      workspace: workspaceDir,
+    })
+    expect(run.pty.write).toHaveBeenCalledWith('please change files\r')
+  })
+
+  it('does not start a workspace diff checkpoint when the workspace was defaulted', () => {
+    const manager = new CodingAgentRunManager()
+    const agentSessionId = `agent-session-diff-default-${Date.now()}`
+    const chatSessionId = `chat-session-diff-default-${Date.now()}`
+    const run = {
+      id: agentSessionId,
+      launch: {
+        agentSessionId,
+        agentId: 'terminal-agent',
+        mode: 'scoped',
+        profile: 'default',
+        provider: 'test-provider',
+        model: 'test-model',
+        sessionId: chatSessionId,
+        command: 'agent',
+        args: [],
+        shellCommand: 'agent',
+        workspaceDir: process.cwd(),
+      },
+      pty: { write: vi.fn() },
+      state: { messages: [], isWorking: false, events: [], queue: [] },
+      lastActiveAt: Date.now(),
+      startedAt: Date.now(),
+      exited: false,
+    }
+    ;(manager as any).runs.set(agentSessionId, run)
+    ;(manager as any).sessionIndex.set(chatSessionId, agentSessionId)
+    ;(manager as any).ensureDbSession = () => {}
+    ;(manager as any).addUserMessage = () => {}
+    ;(manager as any).touch = () => {}
+    ;(manager as any).emitTerminalStatus = () => {}
+
+    manager.send(chatSessionId, 'please change files')
+
+    expect(workspaceDiffMocks.start).not.toHaveBeenCalled()
+    expect(run.pty.write).toHaveBeenCalledWith('please change files\r')
+  })
+
+  it('emits workspace diff summary before coding-agent run completion', () => {
+    const manager = new CodingAgentRunManager()
+    const emitted: Array<{ event: string; payload: any }> = []
+    ;(manager as any).emitToChat = (_sessionId: string, event: string, payload: any) => {
+      emitted.push({ event, payload })
+    }
+    ;(manager as any).markChatRunCompleted = (_sessionId: string, event: string) => {
+      emitted.push({ event, payload: { marked: true } })
+    }
+    workspaceDiffMocks.complete.mockReturnValue({
+      change_id: 'change-coding',
+      session_id: 'chat-session-diff-complete',
+      run_id: 'agent-session-diff-complete',
+      source: 'run',
+      workspace: 'workspace',
+      workspace_kind: 'git',
+      started_at: 1,
+      finished_at: 2,
+      files_changed: 1,
+      additions: 1,
+      deletions: 0,
+      truncated: false,
+      total_patch_bytes: 10,
+      created_at: 2,
+      files: [{
+        id: 1,
+        change_id: 'change-coding',
+        session_id: 'chat-session-diff-complete',
+        path: 'file.txt',
+        old_path: null,
+        change_type: 'modified',
+        additions: 1,
+        deletions: 0,
+        size_before: 1,
+        size_after: 2,
+        patch_bytes: 10,
+        truncated: false,
+        binary: false,
+        created_at: 2,
+      }],
+    })
+    const run = {
+      id: 'agent-session-diff-complete',
+      launch: {
+        sessionId: 'chat-session-diff-complete',
+        workspaceDir: process.cwd(),
+        workspaceExplicit: true,
+      },
+      state: { messages: [], isWorking: true, events: [], queue: [] },
+    }
+
+    ;(manager as any).emitAndMarkPrintChatRunCompleted(run, 'run.completed', {
+      event: 'run.completed',
+      run_id: 'resp-1',
+    })
+
+    expect(workspaceDiffMocks.complete).toHaveBeenCalledWith({
+      sessionId: 'chat-session-diff-complete',
+      runId: 'agent-session-diff-complete',
+      workspace: process.cwd(),
+    })
+    expect(emitted[0]).toEqual({
+      event: 'workspace.diff.completed',
+      payload: expect.objectContaining({
+        event: 'workspace.diff.completed',
+        change_id: 'change-coding',
+        files_changed: 1,
+      }),
+    })
+    expect(emitted[1]).toEqual(expect.objectContaining({ event: 'run.completed' }))
+  })
+
+  it('does not complete or emit a workspace diff when the coding-agent workspace was defaulted', () => {
+    const manager = new CodingAgentRunManager()
+    const emitted: Array<{ event: string; payload: any }> = []
+    ;(manager as any).emitToChat = (_sessionId: string, event: string, payload: any) => {
+      emitted.push({ event, payload })
+    }
+    ;(manager as any).markChatRunCompleted = (_sessionId: string, event: string) => {
+      emitted.push({ event, payload: { marked: true } })
+    }
+    workspaceDiffMocks.complete.mockReturnValue({
+      change_id: 'change-default',
+      session_id: 'chat-session-diff-default',
+      run_id: 'agent-session-diff-default',
+      source: 'run',
+      workspace: 'workspace',
+      workspace_kind: 'filesystem',
+      started_at: 1,
+      finished_at: 2,
+      files_changed: 1,
+      additions: 1,
+      deletions: 0,
+      truncated: false,
+      total_patch_bytes: 10,
+      created_at: 2,
+      files: [],
+    })
+    const run = {
+      id: 'agent-session-diff-default',
+      launch: {
+        sessionId: 'chat-session-diff-default',
+        workspaceDir: process.cwd(),
+      },
+      state: { messages: [], isWorking: true, events: [], queue: [] },
+    }
+
+    ;(manager as any).emitAndMarkPrintChatRunCompleted(run, 'run.completed', {
+      event: 'run.completed',
+      run_id: 'resp-1',
+    })
+
+    expect(workspaceDiffMocks.complete).not.toHaveBeenCalled()
+    expect(emitted.map(event => event.event)).toEqual(['run.completed', 'run.completed'])
+  })
+
+  it('cleans up coding-agent workspace diff checkpoints on user abort without run.failed', () => {
+    const manager = new CodingAgentRunManager()
+    const emitted: Array<{ event: string; payload: any }> = []
+    ;(manager as any).emitToChat = (_sessionId: string, event: string, payload: any) => {
+      emitted.push({ event, payload })
+    }
+    ;(manager as any).markChatRunCompleted = (_sessionId: string, event: string) => {
+      emitted.push({ event, payload: { marked: true } })
+    }
+    workspaceDiffMocks.complete.mockReturnValue({
+      change_id: 'change-abort',
+      session_id: 'chat-session-diff-abort',
+      run_id: 'agent-session-diff-abort',
+      source: 'run',
+      workspace: 'workspace',
+      workspace_kind: 'filesystem',
+      started_at: 1,
+      finished_at: 2,
+      files_changed: 1,
+      additions: 1,
+      deletions: 0,
+      truncated: false,
+      total_patch_bytes: 10,
+      created_at: 2,
+      files: [],
+    })
+    const run = {
+      id: 'agent-session-diff-abort',
+      launch: {
+        sessionId: 'chat-session-diff-abort',
+        workspaceDir: process.cwd(),
+        workspaceExplicit: true,
+      },
+      state: { messages: [], isWorking: true, events: [], queue: [] },
+      currentChild: undefined,
+      exited: false,
+    }
+    ;(manager as any).runs.set(run.id, run)
+    ;(manager as any).sessionIndex.set(run.launch.sessionId, run.id)
+
+    ;(manager as any).cleanupRun(run, { kill: true, reportClosed: false })
+
+    expect(emitted.map(event => event.event)).toEqual(['workspace.diff.completed'])
+    expect(emitted[0].payload).toEqual(expect.objectContaining({
+      event: 'workspace.diff.completed',
+      change_id: 'change-abort',
+    }))
   })
 
   it('defers queued-run release until a print coding-agent child exits', () => {

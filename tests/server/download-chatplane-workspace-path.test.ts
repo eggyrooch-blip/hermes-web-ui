@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -14,6 +14,7 @@ const tempRoot = mkdtempSync(join(tmpdir(), 'dl-chatplane-'))
 const profileDir = join(tempRoot, 'profile')
 const workspaceDir = join(profileDir, 'workspace')
 const uploadDir = join(tempRoot, 'upload')
+const externalDir = join(tempRoot, 'external')
 
 let chatPlane = true
 
@@ -56,6 +57,7 @@ async function request(path: string): Promise<any> {
 mkdirSync(join(workspaceDir, 'Downloads'), { recursive: true })
 mkdirSync(join(workspaceDir, 'credentials'), { recursive: true })
 mkdirSync(uploadDir, { recursive: true })
+mkdirSync(externalDir, { recursive: true })
 writeFileSync(join(workspaceDir, 'Downloads', 'a.pptx'), 'PPTX-BYTES')
 writeFileSync(join(workspaceDir, 'Downloads', 'a b 报告.pptx'), '中文-BYTES')
 writeFileSync(join(workspaceDir, 'credentials', 'token'), 'SECRET')
@@ -63,6 +65,8 @@ writeFileSync(join(workspaceDir, 'config.yaml'), 'SECRET')
 writeFileSync(join(workspaceDir, '.env'), 'SECRET')
 writeFileSync(join(profileDir, 'config.yaml'), 'SECRET')
 writeFileSync(join(uploadDir, 'up.bin'), 'UPLOAD-BYTES')
+writeFileSync(join(externalDir, 'secret.txt'), 'EXTERNAL-SECRET')
+symlinkSync(externalDir, join(workspaceDir, 'escape'), 'dir')
 
 const originalUploadDir = config.uploadDir
 
@@ -120,6 +124,15 @@ describe('chat-plane /workspace/ display-path downloads', () => {
     expect(Buffer.isBuffer(ctx.body)).toBe(false)
   })
 
+  it('rejects downloads through a workspace symlink that points outside', async () => {
+    for (const p of ['escape/secret.txt', '/workspace/escape/secret.txt']) {
+      const ctx = await request(p)
+      expect(ctx.status, p).toBe(403)
+      expect(ctx.body?.code, p).toBe('permission_denied')
+      expect(Buffer.isBuffer(ctx.body), p).toBe(false)
+    }
+  })
+
   it('rejects host-absolute paths outside the upload dir unchanged', async () => {
     const ctx = await request('/etc/passwd')
     expect(ctx.status).toBe(400)
@@ -142,6 +155,13 @@ describe('chat-plane /workspace/ display-path downloads', () => {
 })
 
 describe('admin plane stays untouched', () => {
+  it('keeps upload-dir absolute downloads allowed for admin/JWT requests', async () => {
+    chatPlane = false
+    const ctx = await request(join(uploadDir, 'up.bin'))
+    expect(ctx.body?.error).toBeUndefined()
+    expect(ctx.body.toString()).toBe('UPLOAD-BYTES')
+  })
+
   it('does not strip /workspace/ for admin requests', async () => {
     chatPlane = false
     const ctx = await request('/workspace/Downloads/a.pptx')

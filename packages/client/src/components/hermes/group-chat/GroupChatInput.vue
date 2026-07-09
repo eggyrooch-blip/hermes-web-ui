@@ -3,16 +3,20 @@ import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NButton, NSwitch, NTooltip } from 'naive-ui'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
+import { useSettingsStore } from '@/stores/hermes/settings'
 import { useToolTraceVisibility } from '@/composables/useToolTraceVisibility'
 import { buildMentionOptions, type MentionOption } from './mention-options'
 import type { Attachment } from '@/stores/hermes/chat'
+import { CHAT_INPUT_HEIGHT_MOBILE_QUERY, chatInputHeightStyle, clampChatInputHeight } from '@/utils/chat-input-height'
 
 const { t } = useI18n()
 const emit = defineEmits<{ send: [content: string, attachments?: Attachment[]] }>()
 const store = useGroupChatStore()
+const settingsStore = useSettingsStore()
 const { toolTraceVisible, toggleToolTraceVisible } = useToolTraceVisibility()
 
 const inputText = ref('')
+const inputWrapperRef = ref<HTMLDivElement>()
 const textareaRef = ref<HTMLTextAreaElement>()
 const dropdownRef = ref<HTMLDivElement>()
 const fileInputRef = ref<HTMLInputElement>()
@@ -35,20 +39,39 @@ watch(autoPlaySpeech, (value) => {
     store.setAutoPlaySpeech(value)
 })
 
+watch(() => settingsStore.display.chat_input_height, () => {
+    textareaHeight.value = null
+})
+
 // 自定义高度拖拽
 const textareaHeight = ref<number | null>(null)
+const isMobileInput = ref(false)
+let mobileInputQuery: MediaQueryList | null = null
+
+const inputWrapperStyle = computed(() =>
+    chatInputHeightStyle(settingsStore.display.chat_input_height, textareaHeight.value, isMobileInput.value),
+)
+const inputTextareaStyle = computed(() => (isMobileInput.value ? {} : { height: '100%' }))
+
+function syncMobileInputState() {
+    if (typeof window === 'undefined') return
+    const nextIsMobile = mobileInputQuery?.matches ?? window.innerWidth <= 768
+    isMobileInput.value = nextIsMobile
+    if (nextIsMobile) textareaHeight.value = null
+}
 
 function startResize(e: MouseEvent) {
   e.preventDefault()
+  if (isMobileInput.value) return
   const el = textareaRef.value
   if (!el) return
-  const startHeight = el.clientHeight
+  const startHeight = inputWrapperRef.value?.clientHeight || el.clientHeight
   const startY = e.clientY
 
   function onMouseMove(e: MouseEvent) {
     const deltaY = e.clientY - startY
     const newHeight = startHeight - deltaY
-    textareaHeight.value = Math.max(20, Math.min(400, Math.round(newHeight)))
+    textareaHeight.value = clampChatInputHeight(newHeight)
   }
 
   function onMouseUp() {
@@ -173,7 +196,7 @@ function selectMention(name: string) {
             const newPos = before.length + name.length + 2
             el.setSelectionRange(newPos, newPos)
             el.focus()
-            if (textareaHeight.value === null) {
+            if (textareaHeight.value === null && isMobileInput.value) {
                 el.style.height = 'auto'
                 el.style.height = Math.min(el.scrollHeight, 100) + 'px'
             }
@@ -234,7 +257,7 @@ function handleInput(e: Event) {
     }
 
     // 用户手动拖拽自定义高度时，不覆盖
-    if (textareaHeight.value !== null) return
+    if (textareaHeight.value !== null || !isMobileInput.value) return
     const el = e.target as HTMLTextAreaElement
     el.style.height = 'auto'
     el.style.height = Math.min(el.scrollHeight, 100) + 'px'
@@ -259,10 +282,15 @@ function onDocumentMousedown(e: MouseEvent) {
 }
 
 onMounted(() => {
+    mobileInputQuery = window.matchMedia?.(CHAT_INPUT_HEIGHT_MOBILE_QUERY) ?? null
+    syncMobileInputState()
+    mobileInputQuery?.addEventListener?.('change', syncMobileInputState)
     document.addEventListener('mousedown', onDocumentMousedown)
 })
 
 onUnmounted(() => {
+    mobileInputQuery?.removeEventListener?.('change', syncMobileInputState)
+    mobileInputQuery = null
     document.removeEventListener('mousedown', onDocumentMousedown)
 })
 
@@ -409,8 +437,10 @@ function isImage(type: string): boolean {
             </div>
         </div>
         <div
+            ref="inputWrapperRef"
             class="input-wrapper"
             :class="{ 'drag-over': isDragging }"
+            :style="inputWrapperStyle"
             @dragover="handleDragOver"
             @dragenter="handleDragEnter"
             @dragleave="handleDragLeave"
@@ -422,7 +452,7 @@ function isImage(type: string): boolean {
                 ref="textareaRef"
                 v-model="inputText"
                 class="input-textarea"
-                :style="textareaHeight ? { height: textareaHeight + 'px' } : {}"
+                :style="inputTextareaStyle"
                 :placeholder="t('groupChat.inputPlaceholder')"
                 rows="1"
                 @keydown="handleKeydown"
@@ -636,6 +666,7 @@ function isImage(type: string): boolean {
     display: flex;
     align-items: center;
     gap: 10px;
+    box-sizing: border-box;
     background-color: $bg-input;
     border: 1px solid $border-color;
     border-radius: $radius-md;
@@ -674,6 +705,7 @@ function isImage(type: string): boolean {
 
 .input-textarea {
     flex: 1;
+    box-sizing: border-box;
     background: none;
     border: none;
     outline: none;

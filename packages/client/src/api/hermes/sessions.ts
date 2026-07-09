@@ -33,6 +33,7 @@ export interface SessionSummary {
   cost_status: string
   workspace?: string | null
   webui_imported?: boolean
+  is_archived?: boolean
 }
 
 export interface SessionDetail extends SessionSummary {
@@ -68,6 +69,52 @@ export interface HermesMessage {
   token_count: number | null
   finish_reason: string | null
   reasoning: string | null
+}
+
+export interface WorkspaceRunChangeFileSummary {
+  id: number
+  change_id: string
+  session_id: string
+  path: string
+  old_path: string | null
+  change_type: 'added' | 'modified' | 'deleted' | 'renamed'
+  additions: number
+  deletions: number
+  size_before: number | null
+  size_after: number | null
+  patch_bytes: number
+  truncated: boolean
+  binary: boolean
+  created_at: number
+}
+
+export interface WorkspaceRunChangeFileDetail extends WorkspaceRunChangeFileSummary {
+  patch: string | null
+}
+
+export interface WorkspaceRunChangeSummary {
+  change_id: string
+  session_id: string
+  run_id: string
+  source: 'run'
+  workspace: string
+  workspace_kind: 'git' | 'filesystem'
+  started_at: number
+  finished_at: number
+  files_changed: number
+  additions: number
+  deletions: number
+  truncated: boolean
+  total_patch_bytes: number
+  created_at: number
+  files: WorkspaceRunChangeFileSummary[]
+}
+
+function profileQuery(profile?: string | null): string {
+  const params = new URLSearchParams()
+  if (profile) params.set('profile', profile)
+  const query = params.toString()
+  return query ? `?${query}` : ''
 }
 
 export async function fetchSessions(source?: string, limit?: number, profile?: string): Promise<SessionSummary[]> {
@@ -116,6 +163,47 @@ export async function fetchSession(id: string, profile?: string | null): Promise
   }
 }
 
+export async function fetchWorkspaceRunChanges(
+  id: string,
+  profile?: string | null,
+): Promise<WorkspaceRunChangeSummary[]> {
+  const res = await request<{ changes: WorkspaceRunChangeSummary[] }>(
+    `/api/hermes/sessions/${encodeURIComponent(id)}/workspace-run-changes${profileQuery(profile)}`,
+  )
+  return res.changes
+}
+
+export async function fetchWorkspaceRunChange(
+  id: string,
+  changeId: string,
+  profile?: string | null,
+): Promise<WorkspaceRunChangeSummary | null> {
+  try {
+    const res = await request<{ change: WorkspaceRunChangeSummary }>(
+      `/api/hermes/sessions/${encodeURIComponent(id)}/workspace-run-changes/${encodeURIComponent(changeId)}${profileQuery(profile)}`,
+    )
+    return res.change
+  } catch {
+    return null
+  }
+}
+
+export async function fetchWorkspaceRunChangeFile(
+  id: string,
+  changeId: string,
+  fileId: number,
+  profile?: string | null,
+): Promise<WorkspaceRunChangeFileDetail | null> {
+  try {
+    const res = await request<{ file: WorkspaceRunChangeFileDetail }>(
+      `/api/hermes/sessions/${encodeURIComponent(id)}/workspace-run-changes/${encodeURIComponent(changeId)}/files/${encodeURIComponent(String(fileId))}${profileQuery(profile)}`,
+    )
+    return res.file
+  } catch {
+    return null
+  }
+}
+
 export async function fetchSessionMessagesPage(
   id: string,
   offset: number,
@@ -157,6 +245,19 @@ export async function deleteSession(id: string, profile?: string | null): Promis
     if (profile) params.set('profile', profile)
     const query = params.toString()
     await request(`/api/hermes/sessions/${id}${query ? `?${query}` : ''}`, { method: 'DELETE' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<boolean> {
+  try {
+    const params = new URLSearchParams()
+    if (profile) params.set('profile', profile)
+    const query = params.toString()
+    const action = archived ? 'archive' : 'unarchive'
+    await request(`/api/hermes/sessions/${id}/${action}${query ? `?${query}` : ''}`, { method: 'POST' })
     return true
   } catch {
     return false

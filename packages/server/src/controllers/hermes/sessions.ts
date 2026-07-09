@@ -9,6 +9,7 @@ import {
   getSessionDetail as localGetSessionDetail,
   deleteSession as localDeleteSession,
   renameSession as localRenameSession,
+  setSessionArchived as localSetSessionArchived,
   createSession as localCreateSession,
   addMessages as localAddMessages,
   updateSession as localUpdateSession,
@@ -18,9 +19,14 @@ import { config } from '../../config'
 import { ExportCompressor } from '../../lib/context-compressor/export-compressor'
 import { deleteUsage, getUsage, getUsageBatch } from '../../db/hermes/usage-store'
 import type { UsageStatsModelRow, UsageStatsDailyRow } from '../../db/hermes/usage-store'
+import {
+  getWorkspaceRunChange as localGetWorkspaceRunChange,
+  getWorkspaceRunChangeFile as localGetWorkspaceRunChangeFile,
+  listWorkspaceRunChangesForSession,
+} from '../../db/hermes/workspace-run-changes-store'
 import { getModelContextLength } from '../../services/hermes/model-context'
 import { getActiveProfileName, listProfileNamesFromDisk } from '../../services/hermes/hermes-profile'
-import { isPathWithin } from '../../services/hermes/hermes-path'
+import { isNearestExistingRealPathWithin, isPathWithin } from '../../services/hermes/hermes-path'
 import { getRequestProfile, isChatPlaneRequest } from '../../services/request-context'
 import { getGroupChatServer } from '../../routes/hermes/group-chat'
 import { logger } from '../../services/logger'
@@ -202,6 +208,18 @@ async function denySessionAccessAsync(ctx: any, session: any | null | undefined)
   return true
 }
 
+async function readableLocalSessionForParam(ctx: any): Promise<{ id?: string } | null> {
+  const sessionId = String(ctx.params?.id || '').trim()
+  const session = sessionId ? localGetSession(sessionId) : null
+  if (!session) {
+    ctx.status = 404
+    ctx.body = { error: 'Session not found' }
+    return null
+  }
+  if (await denySessionAccessAsync(ctx, session)) return null
+  return session
+}
+
 function filterByAllowedProfiles<T>(ctx: any, items: T[]): T[] {
   const allowed = allowedProfileSet(ctx)
   if (!allowed) return items
@@ -219,6 +237,18 @@ function isRequestedSessionSource(source: string | undefined, sessionSource?: st
 
 function isHermesHistorySessionSource(source?: string | null): boolean {
   return source !== 'api_server' && source !== 'global_agent'
+}
+
+function isHermesHistorySession(session: { source?: string | null; is_archived?: boolean | null }): boolean {
+  return isHermesHistorySessionSource(session.source) || session.is_archived === true
+}
+
+function matchesHermesHistorySource(
+  requestedSource: string | undefined,
+  session: { source?: string | null; is_archived?: boolean | null },
+): boolean {
+  if (requestedSource && session.source !== requestedSource) return false
+  return isHermesHistorySession(session)
 }
 
 function isCodingAgentSession(session?: { source?: string | null; agent?: string | null; agent_session_id?: string | null } | null): boolean {
@@ -427,6 +457,7 @@ export async function listConversations(ctx: any) {
         expert_id: s.expert_id || null,
         expert_label: s.expert_label || null,
         expert_avatar: s.expert_avatar || null,
+        is_archived: s.is_archived,
         model: s.model,
         provider: s.provider,
         title: s.title,
@@ -471,6 +502,7 @@ export async function listConversations(ctx: any) {
     expert_id: s.expert_id || null,
     expert_label: s.expert_label || null,
     expert_avatar: s.expert_avatar || null,
+    is_archived: s.is_archived,
     model: s.model,
     provider: s.provider,
     title: s.title,
@@ -572,21 +604,58 @@ export async function list(ctx: any) {
 export async function listHermesSessions(ctx: any) {
   const source = (ctx.query.source as string) || undefined
   const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
+  const effectiveLimit = limit && limit > 0 ? limit : 2000
+  const agentId = requestedAgentId(ctx)
+  if (agentId) {
+    const scope = await sharedAgentSessionScope(ctx, agentId)
+    if (!scope) {
+      ctx.body = { sessions: [] }
+      return
+    }
+    const sessions = localListSessionsByAgent(scope.agentId, {
+      userId: scope.userId,
+      source,
+      limit: effectiveLimit,
+      includeArchived: true,
+    })
+    ctx.body = {
+      sessions: filterPendingDeletedSessions(
+        sessions
+          .filter(session => matchesHermesHistorySource(source, session))
+          .map(session => ({ ...session, webui_imported: true })),
+      ),
+    }
+    return
+  }
   const resolved = explicitSessionCollectionProfile(ctx)
   if (resolved.denied) {
     ctx.body = { sessions: [] }
     return
   }
   const profile = resolved.profile || requestedProfile(ctx)
-  const effectiveLimit = limit && limit > 0 ? limit : 2000
 
-  const importedIds = new Set(localListSessions(profile, undefined, effectiveLimit).map(session => session.id))
-  const allSessions = (await listSessionSummaries(source, effectiveLimit, profile))
-    .map(session => ({
-      ...(profile ? { ...session, profile } : session),
-      webui_imported: importedIds.has(session.id),
-    }))
-  ctx.body = { sessions: filterPendingDeletedSessions(filterByAllowedProfiles(ctx, allSessions).filter(s => isHermesHistorySessionSource(s.source))) }
+  const localHistorySessions = localListSessions(profile, source, effectiveLimit, { includeArchived: true })
+    .filter(session => matchesHermesHistorySource(source, session))
+  const localById = new Map(localHistorySessions.map(session => [session.id, session]))
+  const stateSessions = (await listSessionSummaries(source, effectiveLimit, profile))
+    .map(session => {
+      const localSession = localById.get(session.id)
+      return {
+        ...(profile ? { ...session, profile } : session),
+        webui_imported: Boolean(localSession),
+        is_archived: localSession?.is_archived ?? false,
+      }
+    })
+  const stateIds = new Set(stateSessions.map(session => session.id))
+  const localOnlySessions = localHistorySessions
+    .filter(session => !stateIds.has(session.id))
+    .map(session => ({ ...session, webui_imported: true }))
+  const allSessions = [...stateSessions, ...localOnlySessions]
+  ctx.body = {
+    sessions: filterPendingDeletedSessions(
+      filterByAllowedProfiles(ctx, allSessions).filter(s => matchesHermesHistorySource(source, s)),
+    ),
+  }
 }
 
 export async function search(ctx: any) {
@@ -635,6 +704,47 @@ export async function get(ctx: any) {
   }
   if (await denySessionAccessAsync(ctx, session)) return
   ctx.body = { session }
+}
+
+export async function listWorkspaceRunChanges(ctx: any) {
+  const session = await readableLocalSessionForParam(ctx)
+  if (!session) return
+  const sessionId = String(ctx.params.id || '').trim()
+  ctx.body = { changes: listWorkspaceRunChangesForSession(sessionId) }
+}
+
+export async function getWorkspaceRunChange(ctx: any) {
+  const session = await readableLocalSessionForParam(ctx)
+  if (!session) return
+  const sessionId = String(ctx.params.id || '').trim()
+  const changeId = String(ctx.params.changeId || '').trim()
+  const change = changeId ? localGetWorkspaceRunChange(sessionId, changeId) : null
+  if (!change) {
+    ctx.status = 404
+    ctx.body = { error: 'Workspace run change not found' }
+    return
+  }
+  ctx.body = { change }
+}
+
+export async function getWorkspaceRunChangeFile(ctx: any) {
+  const session = await readableLocalSessionForParam(ctx)
+  if (!session) return
+  const sessionId = String(ctx.params.id || '').trim()
+  const changeId = String(ctx.params.changeId || '').trim()
+  const fileId = Number(ctx.params.fileId)
+  if (!Number.isInteger(fileId) || fileId <= 0) {
+    ctx.status = 400
+    ctx.body = { error: 'Invalid workspace run change file id' }
+    return
+  }
+  const file = changeId ? localGetWorkspaceRunChangeFile(sessionId, changeId, fileId) : null
+  if (!file) {
+    ctx.status = 404
+    ctx.body = { error: 'Workspace run change file not found' }
+    return
+  }
+  ctx.body = { file }
 }
 
 /**
@@ -929,6 +1039,31 @@ export async function rename(ctx: any) {
   ctx.body = { ok: true }
 }
 
+async function setArchived(ctx: any, archived: boolean) {
+  const existing = localGetSession(ctx.params.id)
+  if (!existing) {
+    ctx.status = 404
+    ctx.body = { error: 'Session not found' }
+    return
+  }
+  if (await denySessionAccessAsync(ctx, existing)) return
+  const ok = localSetSessionArchived(ctx.params.id, archived)
+  if (!ok) {
+    ctx.status = 500
+    ctx.body = { error: 'Failed to update session archive state' }
+    return
+  }
+  ctx.body = { ok: true, archived }
+}
+
+export async function archiveSession(ctx: any) {
+  await setArchived(ctx, true)
+}
+
+export async function unarchiveSession(ctx: any) {
+  await setArchived(ctx, false)
+}
+
 export async function setWorkspace(ctx: any) {
   const { workspace } = ctx.request.body as { workspace?: string }
   if (workspace !== undefined && workspace !== null && typeof workspace !== 'string') {
@@ -1065,7 +1200,7 @@ export async function usageStats(ctx: any) {
  */
 export async function listWorkspaceFolders(ctx: any) {
   const { resolve, join } = await import('path')
-  const { readdir } = await import('fs/promises')
+  const { readdir, stat } = await import('fs/promises')
   const { existsSync } = await import('fs')
   const { homedir } = await import('os')
 
@@ -1079,6 +1214,11 @@ export async function listWorkspaceFolders(ctx: any) {
     ctx.body = { error: 'Access denied' }
     return
   }
+  if (!(await isNearestExistingRealPathWithin(fullPath, WORKSPACE_BASE))) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return
+  }
 
   if (!existsSync(fullPath)) {
     ctx.status = 404
@@ -1088,14 +1228,24 @@ export async function listWorkspaceFolders(ctx: any) {
 
   try {
     const entries = await readdir(fullPath, { withFileTypes: true })
-    const folders = entries
-      .filter(e => e.isDirectory() && !e.name.startsWith('.'))
-      .map(e => ({
-        name: e.name,
-        path: subPath ? `${subPath}/${e.name}` : e.name,
-        fullPath: join(fullPath, e.name),
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name))
+    const folders = []
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue
+      const entryPath = join(fullPath, e.name)
+      try {
+        const info = await stat(entryPath)
+        if (!info.isDirectory()) continue
+        if (!(await isNearestExistingRealPathWithin(entryPath, WORKSPACE_BASE))) continue
+        folders.push({
+          name: e.name,
+          path: subPath ? `${subPath}/${e.name}` : e.name,
+          fullPath: entryPath,
+        })
+      } catch {
+        // Skip unreadable or broken symlink entries.
+      }
+    }
+    folders.sort((a, b) => a.name.localeCompare(b.name))
 
     ctx.body = { base: WORKSPACE_BASE, current: subPath, folders }
   } catch (err: any) {
@@ -1123,6 +1273,11 @@ async function resolveWorkspaceFolderPath(ctx: any, inputPath: string) {
     ctx.body = { error: 'Access denied' }
     return null
   }
+  if (!(await isNearestExistingRealPathWithin(fullPath, WORKSPACE_BASE))) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return null
+  }
   return { base: WORKSPACE_BASE, fullPath }
 }
 
@@ -1141,6 +1296,11 @@ export async function createWorkspaceFolder(ctx: any) {
   if (!resolvedParent) return
   const targetPath = join(resolvedParent.fullPath, folderName)
   if (!isPathWithin(targetPath, resolvedParent.base)) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return
+  }
+  if (!(await isNearestExistingRealPathWithin(targetPath, resolvedParent.base))) {
     ctx.status = 403
     ctx.body = { error: 'Access denied' }
     return
@@ -1177,6 +1337,11 @@ export async function renameWorkspaceFolder(ctx: any) {
   const parentPath = dirname(resolvedCurrent.fullPath)
   const targetPath = join(parentPath, folderName)
   if (!isPathWithin(targetPath, resolvedCurrent.base)) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return
+  }
+  if (!(await isNearestExistingRealPathWithin(targetPath, resolvedCurrent.base))) {
     ctx.status = 403
     ctx.body = { error: 'Access denied' }
     return

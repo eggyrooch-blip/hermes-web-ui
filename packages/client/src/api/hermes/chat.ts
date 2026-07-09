@@ -93,6 +93,16 @@ export interface RunEvent {
     timestamp?: number
     queued?: boolean
   }
+  /** Workspace diff summary from explicit-workspace agent runs. */
+  change_id?: string
+  workspace?: string
+  workspace_kind?: 'git' | 'filesystem'
+  files_changed?: number
+  additions?: number
+  deletions?: number
+  truncated?: boolean
+  total_patch_bytes?: number
+  files?: Array<Record<string, unknown>>
 }
 
 export interface ResumeSessionPayload {
@@ -160,6 +170,7 @@ const sessionEventHandlers = new Map<string, {
   onClarifyRequested?: (event: RunEvent) => void
   onClarifyResolved?: (event: RunEvent) => void
   onAuthRequired?: (event: RunEvent) => void
+  onWorkspaceDiffCompleted?: (event: RunEvent) => void
 }>()
 
 const peerUserMessageHandlers = new Set<(event: RunEvent) => void>()
@@ -510,6 +521,16 @@ function globalClarifyResolvedHandler(event: RunEvent): void {
   }
 }
 
+function globalWorkspaceDiffCompletedHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onWorkspaceDiffCompleted) {
+    handlers.onWorkspaceDiffCompleted(event)
+  }
+}
+
 /**
  * Register event handlers for a session
  * @param sessionId - Session ID
@@ -545,6 +566,7 @@ export function registerSessionHandlers(
     onClarifyRequested?: (event: RunEvent) => void
     onClarifyResolved?: (event: RunEvent) => void
     onAuthRequired?: (event: RunEvent) => void
+    onWorkspaceDiffCompleted?: (event: RunEvent) => void
   }
 ): () => void {
   sessionEventHandlers.set(sessionId, handlers)
@@ -723,6 +745,7 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
     chatRunSocket.on('run.reattach_failed', globalRunReattachFailedHandler)
     chatRunSocket.on('session.command', globalSessionCommandHandler)
     chatRunSocket.on('session.title.updated', globalSessionTitleUpdatedHandler)
+    chatRunSocket.on('workspace.diff.completed', globalWorkspaceDiffCompletedHandler)
 
     globalListenersRegistered = true
   }
@@ -985,6 +1008,10 @@ export function startRunViaSocket(
       onEvent(evt)
     },
     onAuthRequired: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
+    onWorkspaceDiffCompleted: (evt: RunEvent) => {
       if (closed) return
       onEvent(evt)
     },

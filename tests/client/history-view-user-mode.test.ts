@@ -7,6 +7,7 @@ const fetchHermesSessionsMock = vi.hoisted(() => vi.fn())
 const fetchHermesSessionMock = vi.hoisted(() => vi.fn())
 const renameSessionMock = vi.hoisted(() => vi.fn())
 const setSessionWorkspaceMock = vi.hoisted(() => vi.fn())
+const setSessionArchivedMock = vi.hoisted(() => vi.fn())
 // Rebaseline: upstream HistoryView no longer loads the auto-selected session
 // directly — it navigates (router.push) and a watch on the route drives the
 // load. To keep the auto-load semantics genuinely exercised, the router
@@ -35,6 +36,7 @@ vi.mock('@/api/hermes/sessions', () => ({
   fetchSessionMessagesPage: vi.fn(async () => null),
   renameSession: renameSessionMock,
   setSessionWorkspace: setSessionWorkspaceMock,
+  setSessionArchived: setSessionArchivedMock,
 }))
 
 vi.mock('@/stores/hermes/chat', () => ({
@@ -77,7 +79,9 @@ vi.mock('naive-ui', () => ({
     template: '<button class="n-button" :disabled="disabled" @click="$emit(\'click\')"><slot name="icon" /><slot /></button>',
   },
   NDropdown: {
-    template: '<div />',
+    props: ['options'],
+    emits: ['select'],
+    template: '<div class="mock-dropdown"><button v-for="option in options" :key="option.key" :data-key="option.key" @click="$emit(\'select\', option.key)">{{ option.key }}</button></div>',
   },
   NInput: {
     props: ['value'],
@@ -108,7 +112,7 @@ vi.mock('@/components/hermes/chat/SessionListItem.vue', () => ({
   default: {
     props: ['session', 'active'],
     emits: ['select', 'contextmenu'],
-    template: '<button class="session-list-item" :class="{ active }" @click="$emit(\'select\')">{{ session.title || session.id }}</button>',
+    template: '<button class="session-list-item" :class="{ active, archived: session.isArchived }" @click="$emit(\'select\')" @contextmenu.prevent="$emit(\'contextmenu\', $event)">{{ session.title || session.id }}</button>',
   },
 }))
 
@@ -152,6 +156,8 @@ describe('HistoryView user-mode session loading', () => {
     fetchHermesSessionMock.mockReset()
     renameSessionMock.mockReset()
     setSessionWorkspaceMock.mockReset()
+    setSessionArchivedMock.mockReset()
+    setSessionArchivedMock.mockResolvedValue(true)
     // Reinstall the routeState-mutating implementation so navigation simulates
     // the real router driving the component's route watch.
     routerPushMock.mockReset()
@@ -214,5 +220,46 @@ describe('HistoryView user-mode session loading', () => {
     expect(wrapper.find('.session-empty').text()).toBe('chat.noSessions')
     expect(wrapper.find('.history-message-list').exists()).toBe(true)
     expect(wrapper.find('.history-message-list').text()).toBe('empty')
+  })
+
+  it('shows archived and local-only coding-agent sessions in History', async () => {
+    fetchHermesSessionsMock.mockResolvedValue([
+      sessionSummary({ id: 'archived-session', title: 'Archived session', is_archived: true }),
+      sessionSummary({
+        id: 'codex-local',
+        source: 'coding_agent',
+        agent: 'codex',
+        agent_session_id: 'codex-agent-session',
+        title: 'Codex local only',
+      }),
+    ])
+    fetchHermesSessionMock.mockResolvedValue(sessionSummary({ id: 'archived-session', title: 'Archived session' }))
+
+    const wrapper = mount(HistoryView)
+    await flushMountedWork()
+
+    expect(wrapper.text()).toContain('Archived session')
+    expect(wrapper.text()).toContain('Codex local only')
+  })
+
+  it('unarchives an archived History session through the sessions API', async () => {
+    fetchHermesSessionsMock
+      .mockResolvedValueOnce([
+        sessionSummary({ id: 'archived-session', profile: 'tester', title: 'Archived session', is_archived: true }),
+      ])
+      .mockResolvedValueOnce([
+        sessionSummary({ id: 'archived-session', profile: 'tester', title: 'Archived session', is_archived: false }),
+      ])
+    fetchHermesSessionMock.mockResolvedValue(sessionSummary({ id: 'archived-session', profile: 'tester' }))
+
+    const wrapper = mount(HistoryView)
+    await flushMountedWork()
+
+    await wrapper.find('.session-list-item').trigger('contextmenu')
+    await wrapper.find('[data-key="unarchive"]').trigger('click')
+    await flushMountedWork()
+
+    expect(setSessionArchivedMock).toHaveBeenCalledWith('archived-session', false, 'tester')
+    expect(fetchHermesSessionsMock).toHaveBeenCalledTimes(2)
   })
 })

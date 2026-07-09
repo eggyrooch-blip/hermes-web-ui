@@ -13,6 +13,12 @@ index 1111111..2222222 100644
  console.log(value)
 `
 
+const fetchWorkspaceRunChangeFileMock = vi.hoisted(() => vi.fn())
+
+vi.mock('@/api/hermes/sessions', () => ({
+  fetchWorkspaceRunChangeFile: fetchWorkspaceRunChangeFileMock,
+}))
+
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string) => key,
@@ -56,6 +62,7 @@ describe('MessageItem tool details', () => {
         resume: vi.fn(),
       },
     })
+    fetchWorkspaceRunChangeFileMock.mockReset()
   })
 
   it('renders highlighted code blocks for tool arguments and tool results', async () => {
@@ -423,5 +430,72 @@ describe('MessageItem tool details', () => {
 
     await wrapper.find('.tool-details [data-copy-source="tool-result"] [data-copy-code="true"]').trigger('click')
     expect(writeText).toHaveBeenCalledWith(JSON.stringify(fullResult, null, 2))
+  })
+
+  it('renders a workspace diff summary card and loads file patch details on demand', async () => {
+    fetchWorkspaceRunChangeFileMock.mockResolvedValue({
+      id: 7,
+      change_id: 'change-1',
+      session_id: 'session-1',
+      path: 'src/app.ts',
+      old_path: null,
+      change_type: 'modified',
+      additions: 2,
+      deletions: 1,
+      size_before: 10,
+      size_after: 11,
+      patch_bytes: UNIFIED_DIFF_SAMPLE.length,
+      truncated: false,
+      binary: false,
+      created_at: 2,
+      patch: UNIFIED_DIFF_SAMPLE,
+    })
+    const wrapper = mount(MessageItem, {
+      props: {
+        session: { id: 'session-1', profile: 'travel' } as any,
+        message: {
+          id: 'workspace-change:change-1',
+          role: 'command',
+          content: '',
+          timestamp: Date.now(),
+          commandAction: 'workspace.diff',
+          commandData: {
+            change_id: 'change-1',
+            session_id: 'session-1',
+            workspace: 'project',
+            workspace_kind: 'git',
+            files_changed: 1,
+            additions: 2,
+            deletions: 1,
+            truncated: false,
+            files: [{
+              id: 7,
+              path: 'src/app.ts',
+              change_type: 'modified',
+              additions: 2,
+              deletions: 1,
+              patch_bytes: UNIFIED_DIFF_SAMPLE.length,
+              truncated: false,
+              binary: false,
+            }],
+          },
+        } as unknown as Message,
+      },
+    })
+
+    expect(wrapper.find('.workspace-diff-card').exists()).toBe(true)
+    expect(wrapper.text()).toContain('1')
+    expect(wrapper.text()).toContain('+2')
+    expect(wrapper.text()).toContain('-1')
+    expect(wrapper.text()).toContain('src/app.ts')
+
+    await wrapper.find('.workspace-diff-file').trigger('click')
+
+    expect(fetchWorkspaceRunChangeFileMock).toHaveBeenCalledWith('session-1', 'change-1', 7, 'travel')
+    const patch = wrapper.find('.workspace-diff-patch')
+    expect(patch.exists()).toBe(true)
+    expect(patch.find('.code-lang').text()).toBe('diff')
+    expect(patch.find('.hljs-unified-diff').exists()).toBe(true)
+    expect(patch.find('.diff-line-added .diff-line-content').text()).toBe('+const value = 2')
   })
 })

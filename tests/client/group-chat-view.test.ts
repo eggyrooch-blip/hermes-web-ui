@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 
 const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
 const storeMock = vi.hoisted(() => ({
@@ -20,6 +20,10 @@ const routeMock = vi.hoisted(() => ({
   params: {} as Record<string, string>,
 }))
 
+const settingsStoreMock = vi.hoisted(() => ({
+  fetchSettings: vi.fn().mockResolvedValue(undefined),
+}))
+
 vi.mock('vue-router', () => ({
   useRoute: () => routeMock,
   useRouter: () => routerMock,
@@ -31,6 +35,10 @@ vi.mock('@/api/client', () => ({
 
 vi.mock('@/stores/hermes/group-chat', () => ({
   useGroupChatStore: () => storeMock,
+}))
+
+vi.mock('@/stores/hermes/settings', () => ({
+  useSettingsStore: () => settingsStoreMock,
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -52,16 +60,18 @@ describe('GroupChatView user mode', () => {
     storeMock.loadRooms.mockClear()
     storeMock.disconnect.mockClear()
     storeMock.joinRoom.mockClear()
+    settingsStoreMock.fetchSettings.mockClear()
     storeMock.currentRoomId = null
     storeMock.rooms = []
     routerMock.replace.mockClear()
     routeMock.params = {}
   })
 
-  it('opens the group-chat panel in user mode', () => {
+  it('opens the group-chat panel in user mode', async () => {
     isUserModeMock.mockReturnValue(true)
 
     const wrapper = mount(GroupChatView)
+    await flushPromises()
 
     expect(storeMock.connect).toHaveBeenCalledOnce()
     expect(storeMock.loadRooms).toHaveBeenCalledOnce()
@@ -71,8 +81,9 @@ describe('GroupChatView user mode', () => {
     expect(storeMock.disconnect).toHaveBeenCalledOnce()
   })
 
-  it('keeps the existing group-chat backend flow outside user mode', () => {
+  it('keeps the existing group-chat backend flow outside user mode', async () => {
     const wrapper = mount(GroupChatView)
+    await flushPromises()
 
     expect(storeMock.connect).toHaveBeenCalledOnce()
     expect(storeMock.loadRooms).toHaveBeenCalledOnce()
@@ -80,5 +91,16 @@ describe('GroupChatView user mode', () => {
 
     wrapper.unmount()
     expect(storeMock.disconnect).toHaveBeenCalledOnce()
+  })
+
+  it('loads display settings before room data on direct group-chat loads', async () => {
+    mount(GroupChatView)
+    await flushPromises()
+
+    expect(settingsStoreMock.fetchSettings).toHaveBeenCalledOnce()
+    expect(storeMock.loadRooms).toHaveBeenCalledOnce()
+    expect(settingsStoreMock.fetchSettings.mock.invocationCallOrder[0]).toBeLessThan(
+      storeMock.loadRooms.mock.invocationCallOrder[0],
+    )
   })
 })

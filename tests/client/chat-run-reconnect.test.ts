@@ -212,4 +212,32 @@ describe('chat-run socket reconnect handling', () => {
     socket.__trigger('session.command', { ...event, message: 'next status' })
     expect(onGlobalCommand).toHaveBeenCalledTimes(1)
   })
+
+  it('forwards workspace diff completed events to the run handler', async () => {
+    const { startRunViaSocket } = await import('../../packages/client/src/api/hermes/chat')
+    const onEvent = vi.fn()
+
+    startRunViaSocket(
+      { session_id: 'session-1', input: 'change files', profile: 'default', source: 'cli' },
+      onEvent,
+      vi.fn(),
+      vi.fn(),
+    )
+
+    const socket = socketState.sockets[0]
+    const event = {
+      event: 'workspace.diff.completed',
+      session_id: 'session-1',
+      change_id: 'change-1',
+      run_id: 'run-1',
+      files_changed: 1,
+      additions: 2,
+      deletions: 1,
+      files: [{ id: 7, path: 'src/app.ts', additions: 2, deletions: 1 }],
+    }
+
+    socket.__trigger('workspace.diff.completed', event)
+
+    expect(onEvent).toHaveBeenCalledWith(event)
+  })
 })

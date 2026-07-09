@@ -39,6 +39,8 @@ const recordBridgeToolStartedMock = vi.fn()
 const recordBridgeToolCompletedMock = vi.fn()
 const resolveBridgeRunModelConfigMock = vi.fn()
 const issueModelRunJwtMock = vi.fn(async () => 'model-run-token')
+const startWorkspaceRunCheckpointMock = vi.fn()
+const completeWorkspaceRunCheckpointMock = vi.fn()
 const homes: string[] = []
 
 vi.mock('../../packages/server/src/lib/llm-prompt', () => ({
@@ -90,6 +92,11 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/bridge-message', () 
 
 vi.mock('../../packages/server/src/services/hermes/run-chat/model-config', () => ({
   resolveBridgeRunModelConfig: resolveBridgeRunModelConfigMock,
+}))
+
+vi.mock('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker', () => ({
+  startWorkspaceRunCheckpoint: startWorkspaceRunCheckpointMock,
+  completeWorkspaceRunCheckpoint: completeWorkspaceRunCheckpointMock,
 }))
 
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
@@ -145,6 +152,9 @@ describe('bridge run final context usage', () => {
     buildSnapshotAwareHistoryMock.mockImplementation(async (_sessionId: string, _profile: string, history: any[]) => history)
     calcAndUpdateUsageMock.mockResolvedValue({ inputTokens: 11, outputTokens: 7 })
     estimateUsageTokensFromMessagesMock.mockReturnValue({ inputTokens: 11, outputTokens: 7 })
+    startWorkspaceRunCheckpointMock.mockReset()
+    completeWorkspaceRunCheckpointMock.mockReset()
+    completeWorkspaceRunCheckpointMock.mockReturnValue(null)
     getCachedBridgeContextOverheadMock.mockImplementation((state: any) => {
       const fixed = state?.bridgeContext?.fixedContextTokens
       return typeof fixed === 'number' ? fixed : undefined
@@ -275,6 +285,259 @@ describe('bridge run final context usage', () => {
       outputTokens: 7,
       contextTokens: 12345,
     }))
+  })
+
+  it('emits workspace diff summary for an explicit workspace before bridge completion', async () => {
+    const emit = vi.fn()
+    const nsp = makeNamespace(emit)
+    const socket = makeSocket()
+    const state = makeState()
+    const sessionMap = new Map([['session-1', state]])
+    const workspace = '/tmp/hermes-explicit-workspace'
+    completeWorkspaceRunCheckpointMock.mockReturnValue({
+      change_id: 'change-1',
+      session_id: 'session-1',
+      run_id: 'run-1',
+      source: 'run',
+      workspace: 'hermes-explicit-workspace',
+      workspace_kind: 'git',
+      started_at: 1,
+      finished_at: 2,
+      files_changed: 1,
+      additions: 2,
+      deletions: 1,
+      truncated: false,
+      total_patch_bytes: 42,
+      created_at: 2,
+      files: [{
+        id: 7,
+        change_id: 'change-1',
+        session_id: 'session-1',
+        path: 'src/app.ts',
+        old_path: null,
+        change_type: 'modified',
+        additions: 2,
+        deletions: 1,
+        size_before: 10,
+        size_after: 12,
+        patch_bytes: 42,
+        truncated: false,
+        binary: false,
+        created_at: 2,
+      }],
+    })
+    const bridge = {
+      chat: vi.fn().mockResolvedValue({ run_id: 'run-1', status: 'started' }),
+      contextEstimate: vi.fn().mockResolvedValue({
+        token_count: 12345,
+        fixed_context_tokens: 12327,
+        message_count: 2,
+        tool_count: 4,
+        system_prompt_chars: 13,
+      }),
+      streamOutput: vi.fn(async function* () {
+        yield { run_id: 'run-1', done: true, status: 'completed', output: 'done' }
+      }),
+    } as any
+
+    const { handleBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
+    await handleBridgeRun(
+      nsp,
+      socket,
+      { input: 'hello', session_id: 'session-1', workspace },
+      'default',
+      sessionMap,
+      bridge,
+      false,
+      vi.fn(),
+      vi.fn(),
+    )
+
+    expect(startWorkspaceRunCheckpointMock).toHaveBeenCalledWith({ sessionId: 'session-1', workspace })
+    expect(completeWorkspaceRunCheckpointMock).toHaveBeenCalledWith({ sessionId: 'session-1', runId: 'run-1', workspace })
+    const diffIndex = emit.mock.calls.findIndex(call => call[0] === 'workspace.diff.completed')
+    const completedIndex = emit.mock.calls.findIndex(call => call[0] === 'run.completed')
+    expect(diffIndex).toBeGreaterThanOrEqual(0)
+    expect(diffIndex).toBeLessThan(completedIndex)
+    expect(emit).toHaveBeenCalledWith('workspace.diff.completed', expect.objectContaining({
+      event: 'workspace.diff.completed',
+      change_id: 'change-1',
+      files_changed: 1,
+      files: [expect.not.objectContaining({ patch: expect.anything() })],
+    }))
+  })
+
+  it('starts the bridge workspace diff checkpoint before bridge.chat returns', async () => {
+    const emit = vi.fn()
+    const nsp = makeNamespace(emit)
+    const socket = makeSocket()
+    const state = makeState()
+    const sessionMap = new Map([['session-1', state]])
+    const workspace = '/tmp/hermes-explicit-workspace'
+    const order: string[] = []
+    startWorkspaceRunCheckpointMock.mockImplementation(() => {
+      order.push('checkpoint-started')
+    })
+    const bridge = {
+      chat: vi.fn(async () => {
+        order.push('bridge-chat')
+        return { run_id: 'run-1', status: 'started' }
+      }),
+      contextEstimate: vi.fn().mockResolvedValue({
+        token_count: 12345,
+        fixed_context_tokens: 12327,
+        message_count: 2,
+        tool_count: 4,
+        system_prompt_chars: 13,
+      }),
+      streamOutput: vi.fn(async function* () {
+        yield { run_id: 'run-1', done: true, status: 'completed', output: 'done' }
+      }),
+    } as any
+
+    const { handleBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
+    await handleBridgeRun(
+      nsp,
+      socket,
+      { input: 'hello', session_id: 'session-1', workspace },
+      'default',
+      sessionMap,
+      bridge,
+      false,
+      vi.fn(),
+      vi.fn(),
+    )
+
+    expect(order.slice(0, 2)).toEqual(['checkpoint-started', 'bridge-chat'])
+  })
+
+  it('does not emit workspace diff for default no-workspace bridge runs', async () => {
+    const emit = vi.fn()
+    const nsp = makeNamespace(emit)
+    const socket = makeSocket()
+    const state = makeState()
+    const sessionMap = new Map([['session-1', state]])
+    const bridge = {
+      chat: vi.fn().mockResolvedValue({ run_id: 'run-1', status: 'started' }),
+      contextEstimate: vi.fn().mockResolvedValue({ token_count: 12345, message_count: 2, tool_count: 4, system_prompt_chars: 13 }),
+      streamOutput: vi.fn(async function* () {
+        yield { run_id: 'run-1', done: true, status: 'completed', output: 'done' }
+      }),
+    } as any
+
+    const { handleBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
+    await handleBridgeRun(
+      nsp,
+      socket,
+      { input: 'hello', session_id: 'session-1' },
+      'default',
+      sessionMap,
+      bridge,
+      false,
+      vi.fn(),
+      vi.fn(),
+    )
+
+    expect(startWorkspaceRunCheckpointMock).not.toHaveBeenCalled()
+    expect(completeWorkspaceRunCheckpointMock).not.toHaveBeenCalled()
+    expect(emit.mock.calls.map(call => call[0])).not.toContain('workspace.diff.completed')
+  })
+
+  it('does not emit workspace diff when only the stored bridge session workspace exists', async () => {
+    getSessionMock.mockReturnValue({
+      id: 'session-1',
+      profile: 'default',
+      model: '',
+      provider: '',
+      workspace: '/tmp/hermes-stored-workspace',
+    })
+    const emit = vi.fn()
+    const nsp = makeNamespace(emit)
+    const socket = makeSocket()
+    const state = makeState()
+    const sessionMap = new Map([['session-1', state]])
+    const bridge = {
+      chat: vi.fn().mockResolvedValue({ run_id: 'run-1', status: 'started' }),
+      contextEstimate: vi.fn().mockResolvedValue({ token_count: 12345, message_count: 2, tool_count: 4, system_prompt_chars: 13 }),
+      streamOutput: vi.fn(async function* () {
+        yield { run_id: 'run-1', done: true, status: 'completed', output: 'done' }
+      }),
+    } as any
+
+    const { handleBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
+    await handleBridgeRun(
+      nsp,
+      socket,
+      { input: 'hello', session_id: 'session-1' },
+      'default',
+      sessionMap,
+      bridge,
+      false,
+      vi.fn(),
+      vi.fn(),
+    )
+
+    expect(startWorkspaceRunCheckpointMock).not.toHaveBeenCalled()
+    expect(completeWorkspaceRunCheckpointMock).not.toHaveBeenCalled()
+    expect(emit.mock.calls.map(call => call[0])).not.toContain('workspace.diff.completed')
+  })
+
+  it('completes bridge workspace diff cleanup on stream failure', async () => {
+    const emit = vi.fn()
+    const nsp = makeNamespace(emit)
+    const socket = makeSocket()
+    const state = makeState()
+    const sessionMap = new Map([['session-1', state]])
+    const workspace = '/tmp/hermes-explicit-workspace'
+    completeWorkspaceRunCheckpointMock.mockReturnValue({
+      change_id: 'change-failed',
+      session_id: 'session-1',
+      run_id: 'run-1',
+      source: 'run',
+      workspace: 'hermes-explicit-workspace',
+      workspace_kind: 'filesystem',
+      started_at: 1,
+      finished_at: 2,
+      files_changed: 1,
+      additions: 1,
+      deletions: 0,
+      truncated: false,
+      total_patch_bytes: 12,
+      created_at: 2,
+      files: [],
+    })
+    const bridge = {
+      chat: vi.fn().mockResolvedValue({ run_id: 'run-1', status: 'started' }),
+      contextEstimate: vi.fn().mockResolvedValue({
+        token_count: 12345,
+        fixed_context_tokens: 12327,
+        message_count: 2,
+        tool_count: 4,
+        system_prompt_chars: 13,
+      }),
+      streamOutput: vi.fn(async function* () {
+        throw new Error('stream failed')
+      }),
+    } as any
+
+    const { handleBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
+    await handleBridgeRun(
+      nsp,
+      socket,
+      { input: 'hello', session_id: 'session-1', workspace },
+      'default',
+      sessionMap,
+      bridge,
+      false,
+      vi.fn(),
+      vi.fn(),
+    )
+
+    expect(completeWorkspaceRunCheckpointMock).toHaveBeenCalledWith({ sessionId: 'session-1', runId: 'run-1', workspace })
+    const diffIndex = emit.mock.calls.findIndex(call => call[0] === 'workspace.diff.completed')
+    const failedIndex = emit.mock.calls.findIndex(call => call[0] === 'run.failed')
+    expect(diffIndex).toBeGreaterThanOrEqual(0)
+    expect(diffIndex).toBeLessThan(failedIndex)
   })
 
   it('stores a super admin model-run token for the profile without adding it to bridge instructions', async () => {

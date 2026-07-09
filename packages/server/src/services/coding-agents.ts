@@ -103,6 +103,7 @@ export interface CodingAgentLaunchInput extends CodingAgentConfigScope {
   agentNativeSessionId?: string
   isolateSettings?: boolean
   sessionSource?: 'global_agent'
+  workspaceExplicit?: boolean
 }
 
 export interface CodingAgentLaunchResult {
@@ -113,6 +114,7 @@ export interface CodingAgentLaunchResult {
   model: string
   rootDir: string
   workspaceDir: string
+  workspaceExplicit: boolean
   command: string
   args: string[]
   env: Record<string, string>
@@ -488,6 +490,9 @@ async function resolveStoredProviderLaunchInput(
   const profile = String(input.profile || existingSession?.profile || 'default').trim() || 'default'
   const provider = String(input.provider || existingSession?.provider || '').trim()
   const model = String(input.model || existingSession?.model || '').trim()
+  const workspaceExplicit = input.workspaceExplicit === undefined
+    ? hasExplicitLaunchWorkspace(input.workspace)
+    : input.workspaceExplicit === true
   const workspace = input.workspace || existingSession?.workspace || undefined
   let baseUrl = String(input.baseUrl || '').trim()
   let apiKey = String(input.apiKey || '').trim()
@@ -500,7 +505,7 @@ async function resolveStoredProviderLaunchInput(
   }
 
   if (!provider || (baseUrl && apiKey && apiMode)) {
-    return { ...input, profile, provider: provider || input.provider, model: model || input.model, workspace, baseUrl, apiKey, apiMode }
+    return { ...input, profile, provider: provider || input.provider, model: model || input.model, workspace, workspaceExplicit, baseUrl, apiKey, apiMode }
   }
 
   let config: Record<string, any> = {}
@@ -557,6 +562,7 @@ async function resolveStoredProviderLaunchInput(
     provider: canonicalProvider,
     model: model || input.model,
     workspace,
+    workspaceExplicit,
     baseUrl: baseUrl || (ignoredStaleProviderRuntime ? '' : input.baseUrl),
     apiKey: apiKey || (ignoredStaleProviderRuntime ? '' : input.apiKey),
     apiMode,
@@ -602,6 +608,10 @@ function resolveLaunchWorkspaceRoot(scope: Required<CodingAgentConfigScope>, wor
     return customWorkspace
   }
   return getScopedWorkspaceRoot(scope)
+}
+
+function hasExplicitLaunchWorkspace(workspace?: string | null): boolean {
+  return Boolean(String(workspace || '').trim())
 }
 
 function displayNameForModel(model: string): string {
@@ -1457,6 +1467,9 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
   }
 
   const mode = input.mode === 'global' ? 'global' : 'scoped'
+  const workspaceExplicit = input.workspaceExplicit === undefined
+    ? hasExplicitLaunchWorkspace(input.workspace)
+    : input.workspaceExplicit === true
   if (mode === 'global') {
     const scope = normalizeConfigScope({ profile: input.profile, provider: 'global' })
     const workspaceDir = resolveLaunchWorkspaceRoot(scope, input.workspace)
@@ -1477,6 +1490,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
       model: '',
       rootDir: workspaceDir,
       workspaceDir,
+      workspaceExplicit,
       command: tool.command,
       args,
       env: {},
@@ -1645,6 +1659,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     model,
     rootDir,
     workspaceDir,
+    workspaceExplicit,
     command: tool.command,
     args,
     env,
@@ -1719,6 +1734,7 @@ export async function startCodingAgentRun(
     args: launch.args,
     shellCommand: launch.shellCommand,
     workspaceDir: launch.workspaceDir,
+    workspaceExplicit: launch.workspaceExplicit,
     env: runtimeEnv,
     state,
     sessionSource: sessionSource === 'global_agent' ? 'global_agent' : undefined,

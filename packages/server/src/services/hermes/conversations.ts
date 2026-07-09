@@ -43,6 +43,7 @@ export interface ConversationSummary {
   expert_id?: string | null
   expert_label?: string | null
   expert_avatar?: string | null
+  is_archived?: boolean
   model: string
   provider?: string
   title: string | null

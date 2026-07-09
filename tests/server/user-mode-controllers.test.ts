@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { mkdtempSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -860,6 +860,81 @@ model:
     uploadCtx.query = { path: 'credentials' }
     await invokeFileRoute('POST', '/api/hermes/files/upload', uploadCtx)
     expect(uploadCtx.status).toBe(403)
+  })
+
+  it('rejects chat-plane file operations through a workspace symlink that points outside', async () => {
+    const profileWorkspace = join(baseDir, 'profiles', 'user_a', 'workspace')
+    const externalDir = join(baseDir, 'outside-workspace')
+    mkdirSync(profileWorkspace, { recursive: true })
+    mkdirSync(externalDir, { recursive: true })
+    writeFileSync(join(profileWorkspace, 'safe.txt'), 'safe', 'utf-8')
+    writeFileSync(join(externalDir, 'secret.txt'), 'secret', 'utf-8')
+    symlinkSync(externalDir, join(profileWorkspace, 'escape'), 'dir')
+
+    const rootListCtx = mockCtx({ query: { path: '' } })
+    await invokeFileRoute('GET', '/api/hermes/files/list', rootListCtx)
+    expect(rootListCtx.body.entries.map((entry: { name: string }) => entry.name)).toEqual(['safe.txt'])
+
+    const listCtx = mockCtx({ query: { path: 'escape' } })
+    await invokeFileRoute('GET', '/api/hermes/files/list', listCtx)
+    expect(listCtx.status).toBe(403)
+
+    const readCtx = mockCtx({ query: { path: 'escape/secret.txt' } })
+    await invokeFileRoute('GET', '/api/hermes/files/read', readCtx)
+    expect(readCtx.status).toBe(403)
+
+    const statCtx = mockCtx({ query: { path: 'escape/secret.txt' } })
+    await invokeFileRoute('GET', '/api/hermes/files/stat', statCtx)
+    expect(statCtx.status).toBe(403)
+
+    const writeCtx = mockCtx({
+      method: 'PUT',
+      request: { body: { path: 'escape/secret.txt', content: 'changed' } },
+    })
+    await invokeFileRoute('PUT', '/api/hermes/files/write', writeCtx)
+    expect(writeCtx.status).toBe(403)
+    expect(readFileSync(join(externalDir, 'secret.txt'), 'utf-8')).toBe('secret')
+
+    const mkdirCtx = mockCtx({
+      method: 'POST',
+      request: { body: { path: 'escape/new-dir' } },
+    })
+    await invokeFileRoute('POST', '/api/hermes/files/mkdir', mkdirCtx)
+    expect(mkdirCtx.status).toBe(403)
+    expect(existsSync(join(externalDir, 'new-dir'))).toBe(false)
+
+    const copyCtx = mockCtx({
+      method: 'POST',
+      request: { body: { srcPath: 'safe.txt', destPath: 'escape/copied.txt' } },
+    })
+    await invokeFileRoute('POST', '/api/hermes/files/copy', copyCtx)
+    expect(copyCtx.status).toBe(403)
+    expect(existsSync(join(externalDir, 'copied.txt'))).toBe(false)
+
+    const renameCtx = mockCtx({
+      method: 'POST',
+      request: { body: { oldPath: 'escape/secret.txt', newPath: 'renamed.txt' } },
+    })
+    await invokeFileRoute('POST', '/api/hermes/files/rename', renameCtx)
+    expect(renameCtx.status).toBe(403)
+    expect(readFileSync(join(externalDir, 'secret.txt'), 'utf-8')).toBe('secret')
+    expect(existsSync(join(profileWorkspace, 'renamed.txt'))).toBe(false)
+
+    const deleteCtx = mockCtx({
+      method: 'DELETE',
+      query: { path: 'escape/secret.txt' },
+      request: {},
+    })
+    await invokeFileRoute('DELETE', '/api/hermes/files/delete', deleteCtx)
+    expect(deleteCtx.status).toBe(403)
+    expect(readFileSync(join(externalDir, 'secret.txt'), 'utf-8')).toBe('secret')
+
+    const upload = multipartBody('uploaded.txt', 'uploaded')
+    const uploadCtx = mockUploadCtx(upload.body, upload.contentType)
+    uploadCtx.query = { path: 'escape' }
+    await invokeFileRoute('POST', '/api/hermes/files/upload', uploadCtx)
+    expect(uploadCtx.status).toBe(403)
+    expect(existsSync(join(externalDir, 'uploaded.txt'))).toBe(false)
   })
 
   it('deletes chat-plane workspace files from query params when DELETE bodies are not parsed', async () => {
