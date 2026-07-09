@@ -747,6 +747,229 @@ describe('chat store user-mode model selection', () => {
     expect(resumeSessionMock).toHaveBeenCalledWith('session-2', expect.any(Function), 'tester', 'chat-run')
   })
 
+  it('falls back to paginated messages when socket resume returns empty for a non-empty session', async () => {
+    fetchSessionsMock.mockResolvedValue([
+      {
+        id: 'session-1',
+        source: 'api_server',
+        model: 'm',
+        title: 'first',
+        started_at: 100,
+        ended_at: null,
+        last_active: 100,
+        message_count: 2,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        profile: 'tester',
+      },
+    ])
+    resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({
+        session_id: 'session-1',
+        isWorking: false,
+        events: [],
+        messages: [],
+        messageTotal: 2,
+        messageLoadedCount: 0,
+        hasMoreBefore: false,
+      })
+      return { disconnect: vi.fn() }
+    })
+    fetchSessionMessagesPageMock.mockResolvedValue({
+      session: { id: 'session-1', title: 'first' },
+      messages: [
+        {
+          id: 1,
+          session_id: 'session-1',
+          role: 'user',
+          content: 'hello',
+          timestamp: 100,
+        },
+        {
+          id: 2,
+          session_id: 'session-1',
+          role: 'assistant',
+          content: 'world',
+          timestamp: 101,
+          run_id: 'run-1',
+        },
+      ],
+      total: 2,
+      offset: 0,
+      limit: 150,
+      hasMore: false,
+    })
+
+    const store = useChatStore()
+
+    await store.loadSessions('tester', 'session-1')
+
+    expect(fetchSessionMessagesPageMock).toHaveBeenCalledWith('session-1', 0, 150, 'tester')
+    expect(store.activeSession?.messages.map(message => message.content)).toEqual(['hello', 'world'])
+    expect(store.activeSession?.messages[1]?.runId).toBe('run-1')
+  })
+
+  it('does not let slow fallback hydration reactivate a stale session', async () => {
+    fetchSessionsMock.mockResolvedValue([
+      {
+        id: 'session-1',
+        source: 'api_server',
+        model: 'm',
+        title: 'first',
+        started_at: 100,
+        ended_at: null,
+        last_active: 100,
+        message_count: 2,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        profile: 'tester',
+      },
+      {
+        id: 'session-2',
+        source: 'api_server',
+        model: 'm',
+        title: 'second',
+        started_at: 101,
+        ended_at: null,
+        last_active: 101,
+        message_count: 0,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        profile: 'tester',
+      },
+    ])
+    resumeSessionMock.mockImplementation((sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({
+        session_id: sessionId,
+        isWorking: false,
+        events: [],
+        messages: [],
+        messageTotal: sessionId === 'session-1' ? 2 : 0,
+        messageLoadedCount: 0,
+        hasMoreBefore: false,
+      })
+      return { disconnect: vi.fn() }
+    })
+    let resolveSessionOnePage!: (value: any) => void
+    fetchSessionMessagesPageMock.mockImplementation((sessionId: string) => {
+      if (sessionId !== 'session-1') return Promise.resolve(null)
+      return new Promise(resolve => {
+        resolveSessionOnePage = resolve
+      })
+    })
+
+    const store = useChatStore()
+    const initialLoad = store.loadSessions('tester', 'session-1')
+    for (let i = 0; i < 10 && !resolveSessionOnePage; i += 1) {
+      await Promise.resolve()
+    }
+    expect(store.activeSessionId).toBe('session-1')
+
+    await store.switchSession('session-2')
+
+    resolveSessionOnePage({
+      session: { id: 'session-1', title: 'first' },
+      messages: [
+        {
+          id: 1,
+          session_id: 'session-1',
+          role: 'user',
+          content: 'late hello',
+          timestamp: 100,
+        },
+      ],
+      total: 1,
+      offset: 0,
+      limit: 150,
+      hasMore: false,
+    })
+    await initialLoad
+
+    expect(store.activeSessionId).toBe('session-2')
+    expect(store.activeSession?.id).toBe('session-2')
+  })
+
+  it('falls back to paginated messages when foreground resume returns empty for a non-empty active session', async () => {
+    const session = {
+      id: 'session-1',
+      title: 'first',
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messageCount: 2,
+      messageTotal: 2,
+      profile: 'tester',
+    }
+    resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({
+        session_id: 'session-1',
+        isWorking: false,
+        events: [],
+        messages: [],
+        messageTotal: 2,
+        messageLoadedCount: 0,
+        hasMoreBefore: false,
+      })
+      return { disconnect: vi.fn() }
+    })
+    fetchSessionMessagesPageMock.mockResolvedValue({
+      session: { id: 'session-1', title: 'first' },
+      messages: [
+        {
+          id: 1,
+          session_id: 'session-1',
+          role: 'assistant',
+          content: 'foreground fallback',
+          timestamp: 100,
+        },
+      ],
+      total: 1,
+      offset: 0,
+      limit: 150,
+      hasMore: false,
+    })
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+
+    const store = useChatStore()
+    store.sessions = [session as any]
+    store.activeSessionId = 'session-1'
+    store.activeSession = session as any
+
+    document.dispatchEvent(new Event('visibilitychange'))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(fetchSessionMessagesPageMock).toHaveBeenCalledWith('session-1', 0, 150, 'tester')
+    expect(store.activeSession?.messages.map(message => message.content)).toEqual(['foreground fallback'])
+  })
+
   it('archives a session and removes it from the normal session list', async () => {
     fetchSessionsMock.mockResolvedValue([
       {

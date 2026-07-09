@@ -412,6 +412,7 @@ function mapHermesMessages(msgs: HermesMessage[]): Message[] {
           toolStatus: 'done',
           finishReason: readFinishReason(msg),
           runMarker: readRunMarker(msg),
+          runId: readRunId(msg),
         })
       }
       continue
@@ -455,6 +456,7 @@ function mapHermesMessages(msgs: HermesMessage[]): Message[] {
         toolStatus: 'done',
         finishReason: readFinishReason(msg),
         runMarker: readRunMarker(msg),
+        runId: readRunId(msg),
       })
       continue
     }
@@ -471,6 +473,7 @@ function mapHermesMessages(msgs: HermesMessage[]): Message[] {
       systemType: displayRole === 'command' ? 'command' : undefined,
       finishReason: readFinishReason(msg),
       runMarker: readRunMarker(msg),
+      runId: readRunId(msg),
     })
   }
   return result
@@ -1018,18 +1021,8 @@ export const useChatStore = defineStore('chat', () => {
         Math.max(target.loadedMessageCount || LIVE_CHAT_MESSAGE_PAGE_SIZE, LIVE_CHAT_MESSAGE_PAGE_SIZE),
         LIVE_CHAT_MAX_LOADED_MESSAGES,
       )
-      const detail = await fetchSessionMessagesPage(sid, 0, limit, activeSession.value?.profile)
-      if (!detail) return false
-      const mapped = mapHermesMessages(detail.messages || [])
-      target.messages = mapped
-      target.loadedMessageCount = detail.messages.length
-      target.messageTotal = detail.total
-      target.messageCount = detail.total
-      target.hasMoreBefore = detail.hasMore
-      if (detail.session.title) target.title = detail.session.title
-      target.expertId = detail.session.expert_id || undefined
-      target.expertLabel = detail.session.expert_label || undefined
-      target.expertAvatar = detail.session.expert_avatar || undefined
+      const hydrated = await hydrateSessionMessagesFromPage(target, limit, activeSession.value?.profile)
+      if (!hydrated) return false
       await restoreWorkspaceDiffCards(target)
       if (activeSessionId.value === sid) syncActiveExpertFromSession(target)
       return true
@@ -1037,6 +1030,26 @@ export const useChatStore = defineStore('chat', () => {
       console.error('Failed to refresh active session:', err)
       return false
     }
+  }
+
+  async function hydrateSessionMessagesFromPage(
+    target: Session,
+    limit: number,
+    profile = target.profile,
+  ): Promise<boolean> {
+    const detail = await fetchSessionMessagesPage(target.id, 0, limit, profile)
+    if (!detail) return false
+    const mapped = mapHermesMessages(detail.messages || [])
+    target.messages = mapped
+    target.loadedMessageCount = detail.messages.length
+    target.messageTotal = detail.total
+    target.messageCount = detail.total
+    target.hasMoreBefore = detail.hasMore
+    if (detail.session.title) target.title = detail.session.title
+    target.expertId = detail.session.expert_id || undefined
+    target.expertLabel = detail.session.expert_label || undefined
+    target.expertAvatar = detail.session.expert_avatar || undefined
+    return mapped.length > 0
   }
 
 
@@ -1163,6 +1176,16 @@ export const useChatStore = defineStore('chat', () => {
             target.messageTotal = data.messageTotal ?? target.messageCount ?? target.loadedMessageCount
             target.messageCount = target.messageTotal
             target.hasMoreBefore = data.hasMoreBefore ?? target.loadedMessageCount < target.messageTotal
+          } else if (Number(data.messageTotal ?? target.messageCount ?? 0) > 0) {
+            const limit = Math.min(
+              Math.max(data.messageLoadedCount || target.loadedMessageCount || LIVE_CHAT_MESSAGE_PAGE_SIZE, LIVE_CHAT_MESSAGE_PAGE_SIZE),
+              LIVE_CHAT_MAX_LOADED_MESSAGES,
+            )
+            await hydrateSessionMessagesFromPage(target, limit, target.profile)
+            if (activeSessionId.value !== sessionId) {
+              resolve()
+              return
+            }
           }
           if (!target.title) {
             const firstUser = target.messages.find(m => m.role === 'user')
@@ -1173,6 +1196,10 @@ export const useChatStore = defineStore('chat', () => {
           }
           activeSession.value = target
           await restoreWorkspaceDiffCards(target)
+          if (activeSessionId.value !== sessionId) {
+            resolve()
+            return
+          }
           // Process replayed events (compression state etc.)
           if (data.events?.length) {
             for (const evt of data.events) {
@@ -3805,7 +3832,10 @@ export const useChatStore = defineStore('chat', () => {
         const sid = activeSessionId.value
         if (sid && !streamStates.value.has(sid)) {
           // Re-load messages via resume (server loads from DB)
-          resumeSession(sid, (data) => {
+          resumeSession(sid, async (data) => {
+            if (activeSessionId.value !== sid) return
+            const target = sessions.value.find(s => s.id === sid)
+            if (!target || !activeSession.value) return
             if (data.isWorking) {
               serverWorking.value.add(sid)
             } else {
@@ -3817,12 +3847,21 @@ export const useChatStore = defineStore('chat', () => {
               setAbortState(null)
             }
             if (!data.isWorking) setCompressionState(sid, null)
-            if (data.messages?.length && activeSession.value) {
-              activeSession.value.messages = mapHermesMessages(data.messages as any[])
-              activeSession.value.loadedMessageCount = data.messageLoadedCount ?? data.messages.length
-              activeSession.value.messageTotal = data.messageTotal ?? activeSession.value.messageCount ?? activeSession.value.loadedMessageCount
-              activeSession.value.messageCount = activeSession.value.messageTotal
-              activeSession.value.hasMoreBefore = data.hasMoreBefore ?? activeSession.value.loadedMessageCount < activeSession.value.messageTotal
+            if (data.messages?.length) {
+              target.messages = mapHermesMessages(data.messages as any[])
+              target.loadedMessageCount = data.messageLoadedCount ?? data.messages.length
+              target.messageTotal = data.messageTotal ?? target.messageCount ?? target.loadedMessageCount
+              target.messageCount = target.messageTotal
+              target.hasMoreBefore = data.hasMoreBefore ?? target.loadedMessageCount < target.messageTotal
+              if (activeSessionId.value === sid) activeSession.value = target
+            } else if (Number(data.messageTotal ?? target.messageCount ?? 0) > 0) {
+              const limit = Math.min(
+                Math.max(data.messageLoadedCount || target.loadedMessageCount || LIVE_CHAT_MESSAGE_PAGE_SIZE, LIVE_CHAT_MESSAGE_PAGE_SIZE),
+                LIVE_CHAT_MAX_LOADED_MESSAGES,
+              )
+              await hydrateSessionMessagesFromPage(target, limit, target.profile)
+              if (activeSessionId.value !== sid) return
+              activeSession.value = target
             }
             resumeServerWorkingRun(sid)
           }, activeSession.value?.profile, runtimeTransport())

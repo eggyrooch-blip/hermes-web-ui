@@ -15,6 +15,16 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
+> [!info] 2026-07-09 local hotfix — socket resume empty messages fallback
+> `webui-message-list-hotfix` fixes a local main regression from the upstream
+> selective harvest: chat session switching relied only on Socket.IO
+> `resumeSession()`, so a stale/empty broker resume state could leave the
+> transcript blank even while the HTTP session API still returned messages.
+> The chat store now falls back to the existing paginated session messages
+> endpoint when resume returns no messages for a session whose summary/resume
+> metadata says messages exist. Inline workspace path chips and workspace diff
+> cards keep their existing rendering path.
+
 > [!info] 2026-07-09 local worktree — selective upstream harvest, production not published
 > `upstream-selective-harvest` selectively ports the upstream fixes/features
 > that fit this fork's enterprise WebUI boundary: bridge terminal-error
