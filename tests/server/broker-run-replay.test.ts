@@ -1,15 +1,36 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+const workspaceDiffTracker = vi.hoisted(() => ({
+  start: vi.fn(() => ({ key: 'checkpoint-1' })),
+  complete: vi.fn(() => ({
+    change_id: 'change-1',
+    session_id: 's1',
+    run_id: 'rm',
+    files_changed: 1,
+    files: [{ id: 7, path: 'a.txt', additions: 1, deletions: 0 }],
+  })),
+}))
+const sessionStore = vi.hoisted(() => ({
+  getSession: vi.fn(() => null),
+  updateSession: vi.fn(),
+}))
+const pathSecurity = vi.hoisted(() => ({
+  isNearestExistingRealPathWithin: vi.fn(async () => true),
+}))
+
 // config.runBrokerUrl / runBrokerKey drive the fetch target.
 vi.mock('../../packages/server/src/config', () => ({
   config: { runBrokerUrl: 'http://broker.test', runBrokerKey: 'k' },
 }))
 // Keep DB + input builders inert — replay mode doesn't touch them.
-vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
-  getSession: () => null,
-}))
+vi.mock('../../packages/server/src/db/hermes/session-store', () => sessionStore)
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
   getProfileDir: () => '/tmp',
+}))
+vi.mock('../../packages/server/src/services/hermes/hermes-path', () => pathSecurity)
+vi.mock('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker', () => ({
+  startWorkspaceRunCheckpoint: workspaceDiffTracker.start,
+  completeWorkspaceRunCheckpoint: workspaceDiffTracker.complete,
 }))
 
 import { handleBrokerRun } from '../../packages/server/src/services/hermes/run-chat/handle-broker-run'
@@ -37,7 +58,16 @@ function fakeContext() {
 
 const socket = { data: { user: { openid: 'ou_alice' } }, join: vi.fn(), connected: true } as any
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.restoreAllMocks()
+  sessionStore.getSession.mockReset()
+  sessionStore.getSession.mockReturnValue(null)
+  sessionStore.updateSession.mockClear()
+  workspaceDiffTracker.start.mockClear()
+  workspaceDiffTracker.complete.mockClear()
+  pathSecurity.isNearestExistingRealPathWithin.mockReset()
+  pathSecurity.isNearestExistingRealPathWithin.mockResolvedValue(true)
+})
 
 describe('handleBrokerRun replay mode', () => {
   it('POSTs the broker replay endpoint (not /runs) when replay_run_id is set', async () => {
@@ -97,5 +127,99 @@ describe('handleBrokerRun replay mode', () => {
     expect(state.messages).toEqual([
       expect.objectContaining({ role: 'assistant', content: 'hello', run_id: 'run-live' }),
     ])
+  })
+
+  it('tracks the default profile workspace with the webui marker when broker omits run_id', async () => {
+    sessionStore.getSession.mockReturnValue({ id: 's1', profile: 'default', workspace: null } as any)
+    const state = { messages: [], isWorking: false, events: [], queue: [], runId: undefined, abortController: undefined } as any
+    const run = { runMarker: 'rm', responseId: undefined, insertedKeys: new Set<string>(), toolCalls: new Map() }
+    const context = {
+      sessionMap: new Map([['s1', state]]),
+      getOrCreateSession: () => state,
+      getResponseRunState: () => run,
+      markCompleted: vi.fn(async () => {}),
+      dequeueNextQueuedRun: vi.fn(),
+      buildInput: (value: any) => value,
+    } as any
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || '{}'))
+      expect(body.metadata.instructions).toContain('[Current working directory: /tmp/workspace]')
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream(
+          'event: content\ndata: {"kind":"content","text":"done"}\n\n',
+          'event: done\ndata: {"kind":"done"}\n\n',
+        ),
+      } as any
+    }))
+
+    const emit = vi.fn()
+    await handleBrokerRun(socket, { input: 'hi', session_id: 's1' }, 'default', 'rm', emit, context)
+
+    expect(workspaceDiffTracker.start).toHaveBeenCalledWith({ sessionId: 's1', workspace: '/tmp/workspace' })
+    expect(workspaceDiffTracker.complete).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 's1',
+      runId: 'rm',
+      workspace: '/tmp/workspace',
+    }))
+    expect(sessionStore.updateSession).toHaveBeenCalledWith('s1', { workspace: '/tmp/workspace' })
+    expect(state.messages).toEqual([expect.objectContaining({ content: 'done', run_id: 'rm' })])
+    expect(emit.mock.calls.map(call => call[0])).toEqual(['message.delta', 'workspace.diff.completed', 'run.completed'])
+  })
+
+  it('falls back from broker payload workspaces outside the profile workspace', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || '{}'))
+      expect(body.metadata.instructions).toContain('[Current working directory: /tmp/workspace]')
+      expect(body.metadata.instructions).not.toContain('/tmp/escape')
+      return { ok: true, status: 200, body: sseStream('event: done\ndata: {"kind":"done","run_id":"r"}\n\n') } as any
+    }))
+
+    await handleBrokerRun(socket, { input: 'hi', session_id: 's1', workspace: '/tmp/escape' }, 'default', 'rm', vi.fn(), fakeContext())
+
+    expect(workspaceDiffTracker.start).toHaveBeenCalledWith({ sessionId: 's1', workspace: '/tmp/workspace' })
+  })
+
+  it('falls back when a contained payload path resolves through a symlink escape', async () => {
+    pathSecurity.isNearestExistingRealPathWithin.mockResolvedValue(false)
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || '{}'))
+      expect(body.metadata.instructions).toContain('[Current working directory: /tmp/workspace]')
+      expect(body.metadata.instructions).not.toContain('/tmp/workspace/escape')
+      return { ok: true, status: 200, body: sseStream('event: done\ndata: {"kind":"done","run_id":"r"}\n\n') } as any
+    }))
+
+    await handleBrokerRun(socket, { input: 'hi', session_id: 's1', workspace: '/tmp/workspace/escape' }, 'default', 'rm', vi.fn(), fakeContext())
+
+    expect(pathSecurity.isNearestExistingRealPathWithin).toHaveBeenCalledWith('/tmp/workspace/escape', '/tmp/workspace')
+    expect(workspaceDiffTracker.start).toHaveBeenCalledWith({ sessionId: 's1', workspace: '/tmp/workspace' })
+  })
+
+  it('retags early fallback messages before completion when broker supplies a late run_id', async () => {
+    const state = { messages: [], isWorking: false, events: [], queue: [], runId: undefined, abortController: undefined } as any
+    const run = { runMarker: 'rm', responseId: undefined, insertedKeys: new Set<string>(), toolCalls: new Map() }
+    const persistedRunIds: Array<string | null | undefined> = []
+    const context = {
+      sessionMap: new Map([['s1', state]]),
+      getOrCreateSession: () => state,
+      getResponseRunState: () => run,
+      markCompleted: vi.fn(async () => persistedRunIds.push(...state.messages.map((message: any) => message.run_id))),
+      dequeueNextQueuedRun: vi.fn(),
+      buildInput: (value: any) => value,
+    } as any
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body: sseStream(
+        'event: content\ndata: {"kind":"content","text":"done"}\n\n',
+        'event: done\ndata: {"kind":"done","run_id":"run-late"}\n\n',
+      ),
+    })))
+
+    await handleBrokerRun(socket, { input: 'hi', session_id: 's1' }, 'default', 'rm', vi.fn(), context)
+
+    expect(persistedRunIds).toEqual(['run-late'])
+    expect(workspaceDiffTracker.complete).toHaveBeenCalledWith(expect.objectContaining({ runId: 'run-late' }))
   })
 })

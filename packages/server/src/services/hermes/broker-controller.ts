@@ -393,6 +393,7 @@ interface QueuedRun {
   source?: ChatRunSource
   model?: string
   provider?: string
+  workspace?: string | null
   instructions?: string
   expert_id?: string
   expert_label?: string
@@ -779,6 +780,7 @@ export class BrokerRunController {
       source?: ChatRunSource
       model?: string
       provider?: string
+      workspace?: string | null
       instructions?: string
       expert_id?: string
       expert_label?: string
@@ -798,6 +800,7 @@ export class BrokerRunController {
             source: data.source,
             model: data.model,
             provider: data.provider,
+            workspace: data.workspace,
             instructions: data.instructions,
             expert_id: data.expert_id,
             expert_label: data.expert_label,
@@ -1102,7 +1105,7 @@ export class BrokerRunController {
 
   private async handleRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; source?: ChatRunSource; model?: string; provider?: string; instructions?: string; expert_id?: string; expert_label?: string; expert_avatar?: string; queue_id?: string },
+    data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; source?: ChatRunSource; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; expert_label?: string; expert_avatar?: string; queue_id?: string },
     profile: string,
     skipUserMessage = false,
   ) {
@@ -1200,6 +1203,7 @@ export class BrokerRunController {
         session_id,
         model,
         provider,
+        workspace: data.workspace,
         instructions,
         expert_id,
       }, profile, runMarker, emit)
@@ -1571,6 +1575,7 @@ export class BrokerRunController {
       source: next.source,
       model: next.model,
       provider: next.provider,
+      workspace: next.workspace,
       instructions: next.instructions,
       expert_id: next.expert_id,
       expert_label: next.expert_label,
@@ -1622,6 +1627,7 @@ export class BrokerRunController {
         source: next.source,
         model: next.model,
         provider: next.provider,
+        workspace: next.workspace,
         instructions: next.instructions,
         expert_id: next.expert_id,
         expert_label: next.expert_label,
@@ -1689,7 +1695,7 @@ export class BrokerRunController {
 
   private async handleBrokerRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; instructions?: string; expert_id?: string; replay_run_id?: string },
+    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; replay_run_id?: string },
     profile: string,
     runMarker: string | undefined,
     emit: (event: string, payload: any) => void,

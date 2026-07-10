@@ -15,6 +15,16 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
+> [!info] 2026-07-10 local hotfix — broker default workspace diff producer
+> `webui-broker-default-workspace-diff-hotfix` restores the broker-side producer
+> that was preserved in the July 9 in-flight rescue but omitted from main. A
+> normal broker run now checkpoints the active profile workspace, writes that
+> workspace back to a session that had none, and uses the WebUI run marker when
+> broker SSE omits `run_id`. Broker-supplied paths outside the profile workspace
+> fall back to the profile workspace. This keeps persisted message `run_id` and
+> `workspace_run_changes.run_id` aligned so inline file chips can show diff
+> badges after reload. Production is not published.
+
 > [!info] 2026-07-09 local hotfix — socket resume empty messages fallback
 > `webui-message-list-hotfix` fixes a local main regression from the upstream
 > selective harvest: chat session switching relied only on Socket.IO
@@ -1131,6 +1141,7 @@ user_a  | ou_test_owner_a | feishu_user_a   | 1
 - Socket.IO `resumeSession()` 可能返回空数组、过期的 `messageTotal=0`，也可能在认证/连接异常时超时；这些结果不能证明 paginated session history 为空。
 - `packages/client/src/stores/hermes/chat.ts` 必须用有界的 paginated HTTP fallback 恢复空 transcript，并用 request epoch + serialized snapshot merge 防止迟到响应覆盖发送中的 prompt/assistant state；partial page 未返回的 current row 也必须保留。乐观 user/command row 的 `queue_id` 必须以 `messages.client_id` 持久化并经 resume/paginated 返回，客户端按稳定相邻 ID 合并 current/server 顺序，不能用内容或时间戳猜测、排序，否则会重复、吞消息或颠倒历史。
 - inline workspace diff 的历史匹配依赖持久化 `messages.run_id`，新增消息写入、bridge flush、resume mapper 与 paginated API 必须同时保留该字段。
+- Broker 默认 profile workspace 也必须在 run 开始前建立 checkpoint，并在所有 terminal/failure 路径完成；SSE 缺 `run_id` 时，消息和 `workspace_run_changes` 必须共同使用本轮 WebUI run marker，不能只修其中一侧。
 
 ---
 
