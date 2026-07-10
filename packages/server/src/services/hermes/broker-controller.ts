@@ -1099,7 +1099,7 @@ export class BrokerRunController {
 
   private async handleRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; source?: ChatRunSource; model?: string; provider?: string; instructions?: string; expert_id?: string; expert_label?: string; expert_avatar?: string },
+    data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; source?: ChatRunSource; model?: string; provider?: string; instructions?: string; expert_id?: string; expert_label?: string; expert_avatar?: string; queue_id?: string },
     profile: string,
     skipUserMessage = false,
   ) {
@@ -1133,7 +1133,7 @@ export class BrokerRunController {
         // Convert ContentBlock[] to string for storage
         const inputStr = contentBlocksToString(input)
         state.messages.push({
-          id: state.messages.length + 1,
+          id: data.queue_id || state.messages.length + 1,
           session_id,
           runMarker,
           role: 'user',
@@ -1158,6 +1158,7 @@ export class BrokerRunController {
         // Write user message to local DB immediately
         addMessage({
           session_id,
+          client_id: data.queue_id || null,
           role: 'user',
           content: inputStr,
           timestamp: now,

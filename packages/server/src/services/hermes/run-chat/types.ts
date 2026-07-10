@@ -17,6 +17,7 @@ export interface SessionMessage {
   display_content?: string | null
   runMarker?: string
   run_id?: string | null
+  client_id?: string | null
   tool_call_id?: string | null
   tool_calls?: any[] | null
   tool_name?: string | null

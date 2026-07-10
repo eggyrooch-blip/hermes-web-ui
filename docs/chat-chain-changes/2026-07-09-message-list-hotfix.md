@@ -25,7 +25,7 @@ Local main could render an empty chat transcript after switching sessions even w
 - Hydration ordering advances only when a request returns usable messages, so a newer failed request cannot invalidate an older successful page for the same session.
 - Hydration snapshots compare serialized values rather than object identity, so in-place streaming deltas survive; a raw page that maps to no visible rows is not allowed to blank the transcript or advance the success epoch.
 - A completed reconnect treats server rows as authoritative and does not preserve stale local streaming flags; an active reconnect only selects an unfinished assistant from the resume payload's current tail, not an older legacy `finish_reason=null` row.
-- Resume candidates are validated after merging against the latest user boundary, so a stale unfinished assistant cannot absorb the next run. Optimistic user rows reconcile with one matching numeric server echo without duplicating the prompt or collapsing a second identical prompt.
+- Resume candidates use the current persisted client message identity plus server order or an explicit run marker, so stale/future timestamps cannot make an unfinished assistant absorb the next run. User/command `queue_id` is persisted as `messages.client_id` and returned by paginated/resume paths, letting optimistic rows reconcile by stable ID without content/time guesses, duplicate prompts, or collapsed repeated prompts.
 - The Responses stream uses `state.runId` as the canonical message/diff identity (falling back to `response.id`), so coding-agent workspace diffs match both live and persisted assistant rows.
 - The production Run Broker SSE path now sets `state.runId`, tags assistant/tool rows, and persists that id before controller completion clears transient run state.
 
@@ -33,7 +33,7 @@ Local main could render an empty chat transcript after switching sessions even w
 
 - Failing-first client regressions cover stale/zero totals, resume timeout, delayed hydration, reconnect-empty preservation, and store disposal.
 - Focused client verification: 6 files / 91 passed.
-- Focused server verification: 11 files / 156 passed.
+- Focused server verification: 12 files / 167 passed.
 - Full suite: 313 files / 2386 passed / 2 skipped / 0 failed.
 - `npm run harness:check` and `npm run build` passed.
 - A fresh Playwright browser against the worktree production build and a real local DB snapshot observed a paginated `200`, 7 rendered message nodes, and 0 empty-state nodes after Socket.IO resume timeout.

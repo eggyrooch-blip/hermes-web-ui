@@ -410,7 +410,7 @@ export async function handleBridgeRun(
 
   if (shouldPersistUserMessage) {
     state.messages.push({
-      id: state.messages.length + 1,
+      id: data.queue_id || state.messages.length + 1,
       session_id,
       runMarker,
       role: storageRole,
@@ -427,6 +427,7 @@ export async function handleBridgeRun(
     }
     messageId = addMessage({
       session_id,
+      client_id: data.queue_id || null,
       role: storageRole,
       content: storageInputStr,
       display_role: displayRoleForStorage,

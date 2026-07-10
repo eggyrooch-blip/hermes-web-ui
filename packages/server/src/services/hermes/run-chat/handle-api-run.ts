@@ -141,7 +141,7 @@ export async function handleApiRun(
     if (!skipUserMessage) {
       const inputStr = contentBlocksToString(input)
       state.messages.push({
-        id: state.messages.length + 1,
+        id: data.queue_id || state.messages.length + 1,
         session_id,
         runMarker,
         role: 'user',
@@ -157,6 +157,7 @@ export async function handleApiRun(
 
       const messageId = addMessage({
         session_id,
+        client_id: data.queue_id || null,
         role: 'user',
         content: inputStr,
         timestamp: now,
@@ -165,7 +166,7 @@ export async function handleApiRun(
     } else {
       const inputStr = contentBlocksToString(input)
       state.messages.push({
-        id: state.messages.length + 1,
+        id: data.queue_id || state.messages.length + 1,
         session_id,
         runMarker,
         role: 'user',
@@ -179,6 +180,7 @@ export async function handleApiRun(
       }
       const messageId = addMessage({
         session_id,
+        client_id: data.queue_id || null,
         role: 'user',
         content: inputStr,
         timestamp: now,

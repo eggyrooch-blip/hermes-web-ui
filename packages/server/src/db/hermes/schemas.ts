@@ -82,6 +82,7 @@ export const MESSAGES_SCHEMA: Record<string, string> = {
   reasoning_details: 'TEXT',
   reasoning_content: 'TEXT',
   run_id: 'TEXT NOT NULL DEFAULT \'\'',
+  client_id: 'TEXT NOT NULL DEFAULT \'\'',
 }
 
 export const MESSAGES_INDEX = 'CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id)'

@@ -34,10 +34,11 @@ describe('session message run identity', () => {
       content: 'Changed app.ts',
       timestamp: 100,
       run_id: 'run-1',
+      client_id: 'client-message-1',
     } as any)
 
     expect(getSessionDetailPaginated('session-1')?.messages).toEqual([
-      expect.objectContaining({ run_id: 'run-1' }),
+      expect.objectContaining({ run_id: 'run-1', client_id: 'client-message-1' }),
     ])
   })
 
@@ -57,8 +58,8 @@ describe('session message run identity', () => {
     const { initAllHermesTables } = await import('../../packages/server/src/db/hermes/schemas')
     initAllHermesTables()
 
-    const row = db.prepare('SELECT content, run_id FROM messages WHERE session_id = ?')
-      .get('legacy-session') as { content: string; run_id: string }
-    expect(row).toEqual({ content: 'legacy answer', run_id: '' })
+    const row = db.prepare('SELECT content, run_id, client_id FROM messages WHERE session_id = ?')
+      .get('legacy-session') as { content: string; run_id: string; client_id: string }
+    expect(row).toEqual({ content: 'legacy answer', run_id: '', client_id: '' })
   })
 })

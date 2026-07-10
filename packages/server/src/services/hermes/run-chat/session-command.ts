@@ -89,7 +89,7 @@ export async function handleSessionCommand(
   ensureCommandSession(sessionId, ctx)
   const isKnownCommand = Boolean(COMMAND_ALIASES[command.rawName])
   if (command.name !== 'plan' && command.name !== 'skill' && isKnownCommand) {
-    persistCommandMessage(sessionId, state, `/${command.rawName}${command.args ? ` ${command.args}` : ''}`)
+    persistCommandMessage(sessionId, state, `/${command.rawName}${command.args ? ` ${command.args}` : ''}`, ctx.queueId)
   }
 
   const emitCommand = (payload: Record<string, unknown>) => {
@@ -768,16 +768,17 @@ function ensureCommandSession(sessionId: string, ctx: SessionCommandContext) {
   })
 }
 
-function persistCommandMessage(sessionId: string, state: SessionState, content: string) {
+function persistCommandMessage(sessionId: string, state: SessionState, content: string, clientId?: string) {
   const now = Math.floor(Date.now() / 1000)
   const id = addMessage({
     session_id: sessionId,
+    client_id: clientId || null,
     role: 'command',
     content,
     timestamp: now,
   })
   state.messages.push({
-    id: id || `command_${now}_${state.messages.length}`,
+    id: clientId || id || `command_${now}_${state.messages.length}`,
     session_id: sessionId,
     role: 'command',
     content,

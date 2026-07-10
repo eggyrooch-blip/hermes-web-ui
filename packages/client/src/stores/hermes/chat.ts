@@ -333,20 +333,18 @@ function selectResumedInFlightAssistant(messages: Message[], activeRunMarker?: s
 }
 
 function isCurrentResumeCandidate(
-  messages: Message[],
+  resumeMessages: Message[],
   candidate: Message | null,
+  currentUserMessageId: string,
   activeRunMarker?: string | null,
 ): boolean {
   if (!candidate) return false
-  const candidateIndex = messages.findIndex(message => message.id === candidate.id)
+  const candidateIndex = resumeMessages.findIndex(message => message.id === candidate.id)
   if (candidateIndex < 0) return false
-  const latestUserIndex = messages.findLastIndex(message => message.role === 'user' || message.role === 'command')
-  if (candidateIndex > latestUserIndex) return true
-
   const candidateRunMarker = readRunMarker(candidate)
   if (activeRunMarker && candidateRunMarker === activeRunMarker) return true
-  if (latestUserIndex < 0 || !candidateRunMarker) return false
-  return candidate.timestamp >= messages[latestUserIndex].timestamp
+  const currentUserIndex = resumeMessages.findIndex(message => message.id === currentUserMessageId)
+  return currentUserIndex >= 0 && candidateIndex > currentUserIndex
 }
 
 function getReplayRunMarker(events?: Array<{ event: string; data: RunEvent }>): string | null {
@@ -365,6 +363,7 @@ function resolveResumedAssistantState(
     previousReasoningAssistantMessageId?: string | null
     resumeCandidateMessageId?: string | null
     activeRunMarker?: string | null
+    allowImplicitCandidate?: boolean
   },
 ): {
   activeAssistant: Message | null
@@ -378,7 +377,10 @@ function resolveResumedAssistantState(
   const resumeCandidate = options.resumeCandidateMessageId
     ? messages.find(m => m.role === 'assistant' && m.id === options.resumeCandidateMessageId) || null
     : null
-  const selectedActiveAssistant = activeAssistant || resumeCandidate || selectResumedInFlightAssistant(messages, options.activeRunMarker)
+  const implicitCandidate = options.allowImplicitCandidate === false
+    ? null
+    : selectResumedInFlightAssistant(messages, options.activeRunMarker)
+  const selectedActiveAssistant = activeAssistant || resumeCandidate || implicitCandidate
   const reasoningAssistant = options.previousReasoningAssistantMessageId
     ? messages.find(m => m.role === 'assistant' && m.id === options.previousReasoningAssistantMessageId) || null
     : null
@@ -486,7 +488,7 @@ function mapHermesMessages(msgs: HermesMessage[]): Message[] {
     const displayRole = msg.display_role || msg.role
     const displayContent = msg.display_content ?? msg.content
     result.push({
-      id: String(msg.id),
+      id: String(msg.client_id || msg.id),
       role: displayRole,
       content: displayContent || '',
       timestamp: Math.round(msg.timestamp * 1000),
@@ -508,29 +510,10 @@ function mergeServerMessagesPreservingLocalChanges(
 ): Message[] {
   const merged = [...serverMessages]
   const indexById = new Map(merged.map((message, index) => [message.id, index]))
-  const reconciledServerIds = new Set<string>()
   for (const message of current) {
     const serverIndex = indexById.get(message.id)
-    if (serverIndex != null) reconciledServerIds.add(message.id)
     if (messagesAtRequestStart?.get(message.id) === JSON.stringify(message)) continue
     if (serverIndex == null) {
-      const optimisticServerIndex = !/^\d+$/.test(message.id) && (message.role === 'user' || message.role === 'command')
-        ? serverMessages.findIndex(serverMessage =>
-            /^\d+$/.test(serverMessage.id) &&
-            !reconciledServerIds.has(serverMessage.id) &&
-            serverMessage.role === message.role &&
-            serverMessage.content === message.content &&
-            Math.abs(serverMessage.timestamp - message.timestamp) <= 1_500,
-          )
-        : -1
-      if (optimisticServerIndex >= 0) {
-        const serverMessage = merged[optimisticServerIndex]
-        reconciledServerIds.add(serverMessage.id)
-        if (localWinsOnConflict) {
-          merged[optimisticServerIndex] = { ...serverMessage, ...message, id: serverMessage.id }
-        }
-        continue
-      }
       indexById.set(message.id, merged.length)
       merged.push(message)
     } else if (localWinsOnConflict) {
@@ -2510,8 +2493,9 @@ export const useChatStore = defineStore('chat', () => {
             data.isWorking !== false,
           )
           const resumeCandidateMessageId = isCurrentResumeCandidate(
-            target.messages,
+            mappedResumeMessages,
             resumeCandidate,
+            userMsg.id,
             replayRunMarker,
           )
             ? resumeCandidate?.id
@@ -2532,6 +2516,7 @@ export const useChatStore = defineStore('chat', () => {
                 previousReasoningAssistantMessageId,
                 resumeCandidateMessageId,
                 activeRunMarker: replayRunMarker,
+                allowImplicitCandidate: false,
               })
             : {
                 activeAssistant: null,

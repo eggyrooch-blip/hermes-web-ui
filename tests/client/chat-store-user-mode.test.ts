@@ -1157,10 +1157,11 @@ describe('chat store user-mode model selection', () => {
       events: [],
       messages: [{
         id: 42,
+        client_id: optimisticPrompt!.id,
         session_id: session.id,
         role: 'user',
         content: 'prompt persisted during reconnect',
-        timestamp: optimisticPrompt!.timestamp / 1000,
+        timestamp: (optimisticPrompt!.timestamp - 86_400_000) / 1000,
       }],
       messageTotal: 1,
       messageLoadedCount: 1,
@@ -1169,7 +1170,7 @@ describe('chat store user-mode model selection', () => {
 
     expect(session.messages.filter(message => message.role === 'user')).toEqual([
       expect.objectContaining({
-        id: '42',
+        id: optimisticPrompt!.id,
         content: 'prompt persisted during reconnect',
       }),
     ])
@@ -1512,7 +1513,7 @@ describe('chat store user-mode model selection', () => {
       id: 'assistant-old',
       role: 'assistant',
       content: 'previous turn answer',
-      timestamp: Date.now() - 2_000,
+      timestamp: Date.now() + 86_400_000,
       finishReason: null,
     })
 
@@ -1529,7 +1530,7 @@ describe('chat store user-mode model selection', () => {
           session_id: session.id,
           role: 'assistant',
           content: 'previous turn answer',
-          timestamp: (Date.now() - 2_000) / 1000,
+          timestamp: (Date.now() + 86_400_000) / 1000,
           finish_reason: null,
         },
       ],

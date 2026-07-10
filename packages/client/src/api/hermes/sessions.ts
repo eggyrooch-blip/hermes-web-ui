@@ -70,6 +70,7 @@ export interface HermesMessage {
   finish_reason: string | null
   reasoning: string | null
   run_id?: string | null
+  client_id?: string | null
 }
 
 export interface WorkspaceRunChangeFileSummary {

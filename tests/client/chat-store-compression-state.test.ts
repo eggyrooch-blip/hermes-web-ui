@@ -266,7 +266,7 @@ describe('chat store compression state', () => {
       session_id: 'session-1',
       isWorking: true,
       messages: [],
-      events: [],
+      events: [{ event: 'run.started', data: { event: 'run.started', runMarker: 'cli_run_current' } }],
     })
 
     onEvent({
@@ -342,7 +342,7 @@ describe('chat store compression state', () => {
         finish_reason: null,
         runMarker: 'cli_run_current',
       }],
-      events: [],
+      events: [{ event: 'run.started', data: { event: 'run.started', runMarker: 'cli_run_current' } }],
     })
 
     onEvent({
@@ -388,7 +388,7 @@ describe('chat store compression state', () => {
         finish_reason: null,
         runMarker: 'cli_run_current',
       }],
-      events: [],
+      events: [{ event: 'run.started', data: { event: 'run.started', runMarker: 'cli_run_current' } }],
     })
 
     onEvent({
@@ -441,7 +441,7 @@ describe('chat store compression state', () => {
         finish_reason: null,
         runMarker: 'cli_run_current',
       }],
-      events: [],
+      events: [{ event: 'run.started', data: { event: 'run.started', runMarker: 'cli_run_current' } }],
     })
 
     onEvent({

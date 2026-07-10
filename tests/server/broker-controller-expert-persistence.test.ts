@@ -138,6 +138,7 @@ describe('BrokerRunController expert metadata persistence', () => {
     await (controller as any).handleRun(socket, {
       input: '启动资源投放',
       session_id: 'expert-run-session',
+      queue_id: 'client-prompt-1',
       source: 'cli',
       model: 'custom:litellm-sre/tencent-',
       provider: 'custom',
@@ -164,6 +165,9 @@ describe('BrokerRunController expert metadata persistence', () => {
       expert_label: '资源投放专家',
       expert_avatar: expertAvatar,
     })
+    expect(detailCtx.body.messages).toEqual([
+      expect.objectContaining({ role: 'user', client_id: 'client-prompt-1' }),
+    ])
   })
 
   it('persists the broker response run id when flushing messages', async () => {

@@ -59,6 +59,7 @@ export interface HermesMessageRow {
   reasoning_details?: string | null
   reasoning_content?: string | null
   run_id?: string | null
+  client_id?: string | null
 }
 
 export interface HermesSessionDetailRow extends HermesSessionRow {
@@ -368,6 +369,7 @@ function mapMessageRow(row: Record<string, unknown>): HermesMessageRow {
     reasoning_details: normalizeNullableString(row.reasoning_details),
     reasoning_content: normalizeNullableString(row.reasoning_content),
     run_id: normalizeNullableString(row.run_id),
+    client_id: normalizeNullableString(row.client_id),
   }
 }
 
