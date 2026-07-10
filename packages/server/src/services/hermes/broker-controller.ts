@@ -375,6 +375,7 @@ interface SessionMessage {
   content: string
   runMarker?: string
   run_id?: string | null
+  client_id?: string | null
   tool_call_id?: string | null
   tool_calls?: any[] | null
   tool_name?: string | null
@@ -895,13 +896,15 @@ export class BrokerRunController {
         .filter(m => (m.role === 'user' || m.role === 'assistant' || m.role === 'tool') && m.content !== undefined)
         .map((m, idx, arr) => {
           const msg: any = {
-            id: m.id,
+            id: m.client_id || m.id,
             session_id: sid,
             role: m.role,
             content: m.content || '',
             reasoning: m.reasoning || '',
             timestamp: m.timestamp,
           }
+          if (m.run_id) msg.run_id = m.run_id
+          if (m.client_id) msg.client_id = m.client_id
           // Convert Anthropic format content to OpenAI format
           // Check if content is a stringified array (Hermes Gateway behavior) - only for assistant messages
           if (m.role === 'assistant' && typeof m.content === 'string') {

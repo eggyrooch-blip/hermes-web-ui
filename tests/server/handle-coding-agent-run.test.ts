@@ -194,6 +194,30 @@ describe('handleCodingAgentRun', () => {
     expect(sendCodingAgentRunInputMock).toHaveBeenCalledWith('session-1', 'hello claude', 'system prompt')
   })
 
+  it('forwards the optimistic client message id to the coding-agent runner', async () => {
+    managerMock.runIdForSession.mockReturnValue('agent-session-1')
+    managerMock.isSessionLaunchCompatible.mockReturnValue(true)
+    sendCodingAgentRunInputMock.mockResolvedValue({ runId: 'agent-session-1' })
+
+    const { handleCodingAgentRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-coding-agent-run')
+    const state = { messages: [], isWorking: false, isAborting: false, events: [], queue: [] }
+    const socket = { join: vi.fn(), emit: vi.fn() }
+
+    await handleCodingAgentRun({} as any, socket as any, {
+      session_id: 'session-1',
+      input: 'hello codex',
+      coding_agent_id: 'codex',
+      queue_id: 'client-prompt-1',
+    }, 'default', new Map([['session-1', state]]) as any)
+
+    expect(sendCodingAgentRunInputMock).toHaveBeenCalledWith(
+      'session-1',
+      'hello codex',
+      'system prompt',
+      'client-prompt-1',
+    )
+  })
+
   it('keeps profile token handling separate from the system prompt for authenticated users', async () => {
     managerMock.runIdForSession.mockReturnValue('agent-session-1')
     managerMock.isSessionLaunchCompatible.mockReturnValue(true)

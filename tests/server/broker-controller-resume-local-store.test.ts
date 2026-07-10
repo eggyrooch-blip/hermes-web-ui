@@ -109,8 +109,8 @@ describe('BrokerRunController local session resume', () => {
       profile: 'feishu_g41a5b5g',
       source: 'api_server',
       messages: [
-        { id: 1, session_id: 'local-session', role: 'user', content: '历史问题', timestamp: 1 },
-        { id: 2, session_id: 'local-session', role: 'assistant', content: '历史回答', timestamp: 2 },
+        { id: 1, client_id: 'client-prompt-1', session_id: 'local-session', role: 'user', content: '历史问题', timestamp: 1 },
+        { id: 2, run_id: 'run-answer-1', session_id: 'local-session', role: 'assistant', content: '历史回答', timestamp: 2 },
       ],
     })
   })
@@ -125,8 +125,8 @@ describe('BrokerRunController local session resume', () => {
     expect(getSessionDetailFromDbMock).not.toHaveBeenCalled()
     expect(getSessionDetailFromDbWithProfileMock).not.toHaveBeenCalled()
     expect(state.messages).toMatchObject([
-      { role: 'user', content: '历史问题' },
-      { role: 'assistant', content: '历史回答' },
+      { id: 'client-prompt-1', client_id: 'client-prompt-1', role: 'user', content: '历史问题' },
+      { id: 2, run_id: 'run-answer-1', role: 'assistant', content: '历史回答' },
     ])
     expect(state.inputTokens).toBeGreaterThan(0)
     expect(state.outputTokens).toBeGreaterThan(0)

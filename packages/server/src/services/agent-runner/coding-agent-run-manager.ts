@@ -115,6 +115,7 @@ interface ManagedCodingAgentRun {
 
 interface CodingAgentRunSendOptions {
   systemPrompt?: string
+  clientId?: string
 }
 
 function nowSeconds(): number {
@@ -510,7 +511,7 @@ export class CodingAgentRunManager {
     if (!text) throw new Error('Input is required')
     const systemPrompt = String(options.systemPrompt || '').trim()
     this.ensureDbSession(run)
-    this.addUserMessage(run, text)
+    this.addUserMessage(run, text, options.clientId)
     this.touch(run)
     this.emitTerminalStatus(run, 'Input sent to coding agent.')
     this.startWorkspaceDiffCheckpoint(run)
@@ -653,17 +654,23 @@ export class CodingAgentRunManager {
     })
   }
 
-  private addUserMessage(run: ManagedCodingAgentRun, content: string) {
+  private addUserMessage(run: ManagedCodingAgentRun, content: string, clientId?: string) {
     const timestamp = nowSeconds()
     run.state.messages.push({
-      id: run.state.messages.length + 1,
+      id: clientId || run.state.messages.length + 1,
       session_id: run.launch.sessionId,
       runMarker: run.runMarker,
       role: 'user',
       content,
       timestamp,
     })
-    const id = addMessage({ session_id: run.launch.sessionId, role: 'user', content, timestamp })
+    const id = addMessage({
+      session_id: run.launch.sessionId,
+      client_id: clientId || null,
+      role: 'user',
+      content,
+      timestamp,
+    })
     logger.debug({ runId: run.id, sessionId: run.launch.sessionId, messageId: id }, '[coding-agent-run] recorded user message')
   }
 

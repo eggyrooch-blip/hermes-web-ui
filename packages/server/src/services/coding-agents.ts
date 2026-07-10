@@ -1758,8 +1758,8 @@ export async function startCodingAgentRun(
   }
 }
 
-export function sendCodingAgentRunInput(sessionId: string, input: string, systemPrompt?: string): { runId: string } {
-  return codingAgentRunManager.send(sessionId, input, { systemPrompt })
+export function sendCodingAgentRunInput(sessionId: string, input: string, systemPrompt?: string, clientId?: string): { runId: string } {
+  return codingAgentRunManager.send(sessionId, input, { systemPrompt, clientId })
 }
 
 export function stopCodingAgentRun(sessionId: string): { stopped: boolean } {

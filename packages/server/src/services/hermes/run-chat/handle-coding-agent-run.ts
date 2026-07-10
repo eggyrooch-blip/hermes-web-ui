@@ -30,6 +30,7 @@ export interface CodingAgentRunSocketData {
   apiMode?: any
   api_mode?: any
   session_source?: 'global_agent'
+  queue_id?: string
 }
 
 function codingAgentId(data: CodingAgentRunSocketData): CodingAgentId {
@@ -97,7 +98,11 @@ export async function handleCodingAgentRun(
     const runPrompt = [
       includeBaseSystemPrompt ? getSystemPrompt() : '',
     ].filter(Boolean).join('\n')
-    await sendCodingAgentRunInput(sessionId, inputText, runPrompt)
+    if (data.queue_id) {
+      await sendCodingAgentRunInput(sessionId, inputText, runPrompt, data.queue_id)
+    } else {
+      await sendCodingAgentRunInput(sessionId, inputText, runPrompt)
+    }
   } catch (err) {
     if (!codingAgentRunManager.isSessionProcessing(sessionId)) {
       state.isWorking = false

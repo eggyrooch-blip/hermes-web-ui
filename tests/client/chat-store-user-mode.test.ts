@@ -1140,6 +1140,60 @@ describe('chat store user-mode model selection', () => {
     ])
   })
 
+  it('preserves an unchanged local row omitted from a partial resume snapshot', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    session.messages.push({ id: 'local-old', role: 'user', content: 'keep omitted row', timestamp: 100_000 })
+
+    let onResumed!: (data: any) => void
+    resumeSessionMock.mockImplementation((_sessionId: string, callback: (data: any) => void) => {
+      onResumed = callback
+      return { disconnect: vi.fn() }
+    })
+    const switching = store.switchSession(session.id)
+    for (let i = 0; i < 10 && !onResumed; i += 1) await Promise.resolve()
+    onResumed({
+      session_id: session.id,
+      isWorking: false,
+      events: [],
+      messages: [{ id: 42, session_id: session.id, role: 'assistant', content: 'partial server row', timestamp: 101 }],
+      messageTotal: 2,
+      messageLoadedCount: 1,
+      hasMoreBefore: true,
+    })
+    await switching
+
+    expect(session.messages.map(message => message.content)).toEqual(['keep omitted row', 'partial server row'])
+  })
+
+  it('preserves authoritative server order when message timestamps are skewed', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+
+    let onResumed!: (data: any) => void
+    resumeSessionMock.mockImplementation((_sessionId: string, callback: (data: any) => void) => {
+      onResumed = callback
+      return { disconnect: vi.fn() }
+    })
+    const switching = store.switchSession(session.id)
+    for (let i = 0; i < 10 && !onResumed; i += 1) await Promise.resolve()
+    onResumed({
+      session_id: session.id,
+      isWorking: false,
+      events: [],
+      messages: [
+        { id: 1, session_id: session.id, role: 'user', content: 'server first', timestamp: 200 },
+        { id: 2, session_id: session.id, role: 'assistant', content: 'server second', timestamp: 100 },
+      ],
+      messageTotal: 2,
+      messageLoadedCount: 2,
+      hasMoreBefore: false,
+    })
+    await switching
+
+    expect(session.messages.map(message => message.content)).toEqual(['server first', 'server second'])
+  })
+
   it('reconciles a persisted server echo of an optimistic prompt with a different id', async () => {
     const store = useChatStore()
     const session = store.newChat({ profile: 'tester' })

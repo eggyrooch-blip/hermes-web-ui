@@ -79,6 +79,22 @@ describe('run-chat message formatting', () => {
     }))
   })
 
+  it('uses the persisted client id when resuming a user message from the database', () => {
+    const messages: SessionMessage[] = [{
+      id: 42,
+      client_id: 'client-prompt-1',
+      session_id: 's1',
+      role: 'user',
+      content: 'hello',
+      timestamp: 1,
+    }]
+
+    expect(handleMessage(messages, 's1')[0]).toEqual(expect.objectContaining({
+      id: 'client-prompt-1',
+      client_id: 'client-prompt-1',
+    }))
+  })
+
   it('treats assistant tool-call messages as sendable even with empty text', () => {
     expect(isAssistantMessageSendable({
       content: '',

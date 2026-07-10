@@ -508,19 +508,50 @@ function mergeServerMessagesPreservingLocalChanges(
   messagesAtRequestStart?: Map<string, string>,
   localWinsOnConflict = true,
 ): Message[] {
-  const merged = [...serverMessages]
-  const indexById = new Map(merged.map((message, index) => [message.id, index]))
-  for (const message of current) {
-    const serverIndex = indexById.get(message.id)
-    if (messagesAtRequestStart?.get(message.id) === JSON.stringify(message)) continue
-    if (serverIndex == null) {
-      indexById.set(message.id, merged.length)
-      merged.push(message)
-    } else if (localWinsOnConflict) {
-      merged[serverIndex] = { ...merged[serverIndex], ...message }
+  const serverById = new Map(serverMessages.map(message => [message.id, message]))
+  const localMessagesAddedAfterRequest = messagesAtRequestStart
+    ? current.filter(message => !messagesAtRequestStart.has(message.id))
+    : []
+  const baseCurrent = messagesAtRequestStart
+    ? current.filter(message => messagesAtRequestStart.has(message.id))
+    : current
+  const merged = baseCurrent.map((message) => {
+    const serverMessage = serverById.get(message.id)
+    if (!serverMessage) return message
+    const unchangedSinceRequest = messagesAtRequestStart?.get(message.id) === JSON.stringify(message)
+    if (!localWinsOnConflict || unchangedSinceRequest) return serverMessage
+    return { ...serverMessage, ...message }
+  })
+  const mergedIds = new Set(merged.map(message => message.id))
+
+  for (let index = 0; index < serverMessages.length; index += 1) {
+    const serverMessage = serverMessages[index]
+    if (mergedIds.has(serverMessage.id)) continue
+
+    const nextExisting = serverMessages.slice(index + 1).find(message => mergedIds.has(message.id))
+    if (nextExisting) {
+      merged.splice(merged.findIndex(message => message.id === nextExisting.id), 0, serverMessage)
+    } else {
+      const previousExisting = serverMessages.slice(0, index).findLast(message => mergedIds.has(message.id))
+      const previousIndex = previousExisting
+        ? merged.findIndex(message => message.id === previousExisting.id)
+        : -1
+      merged.splice(previousIndex >= 0 ? previousIndex + 1 : merged.length, 0, serverMessage)
+    }
+    mergedIds.add(serverMessage.id)
+  }
+
+  for (const localMessage of localMessagesAddedAfterRequest) {
+    const existingIndex = merged.findIndex(message => message.id === localMessage.id)
+    if (existingIndex >= 0) {
+      merged[existingIndex] = localWinsOnConflict
+        ? { ...merged[existingIndex], ...localMessage }
+        : merged[existingIndex]
+    } else {
+      merged.push(localMessage)
     }
   }
-  return merged.sort((left, right) => left.timestamp - right.timestamp)
+  return merged
 }
 
 function mapHermesSession(s: SessionSummary): Session {

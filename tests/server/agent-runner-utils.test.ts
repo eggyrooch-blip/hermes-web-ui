@@ -198,6 +198,34 @@ describe('coding agent terminal output sanitizer', () => {
 })
 
 describe('coding agent run state', () => {
+  it('persists the client message id for coding-agent user turns', () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const state: any = { messages: [], isWorking: false, events: [], queue: [] }
+    const run: any = {
+      id: `agent-client-id-${Date.now()}`,
+      runMarker: 'coding-run-marker',
+      launch: {
+        agentSessionId: 'agent-client-id',
+        agentId: 'codex',
+        mode: 'scoped',
+        profile: 'default',
+        sessionId: `chat-client-id-${Date.now()}`,
+        workspaceDir: process.cwd(),
+      },
+      state,
+    }
+
+    ;(manager as any).ensureDbSession(run)
+    ;(manager as any).addUserMessage(run, 'hello', 'client-prompt-1')
+
+    expect(state.messages[0]).toEqual(expect.objectContaining({ id: 'client-prompt-1' }))
+    expect(getSessionDetail(run.launch.sessionId)?.messages[0]).toEqual(expect.objectContaining({
+      client_id: 'client-prompt-1',
+    }))
+    manager.shutdown()
+  })
+
   it('marks existing scoped Codex runners incompatible when Hermes MCP config is missing', () => {
     const codexHome = mkdtempSync(join(tmpdir(), 'hwui-codex-mcp-compat-'))
     try {

@@ -104,7 +104,7 @@ export function handleMessage(messages: SessionMessage[], sid: string): any[] {
       .filter(m => (m.role === 'user' || m.role === 'assistant' || m.role === 'tool' || m.role === 'command') && m.content !== undefined)
       .map((m, idx, arr) => {
         const msg: any = {
-          id: m.id,
+          id: m.client_id || m.id,
           session_id: sid,
           role: m.role,
           content: m.content || '',
@@ -116,6 +116,7 @@ export function handleMessage(messages: SessionMessage[], sid: string): any[] {
         }
         if (m.runMarker) msg.runMarker = m.runMarker
         if (m.run_id) msg.run_id = m.run_id
+        if (m.client_id) msg.client_id = m.client_id
         // Convert Anthropic format content to OpenAI format
         if (m.role === 'assistant' && typeof m.content === 'string') {
           let contentToParse = m.content
