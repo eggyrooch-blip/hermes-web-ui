@@ -695,7 +695,7 @@ export type HandleBrokerRunContext = {
   buildInput: (input: string | ContentBlock[], profile: string) => Promise<any>
 }
 
-function appendBrokerFailureMessage(
+export function appendBrokerFailureMessage(
   context: HandleBrokerRunContext,
   sessionId: string | undefined,
   runMarker: string | undefined,
@@ -709,13 +709,18 @@ function appendBrokerFailureMessage(
   ))
   if (alreadyHasRunOutput) return
 
-  context.getResponseRunState(state, runMarker)
+  const run = context.getResponseRunState(state, runMarker)
   const detail = error.trim() || 'Run broker failed'
   const content = `运行失败：${detail.slice(0, 2000)}`
+  // Stamp run_id at creation: this message is appended AFTER the terminal
+  // event's stamping loop ran, so it would otherwise stay unmatched and the
+  // socket-resume path would hydrate it without run_id (workspace diff chips
+  // vanish on reload of the just-failed session).
   state.messages.push({
     id: state.messages.length + 1,
     session_id: sessionId,
     runMarker,
+    run_id: run.responseId || runMarker,
     role: 'assistant',
     content,
     finish_reason: 'error',

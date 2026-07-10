@@ -3,6 +3,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  appendBrokerFailureMessage,
   buildRunBrokerRequest,
   buildRunBrokerHeaders,
   mapRunBrokerFrameForChat,
@@ -312,5 +313,33 @@ describe('run-chat broker compatibility module', () => {
     for await (const frame of readSseFrames(stream)) frames.push(frame)
 
     expect(frames).toEqual([{ event: 'chunk', data: '{"a":1}\n{"b":2}' }])
+  })
+
+  it('stamps run_id on the broker failure message so socket-resume keeps diff chips', () => {
+    // The failure message is appended AFTER the terminal event's run_id
+    // stamping loop, so it must carry run_id itself or the resumed session
+    // hydrates it without one and workspace diff chips vanish on reload.
+    const state: any = {
+      messages: [{ id: 1, session_id: 's1', runMarker: 'rm-1', role: 'user', content: 'hi', timestamp: 1 }],
+    }
+    const context: any = {
+      sessionMap: new Map([['s1', state]]),
+      getResponseRunState: () => ({ responseId: 'resp_run_abc' }),
+    }
+    appendBrokerFailureMessage(context, 's1', 'rm-1', 'streaming exhausted')
+    const failure = state.messages.at(-1)
+    expect(failure.role).toBe('assistant')
+    expect(failure.finish_reason).toBe('error')
+    expect(failure.run_id).toBe('resp_run_abc')
+
+    // No SSE event ever delivered a run_id → fall back to the run marker,
+    // which is also what the workspace change row records in that case.
+    const state2: any = { messages: [] }
+    const context2: any = {
+      sessionMap: new Map([['s2', state2]]),
+      getResponseRunState: () => ({ responseId: undefined }),
+    }
+    appendBrokerFailureMessage(context2, 's2', 'rm-2', 'boom')
+    expect(state2.messages.at(-1).run_id).toBe('rm-2')
   })
 })
