@@ -117,7 +117,51 @@ describe('MarkdownRenderer workspace artifact file card', () => {
     expect(wrapper.find('.markdown-file-card').exists()).toBe(false)
   })
 
-  it('renders a unique workspace diff basename as a file card with a diff badge', () => {
+  it('renders a unique workspace diff basename as a file card with addition and deletion counts', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'Updated **app.ts**.',
+        workspaceDiffFiles: [{
+          id: 7,
+          path: 'src/app.ts',
+          change_id: 'change-1',
+          session_id: 'session-1',
+          additions: 3,
+          deletions: 2,
+        }],
+      },
+    })
+
+    const card = wrapper.find('.markdown-file-card')
+    expect(card.exists()).toBe(true)
+    expect(card.attributes('data-path')).toBe('/workspace/src/app.ts')
+    expect(card.attributes('data-filename')).toBe('app.ts')
+    expect(wrapper.find('.markdown-file-diff-btn').text()).toContain('+3')
+    expect(wrapper.find('.markdown-file-diff-btn').text()).toContain('−2')
+  })
+
+  it('appends unmatched workspace diff files in one fallback chip row', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'Updated the generated output.',
+        workspaceDiffFiles: [{
+          id: 7,
+          path: 'src/app.ts',
+          change_id: 'change-1',
+          session_id: 'session-1',
+          additions: 3,
+          deletions: 2,
+        }],
+      },
+    })
+
+    const fallback = wrapper.find('.markdown-diff-fallback-row')
+    expect(fallback.exists()).toBe(true)
+    expect(fallback.find('.markdown-file-card').attributes('data-path')).toBe('/workspace/src/app.ts')
+    expect(fallback.find('.markdown-file-diff-btn').text()).toContain('+3')
+  })
+
+  it('does not duplicate an inline-matched diff file in the fallback row', () => {
     const wrapper = mount(MarkdownRenderer, {
       props: {
         content: 'Updated **app.ts**.',
@@ -130,14 +174,34 @@ describe('MarkdownRenderer workspace artifact file card', () => {
       },
     })
 
-    const card = wrapper.find('.markdown-file-card')
-    expect(card.exists()).toBe(true)
-    expect(card.attributes('data-path')).toBe('/workspace/src/app.ts')
-    expect(card.attributes('data-filename')).toBe('app.ts')
-    expect(wrapper.find('.markdown-file-diff-btn').exists()).toBe(true)
+    expect(wrapper.findAll('.markdown-file-card')).toHaveLength(1)
+    expect(wrapper.find('.markdown-diff-fallback-row').exists()).toBe(false)
   })
 
-  it('does not linkify an ambiguous workspace diff basename', () => {
+  it('emits the workspace diff file when the chip body is clicked', async () => {
+    previewByDisplayPath.mockClear()
+    const diffFile = {
+      id: 7,
+      path: 'src/app.ts',
+      change_id: 'change-1',
+      session_id: 'session-1',
+      additions: 3,
+      deletions: 2,
+    }
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'Updated **app.ts**.',
+        workspaceDiffFiles: [diffFile],
+      },
+    })
+
+    await wrapper.find('.markdown-file-card').trigger('click')
+
+    expect(wrapper.emitted('workspace-diff-file-click')).toEqual([[diffFile]])
+    expect(previewByDisplayPath).not.toHaveBeenCalled()
+  })
+
+  it('renders ambiguous workspace diff basenames only in the fallback row', () => {
     const wrapper = mount(MarkdownRenderer, {
       props: {
         content: 'Updated app.ts.',
@@ -148,7 +212,8 @@ describe('MarkdownRenderer workspace artifact file card', () => {
       },
     })
 
-    expect(wrapper.find('.markdown-file-card').exists()).toBe(false)
+    expect(wrapper.find('.markdown-diff-fallback-row').exists()).toBe(true)
+    expect(wrapper.findAll('.markdown-diff-fallback-row .markdown-file-card')).toHaveLength(2)
   })
 
   it('routes a workspace HTML card click to requestBrowserArtifact', async () => {

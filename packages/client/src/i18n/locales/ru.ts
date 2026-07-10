@@ -1877,6 +1877,9 @@ export default {
     closePreview: 'Закрыть',
     previewRender: 'Просмотр',
     previewSource: 'Исходный код',
+    previewFileTab: 'Файл',
+    previewDiffTab: 'Изменения запуска',
+    diffPatchTruncated: 'Патч слишком большой и был обрезан — переключитесь на «Файл», чтобы увидеть содержимое полностью',
     saveFile: 'Сохранить',
   },
   

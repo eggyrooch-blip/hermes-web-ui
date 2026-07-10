@@ -162,6 +162,7 @@ md.renderer.rules.text = (tokens, idx, options, env, self) => {
 const markdownBody = ref<HTMLElement | null>(null)
 const componentId = `hermes-mermaid-${Math.random().toString(36).slice(2)}`
 const previewUrl = ref<string | null>(null)
+const renderedWorkspaceDiffFileIds = new Set<number>()
 
 // Preview config variable
 const textPreviewContent = ref<string | null>(null)
@@ -265,7 +266,8 @@ function renderFileCard(path: string, fileName: string, options: {
     </${tag}>`
   const diffFile = options.diffFile
   if (!diffFile) return card
-  return `<span class="markdown-inline-file-chip">${card}<button class="markdown-file-diff-btn" type="button" data-workspace-diff-file-id="${escapeHtml(String(diffFile.id))}" data-workspace-diff-change-id="${escapeHtml(String(diffFile.change_id || ''))}" data-workspace-diff-session-id="${escapeHtml(String(diffFile.session_id || ''))}" title="${escapeHtml(t('chat.workspaceDiffTitle'))}" aria-label="${escapeHtml(t('chat.workspaceDiffTitle'))}">Δ</button></span>`
+  renderedWorkspaceDiffFileIds.add(diffFile.id)
+  return `<span class="markdown-inline-file-chip">${card}<button class="markdown-file-diff-btn" type="button" data-workspace-diff-file-id="${escapeHtml(String(diffFile.id))}" data-workspace-diff-change-id="${escapeHtml(String(diffFile.change_id || ''))}" data-workspace-diff-session-id="${escapeHtml(String(diffFile.session_id || ''))}" title="${escapeHtml(t('chat.workspaceDiffTitle'))}" aria-label="${escapeHtml(t('chat.workspaceDiffTitle'))}"><span class="diff-badge-add">+${Number(diffFile.additions ?? 0)}</span> <span class="diff-badge-del">−${Number(diffFile.deletions ?? 0)}</span></button></span>`
 }
 
 function isInsideLinkToken(tokens: any[], idx: number): boolean {
@@ -337,6 +339,7 @@ function preprocessMediaDirectives(content: string): string {
 }
 
 const renderedHtml = computed(() => {
+  renderedWorkspaceDiffFileIds.clear()
   let html = md.render(preprocessMediaDirectives(repairNestedMarkdownFences(props.content)))
 
   // Add IDs to headings for anchor links
@@ -415,6 +418,20 @@ const renderedHtml = computed(() => {
       .map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     const re = new RegExp(`(?<=[\\s>({\\[<]|^)@(${escaped.join('|')})(?=[\\s.,!?;:，。！？；：)\\]}>]|<|$)`, 'gi')
     html = html.replace(re, '<span class="mention-highlight">@$1</span>')
+  }
+  const seen = new Set<number>()
+  const unmatched = (props.workspaceDiffFiles || []).filter((file) => {
+    if (!file?.id || !file.path || renderedWorkspaceDiffFileIds.has(file.id) || seen.has(file.id)) return false
+    seen.add(file.id)
+    return true
+  })
+  if (unmatched.length > 0) {
+    html += `<div class="markdown-diff-fallback-row">${unmatched
+      .map(file => renderFileCard(displayPathForDiffFile(file), fileNameFromPath(file.path), {
+        inline: true,
+        diffFile: file,
+      }))
+      .join('')}</div>`
   }
   return html
 })
@@ -610,6 +627,15 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
         message.error(err.message || t('download.downloadFailed'))
       })
       return
+    }
+
+    if (path) {
+      const rel = path.replace(/^\/workspace\/+/, '')
+      const diffFile = (props.workspaceDiffFiles || []).find(file => file.path === rel)
+      if (diffFile) {
+        emit('workspace-diff-file-click', diffFile)
+        return
+      }
     }
 
     if (path) {
@@ -933,9 +959,10 @@ function closeTextPreview(): void {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 18px;
+    min-width: 18px;
     height: 18px;
-    padding: 0;
+    gap: 3px;
+    padding: 0 5px;
     font-family: $font-code;
     font-size: 11px;
     line-height: 1;
@@ -944,6 +971,21 @@ function closeTextPreview(): void {
     border: 1px solid rgba(var(--accent-primary-rgb), 0.18);
     border-radius: 999px;
     cursor: pointer;
+  }
+
+  .diff-badge-add {
+    color: #2f9e44;
+  }
+
+  .diff-badge-del {
+    color: #d9480f;
+  }
+
+  .markdown-diff-fallback-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
   }
 
   blockquote {

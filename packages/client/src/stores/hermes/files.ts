@@ -131,6 +131,19 @@ function isAffected(targetPath: string, changedPath: string, changedIsDir: boole
   return false
 }
 
+type PreviewFile = {
+  path: string
+  type: 'image' | 'markdown' | 'text' | 'html'
+  content?: string
+  language?: string
+  diff?: {
+    changeId: string
+    fileId: number
+    sessionId: string
+    profile?: string | null
+  }
+}
+
 export const useFilesStore = defineStore('files', () => {
   const currentPath = ref('')
   const entries = ref<FileEntry[]>([])
@@ -145,12 +158,7 @@ export const useFilesStore = defineStore('files', () => {
     language: string
   } | null>(null)
 
-  const previewFile = ref<{
-    path: string
-    type: 'image' | 'markdown' | 'text' | 'html'
-    content?: string
-    language?: string
-  } | null>(null)
+  const previewFile = ref<PreviewFile | null>(null)
   const previewPanelRequestedAt = ref(0)
   const browserArtifactRequest = ref<{ name: string, path: string } | null>(null)
   const browserArtifactRequestedAt = ref(0)
@@ -303,6 +311,39 @@ export const useFilesStore = defineStore('files', () => {
     previewPanelRequestedAt.value = previewPanelRequestedAt.value + 1
   }
 
+  async function previewWorkspaceDiffFile(opts: {
+    displayPath: string
+    fileName?: string
+    changeId: string
+    fileId: number
+    sessionId: string
+    profile?: string | null
+  }): Promise<void> {
+    previewFile.value = null
+    await previewByDisplayPath(opts.displayPath, opts.fileName)
+    const diff = {
+      changeId: opts.changeId,
+      fileId: opts.fileId,
+      sessionId: opts.sessionId,
+      profile: opts.profile,
+    }
+    const opened = previewFile.value as PreviewFile | null
+    if (opened) {
+      previewFile.value = { ...opened, diff }
+      return
+    }
+
+    const rel = decodeDisplayPathSegments(opts.displayPath.replace(/^\/workspace\//, ''))
+    previewFile.value = {
+      path: rel,
+      type: 'text',
+      content: '',
+      language: getLanguageFromPath(opts.fileName || rel),
+      diff,
+    }
+    previewPanelRequestedAt.value = previewPanelRequestedAt.value + 1
+  }
+
   function requestBrowserArtifact(name: string, path: string) {
     browserArtifactRequest.value = { name, path }
     browserArtifactRequestedAt.value = browserArtifactRequestedAt.value + 1
@@ -378,7 +419,7 @@ export const useFilesStore = defineStore('files', () => {
     pathSegments, sortedEntries, hasUnsavedChanges,
     fetchEntries, navigateTo, navigateUp,
     openEditor, saveEditor, closeEditor,
-    openPreview, previewByDisplayPath, requestBrowserArtifact, closePreview,
+    openPreview, previewByDisplayPath, previewWorkspaceDiffFile, requestBrowserArtifact, closePreview,
     createDir, createFile, deleteEntry, renameEntry, copyEntry,
     uploadFiles, setSort,
   }

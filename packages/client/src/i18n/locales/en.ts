@@ -2131,6 +2131,9 @@ export default {
     closePreview: 'Close',
     previewRender: 'Render',
     previewSource: 'Source',
+    previewFileTab: 'File',
+    previewDiffTab: 'Run changes',
+    diffPatchTruncated: 'Patch too large and truncated — switch to "File" for the full content',
     saveFile: 'Save',
   },
   // Download

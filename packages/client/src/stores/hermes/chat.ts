@@ -9,6 +9,7 @@ import {
   type HermesMessage,
   type ProviderApiMode,
   type SessionSummary,
+  type WorkspaceRunChangeFileSummary,
   type WorkspaceRunChangeSummary,
 } from '@/api/hermes/sessions'
 import { getActiveProfileName, getActiveExpertId, setActiveExpertId } from '@/api/client'
@@ -145,6 +146,15 @@ interface CompressionState {
 }
 
 type WorkspaceRunChangeLike = WorkspaceRunChangeSummary | (RunEvent & { change_id?: string })
+
+export interface WorkspaceDiffInlineFile {
+  id: number
+  path: string
+  change_id: string
+  session_id: string
+  additions: number
+  deletions: number
+}
 
 function uid(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
@@ -703,6 +713,7 @@ export const useChatStore = defineStore('chat', () => {
   const runtimeMode = ref<ChatRuntimeMode>(activeRuntimeMode)
   const seenSessionCommandEvents = new WeakSet<RunEvent>()
   const sessions = ref<Session[]>([])
+  const workspaceDiffs = ref<Record<string, WorkspaceRunChangeSummary[]>>({})
   const activeSessionId = ref<string | null>(null)
   const focusMessageId = ref<string | null>(null)
   const streamStates = ref<Map<string, { abort: () => void }>>(new Map())
@@ -778,6 +789,7 @@ export const useChatStore = defineStore('chat', () => {
     activeRuntimeMode = mode
     runtimeMode.value = mode
     sessions.value = []
+    workspaceDiffs.value = {}
     completedUnreadSessions.value = new Set()
     queueLengths.value = new Map()
     queuedUserMessages.value = new Map()
@@ -1101,7 +1113,7 @@ export const useChatStore = defineStore('chat', () => {
       )
       const hydrated = await hydrateSessionMessagesFromPage(target, limit, activeSession.value?.profile)
       if (!hydrated) return false
-      await restoreWorkspaceDiffCards(target)
+      await restoreWorkspaceDiffs(target)
       if (activeSessionId.value === sid) syncActiveExpertFromSession(target)
       return true
     } catch (err) {
@@ -1288,7 +1300,7 @@ export const useChatStore = defineStore('chat', () => {
             }
           }
           activeSession.value = target
-          await restoreWorkspaceDiffCards(target)
+          await restoreWorkspaceDiffs(target)
           if (activeSessionId.value !== sessionId) {
             resolve()
             return
@@ -1397,7 +1409,7 @@ export const useChatStore = defineStore('chat', () => {
         const hydrated = await hydrateSessionMessagesFromPage(target, limit, target.profile)
         if (hydrated && activeSessionId.value === sessionId) {
           activeSession.value = target
-          await restoreWorkspaceDiffCards(target)
+          await restoreWorkspaceDiffs(target)
         }
       }
     } finally {
@@ -1548,101 +1560,88 @@ export const useChatStore = defineStore('chat', () => {
     if (s) s.messages.push(msg)
   }
 
-  function workspaceDiffMessageId(changeId: string): string {
-    return `workspace-change:${changeId}`
-  }
-
-  function workspaceDiffCardMessage(change: WorkspaceRunChangeLike): Message | null {
-    const changeId = String((change as any).change_id || '').trim()
-    const sessionId = String((change as any).session_id || '').trim()
+  function normalizeWorkspaceDiff(
+    sessionId: string,
+    change: WorkspaceRunChangeLike,
+  ): WorkspaceRunChangeSummary | null {
+    const raw = change as unknown as Record<string, unknown>
+    const changeId = String(raw.change_id || '').trim()
     if (!changeId || !sessionId) return null
-    const files = Array.isArray((change as any).files)
-      ? (change as any).files.map((file: Record<string, unknown>) => {
-          const {
-            id,
-            change_id,
-            session_id,
-            path,
-            old_path,
-            change_type,
-            additions,
-            deletions,
-            size_before,
-            size_after,
-            patch_bytes,
-            truncated,
-            binary,
-            created_at,
-          } = file
-          return {
-            id,
-            change_id,
-            session_id,
-            path,
-            old_path,
-            change_type,
-            additions,
-            deletions,
-            size_before,
-            size_after,
-            patch_bytes,
-            truncated,
-            binary,
-            created_at,
-          }
-        })
-      : []
-    const createdAt = Number((change as any).created_at || (change as any).finished_at || Date.now() / 1000)
-    const timestamp = Number.isFinite(createdAt) ? Math.round(createdAt * 1000) : Date.now()
-    const filesChanged = Number((change as any).files_changed ?? files.length)
-    const additions = Number((change as any).additions || 0)
-    const deletions = Number((change as any).deletions || 0)
+    const files = (Array.isArray(raw.files) ? raw.files : [])
+      .filter((file): file is Record<string, unknown> => !!file && typeof file === 'object')
+      .map((file): WorkspaceRunChangeFileSummary => ({
+        id: Number(file.id || 0),
+        change_id: String(file.change_id || changeId),
+        session_id: String(file.session_id || sessionId),
+        path: String(file.path || ''),
+        old_path: file.old_path == null ? null : String(file.old_path),
+        change_type: file.change_type === 'added' || file.change_type === 'deleted' || file.change_type === 'renamed'
+          ? file.change_type
+          : 'modified',
+        additions: Number(file.additions || 0),
+        deletions: Number(file.deletions || 0),
+        size_before: file.size_before == null ? null : Number(file.size_before),
+        size_after: file.size_after == null ? null : Number(file.size_after),
+        patch_bytes: Number(file.patch_bytes || 0),
+        truncated: Boolean(file.truncated),
+        binary: Boolean(file.binary),
+        created_at: Number(file.created_at || raw.created_at || raw.finished_at || 0),
+      }))
+
     return {
-      id: workspaceDiffMessageId(changeId),
-      role: 'command',
-      content: '',
-      timestamp,
-      systemType: 'command',
-      commandAction: 'workspace.diff',
-      commandData: {
-        change_id: changeId,
-        session_id: sessionId,
-        run_id: String((change as any).run_id || ''),
-        workspace: String((change as any).workspace || ''),
-        workspace_kind: String((change as any).workspace_kind || 'git'),
-        files_changed: filesChanged,
-        additions,
-        deletions,
-        truncated: Boolean((change as any).truncated),
-        total_patch_bytes: Number((change as any).total_patch_bytes || 0),
-        files,
-      },
+      change_id: changeId,
+      session_id: sessionId,
+      run_id: String(raw.run_id || ''),
+      source: 'run',
+      workspace: String(raw.workspace || ''),
+      workspace_kind: raw.workspace_kind === 'filesystem' ? 'filesystem' : 'git',
+      started_at: Number(raw.started_at || 0),
+      finished_at: Number(raw.finished_at || 0),
+      files_changed: Number(raw.files_changed ?? files.length),
+      additions: Number(raw.additions || 0),
+      deletions: Number(raw.deletions || 0),
+      truncated: Boolean(raw.truncated),
+      total_patch_bytes: Number(raw.total_patch_bytes || 0),
+      created_at: Number(raw.created_at || raw.finished_at || 0),
+      files,
     }
   }
 
-  function upsertWorkspaceDiffCard(sessionId: string, change: WorkspaceRunChangeLike) {
-    const s = sessions.value.find(s => s.id === sessionId)
-    if (!s) return
-    const card = workspaceDiffCardMessage({ ...change, session_id: sessionId } as WorkspaceRunChangeLike)
-    if (!card) return
-    const idx = s.messages.findIndex(m => m.id === card.id)
-    if (idx >= 0) {
-      s.messages[idx] = card
-      return
-    }
-    s.messages.push(card)
+  function upsertWorkspaceDiff(sessionId: string, change: WorkspaceRunChangeLike): void {
+    const normalized = normalizeWorkspaceDiff(sessionId, change)
+    if (!normalized) return
+    const current = workspaceDiffs.value[sessionId] || []
+    const index = current.findIndex(entry => entry.change_id === normalized.change_id)
+    const next = [...current]
+    if (index >= 0) next[index] = normalized
+    else next.push(normalized)
+    workspaceDiffs.value = { ...workspaceDiffs.value, [sessionId]: next }
   }
 
-  async function restoreWorkspaceDiffCards(session: Session) {
+  async function restoreWorkspaceDiffs(session: Session): Promise<void> {
     try {
       const changes = await fetchWorkspaceRunChanges(session.id, session.profile)
-      session.messages = session.messages.filter(message => message.commandAction !== 'workspace.diff')
-      for (const change of changes) {
-        upsertWorkspaceDiffCard(session.id, change)
-      }
+      const normalized = changes
+        .map(change => normalizeWorkspaceDiff(session.id, change))
+        .filter((change): change is WorkspaceRunChangeSummary => change !== null)
+      workspaceDiffs.value = { ...workspaceDiffs.value, [session.id]: normalized }
     } catch (err) {
-      console.error('Failed to load workspace diff cards:', err)
+      console.error('Failed to load workspace diffs:', err)
     }
+  }
+
+  function workspaceDiffFilesForRun(sessionId: string, runId: string): WorkspaceDiffInlineFile[] {
+    if (!runId) return []
+    return (workspaceDiffs.value[sessionId] || [])
+      .filter(change => change.run_id === runId)
+      .flatMap(change => change.files.map(file => ({
+        id: file.id,
+        path: file.path,
+        change_id: file.change_id || change.change_id,
+        session_id: file.session_id || change.session_id || sessionId,
+        additions: file.additions,
+        deletions: file.deletions,
+      })))
   }
 
   function addOrUpdateSession(session: Session) {
@@ -2633,7 +2632,7 @@ export const useChatStore = defineStore('chat', () => {
                 handleAgentEvent(e)
                 break
               case 'workspace.diff.completed':
-                upsertWorkspaceDiffCard(sid, e as RunEvent)
+                upsertWorkspaceDiff(sid, e as RunEvent)
                 break
             }
           }
@@ -2700,7 +2699,7 @@ export const useChatStore = defineStore('chat', () => {
             }
 
             case 'workspace.diff.completed': {
-              upsertWorkspaceDiffCard(sid, evt)
+              upsertWorkspaceDiff(sid, evt)
               break
             }
 
@@ -3334,7 +3333,7 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         case 'workspace.diff.completed': {
-          upsertWorkspaceDiffCard(sid, evt)
+          upsertWorkspaceDiff(sid, evt)
           break
         }
 
@@ -4176,6 +4175,9 @@ export const useChatStore = defineStore('chat', () => {
     loadSessions,
     refreshSessionListOnly,
     refreshActiveSession,
+    upsertWorkspaceDiff,
+    restoreWorkspaceDiffs,
+    workspaceDiffFilesForRun,
     getThinkingObservation,
     noteThinkingDelta,
     noteReasoningStart,

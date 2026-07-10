@@ -88,4 +88,34 @@ describe('files store', () => {
       type: 'image',
     })
   })
+
+  it('opens an unreadable changed file with diff context', async () => {
+    mockFilesApi.readFile.mockRejectedValue(new Error('deleted'))
+    const store = useFilesStore()
+
+    await store.previewWorkspaceDiffFile({
+      displayPath: '/workspace/src/deleted.ts',
+      fileName: 'deleted.ts',
+      changeId: 'change-1',
+      fileId: 7,
+      sessionId: 'session-1',
+      profile: 'travel',
+    })
+
+    expect(mockFilesApi.readFile).toHaveBeenNthCalledWith(1, 'src/deleted.ts')
+    expect(mockFilesApi.readFile).toHaveBeenNthCalledWith(2, 'workspace/src/deleted.ts')
+    expect(store.previewFile).toEqual({
+      path: 'src/deleted.ts',
+      type: 'text',
+      content: '',
+      language: 'typescript',
+      diff: {
+        changeId: 'change-1',
+        fileId: 7,
+        sessionId: 'session-1',
+        profile: 'travel',
+      },
+    })
+    expect(store.previewPanelRequestedAt).toBe(1)
+  })
 })

@@ -2133,6 +2133,9 @@ export default {
     closePreview: '关闭',
     previewRender: '渲染',
     previewSource: '源码',
+    previewFileTab: '文件',
+    previewDiffTab: '本轮改动',
+    diffPatchTruncated: '补丁过大已截断，切到「文件」查看完整内容',
     saveFile: '保存',
   },
   // 下载

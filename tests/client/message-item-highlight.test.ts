@@ -14,9 +14,14 @@ index 1111111..2222222 100644
 `
 
 const fetchWorkspaceRunChangeFileMock = vi.hoisted(() => vi.fn())
+const readFileMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/hermes/sessions', () => ({
   fetchWorkspaceRunChangeFile: fetchWorkspaceRunChangeFileMock,
+}))
+
+vi.mock('@/api/hermes/files', () => ({
+  readFile: readFileMock,
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -47,7 +52,8 @@ vi.mock('naive-ui', () => ({
 }))
 
 import MessageItem from '@/components/hermes/chat/MessageItem.vue'
-import type { Message } from '@/stores/hermes/chat'
+import { useChatStore, type Message } from '@/stores/hermes/chat'
+import { useFilesStore } from '@/stores/hermes/files'
 
 describe('MessageItem tool details', () => {
   beforeEach(() => {
@@ -75,6 +81,8 @@ describe('MessageItem tool details', () => {
       },
     })
     fetchWorkspaceRunChangeFileMock.mockReset()
+    readFileMock.mockReset()
+    readFileMock.mockResolvedValue({ content: 'const value = 2' })
   })
 
   it('renders highlighted code blocks for tool arguments and tool results', async () => {
@@ -444,24 +452,7 @@ describe('MessageItem tool details', () => {
     expect(writeText).toHaveBeenCalledWith(JSON.stringify(fullResult, null, 2))
   })
 
-  it('renders a workspace diff summary card and loads file patch details on demand', async () => {
-    fetchWorkspaceRunChangeFileMock.mockResolvedValue({
-      id: 7,
-      change_id: 'change-1',
-      session_id: 'session-1',
-      path: 'src/app.ts',
-      old_path: null,
-      change_type: 'modified',
-      additions: 2,
-      deletions: 1,
-      size_before: 10,
-      size_after: 11,
-      patch_bytes: UNIFIED_DIFF_SAMPLE.length,
-      truncated: false,
-      binary: false,
-      created_at: 2,
-      patch: UNIFIED_DIFF_SAMPLE,
-    })
+  it('renders legacy persisted workspace diff command messages as nothing', () => {
     const wrapper = mount(MessageItem, {
       props: {
         session: { id: 'session-1', profile: 'travel' } as any,
@@ -495,64 +486,31 @@ describe('MessageItem tool details', () => {
       },
     })
 
-    expect(wrapper.find('.workspace-diff-card').exists()).toBe(true)
-    expect(wrapper.text()).toContain('1')
-    expect(wrapper.text()).toContain('+2')
-    expect(wrapper.text()).toContain('-1')
-    expect(wrapper.text()).toContain('src/app.ts')
-
-    await wrapper.find('.workspace-diff-file').trigger('click')
-
-    expect(fetchWorkspaceRunChangeFileMock).toHaveBeenCalledWith('session-1', 'change-1', 7, 'travel')
-    const patch = wrapper.find('.workspace-diff-patch')
-    expect(patch.exists()).toBe(true)
-    expect(patch.find('.code-lang').text()).toBe('diff')
-    expect(patch.find('.hljs-unified-diff').exists()).toBe(true)
-    expect(patch.find('.diff-line-added .diff-line-content').text()).toBe('+const value = 2')
+    expect(wrapper.text()).toBe('')
+    expect(wrapper.find('.workspace-diff-card').exists()).toBe(false)
+    expect(fetchWorkspaceRunChangeFileMock).not.toHaveBeenCalled()
   })
 
-  it('uses session workspace diff files to linkify assistant bare filenames and load patches', async () => {
-    fetchWorkspaceRunChangeFileMock.mockResolvedValue({
-      id: 7,
+  it('uses stored run diff files to linkify assistant bare filenames and open FilePreview diff mode', async () => {
+    const chatStore = useChatStore()
+    chatStore.upsertWorkspaceDiff('session-1', {
+      event: 'workspace.diff.completed',
       change_id: 'change-1',
       session_id: 'session-1',
-      path: 'src/app.ts',
-      old_path: null,
-      change_type: 'modified',
-      additions: 2,
-      deletions: 1,
-      size_before: 10,
-      size_after: 11,
-      patch_bytes: UNIFIED_DIFF_SAMPLE.length,
-      truncated: false,
-      binary: false,
-      created_at: 2,
-      patch: UNIFIED_DIFF_SAMPLE,
+      run_id: 'run-1',
+      files: [{
+        id: 7,
+        path: 'src/app.ts',
+        additions: 2,
+        deletions: 1,
+      }],
     })
     const wrapper = mount(MessageItem, {
       props: {
         session: {
           id: 'session-1',
           profile: 'travel',
-          messages: [{
-            id: 'workspace-change:change-1',
-            role: 'command',
-            content: '',
-            timestamp: Date.now(),
-            commandAction: 'workspace.diff',
-            commandData: {
-              change_id: 'change-1',
-              session_id: 'session-1',
-              run_id: 'run-1',
-              files: [{
-                id: 7,
-                path: 'src/app.ts',
-                change_type: 'modified',
-                additions: 2,
-                deletions: 1,
-              }],
-            },
-          }],
+          messages: [],
         } as any,
         message: {
           id: 'assistant-1',
@@ -571,37 +529,36 @@ describe('MessageItem tool details', () => {
     await wrapper.find('.markdown-file-diff-btn').trigger('click')
     await Promise.resolve()
 
-    expect(fetchWorkspaceRunChangeFileMock).toHaveBeenCalledWith('session-1', 'change-1', 7, 'travel')
-    const patch = wrapper.find('.workspace-diff-patch')
-    expect(patch.exists()).toBe(true)
-    expect(patch.find('.hljs-unified-diff').exists()).toBe(true)
+    const filesStore = useFilesStore()
+    expect(filesStore.previewFile?.diff).toEqual({
+      changeId: 'change-1',
+      fileId: 7,
+      sessionId: 'session-1',
+      profile: 'travel',
+    })
+    expect(fetchWorkspaceRunChangeFileMock).not.toHaveBeenCalled()
   })
 
   it('does not linkify assistant bare filenames from workspace diffs in another run', () => {
+    const chatStore = useChatStore()
+    chatStore.upsertWorkspaceDiff('session-1', {
+      event: 'workspace.diff.completed',
+      change_id: 'change-2',
+      session_id: 'session-1',
+      run_id: 'run-2',
+      files: [{
+        id: 8,
+        path: 'src/app.ts',
+        additions: 1,
+        deletions: 0,
+      }],
+    })
     const wrapper = mount(MessageItem, {
       props: {
         session: {
           id: 'session-1',
           profile: 'travel',
-          messages: [{
-            id: 'workspace-change:change-2',
-            role: 'command',
-            content: '',
-            timestamp: Date.now(),
-            commandAction: 'workspace.diff',
-            commandData: {
-              change_id: 'change-2',
-              session_id: 'session-1',
-              run_id: 'run-2',
-              files: [{
-                id: 8,
-                path: 'src/app.ts',
-                change_type: 'modified',
-                additions: 1,
-                deletions: 0,
-              }],
-            },
-          }],
+          messages: [],
         } as any,
         message: {
           id: 'assistant-older',

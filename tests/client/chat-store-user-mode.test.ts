@@ -392,7 +392,7 @@ describe('chat store user-mode model selection', () => {
     expect(store.compressionState).toBeNull()
   })
 
-  it('adds one workspace diff card from live events and ignores duplicates', async () => {
+  it('stores workspace diff files from live events without adding a chat message', async () => {
     const store = useChatStore()
     store.newChat()
 
@@ -440,36 +440,20 @@ describe('chat store user-mode model selection', () => {
     onEvent(event)
     onEvent(event)
 
-    const cards = store.activeSession!.messages.filter(m => m.commandAction === 'workspace.diff')
-    expect(cards).toHaveLength(1)
-    expect(cards[0]).toMatchObject({
-      id: 'workspace-change:change-1',
-      role: 'command',
-      commandData: expect.objectContaining({
+    expect(store.activeSession!.messages.some(m => m.commandAction === 'workspace.diff')).toBe(false)
+    expect(store.workspaceDiffFilesForRun(store.activeSession!.id, 'run-1')).toEqual([
+      expect.objectContaining({
+        id: 7,
+        path: 'src/app.ts',
         change_id: 'change-1',
-        files_changed: 1,
+        session_id: store.activeSession!.id,
         additions: 2,
         deletions: 1,
-      }),
-    })
-    expect(cards[0].commandData?.files).toEqual([
-      expect.objectContaining({
-        path: 'src/app.ts',
-        patch_bytes: 42,
-      }),
-    ])
-    expect(JSON.stringify(cards[0].commandData?.files)).not.toContain('secret')
-    expect(cards[0].commandData?.files).toEqual([
-      expect.not.objectContaining({
-        patch: expect.anything(),
-        patch_body: expect.anything(),
-        diff: expect.anything(),
-        content: expect.anything(),
       }),
     ])
   })
 
-  it('restores workspace diff cards after refreshing a session without duplicating existing cards', async () => {
+  it('restores workspace diff files after refreshing a session without adding chat messages', async () => {
     const store = useChatStore()
     store.newChat()
     const sessionId = store.activeSession!.id
@@ -507,16 +491,12 @@ describe('chat store user-mode model selection', () => {
     await store.refreshActiveSession()
 
     expect(fetchWorkspaceRunChangesMock).toHaveBeenCalledWith(sessionId, 'default')
-    const cards = store.activeSession!.messages.filter(m => m.commandAction === 'workspace.diff')
-    expect(cards).toHaveLength(1)
-    expect(cards[0]).toMatchObject({
-      id: 'workspace-change:change-restore',
-      commandData: expect.objectContaining({
-        files_changed: 2,
-        workspace_kind: 'filesystem',
-      }),
-    })
-    expect(store.activeSession!.messages.map(m => m.id)).toEqual(['1', 'workspace-change:change-restore'])
+    expect(store.activeSession!.messages.some(m => m.commandAction === 'workspace.diff')).toBe(false)
+    expect(store.activeSession!.messages.map(m => m.id)).toEqual(['1'])
+    expect(store.workspaceDiffFilesForRun(sessionId, 'run-1')).toEqual([
+      expect.objectContaining({ id: 8, path: 'src/a.ts', change_id: 'change-restore' }),
+      expect.objectContaining({ id: 9, path: 'src/b.ts', change_id: 'change-restore' }),
+    ])
   })
 
   it('keeps a tool run as one thinking message, tool card, then one streamed result message', async () => {

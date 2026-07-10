@@ -2134,6 +2134,9 @@ export default {
     closePreview: '關閉',
     previewRender: '渲染',
     previewSource: '原始碼',
+    previewFileTab: '檔案',
+    previewDiffTab: '本輪改動',
+    diffPatchTruncated: '補丁過大已截斷，切到「檔案」查看完整內容',
     saveFile: '儲存',
   },
 
