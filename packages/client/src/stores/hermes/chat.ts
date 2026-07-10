@@ -14,7 +14,7 @@ import {
 import { getActiveProfileName, getActiveExpertId, setActiveExpertId } from '@/api/client'
 import { getDownloadUrl } from '@/api/hermes/download'
 import { defineStore } from 'pinia'
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onScopeDispose } from 'vue'
 import { useAppStore } from './app'
 import { useProfilesStore } from './profiles'
 import { useSettingsStore } from './settings'
@@ -674,6 +674,9 @@ export const useChatStore = defineStore('chat', () => {
   const isLoadingSessions = ref(false)
   const sessionsLoaded = ref(false)
   const isLoadingMessages = ref(false)
+  let switchSessionLoadEpoch = 0
+  let hydrationRequestEpoch = 0
+  const latestHydrationRequestBySession = new Map<string, number>()
   const isRunActive = computed(() => isStreaming.value)
 
   async function fetchRuntimeSessions(profile?: string | null): Promise<SessionSummary[]> {
@@ -1037,9 +1040,24 @@ export const useChatStore = defineStore('chat', () => {
     limit: number,
     profile = target.profile,
   ): Promise<boolean> {
+    const requestEpoch = ++hydrationRequestEpoch
+    latestHydrationRequestBySession.set(target.id, requestEpoch)
+    const messagesAtRequestStart = new Map(target.messages.map(message => [message.id, message]))
     const detail = await fetchSessionMessagesPage(target.id, 0, limit, profile)
-    if (!detail) return false
+    if (latestHydrationRequestBySession.get(target.id) !== requestEpoch) return false
+    if (!detail?.messages?.length) return false
     const mapped = mapHermesMessages(detail.messages || [])
+    const mappedIndexById = new Map(mapped.map((message, index) => [message.id, index]))
+    for (const message of target.messages) {
+      if (messagesAtRequestStart.get(message.id) === message) continue
+      const mappedIndex = mappedIndexById.get(message.id)
+      if (mappedIndex == null) {
+        mappedIndexById.set(message.id, mapped.length)
+        mapped.push(message)
+      } else {
+        mapped[mappedIndex] = message
+      }
+    }
     target.messages = mapped
     target.loadedMessageCount = detail.messages.length
     target.messageTotal = detail.total
@@ -1117,6 +1135,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function switchSession(sessionId: string, focusId?: string | null) {
+    const loadEpoch = ++switchSessionLoadEpoch
     clearThinkingObservationFor(sessionId)
     activeSessionId.value = sessionId
     focusMessageId.value = focusId ?? null
@@ -1127,7 +1146,10 @@ export const useChatStore = defineStore('chat', () => {
     clearSessionCompletedUnread(sessionId)
     syncActiveExpertFromSession(activeSession.value)
 
-    if (!activeSession.value) return
+    if (!activeSession.value) {
+      if (loadEpoch === switchSessionLoadEpoch) isLoadingMessages.value = false
+      return
+    }
 
     isLoadingMessages.value = true
 
@@ -1176,7 +1198,7 @@ export const useChatStore = defineStore('chat', () => {
             target.messageTotal = data.messageTotal ?? target.messageCount ?? target.loadedMessageCount
             target.messageCount = target.messageTotal
             target.hasMoreBefore = data.hasMoreBefore ?? target.loadedMessageCount < target.messageTotal
-          } else if (Number(data.messageTotal ?? target.messageCount ?? 0) > 0) {
+          } else {
             const limit = Math.min(
               Math.max(data.messageLoadedCount || target.loadedMessageCount || LIVE_CHAT_MESSAGE_PAGE_SIZE, LIVE_CHAT_MESSAGE_PAGE_SIZE),
               LIVE_CHAT_MAX_LOADED_MESSAGES,
@@ -1295,8 +1317,20 @@ export const useChatStore = defineStore('chat', () => {
       })
     } catch (err) {
       console.error('Failed to load session messages via resume:', err)
+      const target = sessions.value.find(session => session.id === sessionId)
+      if (target && activeSessionId.value === sessionId) {
+        const limit = Math.min(
+          Math.max(target.loadedMessageCount || LIVE_CHAT_MESSAGE_PAGE_SIZE, LIVE_CHAT_MESSAGE_PAGE_SIZE),
+          LIVE_CHAT_MAX_LOADED_MESSAGES,
+        )
+        const hydrated = await hydrateSessionMessagesFromPage(target, limit, target.profile)
+        if (hydrated && activeSessionId.value === sessionId) {
+          activeSession.value = target
+          await restoreWorkspaceDiffCards(target)
+        }
+      }
     } finally {
-      isLoadingMessages.value = false
+      if (loadEpoch === switchSessionLoadEpoch) isLoadingMessages.value = false
     }
 
     // Resume in-flight run event listeners if needed
@@ -2406,7 +2440,7 @@ export const useChatStore = defineStore('chat', () => {
         if (data.outputTokens != null) target.outputTokens = data.outputTokens
         if (data.contextTokens != null) target.contextTokens = data.contextTokens
 
-        if (Array.isArray(data.messages)) {
+        if (Array.isArray(data.messages) && data.messages.length > 0) {
           const previousActiveAssistantMessageId = activeAssistantMessageId
           const previousReasoningAssistantMessageId = reasoningAssistantMessageId
           const replayRunMarker = getReplayRunMarker(data.events) ?? activeRunMarker
@@ -3822,7 +3856,7 @@ export const useChatStore = defineStore('chat', () => {
 
   // Tab visibility: re-sync when returning to foreground
   if (typeof document !== 'undefined') {
-    document.addEventListener('visibilitychange', () => {
+    const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && !isStreaming.value) {
         // Live-sync the session list so sessions created elsewhere (CLI,
         // Telegram, another device) appear without a manual reload.
@@ -3854,7 +3888,7 @@ export const useChatStore = defineStore('chat', () => {
               target.messageCount = target.messageTotal
               target.hasMoreBefore = data.hasMoreBefore ?? target.loadedMessageCount < target.messageTotal
               if (activeSessionId.value === sid) activeSession.value = target
-            } else if (Number(data.messageTotal ?? target.messageCount ?? 0) > 0) {
+            } else {
               const limit = Math.min(
                 Math.max(data.messageLoadedCount || target.loadedMessageCount || LIVE_CHAT_MESSAGE_PAGE_SIZE, LIVE_CHAT_MESSAGE_PAGE_SIZE),
                 LIVE_CHAT_MAX_LOADED_MESSAGES,
@@ -3867,7 +3901,9 @@ export const useChatStore = defineStore('chat', () => {
           }, activeSession.value?.profile, runtimeTransport())
         }
       }
-    })
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    onScopeDispose(() => document.removeEventListener('visibilitychange', handleVisibilityChange))
   }
 
   // Mild background polling for live session-list sync (covers sessions created
@@ -3876,11 +3912,12 @@ export const useChatStore = defineStore('chat', () => {
   // disrupts an active run. visibilitychange (above) handles the wake-from-hidden
   // case; this covers the "left it open and watching" case.
   if (typeof window !== 'undefined') {
-    window.setInterval(() => {
+    const sessionListRefreshInterval = window.setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
       if (isStreaming.value) return
       void refreshSessionListOnly()
     }, 12_000)
+    onScopeDispose(() => window.clearInterval(sessionListRefreshInterval))
   }
 
   // Transient observation of <think> boundaries during active streaming.

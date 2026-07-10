@@ -487,6 +487,10 @@ describe('bridge run final context usage', () => {
     const nsp = makeNamespace(emit)
     const socket = makeSocket()
     const state = makeState()
+    const flushedRunIds: Array<string | undefined> = []
+    flushBridgePendingToDbMock.mockImplementation((targetState: any) => {
+      flushedRunIds.push(targetState.runId)
+    })
     const sessionMap = new Map([['session-1', state]])
     const workspace = '/tmp/hermes-explicit-workspace'
     completeWorkspaceRunCheckpointMock.mockReturnValue({
@@ -538,6 +542,7 @@ describe('bridge run final context usage', () => {
     const failedIndex = emit.mock.calls.findIndex(call => call[0] === 'run.failed')
     expect(diffIndex).toBeGreaterThanOrEqual(0)
     expect(diffIndex).toBeLessThan(failedIndex)
+    expect(flushedRunIds).toContain('run-1')
   })
 
   it('stores a super admin model-run token for the profile without adding it to bridge instructions', async () => {
@@ -941,6 +946,9 @@ describe('bridge run final context usage', () => {
     )
 
     expect(persistedContent).toContain('Text [Call')
+    expect(state.messages.find((message: any) => message.role === 'assistant')).toEqual(expect.objectContaining({
+      run_id: 'run-1',
+    }))
     expect(emit).toHaveBeenCalledWith('message.delta', expect.objectContaining({
       delta: 'Text ',
       output: 'Text ',

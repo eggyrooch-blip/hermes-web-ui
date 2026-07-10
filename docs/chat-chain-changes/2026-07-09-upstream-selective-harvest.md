@@ -1,5 +1,6 @@
 ---
 date: 2026-07-09
+pr: pending
 feature: Selective upstream harvest
 impact: Ports the upstream fixes that fit the Hermes WebUI boundary without importing plugin/runtime maintenance surfaces.
 ---

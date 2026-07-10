@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createPinia, setActivePinia } from 'pinia'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, disposePinia, setActivePinia, type Pinia } from 'pinia'
 import { nextTick } from 'vue'
 
 const chatApi = vi.hoisted(() => ({
@@ -8,6 +8,11 @@ const chatApi = vi.hoisted(() => ({
   resumeSession: vi.fn(),
   registerSessionHandlers: vi.fn(),
   unregisterSessionHandlers: vi.fn(),
+}))
+
+const sessionsApi = vi.hoisted(() => ({
+  fetchSessionMessagesPage: vi.fn(),
+  fetchSessions: vi.fn(),
 }))
 
 vi.mock('@/api/hermes/chat', () => ({
@@ -34,7 +39,8 @@ vi.mock('@/api/client', () => ({
 vi.mock('@/api/hermes/sessions', () => ({
   deleteSession: vi.fn(),
   fetchSession: vi.fn(),
-  fetchSessions: vi.fn(),
+  fetchSessionMessagesPage: sessionsApi.fetchSessionMessagesPage,
+  fetchSessions: sessionsApi.fetchSessions,
   fetchWorkspaceRunChanges: vi.fn(() => Promise.resolve([])),
   setSessionModel: vi.fn(),
 }))
@@ -73,11 +79,15 @@ function makeSession(id: string): Session {
 
 describe('chat store compression state', () => {
   let handlers: any
+  let pinia: Pinia
 
   beforeEach(() => {
     handlers = undefined
     vi.resetAllMocks()
-    setActivePinia(createPinia())
+    pinia = createPinia()
+    setActivePinia(pinia)
+    sessionsApi.fetchSessionMessagesPage.mockResolvedValue(null)
+    sessionsApi.fetchSessions.mockResolvedValue([])
     chatApi.startRunViaSocket.mockReturnValue({ abort: vi.fn() })
     chatApi.resumeSession.mockImplementation((sessionId: string, onResumed: (data: any) => void) => {
       onResumed({
@@ -92,6 +102,10 @@ describe('chat store compression state', () => {
       handlers = registeredHandlers
       return vi.fn()
     })
+  })
+
+  afterEach(() => {
+    disposePinia(pinia)
   })
 
   it('does not show a background session compression indicator in the active session', async () => {

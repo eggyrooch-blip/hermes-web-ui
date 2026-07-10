@@ -21,6 +21,7 @@ export function flushBridgePendingToDb(state: SessionState, sessionId: string, r
     content,
     reasoning: reasoning || null,
     reasoning_content: reasoning || null,
+    run_id: state.runId || null,
     timestamp: Math.floor(Date.now() / 1000),
   })
   state.bridgePendingAssistantContent = ''
@@ -43,11 +44,15 @@ export function ensureOpenBridgeAssistantMessage(
   runMarker: string,
 ): SessionMessage {
   const existing = findOpenBridgeAssistantMessage(state, runMarker)
-  if (existing) return existing
+  if (existing) {
+    if (state.runId && !existing.run_id) existing.run_id = state.runId
+    return existing
+  }
   const message: SessionMessage = {
     id: state.messages.length + 1,
     session_id: sessionId,
     runMarker,
+    run_id: state.runId || null,
     role: 'assistant',
     content: '',
     timestamp: Math.floor(Date.now() / 1000),
@@ -103,6 +108,7 @@ export function recordBridgeToolStarted(
       id: state.messages.length + 1,
       session_id: sessionId,
       runMarker,
+      run_id: state.runId || null,
       role: 'assistant',
       content: '',
       tool_calls: [toolCall],
@@ -120,6 +126,7 @@ export function recordBridgeToolStarted(
     finish_reason: 'tool_calls',
     reasoning: reasoning || null,
     reasoning_content: reasoning || null,
+    run_id: state.runId || null,
     timestamp,
   })
   state.bridgePendingReasoningContent = ''
@@ -167,6 +174,7 @@ export function recordBridgeToolCompleted(
     id: state.messages.length + 1,
     session_id: sessionId,
     runMarker,
+    run_id: state.runId || null,
     role: 'tool',
     content: output,
     tool_call_id: id,
@@ -179,6 +187,7 @@ export function recordBridgeToolCompleted(
     content: output,
     tool_call_id: id,
     tool_name: toolName || pending?.name || null,
+    run_id: state.runId || null,
     timestamp,
   })
 

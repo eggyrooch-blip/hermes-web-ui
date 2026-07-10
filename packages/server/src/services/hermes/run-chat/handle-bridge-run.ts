@@ -188,6 +188,7 @@ function flushPendingToolMarkupToAssistant(
   const last = findOpenAssistantMessage(state, runMarker)
   if (last) {
     last.content += pendingMarkup
+    if (!last.run_id) last.run_id = runId
   }
   emit('message.delta', {
     event: 'message.delta',
@@ -213,12 +214,14 @@ function processBridgeTextDelta(
   const last = [...state.messages].reverse().find(m => m.runMarker === runMarker)
   if (last?.role === 'assistant' && last.finish_reason == null) {
     last.content += delta
+    if (!last.run_id) last.run_id = runId
     syncBridgeReasoningToMessage(last, state.bridgePendingReasoningContent)
   } else {
     state.messages.push({
       id: state.messages.length + 1,
       session_id: sessionId,
       runMarker,
+      run_id: runId,
       role: 'assistant',
       content: delta,
       reasoning: state.bridgePendingReasoningContent || null,
@@ -656,11 +659,11 @@ export async function handleBridgeRun(
     state.isWorking = false
     state.isAborting = false
     state.profile = undefined
-    state.runId = undefined
     state.activeRunMarker = undefined
     state.events = []
     state.bridgePendingToolCallMarkup = undefined
     flushBridgePendingToDb(state, session_id)
+    state.runId = undefined
     updateSessionStats(session_id)
     const message = err instanceof Error ? err.message : String(err)
     const errUsage = await calcAndUpdateUsage(session_id, state, emit)
@@ -1239,12 +1242,14 @@ async function applyBridgeChunkAsync(
       const last = [...state.messages].reverse().find(m => m.runMarker === runMarker)
       if (last?.role === 'assistant' && last.finish_reason == null) {
         last.content += delta
+        if (!last.run_id) last.run_id = chunk.run_id
         syncBridgeReasoningToMessage(last, state.bridgePendingReasoningContent)
       } else {
         state.messages.push({
           id: state.messages.length + 1,
           session_id: sessionId,
           runMarker,
+          run_id: chunk.run_id,
           role: 'assistant',
           content: delta,
           reasoning: state.bridgePendingReasoningContent || null,

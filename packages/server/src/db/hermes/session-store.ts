@@ -58,6 +58,7 @@ export interface HermesMessageRow {
   reasoning: string | null
   reasoning_details?: string | null
   reasoning_content?: string | null
+  run_id: string
 }
 
 export interface HermesSessionSearchRow extends HermesSessionRow {
@@ -144,6 +145,7 @@ function mapMessageRow(row: Record<string, unknown>): HermesMessageRow {
     reasoning: row.reasoning != null ? String(row.reasoning) : null,
     reasoning_details: row.reasoning_details != null ? String(row.reasoning_details) : null,
     reasoning_content: row.reasoning_content != null ? String(row.reasoning_content) : null,
+    run_id: String(row.run_id || ''),
   }
 }
 
@@ -544,13 +546,14 @@ export function addMessage(msg: {
   reasoning?: string | null
   reasoning_details?: string | null
   reasoning_content?: string | null
+  run_id?: string | null
 }): number | undefined {
   if (!isSqliteAvailable()) return undefined
   const db = getDb()!
   const toolCallsJson = msg.tool_calls ? JSON.stringify(msg.tool_calls) : null
   const result = db.prepare(
-    `INSERT INTO ${MESSAGES_TABLE} (session_id, role, content, display_role, display_content, tool_call_id, tool_calls, tool_name, timestamp, token_count, finish_reason, reasoning, reasoning_details, reasoning_content)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO ${MESSAGES_TABLE} (session_id, role, content, display_role, display_content, tool_call_id, tool_calls, tool_name, timestamp, token_count, finish_reason, reasoning, reasoning_details, reasoning_content, run_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.session_id, msg.role, normalizeMessageContentForStorageRole(msg.role, msg.content),
     msg.display_role ?? null, msg.display_content ?? null,
@@ -558,7 +561,7 @@ export function addMessage(msg: {
     msg.timestamp ?? Math.floor(Date.now() / 1000),
     msg.token_count ?? null, msg.finish_reason ?? null,
     msg.reasoning ?? null, msg.reasoning_details ?? null,
-    msg.reasoning_content ?? null,
+    msg.reasoning_content ?? null, msg.run_id ?? '',
   )
   return result.lastInsertRowid as number
 }
@@ -578,12 +581,13 @@ export function addMessages(msgs: Array<{
   reasoning?: string | null
   reasoning_details?: string | null
   reasoning_content?: string | null
+  run_id?: string | null
 }>): void {
   if (!isSqliteAvailable() || msgs.length === 0) return
   const db = getDb()!
   const insert = db.prepare(
-    `INSERT INTO ${MESSAGES_TABLE} (session_id, role, content, display_role, display_content, tool_call_id, tool_calls, tool_name, timestamp, token_count, finish_reason, reasoning, reasoning_details, reasoning_content)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO ${MESSAGES_TABLE} (session_id, role, content, display_role, display_content, tool_call_id, tool_calls, tool_name, timestamp, token_count, finish_reason, reasoning, reasoning_details, reasoning_content, run_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   db.exec('BEGIN')
   try {
@@ -596,7 +600,7 @@ export function addMessages(msgs: Array<{
         msg.timestamp ?? Math.floor(Date.now() / 1000),
         msg.token_count ?? null, msg.finish_reason ?? null,
         msg.reasoning ?? null, msg.reasoning_details ?? null,
-        msg.reasoning_content ?? null,
+        msg.reasoning_content ?? null, msg.run_id ?? '',
       )
     }
     db.exec('COMMIT')

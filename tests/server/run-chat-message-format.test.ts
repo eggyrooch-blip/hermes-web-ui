@@ -56,7 +56,7 @@ describe('run-chat message formatting', () => {
     ])
   })
 
-  it('preserves assistant finish reason and run marker when resuming from database messages', () => {
+  it('preserves assistant finish reason and run identity when resuming from database messages', () => {
     const messages: SessionMessage[] = [
       {
         id: 1,
@@ -66,6 +66,7 @@ describe('run-chat message formatting', () => {
         timestamp: 1,
         finish_reason: null,
         runMarker: 'cli_run_current',
+        run_id: 'run-1',
       },
     ]
 
@@ -74,6 +75,7 @@ describe('run-chat message formatting', () => {
       content: 'partial answer',
       finish_reason: null,
       runMarker: 'cli_run_current',
+      run_id: 'run-1',
     }))
   })
 

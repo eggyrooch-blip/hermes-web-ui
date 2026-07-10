@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createPinia, setActivePinia } from 'pinia'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, disposePinia, setActivePinia, type Pinia } from 'pinia'
 
 const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
 const switchModelMock = vi.hoisted(() => vi.fn())
@@ -82,8 +82,11 @@ function setActiveTestSession(store: ReturnType<typeof useChatStore>) {
 }
 
 describe('chat store user-mode model selection', () => {
+  let pinia: Pinia
+
   beforeEach(() => {
-    setActivePinia(createPinia())
+    pinia = createPinia()
+    setActivePinia(pinia)
     vi.clearAllMocks()
     isUserModeMock.mockReturnValue(false)
     fetchSessionsMock.mockResolvedValue([])
@@ -94,6 +97,35 @@ describe('chat store user-mode model selection', () => {
       onResumed({ messages: [], isWorking: false, events: [] })
       return { disconnect: vi.fn() }
     })
+  })
+
+  afterEach(() => {
+    disposePinia(pinia)
+  })
+
+  it('removes background sync listeners and timers when the store is disposed', () => {
+    vi.useFakeTimers()
+    try {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get: () => 'visible',
+      })
+      const store = useChatStore()
+      const session = store.newChat({ profile: 'tester' })
+      store.activeSessionId = session.id
+      store.activeSession = session
+      resumeSessionMock.mockClear()
+      fetchSessionsMock.mockClear()
+
+      store.$dispose()
+      document.dispatchEvent(new Event('visibilitychange'))
+      vi.advanceTimersByTime(12_000)
+
+      expect(resumeSessionMock).not.toHaveBeenCalled()
+      expect(fetchSessionsMock).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   // NOTE: The three "user-mode model selection" cases that used to live here
@@ -747,7 +779,7 @@ describe('chat store user-mode model selection', () => {
     expect(resumeSessionMock).toHaveBeenCalledWith('session-2', expect.any(Function), 'tester', 'chat-run')
   })
 
-  it('falls back to paginated messages when socket resume returns empty for a non-empty session', async () => {
+  it('falls back to paginated messages when socket resume and summary totals are stale zero', async () => {
     fetchSessionsMock.mockResolvedValue([
       {
         id: 'session-1',
@@ -757,7 +789,7 @@ describe('chat store user-mode model selection', () => {
         started_at: 100,
         ended_at: null,
         last_active: 100,
-        message_count: 2,
+        message_count: 0,
         tool_call_count: 0,
         input_tokens: 0,
         output_tokens: 0,
@@ -777,7 +809,7 @@ describe('chat store user-mode model selection', () => {
         isWorking: false,
         events: [],
         messages: [],
-        messageTotal: 2,
+        messageTotal: 0,
         messageLoadedCount: 0,
         hasMoreBefore: false,
       })
@@ -815,6 +847,65 @@ describe('chat store user-mode model selection', () => {
     expect(fetchSessionMessagesPageMock).toHaveBeenCalledWith('session-1', 0, 150, 'tester')
     expect(store.activeSession?.messages.map(message => message.content)).toEqual(['hello', 'world'])
     expect(store.activeSession?.messages[1]?.runId).toBe('run-1')
+  })
+
+  it('falls back to paginated messages when socket resume times out', async () => {
+    vi.useFakeTimers()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      fetchSessionsMock.mockResolvedValue([
+        {
+          id: 'session-1',
+          source: 'api_server',
+          model: 'm',
+          title: 'first',
+          started_at: 100,
+          ended_at: null,
+          last_active: 100,
+          message_count: 1,
+          tool_call_count: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          reasoning_tokens: 0,
+          billing_provider: null,
+          estimated_cost_usd: 0,
+          actual_cost_usd: null,
+          cost_status: '',
+          profile: 'tester',
+        },
+      ])
+      resumeSessionMock.mockImplementation(() => ({ disconnect: vi.fn() }))
+      fetchSessionMessagesPageMock.mockResolvedValue({
+        session: { id: 'session-1', title: 'first' },
+        messages: [
+          {
+            id: 1,
+            session_id: 'session-1',
+            role: 'assistant',
+            content: 'loaded after timeout',
+            timestamp: 100,
+          },
+        ],
+        total: 1,
+        offset: 0,
+        limit: 150,
+        hasMore: false,
+      })
+
+      const store = useChatStore()
+      const loading = store.loadSessions('tester', 'session-1')
+      await vi.advanceTimersByTimeAsync(15_000)
+      await loading
+
+      expect(fetchSessionMessagesPageMock).toHaveBeenCalledWith('session-1', 0, 150, 'tester')
+      expect(store.activeSession?.messages.map(message => message.content)).toEqual(['loaded after timeout'])
+      expect(errorSpy).toHaveBeenCalledWith('Failed to load session messages via resume:', expect.any(Error))
+    } finally {
+      errorSpy.mockRestore()
+      vi.useRealTimers()
+    }
   })
 
   it('does not let slow fallback hydration reactivate a stale session', async () => {
@@ -911,6 +1002,114 @@ describe('chat store user-mode model selection', () => {
 
     expect(store.activeSessionId).toBe('session-2')
     expect(store.activeSession?.id).toBe('session-2')
+  })
+
+  it('does not let slow fallback hydration erase a message sent after the request started', async () => {
+    fetchSessionsMock.mockResolvedValue([
+      {
+        id: 'session-1',
+        source: 'api_server',
+        model: 'm',
+        title: 'first',
+        started_at: 100,
+        ended_at: null,
+        last_active: 100,
+        message_count: 2,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        profile: 'tester',
+      },
+    ])
+    resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({
+        session_id: 'session-1',
+        isWorking: false,
+        events: [],
+        messages: [],
+        messageTotal: 2,
+        messageLoadedCount: 0,
+        hasMoreBefore: false,
+      })
+      return { disconnect: vi.fn() }
+    })
+    let resolvePage!: (value: any) => void
+    fetchSessionMessagesPageMock.mockImplementation(() => new Promise(resolve => {
+      resolvePage = resolve
+    }))
+
+    const store = useChatStore()
+    const initialLoad = store.loadSessions('tester', 'session-1')
+    for (let i = 0; i < 10 && !resolvePage; i += 1) await Promise.resolve()
+
+    await store.sendMessage('new prompt while history loads')
+    resolvePage({
+      session: { id: 'session-1', title: 'first' },
+      messages: [
+        {
+          id: 1,
+          session_id: 'session-1',
+          role: 'user',
+          content: 'older prompt',
+          timestamp: 100,
+        },
+        {
+          id: 2,
+          session_id: 'session-1',
+          role: 'assistant',
+          content: 'older answer',
+          timestamp: 101,
+        },
+      ],
+      total: 2,
+      offset: 0,
+      limit: 150,
+      hasMore: false,
+    })
+    await initialLoad
+
+    expect(store.activeSession?.messages.map(message => message.content)).toEqual([
+      'older prompt',
+      'older answer',
+      'new prompt while history loads',
+    ])
+  })
+
+  it('does not clear the current transcript when reconnect resume returns an empty message array', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    session.messages.push({
+      id: 'older-assistant',
+      role: 'assistant',
+      content: 'existing answer',
+      timestamp: Date.now() - 1_000,
+    })
+
+    await store.sendMessage('keep this prompt')
+
+    const reconnectOptions = startRunViaSocketMock.mock.calls[0][5] as {
+      onReconnectResume: (data: any) => void | Promise<void>
+    }
+    await reconnectOptions.onReconnectResume({
+      session_id: session.id,
+      messages: [],
+      messageTotal: 0,
+      messageLoadedCount: 0,
+      isWorking: true,
+      events: [],
+    })
+
+    expect(session.messages.map(message => message.content)).toEqual([
+      'existing answer',
+      'keep this prompt',
+    ])
   })
 
   it('falls back to paginated messages when foreground resume returns empty for a non-empty active session', async () => {

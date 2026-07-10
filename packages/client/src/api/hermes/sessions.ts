@@ -69,6 +69,7 @@ export interface HermesMessage {
   token_count: number | null
   finish_reason: string | null
   reasoning: string | null
+  run_id?: string | null
 }
 
 export interface WorkspaceRunChangeFileSummary {
@@ -217,9 +218,11 @@ export async function fetchSessionMessagesPage(
     if (profile) params.set('profile', profile)
     const res = await request<PaginatedSessionMessages>(
       `/api/hermes/sessions/conversations/${encodeURIComponent(id)}/messages/paginated?${params}`,
+      { signal: AbortSignal.timeout(15_000) },
     )
     return res
-  } catch {
+  } catch (err) {
+    console.error('Failed to fetch paginated session messages:', err)
     return null
   }
 }
