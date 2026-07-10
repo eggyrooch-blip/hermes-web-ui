@@ -1665,6 +1665,127 @@ describe('chat store user-mode model selection', () => {
     expect(store.activeSession?.messages.map(message => message.content)).toEqual(['foreground fallback'])
   })
 
+  it('preserves local messages omitted from a partial foreground resume snapshot', async () => {
+    const session = {
+      id: 'session-1',
+      title: 'first',
+      messages: [
+        {
+          id: 'local-kept',
+          role: 'user',
+          content: 'keep visible row',
+          timestamp: 100_000,
+        },
+      ],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messageCount: 2,
+      messageTotal: 2,
+      profile: 'tester',
+    }
+    resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({
+        session_id: 'session-1',
+        isWorking: false,
+        events: [],
+        messages: [
+          {
+            id: 2,
+            session_id: 'session-1',
+            role: 'assistant',
+            content: 'foreground partial',
+            timestamp: 101,
+          },
+        ],
+        messageTotal: 2,
+        messageLoadedCount: 1,
+        hasMoreBefore: true,
+      })
+      return { disconnect: vi.fn() }
+    })
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+
+    const store = useChatStore()
+    store.sessions = [session as any]
+    store.activeSessionId = 'session-1'
+    store.activeSession = session as any
+
+    document.dispatchEvent(new Event('visibilitychange'))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(store.activeSession?.messages.map(message => message.content)).toEqual([
+      'keep visible row',
+      'foreground partial',
+    ])
+  })
+
+  it('accepts a changed server row when foreground resume finds the local row unchanged', async () => {
+    const session = {
+      id: 'session-1',
+      title: 'first',
+      messages: [
+        {
+          id: '2',
+          role: 'assistant',
+          content: 'stale local content',
+          timestamp: 100_000,
+          isStreaming: true,
+        },
+      ],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messageCount: 1,
+      messageTotal: 1,
+      profile: 'tester',
+    }
+    resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({
+        session_id: 'session-1',
+        isWorking: false,
+        events: [],
+        messages: [
+          {
+            id: 2,
+            session_id: 'session-1',
+            role: 'assistant',
+            content: 'authoritative final content',
+            timestamp: 101,
+            finish_reason: 'stop',
+            run_id: 'run-final',
+          },
+        ],
+        messageTotal: 1,
+        messageLoadedCount: 1,
+        hasMoreBefore: false,
+      })
+      return { disconnect: vi.fn() }
+    })
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+
+    const store = useChatStore()
+    store.sessions = [session as any]
+    store.activeSessionId = 'session-1'
+    store.activeSession = session as any
+
+    document.dispatchEvent(new Event('visibilitychange'))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(store.activeSession?.messages[0]).toMatchObject({
+      content: 'authoritative final content',
+      finishReason: 'stop',
+      runId: 'run-final',
+    })
+    expect(store.activeSession?.messages[0]?.isStreaming).not.toBe(true)
+  })
+
   it('archives a session and removes it from the normal session list', async () => {
     fetchSessionsMock.mockResolvedValue([
       {

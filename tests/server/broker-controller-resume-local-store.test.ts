@@ -368,4 +368,61 @@ describe('BrokerRunController local session resume', () => {
     expect(to.mock.calls[0][0]).toContain('profile-a')
     expect(to.mock.calls[1][0]).toContain('profile-b')
   })
+
+  it('keeps the queued client message id when dequeuing the next run', async () => {
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    ;(controller as any).nsp = { to: vi.fn(() => ({ emit: vi.fn() })) }
+    ;(controller as any).setSessionState('queued-session', 'research', {
+      messages: [],
+      isWorking: false,
+      events: [],
+      queue: [{
+        queue_id: 'queued-client-1',
+        input: 'next prompt',
+        profile: 'research',
+      }],
+    })
+    ;(controller as any).dequeueNextQueuedRun({ connected: false, emit: vi.fn(), join: vi.fn(), data: {} }, 'queued-session', 'research')
+
+    expect(addMessageMock).toHaveBeenCalledWith(expect.objectContaining({
+      session_id: 'queued-session',
+      client_id: 'queued-client-1',
+      content: 'next prompt',
+    }))
+  })
+
+  it('keeps the queued client message id when dequeuing after an abort', async () => {
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    ;(controller as any).nsp = {
+      to: vi.fn(() => ({ emit: vi.fn() })),
+      adapter: { rooms: new Map() },
+    }
+    ;(controller as any).setSessionState('abort-session', 'research', {
+      messages: [],
+      isWorking: true,
+      isAborting: true,
+      events: [],
+      runId: 'run-1',
+      profile: 'research',
+      queue: [{
+        queue_id: 'queued-client-after-abort',
+        input: 'retry after abort',
+        profile: 'research',
+      }],
+    })
+    await (controller as any).markAbortCompleted(
+      { connected: false, emit: vi.fn(), join: vi.fn(), data: {} },
+      'abort-session',
+      'research',
+      'run-1',
+    )
+
+    expect(addMessageMock).toHaveBeenCalledWith(expect.objectContaining({
+      session_id: 'abort-session',
+      client_id: 'queued-client-after-abort',
+      content: 'retry after abort',
+    }))
+  })
 })

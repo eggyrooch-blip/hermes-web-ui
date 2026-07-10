@@ -3958,6 +3958,10 @@ export const useChatStore = defineStore('chat', () => {
       if (document.visibilityState === 'visible' && activeSessionId.value && !isStreaming.value) {
         const sid = activeSessionId.value
         if (sid && !streamStates.value.has(sid)) {
+          const messagesAtResumeStart = new Map(
+            (sessions.value.find(session => session.id === sid)?.messages || [])
+              .map(message => [message.id, JSON.stringify(message)]),
+          )
           // Re-load messages via resume (server loads from DB)
           resumeSession(sid, async (data) => {
             if (activeSessionId.value !== sid) return
@@ -3975,7 +3979,11 @@ export const useChatStore = defineStore('chat', () => {
             }
             if (!data.isWorking) setCompressionState(sid, null)
             if (data.messages?.length) {
-              target.messages = mapHermesMessages(data.messages as any[])
+              target.messages = mergeServerMessagesPreservingLocalChanges(
+                target.messages,
+                mapHermesMessages(data.messages as any[]),
+                messagesAtResumeStart,
+              )
               target.loadedMessageCount = data.messageLoadedCount ?? data.messages.length
               target.messageTotal = data.messageTotal ?? target.messageCount ?? target.loadedMessageCount
               target.messageCount = target.messageTotal

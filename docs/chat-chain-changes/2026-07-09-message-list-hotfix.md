@@ -29,13 +29,15 @@ Local main could render an empty chat transcript after switching sessions even w
 - DB-to-socket hydration and broker `syncFromHermes` preserve both `client_id` and `run_id`; coding-agent turns forward the same `queue_id` into in-memory and SQLite user rows. The merge keeps current and server relative order by stable neighboring IDs, preserves partial-page omissions, and never sorts by untrusted message timestamps.
 - The Responses stream uses `state.runId` as the canonical message/diff identity (falling back to `response.id`), so coding-agent workspace diffs match both live and persisted assistant rows.
 - The production Run Broker SSE path now sets `state.runId`, tags assistant/tool rows, and persists that id before controller completion clears transient run state.
+- Foreground visibility resume now uses a serialized request-start snapshot: omitted rows stay visible, unchanged same-ID rows accept authoritative server content, and rows changed while resume is pending remain locally protected.
+- Normal and post-abort broker dequeue paths forward the queued `queue_id` into `handleRun`, so the eventual user row persists the same `messages.client_id` used by the optimistic client message.
 
 ## Verification
 
 - Failing-first client regressions cover stale/zero totals, resume timeout, delayed hydration, reconnect-empty preservation, and store disposal.
-- Focused client verification: 6 files / 93 passed.
-- Focused server verification: 14 files / 184 passed.
-- Full suite: 313 files / 2391 passed / 2 skipped / 0 failed.
+- Focused client verification: 6 files / 95 passed.
+- Focused server verification: 14 files / 186 passed.
+- Full suite: 313 files / 2395 passed / 2 skipped / 0 failed.
 - `npm run harness:check` and `npm run build` passed.
 - A fresh Playwright browser against the worktree production build and a real local DB snapshot observed a paginated `200`, 7 rendered message nodes, and 0 empty-state nodes after Socket.IO resume timeout.
 

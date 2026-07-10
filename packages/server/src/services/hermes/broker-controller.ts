@@ -1567,6 +1567,7 @@ export class BrokerRunController {
     void this.handleRun(socket, {
       input: next.input,
       session_id: sessionId,
+      queue_id: next.queue_id,
       source: next.source,
       model: next.model,
       provider: next.provider,
@@ -1617,6 +1618,7 @@ export class BrokerRunController {
       void this.handleRun(socket, {
         input: next.input,
         session_id: sessionId,
+        queue_id: next.queue_id,
         source: next.source,
         model: next.model,
         provider: next.provider,
