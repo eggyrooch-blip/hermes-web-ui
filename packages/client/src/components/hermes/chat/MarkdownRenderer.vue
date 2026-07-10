@@ -267,7 +267,9 @@ function renderFileCard(path: string, fileName: string, options: {
   const diffFile = options.diffFile
   if (!diffFile) return card
   renderedWorkspaceDiffFileIds.add(diffFile.id)
-  return `<span class="markdown-inline-file-chip">${card}<button class="markdown-file-diff-btn" type="button" data-workspace-diff-file-id="${escapeHtml(String(diffFile.id))}" data-workspace-diff-change-id="${escapeHtml(String(diffFile.change_id || ''))}" data-workspace-diff-session-id="${escapeHtml(String(diffFile.session_id || ''))}" title="${escapeHtml(t('chat.workspaceDiffTitle'))}" aria-label="${escapeHtml(t('chat.workspaceDiffTitle'))}"><span class="diff-badge-add">+${Number(diffFile.additions ?? 0)}</span> <span class="diff-badge-del">−${Number(diffFile.deletions ?? 0)}</span></button></span>`
+  const additions = Number(diffFile.additions ?? 0)
+  const deletions = Number(diffFile.deletions ?? 0)
+  return `<span class="markdown-inline-file-chip">${card}<button class="markdown-file-diff-btn" type="button" data-workspace-diff-file-id="${escapeHtml(String(diffFile.id))}" data-workspace-diff-change-id="${escapeHtml(String(diffFile.change_id || ''))}" data-workspace-diff-session-id="${escapeHtml(String(diffFile.session_id || ''))}" title="${escapeHtml(t('chat.workspaceDiffTitle'))}" aria-label="${escapeHtml(t('chat.workspaceDiffTitle'))}"><span class="diff-badge-add">+${Number.isFinite(additions) ? additions : 0}</span> <span class="diff-badge-del">−${Number.isFinite(deletions) ? deletions : 0}</span></button></span>`
 }
 
 function isInsideLinkToken(tokens: any[], idx: number): boolean {

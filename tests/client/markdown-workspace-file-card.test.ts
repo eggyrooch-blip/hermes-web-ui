@@ -140,6 +140,25 @@ describe('MarkdownRenderer workspace artifact file card', () => {
     expect(wrapper.find('.markdown-file-diff-btn').text()).toContain('−2')
   })
 
+  it('renders zeroes instead of non-finite diff counts', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'Updated **app.ts**.',
+        workspaceDiffFiles: [{
+          id: 7,
+          path: 'src/app.ts',
+          change_id: 'change-1',
+          session_id: 'session-1',
+          additions: Number.NaN,
+          deletions: Number.POSITIVE_INFINITY,
+        }],
+      },
+    })
+
+    expect(wrapper.find('.markdown-file-diff-btn').text()).toContain('+0')
+    expect(wrapper.find('.markdown-file-diff-btn').text()).toContain('−0')
+  })
+
   it('appends unmatched workspace diff files in one fallback chip row', () => {
     const wrapper = mount(MarkdownRenderer, {
       props: {

@@ -1005,7 +1005,7 @@ onBeforeUnmount(() => {
 
             <!-- Render assistant message content -->
             <MarkdownRenderer
-              v-if="message.role === 'assistant' && message.content && !parsedThinking.body"
+              v-if="message.role === 'assistant' && (message.content || inlineWorkspaceDiffFiles.length > 0) && !parsedThinking.body"
               :content="message.content"
               :heading-id-prefix="effectiveHeadingIdPrefix"
               :workspace-diff-files="inlineWorkspaceDiffFiles"

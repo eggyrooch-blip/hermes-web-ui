@@ -539,6 +539,33 @@ describe('MessageItem tool details', () => {
     expect(fetchWorkspaceRunChangeFileMock).not.toHaveBeenCalled()
   })
 
+  it('renders fallback diff chips for an assistant message with empty text', () => {
+    const chatStore = useChatStore()
+    chatStore.upsertWorkspaceDiff('session-1', {
+      event: 'workspace.diff.completed',
+      change_id: 'change-1',
+      session_id: 'session-1',
+      run_id: 'run-1',
+      files: [{ id: 7, path: 'src/app.ts', additions: 2, deletions: 1 }],
+    })
+
+    const wrapper = mount(MessageItem, {
+      props: {
+        session: { id: 'session-1', profile: 'travel', messages: [] } as any,
+        message: {
+          id: 'assistant-empty',
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          runId: 'run-1',
+        } satisfies Message,
+      },
+    })
+
+    expect(wrapper.find('.markdown-diff-fallback-row').exists()).toBe(true)
+    expect(wrapper.find('.markdown-file-card').attributes('data-path')).toBe('/workspace/src/app.ts')
+  })
+
   it('does not linkify assistant bare filenames from workspace diffs in another run', () => {
     const chatStore = useChatStore()
     chatStore.upsertWorkspaceDiff('session-1', {

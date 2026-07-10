@@ -118,4 +118,42 @@ describe('files store', () => {
     })
     expect(store.previewPanelRequestedAt).toBe(1)
   })
+
+  it('does not let a stale failed preview bind its diff to a newer file', async () => {
+    let rejectFirstRead: (error: Error) => void = () => undefined
+    const firstRead = new Promise<never>((_resolve, reject) => {
+      rejectFirstRead = reject
+    })
+    mockFilesApi.readFile.mockImplementation((path: string) => {
+      if (path === 'src/a.ts') return firstRead
+      if (path === 'workspace/src/a.ts') return Promise.reject(new Error('deleted'))
+      if (path === 'src/b.ts') return Promise.resolve({ content: 'const file = "b"' })
+      return Promise.reject(new Error(`unexpected path: ${path}`))
+    })
+    const store = useFilesStore()
+
+    const stale = store.previewWorkspaceDiffFile({
+      displayPath: '/workspace/src/a.ts',
+      fileName: 'a.ts',
+      changeId: 'change-a',
+      fileId: 1,
+      sessionId: 'session-1',
+    })
+    const current = store.previewWorkspaceDiffFile({
+      displayPath: '/workspace/src/b.ts',
+      fileName: 'b.ts',
+      changeId: 'change-b',
+      fileId: 2,
+      sessionId: 'session-1',
+    })
+    await current
+    rejectFirstRead(new Error('deleted'))
+    await stale
+
+    expect(store.previewFile).toMatchObject({
+      path: 'src/b.ts',
+      content: 'const file = "b"',
+      diff: { changeId: 'change-b', fileId: 2 },
+    })
+  })
 })

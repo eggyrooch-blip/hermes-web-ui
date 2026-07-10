@@ -160,6 +160,7 @@ export const useFilesStore = defineStore('files', () => {
 
   const previewFile = ref<PreviewFile | null>(null)
   const previewPanelRequestedAt = ref(0)
+  let workspaceDiffPreviewRequestId = 0
   const browserArtifactRequest = ref<{ name: string, path: string } | null>(null)
   const browserArtifactRequestedAt = ref(0)
 
@@ -319,26 +320,44 @@ export const useFilesStore = defineStore('files', () => {
     sessionId: string
     profile?: string | null
   }): Promise<void> {
+    const requestId = ++workspaceDiffPreviewRequestId
     previewFile.value = null
-    await previewByDisplayPath(opts.displayPath, opts.fileName)
+    const rel = decodeDisplayPathSegments(opts.displayPath.replace(/^\/workspace\//, ''))
+    const relWithWs = decodeDisplayPathSegments(opts.displayPath.replace(/^\//, ''))
+    const inferredFileName = opts.fileName || rel.split('/').filter(Boolean).pop() || ''
     const diff = {
       changeId: opts.changeId,
       fileId: opts.fileId,
       sessionId: opts.sessionId,
       profile: opts.profile,
     }
-    const opened = previewFile.value as PreviewFile | null
-    if (opened) {
-      previewFile.value = { ...opened, diff }
-      return
-    }
 
-    const rel = decodeDisplayPathSegments(opts.displayPath.replace(/^\/workspace\//, ''))
+    let type: PreviewFile['type'] = 'text'
+    if (isImageFile(inferredFileName)) type = 'image'
+    else if (isMarkdownFile(inferredFileName)) type = 'markdown'
+    else if (isHtmlFile(inferredFileName)) type = 'html'
+
+    let workingPath = rel
+    let content = ''
+    if (type !== 'image') {
+      try {
+        content = (await filesApi.readFile(rel)).content
+      } catch (firstError) {
+        try {
+          const result = await filesApi.readFile(relWithWs)
+          workingPath = relWithWs
+          content = result.content
+        } catch (secondError) {
+          console.error('Failed to preview workspace diff file:', opts.displayPath, firstError, secondError)
+        }
+      }
+    }
+    if (requestId !== workspaceDiffPreviewRequestId) return
+
     previewFile.value = {
-      path: rel,
-      type: 'text',
-      content: '',
-      language: getLanguageFromPath(opts.fileName || rel),
+      path: workingPath,
+      type,
+      ...(type === 'image' ? {} : { content, language: getLanguageFromPath(workingPath) }),
       diff,
     }
     previewPanelRequestedAt.value = previewPanelRequestedAt.value + 1
