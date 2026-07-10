@@ -1995,6 +1995,7 @@ export default {
     previewDiffTab: '今回の変更',
     diffPatchTruncated: 'パッチが大きすぎるため省略されました。「ファイル」に切り替えると完全な内容を確認できます',
     previewContentUnavailable: 'ファイル内容を読み込めません。削除または移動された可能性があります。「今回の変更」は引き続き表示できます',
+    diffPatchEmpty: 'この変更には表示できるテキストパッチがありません（バイナリファイルまたは名前変更の可能性があります）',
     saveFile: '保存',
     fileTree: 'ファイルツリー',
   },

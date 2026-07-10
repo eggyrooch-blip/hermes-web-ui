@@ -1519,11 +1519,18 @@ export const useChatStore = defineStore('chat', () => {
     return true
   }
 
+  function dropWorkspaceDiffs(sessionId: string) {
+    if (!(sessionId in workspaceDiffs.value)) return
+    const { [sessionId]: _dropped, ...rest } = workspaceDiffs.value
+    workspaceDiffs.value = rest
+  }
+
   async function deleteSession(sessionId: string): Promise<boolean> {
     const target = sessions.value.find(s => s.id === sessionId)
     const ok = await deleteSessionApi(sessionId, target?.profile)
     if (!ok) return false
     sessions.value = sessions.value.filter(s => s.id !== sessionId)
+    dropWorkspaceDiffs(sessionId)
     if (activeSessionId.value === sessionId) {
       if (sessions.value.length > 0) {
         await switchSession(sessions.value[0].id)
@@ -1540,6 +1547,7 @@ export const useChatStore = defineStore('chat', () => {
     const ok = await setSessionArchivedApi(sessionId, true, target?.profile)
     if (!ok) return false
     sessions.value = sessions.value.filter(s => s.id !== sessionId)
+    dropWorkspaceDiffs(sessionId)
     if (activeSessionId.value === sessionId) {
       if (sessions.value.length > 0) {
         await switchSession(sessions.value[0].id)

@@ -292,4 +292,30 @@ describe('MarkdownRenderer workspace artifact file card', () => {
     expect(wrapper.find('.markdown-file-card').exists()).toBe(false)
   })
 
+  it('keeps the embedded-browser card click for run-changed HTML artifacts', async () => {
+    previewByDisplayPath.mockClear()
+    requestBrowserArtifact.mockClear()
+    const diffFile = {
+      id: 9,
+      path: 'Downloads/report.html',
+      change_id: 'change-1',
+      session_id: 'session-1',
+      additions: 5,
+      deletions: 1,
+    }
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '[report.html](/workspace/Downloads/report.html)',
+        workspaceDiffFiles: [diffFile],
+      },
+    })
+
+    await wrapper.find('.markdown-file-card').trigger('click')
+    expect(requestBrowserArtifact).toHaveBeenCalledWith('report.html', '/workspace/Downloads/report.html')
+    expect(wrapper.emitted('workspace-diff-file-click')).toBeUndefined()
+
+    await wrapper.find('.markdown-file-diff-btn').trigger('click')
+    expect(wrapper.emitted('workspace-diff-file-click')).toEqual([[expect.objectContaining({ id: 9 })]])
+  })
+
 })

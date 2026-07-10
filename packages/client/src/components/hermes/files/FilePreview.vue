@@ -183,6 +183,7 @@ const CloseIcon = () =>
             v-html="highlightedDiff"
             @click="handlePreviewClick"
           />
+          <div v-else-if="!diffTruncated" class="preview-diff-state">{{ t('files.diffPatchEmpty') }}</div>
         </template>
       </div>
       <template v-else>

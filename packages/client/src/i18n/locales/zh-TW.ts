@@ -2138,6 +2138,7 @@ export default {
     previewDiffTab: '本輪改動',
     diffPatchTruncated: '補丁過大已截斷，切到「檔案」查看完整內容',
     previewContentUnavailable: '檔案內容讀取失敗，可能已被刪除或移動；「本輪改動」仍可查看',
+    diffPatchEmpty: '本輪改動沒有可顯示的文字補丁（可能是二進位檔案或重新命名）',
     saveFile: '儲存',
   },
 

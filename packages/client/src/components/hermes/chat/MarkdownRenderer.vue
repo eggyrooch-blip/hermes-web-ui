@@ -633,7 +633,12 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
 
     if (path) {
       const rel = path.replace(/^\/workspace\/+/, '')
-      const diffFile = (props.workspaceDiffFiles || []).find(file => file.path === rel)
+      // HTML artifacts keep the embedded-browser card click even when they
+      // changed this run — their diff stays reachable via the ± badge.
+      const cardName = fileName || rel.split('/').filter(Boolean).pop() || ''
+      const diffFile = isHtmlFile(cardName)
+        ? null
+        : (props.workspaceDiffFiles || []).find(file => file.path === rel)
       if (diffFile) {
         emit('workspace-diff-file-click', diffFile)
         return
