@@ -43,4 +43,4 @@ Local main could render an empty chat transcript after switching sessions even w
 
 ## Release Status
 
-The initial hydration fallback is merged into local main as `acda7568`, but the review hardening above remains in the task worktree and is not running on `:8648`. Nothing from this task has been published to production. Current browser evidence is from the isolated hardened build on `127.0.0.1:8750`.
+The complete hotfix, including review hardening, is merged into local main at `1931e4a1`. Main was rebuilt and `com.hermes.ekko-webui` restarted; `127.0.0.1:8648/health` and `/` return OK/200, pending user browser acceptance. Nothing from this task has been pushed or published to production. Browser acceptance evidence for the hardened behavior remains the isolated real-data build on `127.0.0.1:8750`.
