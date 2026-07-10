@@ -103,6 +103,51 @@ describe('response stream reasoning storage', () => {
     }))
   })
 
+  it('keeps the response run id on in-memory and persisted messages', () => {
+    const state: SessionState = { messages: [], isWorking: false, events: [], queue: [] }
+
+    applyResponseStreamEvent(state, 'session-1', 'run-marker-1', 'response.created', {
+      response: { id: 'resp-1', status: 'in_progress' },
+    })
+    applyResponseStreamEvent(state, 'session-1', 'run-marker-1', 'response.output_text.delta', {
+      delta: 'answer',
+    })
+
+    expect(state.messages[0]).toMatchObject({ run_id: 'resp-1' })
+
+    flushResponseRunToDb(state, 'session-1')
+
+    expect(addMessageMock).toHaveBeenCalledWith(expect.objectContaining({
+      session_id: 'session-1',
+      run_id: 'resp-1',
+    }))
+  })
+
+  it('uses the coding-agent run id as the canonical message and diff identity', () => {
+    const state: SessionState = {
+      messages: [],
+      isWorking: true,
+      events: [],
+      queue: [],
+      runId: 'agent-run-1',
+    }
+
+    const started = applyResponseStreamEvent(state, 'session-1', 'run-marker-1', 'response.created', {
+      response: { id: 'resp-1', status: 'in_progress' },
+    })
+    applyResponseStreamEvent(state, 'session-1', 'run-marker-1', 'response.output_text.delta', {
+      delta: 'answer',
+    })
+    flushResponseRunToDb(state, 'session-1')
+
+    expect(started?.payload).toMatchObject({
+      run_id: 'agent-run-1',
+      response_id: 'resp-1',
+    })
+    expect(state.messages[0]).toMatchObject({ run_id: 'agent-run-1' })
+    expect(addMessageMock).toHaveBeenCalledWith(expect.objectContaining({ run_id: 'agent-run-1' }))
+  })
+
   it('deduplicates final reasoning snapshots after streamed reasoning deltas', () => {
     const state: SessionState = { messages: [], isWorking: false, events: [], queue: [] }
 

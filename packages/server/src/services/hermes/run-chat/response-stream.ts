@@ -69,16 +69,17 @@ export function applyResponseStreamEvent(
 ): { event: string; payload: any; runId?: string } | null {
   const run = getResponseRunState(state, runMarker)
   const now = () => Math.floor(Date.now() / 1000)
+  const canonicalRunId = () => state.runId || run.responseId
 
   if (eventType === 'response.created') {
     const response = parsed.response || parsed
     run.responseId = response.id || run.responseId
     return {
       event: 'run.started',
-      runId: run.responseId,
+      runId: canonicalRunId(),
       payload: {
         event: 'run.started',
-        run_id: run.responseId,
+        run_id: canonicalRunId(),
         response_id: run.responseId,
         status: response.status || 'in_progress',
         queue_length: state.queue.length || 0,
@@ -92,6 +93,7 @@ export function applyResponseStreamEvent(
 
     const last = [...state.messages].reverse().find(m => m.runMarker === runMarker)
     if (last?.role === 'assistant' && last.finish_reason == null && !last.tool_calls?.length) {
+      last.run_id = last.run_id || canonicalRunId() || null
       if (run.pendingReasoning) {
         appendReasoningToMessage(run, last, run.pendingReasoning)
         run.pendingReasoning = undefined
@@ -102,6 +104,7 @@ export function applyResponseStreamEvent(
         id: state.messages.length + 1,
         session_id: sessionId,
         runMarker,
+        run_id: canonicalRunId() || null,
         role: 'assistant',
         content: deltaText,
         timestamp: now(),
@@ -118,7 +121,7 @@ export function applyResponseStreamEvent(
       event: 'message.delta',
       payload: {
         event: 'message.delta',
-        run_id: run.responseId,
+        run_id: canonicalRunId(),
         response_id: run.responseId,
         delta: deltaText,
       },
@@ -171,7 +174,7 @@ export function applyResponseStreamEvent(
       event: 'tool.started',
       payload: {
         event: 'tool.started',
-        run_id: run.responseId,
+        run_id: canonicalRunId(),
         response_id: run.responseId,
         tool_call_id: callId,
         tool: toolCall.function.name,
@@ -203,7 +206,7 @@ export function applyResponseStreamEvent(
       event: 'tool.started',
       payload: {
         event: 'tool.started',
-        run_id: run.responseId,
+        run_id: canonicalRunId(),
         response_id: run.responseId,
         tool_call_id: callId,
         tool: nextToolCall.function.name,
@@ -230,6 +233,7 @@ export function applyResponseStreamEvent(
           id: state.messages.length + 1,
           session_id: sessionId,
           runMarker,
+          run_id: canonicalRunId() || null,
           role: 'assistant',
           content: '',
           tool_calls: [toolCall],
@@ -256,6 +260,7 @@ export function applyResponseStreamEvent(
           id: state.messages.length + 1,
           session_id: sessionId,
           runMarker,
+          run_id: canonicalRunId() || null,
           role: 'tool',
           content: output,
           tool_call_id: callId,
@@ -267,7 +272,7 @@ export function applyResponseStreamEvent(
         event: 'tool.completed',
         payload: {
           event: 'tool.completed',
-          run_id: run.responseId,
+          run_id: canonicalRunId(),
           response_id: run.responseId,
           tool_call_id: callId,
           tool: toolName,
@@ -290,6 +295,7 @@ export function applyResponseStreamEvent(
         if (!finalText) continue
         const last = [...state.messages].reverse().find(m => m.runMarker === runMarker)
         if (last?.role === 'assistant' && !last.tool_calls?.length) {
+          last.run_id = last.run_id || canonicalRunId() || null
           if (run.pendingReasoning) {
             appendReasoningToMessage(run, last, run.pendingReasoning)
             run.pendingReasoning = undefined
@@ -301,6 +307,7 @@ export function applyResponseStreamEvent(
             id: state.messages.length + 1,
             session_id: sessionId,
             runMarker,
+            run_id: canonicalRunId() || null,
             role: 'assistant',
             content: finalText,
             finish_reason: 'stop',
@@ -359,6 +366,7 @@ export function flushResponseRunToDb(state: SessionState, sessionId: string) {
     }
     addMessage({
       session_id: sessionId,
+      run_id: msg.run_id || state.runId || run.responseId || null,
       role: msg.role,
       content: msg.content || '',
       tool_call_id: msg.tool_call_id ?? null,

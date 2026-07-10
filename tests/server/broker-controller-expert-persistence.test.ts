@@ -165,4 +165,36 @@ describe('BrokerRunController expert metadata persistence', () => {
       expert_avatar: expertAvatar,
     })
   })
+
+  it('persists the broker response run id when flushing messages', async () => {
+    await initTestDb()
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    const state = {
+      messages: [{
+        id: 1,
+        session_id: 'run-id-session',
+        runMarker: 'marker-1',
+        role: 'assistant',
+        content: 'answer',
+        timestamp: 100,
+      }],
+      isWorking: false,
+      events: [],
+      queue: [],
+      profile: 'research',
+      responseRun: {
+        runMarker: 'marker-1',
+        responseId: 'run-broker-1',
+        insertedKeys: new Set<string>(),
+        toolCalls: new Map(),
+      },
+    }
+
+    ;(controller as any).flushResponseRunToDb(state, 'run-id-session')
+
+    const row = db.prepare('SELECT run_id FROM messages WHERE session_id = ? AND role = ?')
+      .get('run-id-session', 'assistant') as { run_id: string }
+    expect(row.run_id).toBe('run-broker-1')
+  })
 })

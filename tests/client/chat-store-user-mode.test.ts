@@ -1082,6 +1082,312 @@ describe('chat store user-mode model selection', () => {
     ])
   })
 
+  it('does not let a delayed non-empty resume erase a message sent after switching started', async () => {
+    fetchSessionsMock.mockResolvedValue([
+      {
+        id: 'session-1',
+        source: 'api_server',
+        model: 'm',
+        title: 'first',
+        started_at: 100,
+        ended_at: null,
+        last_active: 100,
+        message_count: 1,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        profile: 'tester',
+      },
+    ])
+    let onResumed!: (data: any) => void
+    resumeSessionMock.mockImplementation((_sessionId: string, callback: (data: any) => void) => {
+      onResumed = callback
+      return { disconnect: vi.fn() }
+    })
+
+    const store = useChatStore()
+    const loading = store.loadSessions('tester', 'session-1')
+    for (let i = 0; i < 10 && !onResumed; i += 1) await Promise.resolve()
+
+    await store.sendMessage('new prompt while resume loads')
+    onResumed({
+      session_id: 'session-1',
+      isWorking: true,
+      events: [],
+      messages: [{
+        id: 1,
+        session_id: 'session-1',
+        role: 'assistant',
+        content: 'older answer',
+        timestamp: 100,
+      }],
+      messageTotal: 1,
+      messageLoadedCount: 1,
+      hasMoreBefore: false,
+    })
+    await loading
+
+    expect(store.activeSession?.messages.map(message => message.content)).toEqual([
+      'older answer',
+      'new prompt while resume loads',
+    ])
+  })
+
+  it('reconciles a persisted server echo of an optimistic prompt with a different id', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+
+    await store.sendMessage('prompt persisted during reconnect')
+    const optimisticPrompt = session.messages.find(message => message.role === 'user')
+    expect(optimisticPrompt).toBeDefined()
+
+    const reconnectOptions = startRunViaSocketMock.mock.calls[0][5] as {
+      onReconnectResume: (data: any) => void | Promise<void>
+    }
+    await reconnectOptions.onReconnectResume({
+      session_id: session.id,
+      isWorking: true,
+      events: [],
+      messages: [{
+        id: 42,
+        session_id: session.id,
+        role: 'user',
+        content: 'prompt persisted during reconnect',
+        timestamp: optimisticPrompt!.timestamp / 1000,
+      }],
+      messageTotal: 1,
+      messageLoadedCount: 1,
+      hasMoreBefore: false,
+    })
+
+    expect(session.messages.filter(message => message.role === 'user')).toEqual([
+      expect.objectContaining({
+        id: '42',
+        content: 'prompt persisted during reconnect',
+      }),
+    ])
+  })
+
+  it('does not reconcile a repeated optimistic prompt against an already loaded server row', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    const previousTimestamp = Date.now() - 500
+    session.messages.push({
+      id: '41',
+      role: 'user',
+      content: 'repeat this prompt',
+      timestamp: previousTimestamp,
+    })
+
+    await store.sendMessage('repeat this prompt')
+    const optimisticPrompt = session.messages.find(message => message.id !== '41' && message.role === 'user')
+    expect(optimisticPrompt).toBeDefined()
+
+    const reconnectOptions = startRunViaSocketMock.mock.calls[0][5] as {
+      onReconnectResume: (data: any) => void | Promise<void>
+    }
+    await reconnectOptions.onReconnectResume({
+      session_id: session.id,
+      isWorking: true,
+      events: [],
+      messages: [{
+        id: 41,
+        session_id: session.id,
+        role: 'user',
+        content: 'repeat this prompt',
+        timestamp: previousTimestamp / 1000,
+      }],
+      messageTotal: 1,
+      messageLoadedCount: 1,
+      hasMoreBefore: false,
+    })
+
+    expect(session.messages.filter(message => message.role === 'user')).toHaveLength(2)
+    expect(session.messages.map(message => message.id)).toEqual(expect.arrayContaining(['41', optimisticPrompt!.id]))
+  })
+
+  it('does not let an unchanged hydration snapshot consume a repeated optimistic prompt', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    const previousTimestamp = Date.now() - 500
+    session.messages.push({
+      id: '41',
+      role: 'user',
+      content: 'repeat during hydration',
+      timestamp: previousTimestamp,
+    })
+
+    let onResumed!: (data: any) => void
+    resumeSessionMock.mockImplementation((_sessionId: string, callback: (data: any) => void) => {
+      onResumed = callback
+      return { disconnect: vi.fn() }
+    })
+    const switching = store.switchSession(session.id)
+    for (let i = 0; i < 10 && !onResumed; i += 1) await Promise.resolve()
+
+    await store.sendMessage('repeat during hydration')
+    const optimisticPrompt = session.messages.find(message => message.id !== '41' && message.role === 'user')
+    expect(optimisticPrompt).toBeDefined()
+
+    onResumed({
+      session_id: session.id,
+      isWorking: true,
+      events: [],
+      messages: [{
+        id: 41,
+        session_id: session.id,
+        role: 'user',
+        content: 'repeat during hydration',
+        timestamp: previousTimestamp / 1000,
+      }],
+      messageTotal: 1,
+      messageLoadedCount: 1,
+      hasMoreBefore: false,
+    })
+    await switching
+
+    expect(session.messages.filter(message => message.role === 'user')).toHaveLength(2)
+    expect(session.messages.map(message => message.id)).toEqual(expect.arrayContaining(['41', optimisticPrompt!.id]))
+  })
+
+  it('accepts an older successful hydration when a newer same-session request fails', async () => {
+    const session = {
+      id: 'session-1',
+      title: 'first',
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      profile: 'tester',
+    }
+    const resolvers: Array<(value: any) => void> = []
+    fetchSessionMessagesPageMock.mockImplementation(() => new Promise(resolve => {
+      resolvers.push(resolve)
+    }))
+    const store = useChatStore()
+    store.sessions = [session as any]
+    store.activeSessionId = session.id
+    store.activeSession = session as any
+
+    const firstRefresh = store.refreshActiveSession()
+    const secondRefresh = store.refreshActiveSession()
+    for (let i = 0; i < 10 && resolvers.length < 2; i += 1) await Promise.resolve()
+
+    resolvers[1](null)
+    await secondRefresh
+    resolvers[0]({
+      session: { id: session.id, title: 'first' },
+      messages: [{
+        id: 1,
+        session_id: session.id,
+        role: 'assistant',
+        content: 'older successful page',
+        timestamp: 100,
+      }],
+      total: 1,
+      offset: 0,
+      limit: 150,
+      hasMore: false,
+    })
+    await firstRefresh
+
+    expect(session.messages.map(message => message.content)).toEqual(['older successful page'])
+  })
+
+  it('preserves an in-place streaming update that occurs during hydration', async () => {
+    const session = {
+      id: 'session-1',
+      title: 'first',
+      messages: [{
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'partial',
+        timestamp: 100_000,
+        isStreaming: true,
+      }],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      profile: 'tester',
+    }
+    let resolvePage!: (value: any) => void
+    fetchSessionMessagesPageMock.mockImplementation(() => new Promise(resolve => {
+      resolvePage = resolve
+    }))
+    const store = useChatStore()
+    store.sessions = [session as any]
+    store.activeSessionId = session.id
+    store.activeSession = session as any
+
+    const refresh = store.refreshActiveSession()
+    for (let i = 0; i < 10 && !resolvePage; i += 1) await Promise.resolve()
+    session.messages[0].content = 'partial continued locally'
+    resolvePage({
+      session: { id: session.id, title: 'first' },
+      messages: [{
+        id: 'assistant-1',
+        session_id: session.id,
+        role: 'assistant',
+        content: 'partial',
+        timestamp: 100,
+      }],
+      total: 1,
+      offset: 0,
+      limit: 150,
+      hasMore: false,
+    })
+    await refresh
+
+    expect(session.messages[0]).toEqual(expect.objectContaining({
+      content: 'partial continued locally',
+      isStreaming: true,
+    }))
+  })
+
+  it('does not replace visible messages with a raw page that maps to no visible rows', async () => {
+    const session = {
+      id: 'session-1',
+      title: 'first',
+      messages: [{
+        id: 'assistant-visible',
+        role: 'assistant',
+        content: 'keep visible answer',
+        timestamp: 100_000,
+      }],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      profile: 'tester',
+    }
+    fetchSessionMessagesPageMock.mockResolvedValue({
+      session: { id: session.id, title: 'first' },
+      messages: [{
+        id: 'assistant-empty',
+        session_id: session.id,
+        role: 'assistant',
+        content: '   ',
+        timestamp: 101,
+      }],
+      total: 1,
+      offset: 0,
+      limit: 150,
+      hasMore: false,
+    })
+    const store = useChatStore()
+    store.sessions = [session as any]
+    store.activeSessionId = session.id
+    store.activeSession = session as any
+
+    const hydrated = await store.refreshActiveSession()
+
+    expect(hydrated).toBe(false)
+    expect(session.messages.map(message => message.content)).toEqual(['keep visible answer'])
+  })
+
   it('does not clear the current transcript when reconnect resume returns an empty message array', async () => {
     const store = useChatStore()
     const session = store.newChat({ profile: 'tester' })
@@ -1109,6 +1415,141 @@ describe('chat store user-mode model selection', () => {
     expect(session.messages.map(message => message.content)).toEqual([
       'existing answer',
       'keep this prompt',
+    ])
+  })
+
+  it('does not let non-empty reconnect resume overwrite newer local run state', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    session.messages.push({
+      id: 'assistant-live',
+      role: 'assistant',
+      content: 'newer streamed answer',
+      timestamp: Date.now() - 1_000,
+      isStreaming: true,
+    })
+
+    await store.sendMessage('keep this newer prompt')
+
+    const reconnectOptions = startRunViaSocketMock.mock.calls[0][5] as {
+      onReconnectResume: (data: any) => void | Promise<void>
+    }
+    await reconnectOptions.onReconnectResume({
+      session_id: session.id,
+      messages: [
+        {
+          id: 'server-old',
+          session_id: session.id,
+          role: 'assistant',
+          content: 'older server answer',
+          timestamp: (Date.now() - 2_000) / 1000,
+        },
+        {
+          id: 'assistant-live',
+          session_id: session.id,
+          role: 'assistant',
+          content: 'stale streamed answer',
+          timestamp: (Date.now() - 1_000) / 1000,
+        },
+      ],
+      messageTotal: 2,
+      messageLoadedCount: 2,
+      isWorking: true,
+      events: [],
+    })
+
+    expect(session.messages.map(message => message.content)).toEqual(expect.arrayContaining([
+      'older server answer',
+      'newer streamed answer',
+      'keep this newer prompt',
+    ]))
+    expect(session.messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: 'stale streamed answer' }),
+    ]))
+  })
+
+  it('uses authoritative final rows when reconnect reports the run completed', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    session.messages.push({
+      id: 'assistant-final',
+      role: 'assistant',
+      content: 'local partial answer',
+      timestamp: Date.now() - 1_000,
+      isStreaming: true,
+    })
+
+    await store.sendMessage('finish while disconnected')
+
+    const reconnectOptions = startRunViaSocketMock.mock.calls[0][5] as {
+      onReconnectResume: (data: any) => void | Promise<void>
+    }
+    await reconnectOptions.onReconnectResume({
+      session_id: session.id,
+      messages: [{
+        id: 'assistant-final',
+        session_id: session.id,
+        role: 'assistant',
+        content: 'authoritative final answer',
+        timestamp: Date.now() / 1000,
+        finish_reason: 'stop',
+      }],
+      messageTotal: 1,
+      messageLoadedCount: 1,
+      isWorking: false,
+      events: [],
+    })
+
+    const finalMessage = session.messages.find(message => message.id === 'assistant-final')
+    expect(finalMessage).toEqual(expect.objectContaining({ content: 'authoritative final answer' }))
+    expect(finalMessage?.isStreaming).not.toBe(true)
+  })
+
+  it('does not append a new run delta to an old null-finish assistant', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    session.messages.push({
+      id: 'assistant-old',
+      role: 'assistant',
+      content: 'previous turn answer',
+      timestamp: Date.now() - 2_000,
+      finishReason: null,
+    })
+
+    await store.sendMessage('new turn prompt')
+    const onEvent = startRunViaSocketMock.mock.calls[0][1] as (data: any) => void
+    const reconnectOptions = startRunViaSocketMock.mock.calls[0][5] as {
+      onReconnectResume: (data: any) => void | Promise<void>
+    }
+    await reconnectOptions.onReconnectResume({
+      session_id: session.id,
+      messages: [
+        {
+          id: 'assistant-old',
+          session_id: session.id,
+          role: 'assistant',
+          content: 'previous turn answer',
+          timestamp: (Date.now() - 2_000) / 1000,
+          finish_reason: null,
+        },
+      ],
+      messageTotal: 1,
+      messageLoadedCount: 1,
+      isWorking: true,
+      events: [],
+    })
+
+    onEvent({
+      event: 'message.delta',
+      session_id: session.id,
+      delta: 'new run answer',
+      run_id: 'run-new',
+    })
+
+    expect(session.messages.find(message => message.id === 'assistant-old')?.content).toBe('previous turn answer')
+    expect(session.messages.filter(message => message.role === 'assistant').map(message => message.content)).toEqual([
+      'previous turn answer',
+      'new run answer',
     ])
   })
 

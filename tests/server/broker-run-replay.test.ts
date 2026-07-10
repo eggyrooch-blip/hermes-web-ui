@@ -70,4 +70,32 @@ describe('handleBrokerRun replay mode', () => {
     expect(seen[0]).toBe('http://broker.test/api/run-broker/runs')
     expect(seen[0]).not.toContain('/replay/')
   })
+
+  it('attaches the broker run id to live session messages', async () => {
+    const state = { messages: [], isWorking: false, events: [], queue: [], runId: undefined, abortController: undefined } as any
+    const run = { runMarker: 'rm', responseId: undefined, insertedKeys: new Set<string>(), toolCalls: new Map() }
+    const context = {
+      sessionMap: new Map([['s1', state]]),
+      getOrCreateSession: () => state,
+      getResponseRunState: () => run,
+      markCompleted: vi.fn(async () => {}),
+      dequeueNextQueuedRun: vi.fn(),
+      buildInput: (value: any) => value,
+    } as any
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body: sseStream(
+        'event: content\ndata: {"kind":"content","run_id":"run-live","text":"hello"}\n\n',
+        'event: done\ndata: {"kind":"done","run_id":"run-live","output":"hello"}\n\n',
+      ),
+    })))
+
+    await handleBrokerRun(socket, { input: 'hi', session_id: 's1' }, 'default', 'rm', vi.fn(), context)
+
+    expect(state.runId).toBe('run-live')
+    expect(state.messages).toEqual([
+      expect.objectContaining({ role: 'assistant', content: 'hello', run_id: 'run-live' }),
+    ])
+  })
 })

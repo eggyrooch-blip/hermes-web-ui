@@ -841,18 +841,21 @@ export async function handleBrokerRun(
           if (state) {
             const run = context.getResponseRunState(state, runMarker)
             run.responseId = runId || run.responseId
+            if (runId) state.runId = runId
             const now = Math.floor(Date.now() / 1000)
 
             if (mapped.event === 'message.delta' && mapped.persistAssistantContent) {
               const deltaText = mapped.payload.delta || ''
               const last = [...state.messages].reverse().find(m => m.runMarker === runMarker)
               if (last?.role === 'assistant' && last.finish_reason == null && !last.tool_calls?.length) {
+                last.run_id = last.run_id || run.responseId || null
                 last.content += deltaText
               } else {
                 state.messages.push({
                   id: state.messages.length + 1,
                   session_id,
                   runMarker,
+                  run_id: run.responseId || null,
                   role: 'assistant',
                   content: deltaText,
                   timestamp: now,
@@ -863,12 +866,14 @@ export async function handleBrokerRun(
             if (mapped.event === 'reasoning.delta') {
               const last = [...state.messages].reverse().find(m => m.runMarker === runMarker)
               if (last?.role === 'assistant' && last.finish_reason == null && !last.tool_calls?.length) {
+                last.run_id = last.run_id || run.responseId || null
                 last.reasoning = (last.reasoning || '') + (mapped.payload.delta || '')
               } else {
                 state.messages.push({
                   id: state.messages.length + 1,
                   session_id,
                   runMarker,
+                  run_id: run.responseId || null,
                   role: 'assistant',
                   content: '',
                   reasoning: mapped.payload.delta || '',
@@ -896,6 +901,7 @@ export async function handleBrokerRun(
                     id: state.messages.length + 1,
                     session_id,
                     runMarker,
+                    run_id: run.responseId || null,
                     role: 'assistant',
                     content: '',
                     tool_calls: [toolCall],
@@ -932,6 +938,7 @@ export async function handleBrokerRun(
                   id: state.messages.length + 1,
                   session_id,
                   runMarker,
+                  run_id: run.responseId || null,
                   role: 'tool',
                   content: output,
                   tool_call_id: callId || null,
@@ -950,6 +957,13 @@ export async function handleBrokerRun(
       if (mapped.type === 'terminal') {
         const eventRunId = mapped.payload.run_id || mapped.payload.response_id
         if (eventRunId) runId = String(eventRunId)
+        if (session_id && runId) {
+          const state = context.sessionMap.get(session_id)
+          if (state) {
+            state.runId = runId
+            context.getResponseRunState(state, runMarker).responseId = runId
+          }
+        }
         const queueLen = session_id ? context.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
         const output = mapped.payload.output || finalText
         if (mapped.event === 'run.failed') {

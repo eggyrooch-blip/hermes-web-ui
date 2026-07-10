@@ -332,6 +332,23 @@ function selectResumedInFlightAssistant(messages: Message[], activeRunMarker?: s
   return finishReason === null || hasMatchingRunMarker ? lastMessage : null
 }
 
+function isCurrentResumeCandidate(
+  messages: Message[],
+  candidate: Message | null,
+  activeRunMarker?: string | null,
+): boolean {
+  if (!candidate) return false
+  const candidateIndex = messages.findIndex(message => message.id === candidate.id)
+  if (candidateIndex < 0) return false
+  const latestUserIndex = messages.findLastIndex(message => message.role === 'user' || message.role === 'command')
+  if (candidateIndex > latestUserIndex) return true
+
+  const candidateRunMarker = readRunMarker(candidate)
+  if (activeRunMarker && candidateRunMarker === activeRunMarker) return true
+  if (latestUserIndex < 0 || !candidateRunMarker) return false
+  return candidate.timestamp >= messages[latestUserIndex].timestamp
+}
+
 function getReplayRunMarker(events?: Array<{ event: string; data: RunEvent }>): string | null {
   if (!Array.isArray(events)) return null
   for (let i = events.length - 1; i >= 0; i -= 1) {
@@ -346,6 +363,7 @@ function resolveResumedAssistantState(
   options: {
     previousActiveAssistantMessageId?: string | null
     previousReasoningAssistantMessageId?: string | null
+    resumeCandidateMessageId?: string | null
     activeRunMarker?: string | null
   },
 ): {
@@ -357,7 +375,10 @@ function resolveResumedAssistantState(
   const activeAssistant = options.previousActiveAssistantMessageId
     ? messages.find(m => m.role === 'assistant' && m.id === options.previousActiveAssistantMessageId) || null
     : null
-  const selectedActiveAssistant = activeAssistant || selectResumedInFlightAssistant(messages, options.activeRunMarker)
+  const resumeCandidate = options.resumeCandidateMessageId
+    ? messages.find(m => m.role === 'assistant' && m.id === options.resumeCandidateMessageId) || null
+    : null
+  const selectedActiveAssistant = activeAssistant || resumeCandidate || selectResumedInFlightAssistant(messages, options.activeRunMarker)
   const reasoningAssistant = options.previousReasoningAssistantMessageId
     ? messages.find(m => m.role === 'assistant' && m.id === options.previousReasoningAssistantMessageId) || null
     : null
@@ -477,6 +498,46 @@ function mapHermesMessages(msgs: HermesMessage[]): Message[] {
     })
   }
   return result
+}
+
+function mergeServerMessagesPreservingLocalChanges(
+  current: Message[],
+  serverMessages: Message[],
+  messagesAtRequestStart?: Map<string, string>,
+  localWinsOnConflict = true,
+): Message[] {
+  const merged = [...serverMessages]
+  const indexById = new Map(merged.map((message, index) => [message.id, index]))
+  const reconciledServerIds = new Set<string>()
+  for (const message of current) {
+    const serverIndex = indexById.get(message.id)
+    if (serverIndex != null) reconciledServerIds.add(message.id)
+    if (messagesAtRequestStart?.get(message.id) === JSON.stringify(message)) continue
+    if (serverIndex == null) {
+      const optimisticServerIndex = !/^\d+$/.test(message.id) && (message.role === 'user' || message.role === 'command')
+        ? serverMessages.findIndex(serverMessage =>
+            /^\d+$/.test(serverMessage.id) &&
+            !reconciledServerIds.has(serverMessage.id) &&
+            serverMessage.role === message.role &&
+            serverMessage.content === message.content &&
+            Math.abs(serverMessage.timestamp - message.timestamp) <= 1_500,
+          )
+        : -1
+      if (optimisticServerIndex >= 0) {
+        const serverMessage = merged[optimisticServerIndex]
+        reconciledServerIds.add(serverMessage.id)
+        if (localWinsOnConflict) {
+          merged[optimisticServerIndex] = { ...serverMessage, ...message, id: serverMessage.id }
+        }
+        continue
+      }
+      indexById.set(message.id, merged.length)
+      merged.push(message)
+    } else if (localWinsOnConflict) {
+      merged[serverIndex] = { ...merged[serverIndex], ...message }
+    }
+  }
+  return merged.sort((left, right) => left.timestamp - right.timestamp)
 }
 
 function mapHermesSession(s: SessionSummary): Session {
@@ -676,7 +737,7 @@ export const useChatStore = defineStore('chat', () => {
   const isLoadingMessages = ref(false)
   let switchSessionLoadEpoch = 0
   let hydrationRequestEpoch = 0
-  const latestHydrationRequestBySession = new Map<string, number>()
+  const latestSuccessfulHydrationBySession = new Map<string, number>()
   const isRunActive = computed(() => isStreaming.value)
 
   async function fetchRuntimeSessions(profile?: string | null): Promise<SessionSummary[]> {
@@ -1041,24 +1102,15 @@ export const useChatStore = defineStore('chat', () => {
     profile = target.profile,
   ): Promise<boolean> {
     const requestEpoch = ++hydrationRequestEpoch
-    latestHydrationRequestBySession.set(target.id, requestEpoch)
-    const messagesAtRequestStart = new Map(target.messages.map(message => [message.id, message]))
+    const messagesAtRequestStart = new Map(target.messages.map(message => [message.id, JSON.stringify(message)]))
     const detail = await fetchSessionMessagesPage(target.id, 0, limit, profile)
-    if (latestHydrationRequestBySession.get(target.id) !== requestEpoch) return false
     if (!detail?.messages?.length) return false
     const mapped = mapHermesMessages(detail.messages || [])
-    const mappedIndexById = new Map(mapped.map((message, index) => [message.id, index]))
-    for (const message of target.messages) {
-      if (messagesAtRequestStart.get(message.id) === message) continue
-      const mappedIndex = mappedIndexById.get(message.id)
-      if (mappedIndex == null) {
-        mappedIndexById.set(message.id, mapped.length)
-        mapped.push(message)
-      } else {
-        mapped[mappedIndex] = message
-      }
-    }
-    target.messages = mapped
+    if (!mapped.length) return false
+    const latestSuccessfulEpoch = latestSuccessfulHydrationBySession.get(target.id) || 0
+    if (requestEpoch < latestSuccessfulEpoch) return false
+    latestSuccessfulHydrationBySession.set(target.id, requestEpoch)
+    target.messages = mergeServerMessagesPreservingLocalChanges(target.messages, mapped, messagesAtRequestStart)
     target.loadedMessageCount = detail.messages.length
     target.messageTotal = detail.total
     target.messageCount = detail.total
@@ -1067,7 +1119,7 @@ export const useChatStore = defineStore('chat', () => {
     target.expertId = detail.session.expert_id || undefined
     target.expertLabel = detail.session.expert_label || undefined
     target.expertAvatar = detail.session.expert_avatar || undefined
-    return mapped.length > 0
+    return target.messages.length > 0
   }
 
 
@@ -1152,6 +1204,7 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     isLoadingMessages.value = true
+    const messagesAtResumeStart = new Map(activeSession.value.messages.map(message => [message.id, JSON.stringify(message)]))
 
     try {
       // Load messages via Socket.IO resume (server loads from DB if not in memory)
@@ -1193,7 +1246,11 @@ export const useChatStore = defineStore('chat', () => {
           if (data.outputTokens != null) target.outputTokens = data.outputTokens
           if ((data as any).contextTokens != null) target.contextTokens = (data as any).contextTokens
           if (data.messages?.length) {
-            target.messages = mapHermesMessages(data.messages as any[])
+            target.messages = mergeServerMessagesPreservingLocalChanges(
+              target.messages,
+              mapHermesMessages(data.messages as any[]),
+              messagesAtResumeStart,
+            )
             target.loadedMessageCount = data.messageLoadedCount ?? data.messages.length
             target.messageTotal = data.messageTotal ?? target.messageCount ?? target.loadedMessageCount
             target.messageCount = target.messageTotal
@@ -2444,7 +2501,26 @@ export const useChatStore = defineStore('chat', () => {
           const previousActiveAssistantMessageId = activeAssistantMessageId
           const previousReasoningAssistantMessageId = reasoningAssistantMessageId
           const replayRunMarker = getReplayRunMarker(data.events) ?? activeRunMarker
-          target.messages = mapHermesMessages(data.messages as any[])
+          const mappedResumeMessages = mapHermesMessages(data.messages as any[])
+          const resumeCandidate = selectResumedInFlightAssistant(mappedResumeMessages, replayRunMarker)
+          target.messages = mergeServerMessagesPreservingLocalChanges(
+            target.messages,
+            mappedResumeMessages,
+            undefined,
+            data.isWorking !== false,
+          )
+          const resumeCandidateMessageId = isCurrentResumeCandidate(
+            target.messages,
+            resumeCandidate,
+            replayRunMarker,
+          )
+            ? resumeCandidate?.id
+            : null
+          if (data.isWorking === false) {
+            target.messages.forEach(message => {
+              if (message.role === 'assistant' && message.isStreaming) message.isStreaming = false
+            })
+          }
           target.loadedMessageCount = data.messageLoadedCount ?? data.messages.length
           target.messageTotal = data.messageTotal ?? target.messageCount ?? target.loadedMessageCount
           target.messageCount = target.messageTotal
@@ -2454,6 +2530,7 @@ export const useChatStore = defineStore('chat', () => {
             ? resolveResumedAssistantState(target.messages, {
                 previousActiveAssistantMessageId,
                 previousReasoningAssistantMessageId,
+                resumeCandidateMessageId,
                 activeRunMarker: replayRunMarker,
               })
             : {

@@ -374,6 +374,7 @@ interface SessionMessage {
   role: string
   content: string
   runMarker?: string
+  run_id?: string | null
   tool_call_id?: string | null
   tool_calls?: any[] | null
   tool_name?: string | null
@@ -1250,6 +1251,7 @@ export class BrokerRunController {
       }
       addMessage({
         session_id: sessionId,
+        run_id: msg.run_id || run.responseId || state.runId || null,
         role: msg.role,
         content: msg.content || '',
         tool_call_id: msg.tool_call_id ?? null,
@@ -1525,9 +1527,9 @@ export class BrokerRunController {
       }
       state.isWorking = false
       state.abortController = undefined
-      state.runId = undefined
       state.events = []
       this.flushResponseRunToDb(state, sessionId)
+      state.runId = undefined
       const profile = state.profile
       const hermesSessionId = this.hermesSessionIds.get(this.sessionStateKey(sessionId, profileKey))
       if (profile && hermesSessionId) {
