@@ -2134,6 +2134,7 @@ export default {
     previewFileTab: 'File',
     previewDiffTab: 'Run changes',
     diffPatchTruncated: 'Patch too large and truncated — switch to "File" for the full content',
+    previewContentUnavailable: 'Failed to load file content — it may have been deleted or moved; run changes are still viewable',
     saveFile: 'Save',
   },
   // Download

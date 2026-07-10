@@ -136,6 +136,7 @@ type PreviewFile = {
   type: 'image' | 'markdown' | 'text' | 'html'
   content?: string
   language?: string
+  contentError?: boolean
   diff?: {
     changeId: string
     fileId: number
@@ -257,6 +258,26 @@ export const useFilesStore = defineStore('files', () => {
     }
   }
 
+  // Chat-plane roots file reads at workspace/, while admin-plane reads from
+  // profile home and expects paths that still include workspace/ — try the
+  // workspace-relative path first, then fall back to the ws-prefixed one.
+  async function readFileWithWorkspaceFallback(
+    displayPath: string,
+    rel: string,
+    relWithWs: string,
+  ): Promise<{ path: string, content: string } | null> {
+    try {
+      return { path: rel, content: (await filesApi.readFile(rel)).content }
+    } catch (firstError) {
+      try {
+        return { path: relWithWs, content: (await filesApi.readFile(relWithWs)).content }
+      } catch (secondError) {
+        console.error('Failed to preview file from display path:', displayPath, firstError, secondError)
+        return null
+      }
+    }
+  }
+
   async function previewByDisplayPath(displayPath: string, fileName?: string): Promise<void> {
     const rel = decodeDisplayPathSegments(displayPath.replace(/^\/workspace\//, ''))
     const relWithWs = decodeDisplayPathSegments(displayPath.replace(/^\//, ''))
@@ -284,30 +305,14 @@ export const useFilesStore = defineStore('files', () => {
       return
     }
 
-    // Chat-plane roots file reads at workspace/, while admin-plane reads from
-    // profile home and expects paths that still include workspace/.
-    let workingPath = rel
-    let content: string
-
-    try {
-      const result = await filesApi.readFile(rel)
-      content = result.content
-    } catch (firstError) {
-      try {
-        const result = await filesApi.readFile(relWithWs)
-        workingPath = relWithWs
-        content = result.content
-      } catch (secondError) {
-        console.error('Failed to preview file from display path:', displayPath, firstError, secondError)
-        return
-      }
-    }
+    const loaded = await readFileWithWorkspaceFallback(displayPath, rel, relWithWs)
+    if (!loaded) return
 
     previewFile.value = {
-      path: workingPath,
+      path: loaded.path,
       type,
-      content,
-      language: getLanguageFromPath(workingPath),
+      content: loaded.content,
+      language: getLanguageFromPath(loaded.path),
     }
     previewPanelRequestedAt.value = previewPanelRequestedAt.value + 1
   }
@@ -337,27 +342,26 @@ export const useFilesStore = defineStore('files', () => {
     else if (isMarkdownFile(inferredFileName)) type = 'markdown'
     else if (isHtmlFile(inferredFileName)) type = 'html'
 
-    let workingPath = rel
-    let content = ''
+    // Unlike previewByDisplayPath, a failed content read must NOT abort: the
+    // file may be gone (deleted/renamed after the run) while its diff is still
+    // viewable from the recorded change — surface the failure in the File pane.
+    let loaded: { path: string, content: string } | null = null
     if (type !== 'image') {
-      try {
-        content = (await filesApi.readFile(rel)).content
-      } catch (firstError) {
-        try {
-          const result = await filesApi.readFile(relWithWs)
-          workingPath = relWithWs
-          content = result.content
-        } catch (secondError) {
-          console.error('Failed to preview workspace diff file:', opts.displayPath, firstError, secondError)
-        }
-      }
+      loaded = await readFileWithWorkspaceFallback(opts.displayPath, rel, relWithWs)
     }
     if (requestId !== workspaceDiffPreviewRequestId) return
 
+    const workingPath = loaded?.path || rel
     previewFile.value = {
       path: workingPath,
       type,
-      ...(type === 'image' ? {} : { content, language: getLanguageFromPath(workingPath) }),
+      ...(type === 'image'
+        ? {}
+        : {
+            content: loaded?.content ?? '',
+            language: getLanguageFromPath(workingPath),
+            ...(loaded ? {} : { contentError: true }),
+          }),
       diff,
     }
     previewPanelRequestedAt.value = previewPanelRequestedAt.value + 1

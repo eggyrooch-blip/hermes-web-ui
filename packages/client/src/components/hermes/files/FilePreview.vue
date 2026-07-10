@@ -186,8 +186,11 @@ const CloseIcon = () =>
         </template>
       </div>
       <template v-else>
+        <div v-if="filesStore.previewFile.contentError" class="preview-diff-state error">
+          {{ t('files.previewContentUnavailable') }}
+        </div>
         <img
-          v-if="filesStore.previewFile.type === 'image'"
+          v-else-if="filesStore.previewFile.type === 'image'"
           :src="getImageUrl()"
           class="preview-image"
           :alt="filesStore.previewFile.path"

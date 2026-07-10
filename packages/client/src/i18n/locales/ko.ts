@@ -1994,6 +1994,7 @@ export default {
     previewFileTab: '파일',
     previewDiffTab: '이번 실행 변경 사항',
     diffPatchTruncated: '패치가 너무 커서 잘렸습니다. 전체 내용을 보려면 “파일”로 전환하세요',
+    previewContentUnavailable: '파일 내용을 불러올 수 없습니다. 삭제되었거나 이동되었을 수 있습니다. “이번 변경 사항”은 계속 볼 수 있습니다',
     saveFile: '저장',
     fileTree: '파일 트리',
   },

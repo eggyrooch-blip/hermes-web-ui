@@ -2137,6 +2137,7 @@ export default {
     previewFileTab: '檔案',
     previewDiffTab: '本輪改動',
     diffPatchTruncated: '補丁過大已截斷，切到「檔案」查看完整內容',
+    previewContentUnavailable: '檔案內容讀取失敗，可能已被刪除或移動；「本輪改動」仍可查看',
     saveFile: '儲存',
   },
 

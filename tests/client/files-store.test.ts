@@ -109,6 +109,7 @@ describe('files store', () => {
       type: 'text',
       content: '',
       language: 'typescript',
+      contentError: true,
       diff: {
         changeId: 'change-1',
         fileId: 7,

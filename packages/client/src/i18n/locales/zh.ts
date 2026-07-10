@@ -2136,6 +2136,7 @@ export default {
     previewFileTab: '文件',
     previewDiffTab: '本轮改动',
     diffPatchTruncated: '补丁过大已截断，切到「文件」查看完整内容',
+    previewContentUnavailable: '文件内容读取失败，可能已被删除或移动；「本轮改动」仍可查看',
     saveFile: '保存',
   },
   // 下载
