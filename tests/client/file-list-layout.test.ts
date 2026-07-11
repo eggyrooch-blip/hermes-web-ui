@@ -39,4 +39,48 @@ describe('FileList layout', () => {
     expect(wrapper.find('.file-list-row').classes()).toContain('file-list-grid')
     expect(wrapper.find('.file-name .file-label').exists()).toBe(true)
   })
+
+  it('previews a text file on double click while the pencil still opens the editor', async () => {
+    const store = useFilesStore()
+    const entry = {
+      name: 'notes.txt',
+      path: 'notes.txt',
+      isDir: false,
+      size: 12,
+      modTime: '2026-07-11T08:00:00.000Z',
+    }
+    store.entries = [entry]
+    const openPreview = vi.spyOn(store, 'openPreview').mockResolvedValue(undefined)
+    const openEditor = vi.spyOn(store, 'openEditor').mockResolvedValue(true)
+    const wrapper = mount(FileList)
+
+    await wrapper.find('.file-list-row').trigger('dblclick')
+
+    expect(openPreview).toHaveBeenCalledWith(entry)
+    expect(openEditor).not.toHaveBeenCalled()
+
+    await wrapper.find('button[title="files.edit"]').trigger('click')
+    expect(openEditor).toHaveBeenCalledWith('notes.txt')
+    expect(wrapper.emitted('editor-opened')).toHaveLength(1)
+  })
+
+  it('can disable editing without disabling file preview', async () => {
+    const store = useFilesStore()
+    const entry = {
+      name: 'notes.txt',
+      path: 'notes.txt',
+      isDir: false,
+      size: 12,
+      modTime: '2026-07-11T08:00:00.000Z',
+    }
+    store.entries = [entry]
+    const openPreview = vi.spyOn(store, 'openPreview').mockResolvedValue(undefined)
+    const openEditor = vi.spyOn(store, 'openEditor').mockResolvedValue(undefined)
+    const wrapper = mount(FileList, { props: { allowEdit: false } })
+
+    expect(wrapper.find('button[title="files.edit"]').exists()).toBe(false)
+    await wrapper.find('.file-list-row').trigger('dblclick')
+    expect(openPreview).toHaveBeenCalledWith(entry)
+    expect(openEditor).not.toHaveBeenCalled()
+  })
 })

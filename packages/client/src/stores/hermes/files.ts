@@ -161,9 +161,11 @@ export const useFilesStore = defineStore('files', () => {
 
   const previewFile = ref<PreviewFile | null>(null)
   const previewPanelRequestedAt = ref(0)
-  let workspaceDiffPreviewRequestId = 0
+  let editorRequestId = 0
+  let previewRequestId = 0
   const browserArtifactRequest = ref<{ name: string, path: string } | null>(null)
   const browserArtifactRequestedAt = ref(0)
+  let entriesRequestId = 0
 
   const pathSegments = computed(() => {
     if (!currentPath.value) return []
@@ -186,23 +188,33 @@ export const useFilesStore = defineStore('files', () => {
   })
 
   async function fetchEntries(path?: string) {
+    const requestId = ++entriesRequestId
     if (path !== undefined && path !== currentPath.value) {
       // Switching directory invalidates the current preview; close it so the
       // file list becomes visible again. The editor has its own dirty-check
       // (see hasUnsavedChanges), so we leave editingFile alone here.
       previewFile.value = null
+      previewRequestId += 1
     }
     if (path !== undefined) currentPath.value = path
     loading.value = true
     try {
       const result = await filesApi.listFiles(currentPath.value)
+      if (requestId !== entriesRequestId) return
       entries.value = result.entries
     } catch (err) {
       console.error('Failed to fetch files:', err)
       throw err
     } finally {
-      loading.value = false
+      if (requestId === entriesRequestId) loading.value = false
     }
+  }
+
+  function resetBrowser() {
+    entriesRequestId += 1
+    currentPath.value = ''
+    entries.value = []
+    loading.value = false
   }
 
   function navigateTo(path: string) { return fetchEntries(path) }
@@ -212,15 +224,20 @@ export const useFilesStore = defineStore('files', () => {
     return fetchEntries(parts.join('/'))
   }
 
-  async function openEditor(filePath: string) {
+  async function openEditor(filePath: string): Promise<boolean> {
+    const requestId = ++editorRequestId
     const result = await filesApi.readFile(filePath)
+    if (requestId !== editorRequestId) return false
     editingFile.value = {
       path: filePath,
       content: result.content,
       originalContent: result.content,
       language: getLanguageFromPath(filePath),
     }
+    return true
   }
+
+  function cancelPendingEditor() { editorRequestId += 1 }
 
   async function saveEditor() {
     if (!editingFile.value) return
@@ -228,19 +245,25 @@ export const useFilesStore = defineStore('files', () => {
     editingFile.value.originalContent = editingFile.value.content
   }
 
-  function closeEditor() { editingFile.value = null }
+  function closeEditor() {
+    cancelPendingEditor()
+    editingFile.value = null
+  }
 
   async function openPreview(entry: FileEntry) {
+    const requestId = ++previewRequestId
     if (isImageFile(entry.name)) {
       previewFile.value = { path: entry.path, type: 'image' }
     } else if (isMarkdownFile(entry.name)) {
       const result = await filesApi.readFile(entry.path)
+      if (requestId !== previewRequestId) return
       previewFile.value = { path: entry.path, type: 'markdown', content: result.content }
     } else if (isHtmlFile(entry.name)) {
       // HTML artifacts (e.g. difflib reports) render in a sandboxed iframe via
       // the profile-scoped /api/hermes/download URL. content is kept so the
       // "源码/渲染" toggle in FilePreview can show the raw source on demand.
       const result = await filesApi.readFile(entry.path)
+      if (requestId !== previewRequestId) return
       previewFile.value = {
         path: entry.path,
         type: 'html',
@@ -249,6 +272,7 @@ export const useFilesStore = defineStore('files', () => {
       }
     } else if (isTextFile(entry.name)) {
       const result = await filesApi.readFile(entry.path)
+      if (requestId !== previewRequestId) return
       previewFile.value = {
         path: entry.path,
         type: 'text',
@@ -279,6 +303,7 @@ export const useFilesStore = defineStore('files', () => {
   }
 
   async function previewByDisplayPath(displayPath: string, fileName?: string): Promise<void> {
+    const requestId = ++previewRequestId
     const rel = decodeDisplayPathSegments(displayPath.replace(/^\/workspace\//, ''))
     const relWithWs = decodeDisplayPathSegments(displayPath.replace(/^\//, ''))
     const inferredFileName = fileName || rel.split('/').filter(Boolean).pop() || ''
@@ -299,14 +324,15 @@ export const useFilesStore = defineStore('files', () => {
       return
     }
 
+    previewPanelRequestedAt.value += 1
+
     if (type === 'image') {
       previewFile.value = { path: rel, type: 'image' }
-      previewPanelRequestedAt.value = previewPanelRequestedAt.value + 1
       return
     }
 
     const loaded = await readFileWithWorkspaceFallback(displayPath, rel, relWithWs)
-    if (!loaded) return
+    if (!loaded || requestId !== previewRequestId) return
 
     previewFile.value = {
       path: loaded.path,
@@ -314,7 +340,6 @@ export const useFilesStore = defineStore('files', () => {
       content: loaded.content,
       language: getLanguageFromPath(loaded.path),
     }
-    previewPanelRequestedAt.value = previewPanelRequestedAt.value + 1
   }
 
   async function previewWorkspaceDiffFile(opts: {
@@ -325,8 +350,9 @@ export const useFilesStore = defineStore('files', () => {
     sessionId: string
     profile?: string | null
   }): Promise<void> {
-    const requestId = ++workspaceDiffPreviewRequestId
+    const requestId = ++previewRequestId
     previewFile.value = null
+    previewPanelRequestedAt.value += 1
     const rel = decodeDisplayPathSegments(opts.displayPath.replace(/^\/workspace\//, ''))
     const relWithWs = decodeDisplayPathSegments(opts.displayPath.replace(/^\//, ''))
     const inferredFileName = opts.fileName || rel.split('/').filter(Boolean).pop() || ''
@@ -349,7 +375,7 @@ export const useFilesStore = defineStore('files', () => {
     if (type !== 'image') {
       loaded = await readFileWithWorkspaceFallback(opts.displayPath, rel, relWithWs)
     }
-    if (requestId !== workspaceDiffPreviewRequestId) return
+    if (requestId !== previewRequestId) return
 
     const workingPath = loaded?.path || rel
     previewFile.value = {
@@ -364,7 +390,6 @@ export const useFilesStore = defineStore('files', () => {
           }),
       diff,
     }
-    previewPanelRequestedAt.value = previewPanelRequestedAt.value + 1
   }
 
   function requestBrowserArtifact(name: string, path: string) {
@@ -372,7 +397,10 @@ export const useFilesStore = defineStore('files', () => {
     browserArtifactRequestedAt.value = browserArtifactRequestedAt.value + 1
   }
 
-  function closePreview() { previewFile.value = null }
+  function closePreview() {
+    previewRequestId += 1
+    previewFile.value = null
+  }
 
   async function createDir(name: string, targetPath = currentPath.value) {
     const path = targetPath ? `${targetPath}/${name}` : name
@@ -440,8 +468,8 @@ export const useFilesStore = defineStore('files', () => {
     previewPanelRequestedAt,
     browserArtifactRequest, browserArtifactRequestedAt,
     pathSegments, sortedEntries, hasUnsavedChanges,
-    fetchEntries, navigateTo, navigateUp,
-    openEditor, saveEditor, closeEditor,
+    fetchEntries, resetBrowser, navigateTo, navigateUp,
+    openEditor, cancelPendingEditor, saveEditor, closeEditor,
     openPreview, previewByDisplayPath, previewWorkspaceDiffFile, requestBrowserArtifact, closePreview,
     createDir, createFile, deleteEntry, renameEntry, copyEntry,
     uploadFiles, setSort,

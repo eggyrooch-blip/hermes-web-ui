@@ -2087,6 +2087,11 @@ export default {
   files: {
     title: '文件',
     fileTree: '文件树',
+    browseWorkspace: '浏览工作空间',
+    openArtifacts: '打开的产物',
+    closeArtifact: '关闭 {name}',
+    openFile: '打开文件',
+    noArtifacts: '暂无产出物',
     tree: '目录树',
     list: '文件列表',
     breadcrumbRoot: '根目录',

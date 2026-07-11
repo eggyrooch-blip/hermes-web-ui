@@ -18,6 +18,12 @@ vi.mock('@/api/hermes/files', () => mockFilesApi)
 import { getLanguageFromPath, isPreviewableFile, isTextFile, useFilesStore } from '@/stores/hermes/files'
 import type { FileEntry } from '@/api/hermes/files'
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(res => { resolve = res })
+  return { promise, resolve }
+}
+
 describe('files store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -87,6 +93,75 @@ describe('files store', () => {
       path: 'diagram.png',
       type: 'image',
     })
+  })
+
+  it('keeps only the latest asynchronous editor request', async () => {
+    const slowA = deferred<{ content: string }>()
+    mockFilesApi.readFile.mockImplementation((path: string) => (
+      path === 'a.txt' ? slowA.promise : Promise.resolve({ content: 'B' })
+    ))
+    const store = useFilesStore()
+
+    const stale = store.openEditor('a.txt')
+    const current = store.openEditor('b.txt')
+    await expect(current).resolves.toBe(true)
+    slowA.resolve({ content: 'A' })
+    await expect(stale).resolves.toBe(false)
+
+    expect(store.editingFile).toMatchObject({ path: 'b.txt', content: 'B' })
+  })
+
+  it('invalidates a pending editor request without discarding the dirty buffer', async () => {
+    const pending = deferred<{ content: string }>()
+    mockFilesApi.readFile.mockReturnValue(pending.promise)
+    const store = useFilesStore()
+    store.editingFile = {
+      path: 'dirty.txt',
+      content: 'dirty',
+      originalContent: 'clean',
+      language: 'plaintext',
+    }
+
+    const request = store.openEditor('later.txt')
+    store.cancelPendingEditor()
+    pending.resolve({ content: 'later' })
+
+    await expect(request).resolves.toBe(false)
+    expect(store.editingFile).toMatchObject({ path: 'dirty.txt', content: 'dirty' })
+  })
+
+  it('does not let a slow directory request overwrite the latest path', async () => {
+    const slowA = deferred<{ entries: FileEntry[] }>()
+    const fastB = deferred<{ entries: FileEntry[] }>()
+    mockFilesApi.listFiles.mockImplementation((path: string) => (
+      path === 'a' ? slowA.promise : fastB.promise
+    ))
+    const store = useFilesStore()
+
+    const stale = store.fetchEntries('a')
+    const current = store.fetchEntries('b')
+    fastB.resolve({ entries: [{ name: 'b.txt', path: 'b/b.txt', isDir: false, size: 1, modTime: '' }] })
+    await current
+    slowA.resolve({ entries: [{ name: 'a.txt', path: 'a/a.txt', isDir: false, size: 1, modTime: '' }] })
+    await stale
+
+    expect(store.currentPath).toBe('b')
+    expect(store.entries.map(entry => entry.name)).toEqual(['b.txt'])
+    expect(store.loading).toBe(false)
+  })
+
+  it('signals a display-path preview at request start exactly once', async () => {
+    const pending = deferred<{ content: string }>()
+    mockFilesApi.readFile.mockReturnValue(pending.promise)
+    const store = useFilesStore()
+
+    const request = store.previewByDisplayPath('/workspace/a.txt', 'a.txt')
+    expect(store.previewPanelRequestedAt).toBe(1)
+    pending.resolve({ content: 'A' })
+    await request
+
+    expect(store.previewPanelRequestedAt).toBe(1)
+    expect(store.previewFile?.path).toBe('a.txt')
   })
 
   it('opens an unreadable changed file with diff context', async () => {

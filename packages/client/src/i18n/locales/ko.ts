@@ -1998,6 +1998,11 @@ export default {
     diffPatchEmpty: '이 변경에는 표시할 텍스트 패치가 없습니다(바이너리 파일 또는 이름 변경일 수 있습니다)',
     saveFile: '저장',
     fileTree: '파일 트리',
+    browseWorkspace: '작업 공간 찾아보기',
+    openArtifacts: '열린 산출물',
+    closeArtifact: '{name} 닫기',
+    openFile: '파일 열기',
+    noArtifacts: '아직 산출물이 없습니다',
   },
 
   // 그룹 채팅

@@ -1999,6 +1999,11 @@ jobTriggered: 'Job declenche',
     diffPatchEmpty: "Aucun correctif texte à afficher pour cette modification (fichier binaire ou renommage possible)",
     saveFile: 'Enregistrer',
     fileTree: 'Arborescence des fichiers',
+    browseWorkspace: 'Parcourir l’espace de travail',
+    openArtifacts: 'Artefacts ouverts',
+    closeArtifact: 'Fermer {name}',
+    openFile: 'Ouvrir un fichier',
+    noArtifacts: 'Aucun artefact pour le moment',
   },
 
   // Chat de groupe

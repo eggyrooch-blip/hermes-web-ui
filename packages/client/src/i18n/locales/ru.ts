@@ -1831,6 +1831,11 @@ export default {
   files: {
     title: 'Файлы',
     fileTree: 'Древо файлов',
+    browseWorkspace: 'Просмотреть рабочую область',
+    openArtifacts: 'Открытые артефакты',
+    closeArtifact: 'Закрыть {name}',
+    openFile: 'Открыть файл',
+    noArtifacts: 'Артефактов пока нет',
     tree: 'Древо каталогов',
     list: 'Список файлов',
     breadcrumbRoot: 'Корневая директория',

@@ -2088,6 +2088,11 @@ export default {
   files: {
     title: '檔案',
     fileTree: '檔案樹',
+    browseWorkspace: '瀏覽工作區',
+    openArtifacts: '開啟的產出檔案',
+    closeArtifact: '關閉 {name}',
+    openFile: '開啟檔案',
+    noArtifacts: '暫無產出物',
     tree: '目錄樹',
     list: '檔案清單',
     breadcrumbRoot: '根目錄',

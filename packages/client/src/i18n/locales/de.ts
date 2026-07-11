@@ -1999,6 +1999,11 @@ jobTriggered: 'Job ausgelost',
     diffPatchEmpty: 'Für diese Änderung gibt es keinen anzeigbaren Text-Patch (möglicherweise eine Binärdatei oder eine Umbenennung)',
     saveFile: 'Speichern',
     fileTree: 'Dateibaum',
+    browseWorkspace: 'Arbeitsbereich durchsuchen',
+    openArtifacts: 'Geöffnete Artefakte',
+    closeArtifact: '{name} schließen',
+    openFile: 'Datei öffnen',
+    noArtifacts: 'Noch keine Artefakte',
   },
 
   // Gruppenchat

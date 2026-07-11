@@ -61,6 +61,7 @@ const showOutline = ref(false);
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 const chatContentWrapperRef = ref<HTMLElement | null>(null);
 const showToolPanel = ref(false);
+const toolPanelMounted = ref(false);
 const activeToolPanel = ref<"files" | "terminal">("files");
 const TOOL_PANEL_MIN_WIDTH = 360;
 const TOOL_PANEL_DEFAULT_WIDTH = 560;
@@ -219,6 +220,7 @@ onUnmounted(() => {
   stopToolResize();
 });
 watch(showToolPanel, async (visible) => {
+  if (visible) toolPanelMounted.value = true;
   if (!visible || isMobile.value) return;
   await nextTick();
   handleToolPanelViewportResize();
@@ -1824,7 +1826,8 @@ async function handleSessionModelCustomSubmit() {
             @navigate="handleOutlineNavigate"
           />
           <aside
-            v-if="showToolPanel && !chatSidebarSurface"
+            v-if="toolPanelMounted && !chatSidebarSurface"
+            v-show="showToolPanel"
             class="chat-tool-panel"
             :style="toolPanelStyle"
           >

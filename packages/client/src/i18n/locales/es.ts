@@ -1999,6 +1999,11 @@ jobTriggered: 'Job ejecutado',
     diffPatchEmpty: 'No hay un parche de texto que mostrar para este cambio (posiblemente un archivo binario o un renombrado)',
     saveFile: 'Guardar',
     fileTree: 'Árbol de archivos',
+    browseWorkspace: 'Explorar espacio de trabajo',
+    openArtifacts: 'Artefactos abiertos',
+    closeArtifact: 'Cerrar {name}',
+    openFile: 'Abrir archivo',
+    noArtifacts: 'Aún no hay artefactos',
   },
 
   // Chat grupal

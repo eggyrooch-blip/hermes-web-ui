@@ -2085,6 +2085,11 @@ export default {
   files: {
     title: 'Files',
     fileTree: 'File Tree',
+    browseWorkspace: 'Browse workspace',
+    openArtifacts: 'Open artifacts',
+    closeArtifact: 'Close {name}',
+    openFile: 'Open file',
+    noArtifacts: 'No artifacts yet',
     tree: 'Directory Tree',
     list: 'File List',
     breadcrumbRoot: 'Home',

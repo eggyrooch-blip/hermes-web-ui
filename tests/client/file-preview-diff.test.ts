@@ -76,4 +76,20 @@ describe('FilePreview workspace diff mode', () => {
     expect(wrapper.find('.preview-code').exists()).toBe(true)
     expect(fetchWorkspaceRunChangeFileMock).not.toHaveBeenCalled()
   })
+
+  it('shows its close action by default and lets an embedding tab workspace hide it', async () => {
+    const store = useFilesStore()
+    store.previewFile = {
+      path: 'notes.txt',
+      type: 'text',
+      content: 'notes',
+      language: 'plaintext',
+    }
+
+    const defaultWrapper = mount(FilePreview)
+    expect(defaultWrapper.text()).toContain('files.closePreview')
+
+    const embeddedWrapper = mount(FilePreview, { props: { showClose: false } })
+    expect(embeddedWrapper.text()).not.toContain('files.closePreview')
+  })
 })

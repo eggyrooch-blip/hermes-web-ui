@@ -1999,6 +1999,11 @@ jobTriggered: 'Job acionado',
     diffPatchEmpty: 'Não há patch de texto para mostrar nesta alteração (possivelmente um arquivo binário ou uma renomeação)',
     saveFile: 'Salvar',
     fileTree: 'Árvore de arquivos',
+    browseWorkspace: 'Explorar espaço de trabalho',
+    openArtifacts: 'Artefatos abertos',
+    closeArtifact: 'Fechar {name}',
+    openFile: 'Abrir arquivo',
+    noArtifacts: 'Ainda não há artefatos',
   },
 
   // Chat em grupo

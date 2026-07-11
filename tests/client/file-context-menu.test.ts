@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import type { FileEntry } from '@/api/hermes/files'
@@ -94,6 +95,70 @@ describe('FileContextMenu', () => {
     expect(keys).toContain('edit')
     expect(keys).toContain('preview')
     expect(keys).toContain('download')
+  })
+
+  it('hides and guards edit when the embedding scope disables it', async () => {
+    const store = useFilesStore()
+    const openEditorSpy = vi.spyOn(store, 'openEditor').mockResolvedValue(true)
+    const wrapper = mount(FileContextMenu, { props: { allowEdit: false } })
+    const entry: FileEntry = {
+      name: 'README',
+      path: 'README',
+      isDir: false,
+      size: 12,
+      modTime: '2026-06-02T00:00:00.000Z',
+    }
+
+    await showMenu(wrapper, entry)
+    expect(wrapper.find('[data-key="edit"]').exists()).toBe(false)
+
+    wrapper.findComponent({ name: 'NDropdown' }).vm.$emit('select', 'edit')
+    await flushPromises()
+    expect(openEditorSpy).not.toHaveBeenCalled()
+  })
+
+  it('announces editor ownership before opening from the context menu', async () => {
+    const store = useFilesStore()
+    const openEditorSpy = vi.spyOn(store, 'openEditor').mockResolvedValue(true)
+    const wrapper = mount(FileContextMenu)
+    const entry: FileEntry = {
+      name: 'README',
+      path: 'README',
+      isDir: false,
+      size: 12,
+      modTime: '2026-06-02T00:00:00.000Z',
+    }
+
+    await showMenu(wrapper, entry)
+    await wrapper.get('[data-key="edit"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('editor-opened')).toHaveLength(1)
+    expect(openEditorSpy).toHaveBeenCalledWith('README')
+  })
+
+  it('wires FilesPanel editor scope into both edit entry points', () => {
+    const source = readFileSync('packages/client/src/components/hermes/chat/FilesPanel.vue', 'utf8')
+
+    expect(source).toContain('<FileContextMenu')
+    expect(source.match(/:allow-edit="editorScopeActive"/g)).toHaveLength(2)
+    expect(source.match(/@editor-opened="handleEditorOpened"/g)).toHaveLength(2)
+  })
+
+  it('does not announce ownership when the editor load fails', async () => {
+    const store = useFilesStore()
+    vi.spyOn(store, 'openEditor').mockRejectedValue(new Error('failed'))
+    const wrapper = mount(FileContextMenu)
+    const entry: FileEntry = {
+      name: 'README', path: 'README', isDir: false, size: 1, modTime: '',
+    }
+
+    await showMenu(wrapper, entry)
+    await wrapper.get('[data-key="edit"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('editor-opened')).toBeUndefined()
+    expect(mockMessage.error).toHaveBeenCalled()
   })
 
   it('invokes the store preview action from the preview menu item', async () => {

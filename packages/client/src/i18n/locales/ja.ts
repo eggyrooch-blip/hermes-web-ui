@@ -1998,6 +1998,11 @@ export default {
     diffPatchEmpty: 'この変更には表示できるテキストパッチがありません（バイナリファイルまたは名前変更の可能性があります）',
     saveFile: '保存',
     fileTree: 'ファイルツリー',
+    browseWorkspace: 'ワークスペースを参照',
+    openArtifacts: '開いている成果物',
+    closeArtifact: '{name}を閉じる',
+    openFile: 'ファイルを開く',
+    noArtifacts: '成果物はまだありません',
   },
 
   // グループチャット

@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-07-09
+updated: 2026-07-11
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
@@ -14,6 +14,13 @@ related:
 ---
 
 # hermes-web-ui 架构速查 — EKKO fork
+
+> [!info] 2026-07-11 local worktree — chat 右侧产物 workspace 两阶段，尚未 main/生产
+> `artifact-sidebar-workspace` 把 chat 右侧栏从「重新展开即回到文件管理器」改为 session-aware、file-first 的产物 workspace。阶段一在 `ChatPanel` 首次打开侧栏时才挂载 `DetailPanel`，之后用 `v-show` 收起/展开，保留组件状态；阶段二用可关闭、可键盘切换的文件 tab 取代四模式下拉，并把 `FilesPanel` 降为文件夹/`+` 打开的 secondary browser。没有产物记忆时先显示本轮产物概览，不默认进入根目录。
+>
+> 状态仅保存在已挂载客户端组件内，不新增 Pinia store、localStorage、schema 或服务端 API。workspace key 同时包含 runtime mode、profile metadata 和 session id，避免相同 session id 在不同运行面/profile 间串 tab；`FilePreview`、`ArtifactBrowser`、`FilesPanel` 继续复用，HTML 仍走既有 sandboxed artifact browser，diff/文本/Markdown/图片仍走现有 preview/editor。异步 entries/preview/editor 读取使用 request epoch 丢弃过期返回；编辑器再用当前 workspace owner 限制跨 session/profile 复用，切换 scope 会取消 pending editor 并重置 secondary browser。
+>
+> 无障碍边界包括 `tablist/tab/tabpanel`、`aria-selected/controls`、roving tabindex、方向键与 Home/End，以及关闭/浏览按钮的可读 label。安全边界不变：浏览器不获得 broker bearer，ArtifactBrowser 可见地址不含 token，iframe sandbox 属性不放宽，文件访问仍由现有 BFF、chat-plane access control 与 profile workspace containment 约束。当前仅在本机 worktree；focused 11 files / 86 tests、全量 316 files / 2448 passed / 2 skipped、Playwright 3/3、`npm run harness:check`、`npm run build` 与真实 Chrome 桌面/720px 截图均已完成。未合入 main，未 push，未发布生产。
 
 > [!info] 2026-07-10 local hotfix — broker default workspace diff producer
 > `webui-broker-default-workspace-diff-hotfix` restores the broker-side producer

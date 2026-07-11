@@ -14,4 +14,14 @@ describe('ChatPanel tool drawer resizing support', () => {
     expect(source).toContain('watch(showToolPanel')
     expect(source).toContain('width: 100% !important;')
   })
+
+  it('lazy-mounts the tool panel once and only hides it after collapse', () => {
+    const source = readFileSync('packages/client/src/components/hermes/chat/ChatPanel.vue', 'utf8')
+
+    expect(source).toContain('const toolPanelMounted = ref(false)')
+    expect(source).toContain('if (visible) toolPanelMounted.value = true')
+    expect(source).toContain('v-if="toolPanelMounted && !chatSidebarSurface"')
+    expect(source).toContain('v-show="showToolPanel"')
+    expect(source).not.toContain('v-if="showToolPanel && !chatSidebarSurface"')
+  })
 })

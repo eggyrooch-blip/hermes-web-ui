@@ -11,6 +11,7 @@ import { handleCodeBlockCopyClick, renderHighlightedCodeBlock } from '@/componen
 const { t } = useI18n()
 const message = useMessage()
 const filesStore = useFilesStore()
+withDefaults(defineProps<{ showClose?: boolean }>(), { showClose: true })
 const activePane = ref<'file' | 'diff'>('file')
 const diffPatch = ref('')
 const diffLoading = ref(false)
@@ -163,7 +164,7 @@ const CloseIcon = () =>
         >
           {{ htmlShowSource ? t('files.previewRender') : t('files.previewSource') }}
         </NButton>
-        <NButton size="small" quaternary @click="filesStore.closePreview()">
+        <NButton v-if="showClose" size="small" quaternary @click="filesStore.closePreview()">
           <template #icon>
             <NIcon><CloseIcon /></NIcon>
           </template>

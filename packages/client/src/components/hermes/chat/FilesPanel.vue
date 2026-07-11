@@ -16,6 +16,8 @@ import type { FileEntry } from '@/api/hermes/files'
 
 const filesStore = useFilesStore()
 const { t } = useI18n()
+withDefaults(defineProps<{ editorScopeActive?: boolean }>(), { editorScopeActive: true })
+const emit = defineEmits<{ (e: 'editor-opened'): void }>()
 
 const contextMenuRef = ref<InstanceType<typeof FileContextMenu> | null>(null)
 const showUpload = ref(false)
@@ -55,6 +57,10 @@ function handleRename(entry: FileEntry) {
   renameEntry.value = entry
   renameTargetPath.value = null
   showRenameModal.value = true
+}
+
+function handleEditorOpened() {
+  emit('editor-opened')
 }
 
 onMounted(() => {
@@ -104,13 +110,20 @@ onMounted(() => {
       </div>
       <FileBreadcrumb />
       <div class="files-content">
-        <FileEditor v-if="filesStore.editingFile" />
-        <FileList v-else @contextmenu-entry="handleContextMenu" />
+        <FileEditor v-if="editorScopeActive && filesStore.editingFile" />
+        <FileList
+          v-else
+          :allow-edit="editorScopeActive"
+          @editor-opened="handleEditorOpened"
+          @contextmenu-entry="handleContextMenu"
+        />
       </div>
     </div>
     </template>
     <FileContextMenu
       ref="contextMenuRef"
+      :allow-edit="editorScopeActive"
+      @editor-opened="handleEditorOpened"
       @rename="handleRename"
       @new-folder="handleContextNewFolder"
     />

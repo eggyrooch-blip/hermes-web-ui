@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { NButton, NSpin, NEmpty, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { useFilesStore, isPreviewableFile, isTextFile, isHtmlFile } from '@/stores/hermes/files'
+import { useFilesStore, isPreviewableFile, isTextFile } from '@/stores/hermes/files'
 import { downloadFile } from '@/api/hermes/download'
 import type { FileEntry } from '@/api/hermes/files'
 
 const { t } = useI18n()
 const message = useMessage()
 const filesStore = useFilesStore()
+withDefaults(defineProps<{ allowEdit?: boolean }>(), { allowEdit: true })
 
 const emit = defineEmits<{
   (e: 'contextmenu-entry', event: MouseEvent, entry: FileEntry): void
+  (e: 'editor-opened'): void
 }>()
 
 function formatSize(bytes: number): string {
@@ -56,13 +58,6 @@ async function handlePreview(entry: FileEntry) {
 async function handleDoubleClick(entry: FileEntry) {
   if (entry.isDir) {
     filesStore.navigateTo(entry.path)
-  } else if (isHtmlFile(entry.name)) {
-    // .html is also an isTextFile, but double-click should RENDER the artifact
-    // (right-side iframe preview), not open the source editor. Check html first.
-    // The ✏️ edit button still opens the raw source for those who want it.
-    await handlePreview(entry)
-  } else if (isTextFile(entry.name)) {
-    await filesStore.openEditor(entry.path)
   } else if (isPreviewableFile(entry.name)) {
     await handlePreview(entry)
   }
@@ -79,6 +74,10 @@ async function handleDownload(entry: FileEntry) {
   } catch (err: any) {
     message.error(err.message || t('files.backendError'))
   }
+}
+
+async function handleEdit(entry: FileEntry) {
+  if (await filesStore.openEditor(entry.path)) emit('editor-opened')
 }
 </script>
 
@@ -117,7 +116,7 @@ async function handleDownload(entry: FileEntry) {
           <div class="file-date">{{ formatDate(entry.modTime) }}</div>
           <div class="file-actions">
             <NButton v-if="isPreviewableFile(entry.name) && !entry.isDir" size="tiny" quaternary @click.stop="handlePreview(entry)" :title="t('files.preview')">👁️</NButton>
-            <NButton v-if="isTextFile(entry.name) && !entry.isDir" size="tiny" quaternary @click.stop="filesStore.openEditor(entry.path)" :title="t('files.edit')">✏️</NButton>
+            <NButton v-if="allowEdit && isTextFile(entry.name) && !entry.isDir" size="tiny" quaternary @click.stop="handleEdit(entry)" :title="t('files.edit')">✏️</NButton>
             <NButton v-if="!entry.isDir" size="tiny" quaternary @click.stop="handleDownload(entry)" :title="t('files.download')">⬇️</NButton>
           </div>
         </div>

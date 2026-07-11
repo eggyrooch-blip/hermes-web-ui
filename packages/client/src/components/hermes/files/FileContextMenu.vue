@@ -12,6 +12,7 @@ const { t } = useI18n()
 const message = useMessage()
 const dialog = useDialog()
 const filesStore = useFilesStore()
+const props = withDefaults(defineProps<{ allowEdit?: boolean }>(), { allowEdit: true })
 
 const showMenu = ref(false)
 const menuX = ref(0)
@@ -21,6 +22,7 @@ const targetEntry = ref<FileEntry | null>(null)
 const emit = defineEmits<{
   (e: 'rename', entry: FileEntry): void
   (e: 'newFolder', entry: FileEntry): void
+  (e: 'editor-opened'): void
 }>()
 
 function show(e: MouseEvent, entry: FileEntry) {
@@ -41,7 +43,7 @@ function getOptions() {
   if (entry.isDir) {
     options.push({ label: t('files.open'), key: 'open' })
   } else {
-    if (isTextFile(entry.name)) {
+    if (props.allowEdit && isTextFile(entry.name)) {
       options.push({ label: t('files.edit'), key: 'edit' })
     }
     if (isPreviewableFile(entry.name)) {
@@ -68,7 +70,12 @@ async function handleSelect(key: string) {
       filesStore.navigateTo(entry.path)
       break
     case 'edit':
-      try { await filesStore.openEditor(entry.path) } catch { message.error(t('files.backendError')) }
+      if (!props.allowEdit) break
+      try {
+        if (await filesStore.openEditor(entry.path)) emit('editor-opened')
+      } catch {
+        message.error(t('files.backendError'))
+      }
       break
     case 'preview':
       try { await filesStore.openPreview(entry) } catch { message.error(t('files.backendError')) }

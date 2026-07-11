@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -17,6 +18,11 @@ const routeMock = vi.hoisted(() => ({
   name: 'hermes.chat',
   params: {} as Record<string, unknown>,
   query: {} as Record<string, unknown>,
+}))
+const detailLifecycleMock = vi.hoisted(() => ({
+  mounted: vi.fn(),
+  unmounted: vi.fn(),
+  nextId: 0,
 }))
 
 const chatStoreMock = vi.hoisted(() => ({
@@ -218,6 +224,23 @@ vi.mock('@/components/hermes/chat/OutlinePanel.vue', () => ({
   default: { template: '<div class="outline-panel-stub" />' },
 }))
 
+vi.mock('@/components/hermes/chat/DetailPanel.vue', async () => {
+  const { defineComponent, onMounted, onUnmounted, ref } = await import('vue')
+  return {
+    default: defineComponent({
+      name: 'DetailPanel',
+      setup() {
+        const id = ++detailLifecycleMock.nextId
+        const value = ref(0)
+        onMounted(() => detailLifecycleMock.mounted(id))
+        onUnmounted(() => detailLifecycleMock.unmounted(id))
+        return { id, value }
+      },
+      template: '<button class="detail-panel-probe" @click="value += 1">{{ id }}:{{ value }}</button>',
+    }),
+  }
+})
+
 vi.mock('@/components/hermes/chat/FilesPanel.vue', () => ({
   default: { template: '<div class="files-panel-stub" />' },
 }))
@@ -274,6 +297,7 @@ describe('ChatPanel user-mode gateway state', () => {
     routerReplaceMock.mockClear()
     routerResolveMock.mockClear()
     vi.clearAllMocks()
+    detailLifecycleMock.nextId = 0
     chatStoreMock.newChat.mockReturnValue({ id: 'new-session', profile: 'user_a' })
     chatStoreMock.loadSessions.mockResolvedValue(undefined)
     appStoreMock.loadModels.mockResolvedValue(undefined)
@@ -285,6 +309,38 @@ describe('ChatPanel user-mode gateway state', () => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
     })
+  })
+
+  it('mounts the tool detail once and only hides it across collapse and reopen', async () => {
+    isStoredSuperAdminMock.mockReturnValue(true)
+    const wrapper = mount(ChatPanel, {
+      global: { stubs: { RouterLink: true } },
+    })
+
+    expect(wrapper.find('.detail-panel-probe').exists()).toBe(false)
+    expect(detailLifecycleMock.mounted).not.toHaveBeenCalled()
+
+    await wrapper.find('.header-tool-toggle').trigger('click')
+    await nextTick()
+    const detail = wrapper.find('.detail-panel-probe')
+    expect(detail.text()).toBe('1:0')
+    expect(detailLifecycleMock.mounted).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('.chat-tool-panel').attributes('style')).not.toContain('display: none')
+
+    await detail.trigger('click')
+    expect(wrapper.find('.detail-panel-probe').text()).toBe('1:1')
+
+    await wrapper.find('.header-tool-toggle').trigger('click')
+    await nextTick()
+    expect(wrapper.find('.chat-tool-panel').isVisible()).toBe(false)
+    expect(wrapper.find('.detail-panel-probe').exists()).toBe(true)
+    expect(detailLifecycleMock.unmounted).not.toHaveBeenCalled()
+
+    await wrapper.find('.header-tool-toggle').trigger('click')
+    await nextTick()
+    expect(wrapper.find('.chat-tool-panel').attributes('style')).not.toContain('display: none')
+    expect(wrapper.find('.detail-panel-probe').text()).toBe('1:1')
+    expect(detailLifecycleMock.mounted).toHaveBeenCalledTimes(1)
   })
 
   it('does not show a wake hint in user mode when the bound gateway is still connecting', () => {
