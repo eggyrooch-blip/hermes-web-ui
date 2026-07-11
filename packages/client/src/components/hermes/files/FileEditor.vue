@@ -22,18 +22,18 @@ const filesStore = useFilesStore()
 const props = withDefaults(defineProps<{ editorScope?: string }>(), {
   editorScope: DEFAULT_EDITOR_SCOPE,
 })
-const canAccessEditor = computed(() => filesStore.canAccessEditor(props.editorScope))
+const editingFile = computed(() => filesStore.getEditingFile(props.editorScope))
 
 const editorContainer = ref<HTMLElement | null>(null)
 let editor: monaco.editor.IStandaloneCodeEditor | null = null
 const saving = ref(false)
 
 onMounted(() => {
-  if (!editorContainer.value || !filesStore.editingFile || !canAccessEditor.value) return
+  if (!editorContainer.value || !editingFile.value) return
 
   editor = monaco.editor.create(editorContainer.value, {
-    value: filesStore.editingFile.content,
-    language: filesStore.editingFile.language,
+    value: editingFile.value.content,
+    language: editingFile.value.language,
     theme: document.documentElement.classList.contains('dark') ? 'vs-dark' : 'vs',
     minimap: { enabled: false },
     fontSize: 13,
@@ -45,8 +45,8 @@ onMounted(() => {
   })
 
   editor.onDidChangeModelContent(() => {
-    if (filesStore.editingFile && canAccessEditor.value) {
-      filesStore.editingFile.content = editor!.getValue()
+    if (editingFile.value) {
+      editingFile.value.content = editor!.getValue()
     }
   })
 
@@ -74,7 +74,7 @@ async function handleSave() {
 }
 
 function handleClose() {
-  if (filesStore.hasUnsavedChanges) {
+  if (filesStore.hasUnsavedChangesForScope(props.editorScope)) {
     dialogApi.warning({
       title: t('files.unsavedChanges'),
       positiveText: t('common.ok'),
@@ -90,9 +90,9 @@ function handleClose() {
 </script>
 
 <template>
-  <div v-if="canAccessEditor" class="file-editor">
+  <div v-if="editingFile" class="file-editor">
     <div class="editor-header">
-      <span class="editor-filename">{{ filesStore.editingFile?.path }}</span>
+      <span class="editor-filename">{{ editingFile.path }}</span>
       <NSpace>
         <NButton size="small" type="primary" :loading="saving" @click="handleSave">
           {{ t('files.saveFile') }}

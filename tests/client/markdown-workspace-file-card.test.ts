@@ -31,6 +31,7 @@ const previewByDisplayPath = vi.fn()
 const requestBrowserArtifact = vi.fn()
 vi.mock('@/stores/hermes/files', () => ({
   isHtmlFile: (name: string) => /\.html?$/i.test(name),
+  isImageFile: (name: string) => /\.(png|jpe?g|gif|svg|webp|bmp|ico)$/i.test(name),
   useFilesStore: () => ({ previewByDisplayPath, requestBrowserArtifact }),
 }))
 
@@ -107,6 +108,19 @@ describe('MarkdownRenderer workspace artifact file card', () => {
     await wrapper.find('.markdown-file-card').trigger('click')
 
     expect(downloadFile).toHaveBeenCalledWith('/workspace/reports/archive.zip', 'archive.zip')
+  })
+
+  it('keeps non-workspace image cards on the safe download path', async () => {
+    downloadFile.mockClear()
+    previewByDisplayPath.mockClear()
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: '[preview.gif](/tmp/preview.gif)' },
+    })
+
+    await wrapper.find('.markdown-file-card').trigger('click')
+
+    expect(downloadFile).toHaveBeenCalledWith('/tmp/preview.gif', 'preview.gif')
+    expect(previewByDisplayPath).not.toHaveBeenCalled()
   })
 
   it('does not render fenced workspace paths or URLs as file cards', () => {

@@ -1,15 +1,20 @@
 <script setup lang="ts">
 import { NButton, NSpin, NEmpty, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { DEFAULT_EDITOR_SCOPE, useFilesStore, isPreviewableFile, isTextFile } from '@/stores/hermes/files'
+import { DEFAULT_EDITOR_SCOPE, useFilesStore, isHtmlFile, isPreviewableFile, isTextFile } from '@/stores/hermes/files'
 import { downloadFile } from '@/api/hermes/download'
 import type { FileEntry } from '@/api/hermes/files'
 
 const { t } = useI18n()
 const message = useMessage()
 const filesStore = useFilesStore()
-const props = withDefaults(defineProps<{ allowEdit?: boolean, editorScope?: string }>(), {
+const props = withDefaults(defineProps<{
+  allowEdit?: boolean
+  doubleClickEdits?: boolean
+  editorScope?: string
+}>(), {
   allowEdit: true,
+  doubleClickEdits: true,
   editorScope: DEFAULT_EDITOR_SCOPE,
 })
 
@@ -61,6 +66,10 @@ async function handlePreview(entry: FileEntry) {
 async function handleDoubleClick(entry: FileEntry) {
   if (entry.isDir) {
     filesStore.navigateTo(entry.path)
+  } else if (isHtmlFile(entry.name)) {
+    await handlePreview(entry)
+  } else if (props.allowEdit && props.doubleClickEdits && isTextFile(entry.name)) {
+    await handleEdit(entry)
   } else if (isPreviewableFile(entry.name)) {
     await handlePreview(entry)
   }

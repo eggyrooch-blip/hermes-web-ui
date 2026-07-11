@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { DEFAULT_EDITOR_SCOPE, useFilesStore } from '@/stores/hermes/files'
 import { useI18n } from 'vue-i18n'
 import { NButton } from 'naive-ui'
@@ -21,6 +21,7 @@ const props = withDefaults(defineProps<{ editorScopeActive?: boolean, editorScop
   editorScope: DEFAULT_EDITOR_SCOPE,
 })
 const emit = defineEmits<{ (e: 'editor-opened'): void }>()
+const scopedEditingFile = computed(() => filesStore.getEditingFile(props.editorScope))
 
 const contextMenuRef = ref<InstanceType<typeof FileContextMenu> | null>(null)
 const showUpload = ref(false)
@@ -113,10 +114,11 @@ onMounted(() => {
       </div>
       <FileBreadcrumb />
       <div class="files-content">
-        <FileEditor v-if="editorScopeActive && filesStore.editingFile" :editor-scope="props.editorScope" />
+        <FileEditor v-if="editorScopeActive && scopedEditingFile" :editor-scope="props.editorScope" />
         <FileList
           v-else
           :allow-edit="editorScopeActive"
+          :double-click-edits="false"
           :editor-scope="props.editorScope"
           @editor-opened="handleEditorOpened"
           @contextmenu-entry="handleContextMenu"

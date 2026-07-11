@@ -132,23 +132,28 @@ describe('files store', () => {
     expect(store.editingFile).toMatchObject({ path: 'dirty.txt', content: 'dirty' })
   })
 
-  it('guards editor visibility and saves by owner scope', async () => {
+  it('keeps editor buffers isolated and saves by owner scope', async () => {
     mockFilesApi.readFile.mockResolvedValue({ content: 'A' })
     mockFilesApi.writeFile.mockResolvedValue(undefined)
     const store = useFilesStore()
     await store.openEditor('a.txt', 'chat:session-a')
     store.editingFile!.content = 'dirty A'
 
-    expect(store.canAccessEditor('files-view:profile-b')).toBe(false)
+    expect(store.canAccessEditor('files-view:profile-b')).toBe(true)
     await expect(store.saveEditor('files-view:profile-b')).resolves.toBe(false)
     expect(mockFilesApi.writeFile).not.toHaveBeenCalled()
+
+    await store.openEditor('b.txt', 'files-view:profile-b')
+    store.getEditingFile('files-view:profile-b')!.content = 'dirty B'
+    expect(store.getEditingFile('chat:session-a')).toMatchObject({ path: 'a.txt', content: 'dirty A' })
+    expect(store.getEditingFile('files-view:profile-b')).toMatchObject({ path: 'b.txt', content: 'dirty B' })
 
     expect(store.canAccessEditor('chat:session-a')).toBe(true)
     await expect(store.saveEditor('chat:session-a')).resolves.toBe(true)
     expect(mockFilesApi.writeFile).toHaveBeenCalledWith('a.txt', 'dirty A')
   })
 
-  it('does not clear another scope editor for same-path delete or rename', async () => {
+  it('clears every affected scoped editor for cross-surface delete or rename', async () => {
     mockFilesApi.deleteFile.mockResolvedValue(undefined)
     mockFilesApi.renameFile.mockResolvedValue(undefined)
     mockFilesApi.listFiles.mockResolvedValue({ entries: [] })
@@ -158,10 +163,19 @@ describe('files store', () => {
       path: 'README.md', content: 'dirty A', originalContent: 'clean A', language: 'markdown', ownerScope: 'session-a',
     }
 
+    store.editingFiles.set('session-b', {
+      path: 'other.md', content: 'dirty B', originalContent: 'clean B', language: 'markdown', ownerScope: 'session-b',
+    })
+
     await store.deleteEntry(entry, 'session-b')
-    expect(store.editingFile?.content).toBe('dirty A')
+    expect(store.getEditingFile('session-a')).toBeNull()
+    expect(store.getEditingFile('session-b')?.content).toBe('dirty B')
+    store.editingFiles.set('session-a', {
+      path: 'README.md', content: 'dirty A', originalContent: 'clean A', language: 'markdown', ownerScope: 'session-a',
+    })
     await store.renameEntry(entry, 'renamed.md', 'session-b')
-    expect(store.editingFile?.content).toBe('dirty A')
+    expect(store.getEditingFile('session-a')).toBeNull()
+    expect(store.getEditingFile('session-b')?.content).toBe('dirty B')
   })
 
   it('clears the owned editor for same-path delete and rename', async () => {

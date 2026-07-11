@@ -18,7 +18,7 @@ import {
   SUPPORT_PREVIEW_FILE_TYPES,
 } from './mermaidRenderer'
 import { downloadFile, getDownloadUrl, fetchFileText } from '@/api/hermes/download'
-import { useFilesStore, isHtmlFile } from '@/stores/hermes/files'
+import { useFilesStore, isHtmlFile, isImageFile } from '@/stores/hermes/files'
 
 const LATEX_FENCE_LANGS = new Set(['latex', 'tex', 'math', 'katex'])
 const PREVIEW_AREA_WIDTH = 'min(800px, 100vw)'
@@ -658,6 +658,12 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
           } else {
             await useFilesStore().previewByDisplayPath(path, fileName || undefined)
           }
+        } else if (isImageFile(fileName || '')) {
+          // Non-workspace image cards cannot use the profile-scoped workspace
+          // preview endpoint. Preserve their previous safe download behavior.
+          downloadFile(path, fileName).catch((err: Error) => {
+            message.error(err.message || t('download.downloadFailed'))
+          })
         } else {
           previewTextFile(path, fileName || '')
         }

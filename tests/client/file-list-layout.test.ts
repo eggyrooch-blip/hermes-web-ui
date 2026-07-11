@@ -40,7 +40,7 @@ describe('FileList layout', () => {
     expect(wrapper.find('.file-name .file-label').exists()).toBe(true)
   })
 
-  it('previews a text file on double click while the pencil still opens the editor', async () => {
+  it('opens a text file in the editor on double click', async () => {
     const store = useFilesStore()
     const entry = {
       name: 'notes.txt',
@@ -56,12 +56,13 @@ describe('FileList layout', () => {
 
     await wrapper.find('.file-list-row').trigger('dblclick')
 
-    expect(openPreview).toHaveBeenCalledWith(entry)
-    expect(openEditor).not.toHaveBeenCalled()
-
-    await wrapper.find('button[title="files.edit"]').trigger('click')
+    expect(openPreview).not.toHaveBeenCalled()
     expect(openEditor).toHaveBeenCalledWith('notes.txt', 'files-view:__default__')
     expect(wrapper.emitted('editor-opened')).toHaveLength(1)
+
+    await wrapper.find('button[title="files.edit"]').trigger('click')
+    expect(openEditor).toHaveBeenCalledTimes(2)
+    expect(wrapper.emitted('editor-opened')).toHaveLength(2)
   })
 
   it('can disable editing without disabling file preview', async () => {

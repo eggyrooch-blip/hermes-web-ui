@@ -25,7 +25,7 @@ vi.mock('@/api/hermes/files', async importOriginal => ({
 }))
 
 vi.mock('@/components/hermes/chat/FilesPanel.vue', async () => {
-  const { defineComponent, onMounted } = await import('vue')
+  const { computed, defineComponent, onMounted } = await import('vue')
   const { useFilesStore } = await import('@/stores/hermes/files')
   return {
     default: defineComponent({
@@ -46,18 +46,20 @@ vi.mock('@/components/hermes/chat/FilesPanel.vue', async () => {
           }
         }
         const openEditor = () => {
-          filesStore.editingFile = {
-            path: 'draft-a.txt',
-            content: 'dirty A',
-            originalContent: 'clean A',
+          const suffix = _.editorScope.endsWith('session-b') ? 'B' : 'A'
+          filesStore.editingFiles.set(_.editorScope, {
+            path: `draft-${suffix.toLowerCase()}.txt`,
+            content: `dirty ${suffix}`,
+            originalContent: `clean ${suffix}`,
             language: 'plaintext',
             ownerScope: _.editorScope,
-          }
+          })
           emit('editor-opened')
         }
-        return { filesStore, openPreview, openEditor }
+        const scopedEditor = computed(() => filesStore.getEditingFile(_.editorScope))
+        return { filesStore, openPreview, openEditor, scopedEditor }
       },
-      template: '<div data-testid="files-panel" :data-editor-scope-active="String(editorScopeActive)"><span v-if="editorScopeActive && filesStore.editingFile" data-testid="scoped-editor">{{ filesStore.editingFile.path }}:{{ filesStore.editingFile.content }}</span><button v-if="editorScopeActive" data-testid="files-panel-open-editor" @click="openEditor">open editor</button><button data-testid="files-panel-open-preview" @click="openPreview">open preview</button></div>',
+      template: '<div data-testid="files-panel" :data-editor-scope-active="String(editorScopeActive)"><span v-if="editorScopeActive && scopedEditor" data-testid="scoped-editor">{{ scopedEditor.path }}:{{ scopedEditor.content }}</span><button v-if="editorScopeActive" data-testid="files-panel-open-editor" @click="openEditor">open editor</button><button data-testid="files-panel-open-preview" @click="openPreview">open preview</button></div>',
     }),
   }
 })
@@ -365,7 +367,7 @@ describe('DetailPanel session workspace', () => {
     expect(filesStore.editingFile?.content).toBe('dirty')
   })
 
-  it('hides a session A editor from session B without discarding the unsaved buffer', async () => {
+  it('keeps independent editable buffers for sessions A and B', async () => {
     await activate('session-a')
     const wrapper = mount(DetailPanel, mountOptions)
     const filesStore = useFilesStore()
@@ -376,10 +378,13 @@ describe('DetailPanel session workspace', () => {
     await activate('session-b')
     await wrapper.find('[aria-label="Browse workspace"]').trigger('click')
 
-    expect(wrapper.find('[data-testid="files-panel"]').attributes('data-editor-scope-active')).toBe('false')
+    expect(wrapper.find('[data-testid="files-panel"]').attributes('data-editor-scope-active')).toBe('true')
     expect(wrapper.find('[data-testid="scoped-editor"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="files-panel-open-editor"]').exists()).toBe(false)
-    expect(filesStore.editingFile).toMatchObject({ path: 'draft-a.txt', content: 'dirty A' })
+    expect(wrapper.find('[data-testid="files-panel-open-editor"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="files-panel-open-editor"]').trigger('click')
+    expect(wrapper.find('[data-testid="scoped-editor"]').text()).toContain('draft-b.txt:dirty B')
+    expect(filesStore.getEditingFile('default:default:session-a')).toMatchObject({ path: 'draft-a.txt', content: 'dirty A' })
+    expect(filesStore.getEditingFile('default:default:session-b')).toMatchObject({ path: 'draft-b.txt', content: 'dirty B' })
 
     await activate('session-a')
     expect(wrapper.find('[data-testid="files-panel"]').attributes('data-editor-scope-active')).toBe('true')

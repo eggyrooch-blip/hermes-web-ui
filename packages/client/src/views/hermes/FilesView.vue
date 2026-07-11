@@ -16,7 +16,7 @@ import type { FileEntry } from '@/api/hermes/files'
 const filesStore = useFilesStore()
 const profilesStore = useProfilesStore()
 const editorScope = computed(() => `files-view:${profilesStore.activeProfileName || '__default__'}`)
-const editorScopeActive = computed(() => filesStore.canAccessEditor(editorScope.value))
+const scopedEditingFile = computed(() => filesStore.getEditingFile(editorScope.value))
 
 const contextMenuRef = ref<InstanceType<typeof FileContextMenu> | null>(null)
 const showUpload = ref(false)
@@ -83,13 +83,13 @@ onMounted(() => {
       <FileBreadcrumb />
       <div class="files-content">
         <FileEditor
-          v-if="editorScopeActive && filesStore.editingFile"
+          v-if="scopedEditingFile"
           :editor-scope="editorScope"
         />
         <FilePreview v-else-if="filesStore.previewFile" />
         <FileList
           v-else
-          :allow-edit="editorScopeActive"
+          :allow-edit="true"
           :editor-scope="editorScope"
           @contextmenu-entry="handleContextMenu"
         />
@@ -97,7 +97,7 @@ onMounted(() => {
     </div>
     <FileContextMenu
       ref="contextMenuRef"
-      :allow-edit="editorScopeActive"
+      :allow-edit="true"
       :editor-scope="editorScope"
       @rename="handleRename"
       @new-folder="handleContextNewFolder"

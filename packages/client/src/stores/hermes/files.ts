@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { reactive, ref, computed } from 'vue'
 import * as filesApi from '@/api/hermes/files'
 import type { FileEntry } from '@/api/hermes/files'
 
@@ -147,6 +147,14 @@ type PreviewFile = {
   }
 }
 
+type EditingFile = {
+  path: string
+  content: string
+  originalContent: string
+  language: string
+  ownerScope: string
+}
+
 export const useFilesStore = defineStore('files', () => {
   const currentPath = ref('')
   const entries = ref<FileEntry[]>([])
@@ -154,13 +162,21 @@ export const useFilesStore = defineStore('files', () => {
   const sortBy = ref<'name' | 'size' | 'modTime'>('name')
   const sortOrder = ref<'asc' | 'desc'>('asc')
 
-  const editingFile = ref<{
-    path: string
-    content: string
-    originalContent: string
-    language: string
-    ownerScope: string
-  } | null>(null)
+  const editingFiles = reactive(new Map<string, EditingFile>())
+  const activeEditorScope = ref(DEFAULT_EDITOR_SCOPE)
+  // Backwards-compatible alias for callers that only ever operate one editor.
+  // Scoped UI surfaces use getEditingFile() so their buffers stay isolated.
+  const editingFile = computed<EditingFile | null>({
+    get: () => editingFiles.get(activeEditorScope.value) || null,
+    set: value => {
+      if (!value) {
+        editingFiles.delete(activeEditorScope.value)
+        return
+      }
+      activeEditorScope.value = value.ownerScope
+      editingFiles.set(value.ownerScope, value)
+    },
+  })
 
   const previewFile = ref<PreviewFile | null>(null)
   const previewPanelRequestedAt = ref(0)
@@ -232,34 +248,38 @@ export const useFilesStore = defineStore('files', () => {
     const requestId = ++editorRequestId
     const result = await filesApi.readFile(filePath)
     if (requestId !== editorRequestId) return false
-    editingFile.value = {
+    activeEditorScope.value = ownerScope
+    editingFiles.set(ownerScope, {
       path: filePath,
       content: result.content,
       originalContent: result.content,
       language: getLanguageFromPath(filePath),
       ownerScope,
-    }
+    })
     return true
   }
 
   function cancelPendingEditor() { editorRequestId += 1 }
 
-  function canAccessEditor(ownerScope = DEFAULT_EDITOR_SCOPE): boolean {
-    return !editingFile.value || editingFile.value.ownerScope === ownerScope
+  function getEditingFile(ownerScope = DEFAULT_EDITOR_SCOPE): EditingFile | null {
+    return editingFiles.get(ownerScope) || null
+  }
+
+  function canAccessEditor(_ownerScope = DEFAULT_EDITOR_SCOPE): boolean {
+    return true
   }
 
   async function saveEditor(ownerScope = DEFAULT_EDITOR_SCOPE): Promise<boolean> {
-    if (!editingFile.value || !canAccessEditor(ownerScope)) return false
-    await filesApi.writeFile(editingFile.value.path, editingFile.value.content)
-    editingFile.value.originalContent = editingFile.value.content
+    const file = getEditingFile(ownerScope)
+    if (!file) return false
+    await filesApi.writeFile(file.path, file.content)
+    file.originalContent = file.content
     return true
   }
 
   function closeEditor(ownerScope = DEFAULT_EDITOR_SCOPE): boolean {
-    if (!canAccessEditor(ownerScope)) return false
     cancelPendingEditor()
-    editingFile.value = null
-    return true
+    return editingFiles.delete(ownerScope)
   }
 
   async function openPreview(entry: FileEntry) {
@@ -336,6 +356,7 @@ export const useFilesStore = defineStore('files', () => {
       return
     }
 
+    previewFile.value = null
     previewPanelRequestedAt.value += 1
 
     if (type === 'image') {
@@ -426,26 +447,26 @@ export const useFilesStore = defineStore('files', () => {
     await fetchEntries()
   }
 
-  async function deleteEntry(entry: FileEntry, ownerScope = DEFAULT_EDITOR_SCOPE) {
+  async function deleteEntry(entry: FileEntry, _ownerScope = DEFAULT_EDITOR_SCOPE) {
     await filesApi.deleteFile(entry.path, entry.isDir)
     if (previewFile.value && isAffected(previewFile.value.path, entry.path, entry.isDir)) {
       previewFile.value = null
     }
-    if (editingFile.value && canAccessEditor(ownerScope) && isAffected(editingFile.value.path, entry.path, entry.isDir)) {
-      editingFile.value = null
+    for (const [scope, file] of editingFiles) {
+      if (isAffected(file.path, entry.path, entry.isDir)) editingFiles.delete(scope)
     }
     await fetchEntries()
   }
 
-  async function renameEntry(entry: FileEntry, newName: string, ownerScope = DEFAULT_EDITOR_SCOPE) {
+  async function renameEntry(entry: FileEntry, newName: string, _ownerScope = DEFAULT_EDITOR_SCOPE) {
     const parentPath = entry.path.includes('/') ? entry.path.slice(0, entry.path.lastIndexOf('/')) : ''
     const newPath = parentPath ? `${parentPath}/${newName}` : newName
     await filesApi.renameFile(entry.path, newPath)
     if (previewFile.value && isAffected(previewFile.value.path, entry.path, entry.isDir)) {
       previewFile.value = null
     }
-    if (editingFile.value && canAccessEditor(ownerScope) && isAffected(editingFile.value.path, entry.path, entry.isDir)) {
-      editingFile.value = null
+    for (const [scope, file] of editingFiles) {
+      if (isAffected(file.path, entry.path, entry.isDir)) editingFiles.delete(scope)
     }
     await fetchEntries()
   }
@@ -474,14 +495,20 @@ export const useFilesStore = defineStore('files', () => {
     return editingFile.value.content !== editingFile.value.originalContent
   })
 
+  function hasUnsavedChangesForScope(ownerScope = DEFAULT_EDITOR_SCOPE): boolean {
+    const file = getEditingFile(ownerScope)
+    return Boolean(file && file.content !== file.originalContent)
+  }
+
   return {
     currentPath, entries, loading, sortBy, sortOrder,
-    editingFile, previewFile,
+    editingFile, editingFiles, previewFile,
     previewPanelRequestedAt,
     browserArtifactRequest, browserArtifactRequestedAt,
     pathSegments, sortedEntries, hasUnsavedChanges,
     fetchEntries, resetBrowser, navigateTo, navigateUp,
-    openEditor, cancelPendingEditor, canAccessEditor, saveEditor, closeEditor,
+    openEditor, cancelPendingEditor, getEditingFile, canAccessEditor, saveEditor, closeEditor,
+    hasUnsavedChangesForScope,
     openPreview, previewByDisplayPath, previewWorkspaceDiffFile, requestBrowserArtifact, closePreview,
     createDir, createFile, deleteEntry, renameEntry, copyEntry,
     uploadFiles, setSort,

@@ -44,6 +44,7 @@ const profilesStore = useProfilesStore()
 const { t } = useI18n()
 const props = defineProps<{ dismissPanel?: () => void }>()
 const artifactBrowserRef = ref<InstanceType<typeof ArtifactBrowser> | null>(null)
+const MAX_REMEMBERED_WORKSPACES = 24
 const workspaces = new Map<string, SessionWorkspaceState>()
 const tabPanelId = `detail-artifact-panel-${getCurrentInstance()?.uid ?? 0}`
 
@@ -59,6 +60,10 @@ const editorScopeActive = computed(() => (
 function workspaceFor(key: string): SessionWorkspaceState {
   let value = workspaces.get(key)
   if (!value) {
+    if (workspaces.size >= MAX_REMEMBERED_WORKSPACES) {
+      const oldestKey = workspaces.keys().next().value
+      if (oldestKey) workspaces.delete(oldestKey)
+    }
     value = { surface: 'overview', openArtifacts: [], selectedKey: null }
     workspaces.set(key, value)
   }
