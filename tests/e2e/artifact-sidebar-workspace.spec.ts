@@ -1,6 +1,8 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import { authenticate, mockChatSocket, mockHermesApi, TEST_ACCESS_KEY } from './fixtures'
 
+const ORDINARY_ADMIN_ACCESS_KEY = 'eyJhbGciOiJub25lIn0.eyJyb2xlIjoiYWRtaW4iLCJ1c2VybmFtZSI6InBsYXl3cmlnaHQifQ.signature'
+
 type SessionSeed = {
   id: string
   title: string
@@ -71,8 +73,8 @@ function resumePayload({ id, artifacts }: SessionSeed) {
   }
 }
 
-async function setupArtifactPage(page: Page) {
-  await authenticate(page, TEST_ACCESS_KEY, 'research')
+async function setupArtifactPage(page: Page, accessKey = TEST_ACCESS_KEY) {
+  await authenticate(page, accessKey, 'research')
   await page.addInitScript((payload) => {
     ;(window as any).__PW_CHAT_SOCKET_RESUMES__ = payload
   }, Object.fromEntries(sessions.map(session => [session.id, resumePayload(session)])))
@@ -168,6 +170,26 @@ test('restores the selected artifact independently for each session and after co
   await expect(page.getByText(fileContents['a.txt'], { exact: true })).toBeVisible()
 
   await capture(page, testInfo, 'session-artifact-restored.png')
+  expect(api.unexpectedRequests).toEqual([])
+})
+
+test('ordinary users can close and reopen an artifact panel without receiving admin tool controls', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const api = await setupArtifactPage(page, ORDINARY_ADMIN_ACCESS_KEY)
+  await gotoSession(page, 'session-a')
+
+  await expect(page.locator('.header-tool-toggle')).toHaveCount(0)
+  await openArtifact(page, 'a.txt', fileContents['a.txt'])
+
+  const panel = page.locator('.chat-tool-panel')
+  await page.getByRole('button', { name: 'Collapse', exact: true }).click()
+  await expect(panel).toBeHidden()
+
+  await artifactCard(page, 'a.txt').click()
+  await expect(panel).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'a.txt', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByText(fileContents['a.txt'], { exact: true })).toBeVisible()
+  await expect(page.locator('.header-tool-toggle')).toHaveCount(0)
   expect(api.unexpectedRequests).toEqual([])
 })
 

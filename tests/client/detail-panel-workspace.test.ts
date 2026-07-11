@@ -14,6 +14,7 @@ vi.mock('vue-i18n', () => ({
       'files.openFile': 'Open file',
       'files.openArtifacts': 'Open artifacts',
       'files.closeArtifact': `Close ${params?.name || ''}`,
+      'common.collapse': 'Collapse',
     }[key] || key),
   }),
 }))
@@ -179,6 +180,30 @@ describe('DetailPanel session workspace', () => {
     expect(wrapper.find('[data-testid="files-panel"]').exists()).toBe(false)
     expect(wrapper.find('.detail-mode-trigger').exists()).toBe(false)
     expect(wrapper.find('.detail-empty').text()).toContain('files.noArtifacts')
+  })
+
+  it('offers an explicit panel close action without discarding workspace state', async () => {
+    await activate('session-a', 'a.txt')
+    const dismissPanel = vi.fn()
+    const wrapper = mount(DetailPanel, { props: { dismissPanel } })
+    const filesStore = useFilesStore()
+    filesStore.previewFile = {
+      path: '/workspace/a.txt',
+      type: 'text',
+      content: 'hello',
+    }
+    filesStore.previewPanelRequestedAt += 1
+    await nextTick()
+
+    const close = wrapper.find('.detail-panel-dismiss')
+    expect(close.exists()).toBe(true)
+    expect(close.attributes('aria-label')).toBe('Collapse')
+
+    await close.trigger('click')
+
+    expect(dismissPanel).toHaveBeenCalledTimes(1)
+    expect(tabs(wrapper)).toHaveLength(1)
+    expect(activeTab(wrapper)?.text()).toContain('a.txt')
   })
 
   it('adds and selects a tab when a chat artifact is requested', async () => {

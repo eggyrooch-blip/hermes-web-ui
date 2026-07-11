@@ -22,10 +22,12 @@ impact: Chat 右侧栏收起再展开会保留当前产物，并用 session/runt
 - 内容继续复用 `FilePreview`、`ArtifactBrowser` 与 `FilesPanel`：文本/Markdown/图片/diff 走既有 preview/editor，HTML 走既有 sandboxed browser，不新增后端 API 或第二套 editor state。
 - files store 的 entries、preview、editor 请求使用 request epoch 丢弃 scope 切换后的过期响应；`DetailPanel` 记录 editor owner，防止另一个 session/profile 继承仍在进行的编辑器。
 - tab 使用 `tablist/tab/tabpanel` 语义、roving tabindex、方向键与 Home/End；关闭、浏览和新增入口均有 accessible label。
+- 右栏 header 自身增加 `Collapse` 入口，普通用户即使没有 super-admin 的文件/终端开关也能关闭整个产物栏；关闭只隐藏已挂载实例，重新点产物卡会恢复原 tab。
+- 聊天 workspace 文件卡的 preview 白名单补齐 PNG/JPG/JPEG/GIF/SVG/WebP/BMP/ICO，复用 files store 与 `FilePreview` 已有图片能力；ZIP 等不支持格式仍直接下载。
 - 安全边界保持不变：ArtifactBrowser 可见地址不展示 bearer，iframe sandbox 不放宽，浏览器文件访问继续经过既有 BFF、chat-plane access control 和 profile workspace containment。
 
 ## 测试状态
 
-最终门禁：focused owner/editor 回归 12 files / 91 tests 通过，最终 mutation subset 6 files / 50 tests 通过，`npm run typecheck` 与 i18n 检查通过；全量 `bun run test` 为 317 files / 2454 passed / 2 skipped；`npm run harness:check` 与 `npm run build` 通过。Playwright `artifact-sidebar-workspace.spec.ts` 5/5 通过且 `unexpectedRequests=[]`，覆盖 A/B 会话恢复、收起/展开、文件夹/`+` 二级入口、多 tab 关闭回概览、空会话默认概览和 720px 窄屏。
+最终门禁：focused owner/editor 回归 12 files / 91 tests 通过，跟进 close/workspace 39 passed、图片格式卡 8/8（相关 focused 51 passed），`npm run typecheck` 与 i18n 检查通过；全量 `bun run test` 为 317 files / 2463 passed / 2 skipped；`npm run harness:check`、`npm run build` 与 `git diff --check` 通过。Playwright `artifact-sidebar-workspace.spec.ts` 6/6 通过且 `unexpectedRequests=[]`，新增覆盖普通 admin 没有管理员开关时仍能关闭/重开产物栏。
 
-真实 Chrome 通过 worktree Vite `localhost:47488` 代理本机既有 `:8648` 后端，在真实 `feishu_g41a5b5g` 会话点击 `a.txt` 卡片，确认右栏直接出现并选中 `a.txt` tab、diff/文件预览可见，文件夹与 `+` 均进入 secondary browser，720px 下 panel bounds 为 `0..720` 且页面横向 overflow 为 0；桌面和窄屏截图落在 `.ftask/artifact-sidebar-workspace/screenshots/`。当前改动仍仅在 `artifact-sidebar-workspace` 本机 worktree，尚未合入 main、push 或发布生产。
+真实 Chrome 通过 worktree Vite `localhost:47488` 代理本机既有 `:8648` 后端，在真实 `feishu_g41a5b5g` 会话点击 `a.txt` 卡片，确认右栏直接出现并选中 `a.txt` tab、diff/文件预览可见，文件夹与 `+` 均进入 secondary browser，720px 下 panel bounds 为 `0..720` 且页面横向 overflow 为 0。跟进验收由 Hermes 真实生成静态 HTML、Markdown 与三帧 GIF：HTML sandbox/无 token 地址、Markdown 标题/表格/引用/代码块、GIF 400×220 动画均在右栏显示；GIF 相隔 800ms 截图从蓝帧变为红帧，文件检查为 3 帧、loop=0、700ms/帧。普通用户真实点 `Collapse` 后 panel `1→0`，重点卡片后 `0→1` 并恢复 tab。截图落在 `.ftask/artifact-sidebar-workspace/screenshots/`。当前改动仍仅在 `artifact-sidebar-workspace` 本机 worktree，尚未合入 main、push 或发布生产。

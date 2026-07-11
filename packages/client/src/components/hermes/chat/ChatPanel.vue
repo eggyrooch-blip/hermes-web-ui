@@ -235,6 +235,10 @@ watch(() => filesStore.browserArtifactRequestedAt, () => {
   showToolPanel.value = true;
 });
 
+function closeToolPanel() {
+  showToolPanel.value = false;
+}
+
 const showRenameModal = ref(false);
 const renameValue = ref("");
 const renameSessionId = ref<string | null>(null);
@@ -1837,7 +1841,7 @@ async function handleSessionModelCustomSubmit() {
             />
             <div class="chat-tool-panel-inner">
               <div class="chat-tool-content">
-                <DetailPanel />
+                <DetailPanel :dismiss-panel="closeToolPanel" />
                 <TerminalPanel
                   v-show="activeToolPanel === 'terminal'"
                   :visible="showToolPanel && activeToolPanel === 'terminal'"

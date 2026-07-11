@@ -42,6 +42,7 @@ const chatStore = useChatStore()
 const filesStore = useFilesStore()
 const profilesStore = useProfilesStore()
 const { t } = useI18n()
+const props = defineProps<{ dismissPanel?: () => void }>()
 const artifactBrowserRef = ref<InstanceType<typeof ArtifactBrowser> | null>(null)
 const workspaces = new Map<string, SessionWorkspaceState>()
 const tabPanelId = `detail-artifact-panel-${getCurrentInstance()?.uid ?? 0}`
@@ -318,6 +319,15 @@ onMounted(() => {
         >
           +
         </button>
+        <button
+          class="detail-panel-dismiss"
+          type="button"
+          :aria-label="t('common.collapse')"
+          :title="t('common.collapse')"
+          @click="props.dismissPanel?.()"
+        >
+          ×
+        </button>
       </div>
     </div>
 
@@ -429,6 +439,7 @@ onMounted(() => {
 .detail-tab-close,
 .detail-open-files,
 .detail-tab-add,
+.detail-panel-dismiss,
 .detail-browse-workspace {
   color: inherit;
   background: transparent;
@@ -470,7 +481,8 @@ onMounted(() => {
 }
 
 .detail-open-files,
-.detail-tab-add {
+.detail-tab-add,
+.detail-panel-dismiss {
   display: grid;
   place-items: center;
   width: 30px;
@@ -485,6 +497,12 @@ onMounted(() => {
 .detail-tab-add {
   font-size: 22px;
   font-weight: 300;
+  line-height: 1;
+}
+
+.detail-panel-dismiss {
+  margin-left: 2px;
+  font-size: 20px;
   line-height: 1;
 }
 

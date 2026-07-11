@@ -79,6 +79,23 @@ describe('MarkdownRenderer workspace artifact file card', () => {
     expect(requestBrowserArtifact).not.toHaveBeenCalled()
   })
 
+  it.each(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'])(
+    'routes a workspace .%s image card through the existing file preview',
+    async (extension) => {
+      previewByDisplayPath.mockClear()
+      downloadFile.mockClear()
+      const fileName = `preview.${extension}`
+      const wrapper = mount(MarkdownRenderer, {
+        props: { content: `[${fileName}](/workspace/${fileName})` },
+      })
+
+      await wrapper.find('.markdown-file-card').trigger('click')
+
+      expect(previewByDisplayPath).toHaveBeenCalledWith(`/workspace/${fileName}`, fileName)
+      expect(downloadFile).not.toHaveBeenCalled()
+    },
+  )
+
   it('downloads an inline non-previewable /workspace/ file card', async () => {
     downloadFile.mockClear()
     const wrapper = mount(MarkdownRenderer, {
