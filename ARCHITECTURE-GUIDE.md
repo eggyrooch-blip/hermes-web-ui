@@ -20,7 +20,7 @@ related:
 >
 > 状态仅保存在已挂载客户端组件内，不新增 Pinia store、localStorage、schema 或服务端 API。workspace key 同时包含 runtime mode、profile metadata 和 session id，避免相同 session id 在不同运行面/profile 间串 tab；`FilePreview`、`ArtifactBrowser`、`FilesPanel` 继续复用，HTML 仍走既有 sandboxed artifact browser，diff/文本/Markdown/图片仍走现有 preview/editor。异步 entries/preview/editor 读取使用 request epoch 丢弃过期返回；编辑器再用当前 workspace owner 限制跨 session/profile 复用，切换 scope 会取消 pending editor 并重置 secondary browser。
 >
-> 无障碍边界包括 `tablist/tab/tabpanel`、`aria-selected/controls`、roving tabindex、方向键与 Home/End，以及关闭/浏览按钮的可读 label。安全边界不变：浏览器不获得 broker bearer，ArtifactBrowser 可见地址不含 token，iframe sandbox 属性不放宽，文件访问仍由现有 BFF、chat-plane access control 与 profile workspace containment 约束。当前仅在本机 worktree；focused 11 files / 86 tests、全量 316 files / 2448 passed / 2 skipped、Playwright 3/3、`npm run harness:check`、`npm run build` 与真实 Chrome 桌面/720px 截图均已完成。未合入 main，未 push，未发布生产。
+> 无障碍边界包括 `tablist/tab/tabpanel`、`aria-selected/controls`、roving tabindex、方向键与 Home/End，以及关闭/浏览按钮的可读 label。安全边界不变：浏览器不获得 broker bearer，ArtifactBrowser 可见地址不含 token，iframe sandbox 属性不放宽，文件访问仍由现有 BFF、chat-plane access control 与 profile workspace containment 约束。当前仅在本机 worktree；focused 11 files / 86 tests、全量 316 files / 2448 passed / 2 skipped、Playwright 5/5、`npm run harness:check`、`npm run build` 与真实 Chrome 桌面/720px 截图均已完成。未合入 main，未 push，未发布生产。
 
 > [!info] 2026-07-10 local hotfix — broker default workspace diff producer
 > `webui-broker-default-workspace-diff-hotfix` restores the broker-side producer
