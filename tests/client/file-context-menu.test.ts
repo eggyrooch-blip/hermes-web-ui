@@ -134,7 +134,7 @@ describe('FileContextMenu', () => {
     await flushPromises()
 
     expect(wrapper.emitted('editor-opened')).toHaveLength(1)
-    expect(openEditorSpy).toHaveBeenCalledWith('README')
+    expect(openEditorSpy).toHaveBeenCalledWith('README', 'files-view:__default__')
   })
 
   it('wires FilesPanel editor scope into both edit entry points', () => {
@@ -143,6 +143,7 @@ describe('FileContextMenu', () => {
     expect(source).toContain('<FileContextMenu')
     expect(source.match(/:allow-edit="editorScopeActive"/g)).toHaveLength(2)
     expect(source.match(/@editor-opened="handleEditorOpened"/g)).toHaveLength(2)
+    expect(source).toContain("void filesStore.fetchEntries('').catch(() => undefined)")
   })
 
   it('does not announce ownership when the editor load fails', async () => {

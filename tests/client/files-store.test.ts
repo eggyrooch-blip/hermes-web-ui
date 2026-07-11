@@ -20,8 +20,9 @@ import type { FileEntry } from '@/api/hermes/files'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>(res => { resolve = res })
-  return { promise, resolve }
+  let reject!: (error: Error) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
 }
 
 describe('files store', () => {
@@ -120,6 +121,7 @@ describe('files store', () => {
       content: 'dirty',
       originalContent: 'clean',
       language: 'plaintext',
+      ownerScope: 'files-view:__default__',
     }
 
     const request = store.openEditor('later.txt')
@@ -128,6 +130,57 @@ describe('files store', () => {
 
     await expect(request).resolves.toBe(false)
     expect(store.editingFile).toMatchObject({ path: 'dirty.txt', content: 'dirty' })
+  })
+
+  it('guards editor visibility and saves by owner scope', async () => {
+    mockFilesApi.readFile.mockResolvedValue({ content: 'A' })
+    mockFilesApi.writeFile.mockResolvedValue(undefined)
+    const store = useFilesStore()
+    await store.openEditor('a.txt', 'chat:session-a')
+    store.editingFile!.content = 'dirty A'
+
+    expect(store.canAccessEditor('files-view:profile-b')).toBe(false)
+    await expect(store.saveEditor('files-view:profile-b')).resolves.toBe(false)
+    expect(mockFilesApi.writeFile).not.toHaveBeenCalled()
+
+    expect(store.canAccessEditor('chat:session-a')).toBe(true)
+    await expect(store.saveEditor('chat:session-a')).resolves.toBe(true)
+    expect(mockFilesApi.writeFile).toHaveBeenCalledWith('a.txt', 'dirty A')
+  })
+
+  it('does not clear another scope editor for same-path delete or rename', async () => {
+    mockFilesApi.deleteFile.mockResolvedValue(undefined)
+    mockFilesApi.renameFile.mockResolvedValue(undefined)
+    mockFilesApi.listFiles.mockResolvedValue({ entries: [] })
+    const store = useFilesStore()
+    const entry: FileEntry = { name: 'README.md', path: 'README.md', isDir: false, size: 1, modTime: '' }
+    store.editingFile = {
+      path: 'README.md', content: 'dirty A', originalContent: 'clean A', language: 'markdown', ownerScope: 'session-a',
+    }
+
+    await store.deleteEntry(entry, 'session-b')
+    expect(store.editingFile?.content).toBe('dirty A')
+    await store.renameEntry(entry, 'renamed.md', 'session-b')
+    expect(store.editingFile?.content).toBe('dirty A')
+  })
+
+  it('clears the owned editor for same-path delete and rename', async () => {
+    mockFilesApi.deleteFile.mockResolvedValue(undefined)
+    mockFilesApi.renameFile.mockResolvedValue(undefined)
+    mockFilesApi.listFiles.mockResolvedValue({ entries: [] })
+    const store = useFilesStore()
+    const entry: FileEntry = { name: 'README.md', path: 'README.md', isDir: false, size: 1, modTime: '' }
+    store.editingFile = {
+      path: 'README.md', content: 'dirty A', originalContent: 'clean A', language: 'markdown', ownerScope: 'session-a',
+    }
+
+    await store.deleteEntry(entry, 'session-a')
+    expect(store.editingFile).toBeNull()
+    store.editingFile = {
+      path: 'README.md', content: 'dirty A', originalContent: 'clean A', language: 'markdown', ownerScope: 'session-a',
+    }
+    await store.renameEntry(entry, 'renamed.md', 'session-a')
+    expect(store.editingFile).toBeNull()
   })
 
   it('does not let a slow directory request overwrite the latest path', async () => {
@@ -148,6 +201,33 @@ describe('files store', () => {
     expect(store.currentPath).toBe('b')
     expect(store.entries.map(entry => entry.name)).toEqual(['b.txt'])
     expect(store.loading).toBe(false)
+  })
+
+  it('silently ignores a stale rejected directory request', async () => {
+    const slowA = deferred<{ entries: FileEntry[] }>()
+    mockFilesApi.listFiles.mockImplementation((path: string) => (
+      path === 'a' ? slowA.promise : Promise.resolve({ entries: [] })
+    ))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const store = useFilesStore()
+
+    const stale = store.fetchEntries('a')
+    await store.fetchEntries('b')
+    slowA.reject(new Error('stale A failed'))
+
+    await expect(stale).resolves.toBeUndefined()
+    expect(consoleError).not.toHaveBeenCalled()
+    consoleError.mockRestore()
+  })
+
+  it('reports the current rejected directory request', async () => {
+    mockFilesApi.listFiles.mockRejectedValue(new Error('current failed'))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const store = useFilesStore()
+
+    await expect(store.fetchEntries('current')).rejects.toThrow('current failed')
+    expect(consoleError).toHaveBeenCalled()
+    consoleError.mockRestore()
   })
 
   it('signals a display-path preview at request start exactly once', async () => {

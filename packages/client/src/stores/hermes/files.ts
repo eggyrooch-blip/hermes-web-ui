@@ -109,6 +109,8 @@ export function isPreviewableFile(name: string): boolean {
   return isImageFile(name) || isMarkdownFile(name) || isTextFile(name)
 }
 
+export const DEFAULT_EDITOR_SCOPE = 'files-view:__default__'
+
 export function decodeDisplayPathSegments(p: string): string {
   return p
     .split('/')
@@ -157,6 +159,7 @@ export const useFilesStore = defineStore('files', () => {
     content: string
     originalContent: string
     language: string
+    ownerScope: string
   } | null>(null)
 
   const previewFile = ref<PreviewFile | null>(null)
@@ -203,6 +206,7 @@ export const useFilesStore = defineStore('files', () => {
       if (requestId !== entriesRequestId) return
       entries.value = result.entries
     } catch (err) {
+      if (requestId !== entriesRequestId) return
       console.error('Failed to fetch files:', err)
       throw err
     } finally {
@@ -224,7 +228,7 @@ export const useFilesStore = defineStore('files', () => {
     return fetchEntries(parts.join('/'))
   }
 
-  async function openEditor(filePath: string): Promise<boolean> {
+  async function openEditor(filePath: string, ownerScope = DEFAULT_EDITOR_SCOPE): Promise<boolean> {
     const requestId = ++editorRequestId
     const result = await filesApi.readFile(filePath)
     if (requestId !== editorRequestId) return false
@@ -233,21 +237,29 @@ export const useFilesStore = defineStore('files', () => {
       content: result.content,
       originalContent: result.content,
       language: getLanguageFromPath(filePath),
+      ownerScope,
     }
     return true
   }
 
   function cancelPendingEditor() { editorRequestId += 1 }
 
-  async function saveEditor() {
-    if (!editingFile.value) return
-    await filesApi.writeFile(editingFile.value.path, editingFile.value.content)
-    editingFile.value.originalContent = editingFile.value.content
+  function canAccessEditor(ownerScope = DEFAULT_EDITOR_SCOPE): boolean {
+    return !editingFile.value || editingFile.value.ownerScope === ownerScope
   }
 
-  function closeEditor() {
+  async function saveEditor(ownerScope = DEFAULT_EDITOR_SCOPE): Promise<boolean> {
+    if (!editingFile.value || !canAccessEditor(ownerScope)) return false
+    await filesApi.writeFile(editingFile.value.path, editingFile.value.content)
+    editingFile.value.originalContent = editingFile.value.content
+    return true
+  }
+
+  function closeEditor(ownerScope = DEFAULT_EDITOR_SCOPE): boolean {
+    if (!canAccessEditor(ownerScope)) return false
     cancelPendingEditor()
     editingFile.value = null
+    return true
   }
 
   async function openPreview(entry: FileEntry) {
@@ -414,25 +426,25 @@ export const useFilesStore = defineStore('files', () => {
     await fetchEntries()
   }
 
-  async function deleteEntry(entry: FileEntry) {
+  async function deleteEntry(entry: FileEntry, ownerScope = DEFAULT_EDITOR_SCOPE) {
     await filesApi.deleteFile(entry.path, entry.isDir)
     if (previewFile.value && isAffected(previewFile.value.path, entry.path, entry.isDir)) {
       previewFile.value = null
     }
-    if (editingFile.value && isAffected(editingFile.value.path, entry.path, entry.isDir)) {
+    if (editingFile.value && canAccessEditor(ownerScope) && isAffected(editingFile.value.path, entry.path, entry.isDir)) {
       editingFile.value = null
     }
     await fetchEntries()
   }
 
-  async function renameEntry(entry: FileEntry, newName: string) {
+  async function renameEntry(entry: FileEntry, newName: string, ownerScope = DEFAULT_EDITOR_SCOPE) {
     const parentPath = entry.path.includes('/') ? entry.path.slice(0, entry.path.lastIndexOf('/')) : ''
     const newPath = parentPath ? `${parentPath}/${newName}` : newName
     await filesApi.renameFile(entry.path, newPath)
     if (previewFile.value && isAffected(previewFile.value.path, entry.path, entry.isDir)) {
       previewFile.value = null
     }
-    if (editingFile.value && isAffected(editingFile.value.path, entry.path, entry.isDir)) {
+    if (editingFile.value && canAccessEditor(ownerScope) && isAffected(editingFile.value.path, entry.path, entry.isDir)) {
       editingFile.value = null
     }
     await fetchEntries()
@@ -469,7 +481,7 @@ export const useFilesStore = defineStore('files', () => {
     browserArtifactRequest, browserArtifactRequestedAt,
     pathSegments, sortedEntries, hasUnsavedChanges,
     fetchEntries, resetBrowser, navigateTo, navigateUp,
-    openEditor, cancelPendingEditor, saveEditor, closeEditor,
+    openEditor, cancelPendingEditor, canAccessEditor, saveEditor, closeEditor,
     openPreview, previewByDisplayPath, previewWorkspaceDiffFile, requestBrowserArtifact, closePreview,
     createDir, createFile, deleteEntry, renameEntry, copyEntry,
     uploadFiles, setSort,

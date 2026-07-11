@@ -2,7 +2,7 @@
 import { ref, watch, computed } from 'vue'
 import { NModal, NInput, NButton, NSpace, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { useFilesStore } from '@/stores/hermes/files'
+import { DEFAULT_EDITOR_SCOPE, useFilesStore } from '@/stores/hermes/files'
 import type { FileEntry } from '@/api/hermes/files'
 
 const { t } = useI18n()
@@ -14,6 +14,7 @@ const props = defineProps<{
   mode: 'newFile' | 'newFolder' | 'rename'
   entry?: FileEntry | null
   targetPath?: string | null
+  editorScope?: string
 }>()
 
 const emit = defineEmits<{
@@ -64,7 +65,7 @@ async function handleSubmit() {
         break
       case 'rename':
         if (props.entry) {
-          await filesStore.renameEntry(props.entry, inputValue.value.trim())
+          await filesStore.renameEntry(props.entry, inputValue.value.trim(), props.editorScope || DEFAULT_EDITOR_SCOPE)
           message.success(t('files.renamed'))
         }
         break

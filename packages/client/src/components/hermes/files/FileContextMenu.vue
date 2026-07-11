@@ -2,7 +2,7 @@
 import { ref, nextTick } from 'vue'
 import { NDropdown, useMessage, useDialog } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { useFilesStore, isTextFile, isPreviewableFile } from '@/stores/hermes/files'
+import { DEFAULT_EDITOR_SCOPE, useFilesStore, isTextFile, isPreviewableFile } from '@/stores/hermes/files'
 import { downloadFile } from '@/api/hermes/download'
 import type { FileEntry } from '@/api/hermes/files'
 import { copyToClipboard } from '@/utils/clipboard'
@@ -12,7 +12,10 @@ const { t } = useI18n()
 const message = useMessage()
 const dialog = useDialog()
 const filesStore = useFilesStore()
-const props = withDefaults(defineProps<{ allowEdit?: boolean }>(), { allowEdit: true })
+const props = withDefaults(defineProps<{ allowEdit?: boolean, editorScope?: string }>(), {
+  allowEdit: true,
+  editorScope: DEFAULT_EDITOR_SCOPE,
+})
 
 const showMenu = ref(false)
 const menuX = ref(0)
@@ -72,7 +75,7 @@ async function handleSelect(key: string) {
     case 'edit':
       if (!props.allowEdit) break
       try {
-        if (await filesStore.openEditor(entry.path)) emit('editor-opened')
+        if (await filesStore.openEditor(entry.path, props.editorScope)) emit('editor-opened')
       } catch {
         message.error(t('files.backendError'))
       }
@@ -106,7 +109,7 @@ async function handleSelect(key: string) {
         negativeText: t('common.cancel'),
         onPositiveClick: async () => {
           try {
-            await filesStore.deleteEntry(entry)
+            await filesStore.deleteEntry(entry, props.editorScope)
             message.success(t('files.deleted'))
           } catch {
             message.error(t('files.deleteFailed'))

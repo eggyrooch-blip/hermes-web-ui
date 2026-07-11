@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useFilesStore } from '@/stores/hermes/files'
+import { DEFAULT_EDITOR_SCOPE, useFilesStore } from '@/stores/hermes/files'
 import { useI18n } from 'vue-i18n'
 import { NButton } from 'naive-ui'
 import FileTree from '@/components/hermes/files/FileTree.vue'
@@ -16,7 +16,10 @@ import type { FileEntry } from '@/api/hermes/files'
 
 const filesStore = useFilesStore()
 const { t } = useI18n()
-withDefaults(defineProps<{ editorScopeActive?: boolean }>(), { editorScopeActive: true })
+const props = withDefaults(defineProps<{ editorScopeActive?: boolean, editorScope?: string }>(), {
+  editorScopeActive: true,
+  editorScope: DEFAULT_EDITOR_SCOPE,
+})
 const emit = defineEmits<{ (e: 'editor-opened'): void }>()
 
 const contextMenuRef = ref<InstanceType<typeof FileContextMenu> | null>(null)
@@ -64,7 +67,7 @@ function handleEditorOpened() {
 }
 
 onMounted(() => {
-  filesStore.fetchEntries('')
+  void filesStore.fetchEntries('').catch(() => undefined)
 })
 </script>
 
@@ -110,10 +113,11 @@ onMounted(() => {
       </div>
       <FileBreadcrumb />
       <div class="files-content">
-        <FileEditor v-if="editorScopeActive && filesStore.editingFile" />
+        <FileEditor v-if="editorScopeActive && filesStore.editingFile" :editor-scope="props.editorScope" />
         <FileList
           v-else
           :allow-edit="editorScopeActive"
+          :editor-scope="props.editorScope"
           @editor-opened="handleEditorOpened"
           @contextmenu-entry="handleContextMenu"
         />
@@ -123,6 +127,7 @@ onMounted(() => {
     <FileContextMenu
       ref="contextMenuRef"
       :allow-edit="editorScopeActive"
+      :editor-scope="props.editorScope"
       @editor-opened="handleEditorOpened"
       @rename="handleRename"
       @new-folder="handleContextNewFolder"
@@ -133,6 +138,7 @@ onMounted(() => {
       :mode="renameMode"
       :entry="renameEntry"
       :target-path="renameTargetPath"
+      :editor-scope="props.editorScope"
     />
   </div>
 </template>

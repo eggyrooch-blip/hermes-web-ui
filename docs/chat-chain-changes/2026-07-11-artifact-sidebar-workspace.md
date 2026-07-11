@@ -26,6 +26,6 @@ impact: Chat 右侧栏收起再展开会保留当前产物，并用 session/runt
 
 ## 测试状态
 
-最终门禁：focused 回归 11 files / 86 tests 通过，`npm run typecheck` 与 i18n 检查通过；全量 `bun run test` 为 316 files / 2448 passed / 2 skipped；`npm run harness:check` 与 `npm run build` 通过。Playwright `artifact-sidebar-workspace.spec.ts` 5/5 通过且 `unexpectedRequests=[]`，覆盖 A/B 会话恢复、收起/展开、文件夹/`+` 二级入口、多 tab 关闭回概览、空会话默认概览和 720px 窄屏。
+最终门禁：focused owner/editor 回归 12 files / 91 tests 通过，最终 mutation subset 6 files / 50 tests 通过，`npm run typecheck` 与 i18n 检查通过；全量 `bun run test` 为 317 files / 2454 passed / 2 skipped；`npm run harness:check` 与 `npm run build` 通过。Playwright `artifact-sidebar-workspace.spec.ts` 5/5 通过且 `unexpectedRequests=[]`，覆盖 A/B 会话恢复、收起/展开、文件夹/`+` 二级入口、多 tab 关闭回概览、空会话默认概览和 720px 窄屏。
 
 真实 Chrome 通过 worktree Vite `localhost:47488` 代理本机既有 `:8648` 后端，在真实 `feishu_g41a5b5g` 会话点击 `a.txt` 卡片，确认右栏直接出现并选中 `a.txt` tab、diff/文件预览可见，文件夹与 `+` 均进入 secondary browser，720px 下 panel bounds 为 `0..720` 且页面横向 overflow 为 0；桌面和窄屏截图落在 `.ftask/artifact-sidebar-workspace/screenshots/`。当前改动仍仅在 `artifact-sidebar-workspace` 本机 worktree，尚未合入 main、push 或发布生产。

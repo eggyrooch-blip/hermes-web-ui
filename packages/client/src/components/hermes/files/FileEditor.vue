@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { NButton, NSpace, useMessage, useDialog } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { useFilesStore } from '@/stores/hermes/files'
+import { DEFAULT_EDITOR_SCOPE, useFilesStore } from '@/stores/hermes/files'
 import * as monaco from 'monaco-editor'
 
 // Configure Monaco workers using import.meta.url
@@ -19,13 +19,17 @@ const { t } = useI18n()
 const message = useMessage()
 const dialogApi = useDialog()
 const filesStore = useFilesStore()
+const props = withDefaults(defineProps<{ editorScope?: string }>(), {
+  editorScope: DEFAULT_EDITOR_SCOPE,
+})
+const canAccessEditor = computed(() => filesStore.canAccessEditor(props.editorScope))
 
 const editorContainer = ref<HTMLElement | null>(null)
 let editor: monaco.editor.IStandaloneCodeEditor | null = null
 const saving = ref(false)
 
 onMounted(() => {
-  if (!editorContainer.value || !filesStore.editingFile) return
+  if (!editorContainer.value || !filesStore.editingFile || !canAccessEditor.value) return
 
   editor = monaco.editor.create(editorContainer.value, {
     value: filesStore.editingFile.content,
@@ -41,7 +45,7 @@ onMounted(() => {
   })
 
   editor.onDidChangeModelContent(() => {
-    if (filesStore.editingFile) {
+    if (filesStore.editingFile && canAccessEditor.value) {
       filesStore.editingFile.content = editor!.getValue()
     }
   })
@@ -60,7 +64,7 @@ onBeforeUnmount(() => {
 async function handleSave() {
   saving.value = true
   try {
-    await filesStore.saveEditor()
+    if (!await filesStore.saveEditor(props.editorScope)) return
     message.success(t('files.saved'))
   } catch {
     message.error(t('files.saveFailed'))
@@ -76,17 +80,17 @@ function handleClose() {
       positiveText: t('common.ok'),
       negativeText: t('common.cancel'),
       onPositiveClick: () => {
-        filesStore.closeEditor()
+        filesStore.closeEditor(props.editorScope)
       },
     })
   } else {
-    filesStore.closeEditor()
+    filesStore.closeEditor(props.editorScope)
   }
 }
 </script>
 
 <template>
-  <div class="file-editor">
+  <div v-if="canAccessEditor" class="file-editor">
     <div class="editor-header">
       <span class="editor-filename">{{ filesStore.editingFile?.path }}</span>
       <NSpace>

@@ -138,10 +138,17 @@ async function capture(page: Page, testInfo: TestInfo, name: string) {
   await page.screenshot({ path: testInfo.outputPath(name), animations: 'disabled' })
 }
 
+async function gotoSession(page: Page, sessionId: string) {
+  await page.goto(`/#/hermes/session/${sessionId}`)
+  // The first Vite run compiles ChatView's large lazy chunk. Wait for the
+  // route content contract instead of racing the first artifact assertion.
+  await expect(page.locator('.chat-panel')).toBeVisible({ timeout: 15_000 })
+}
+
 test('restores the selected artifact independently for each session and after collapse', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   const api = await setupArtifactPage(page)
-  await page.goto('/#/hermes/session/session-a')
+  await gotoSession(page, 'session-a')
 
   await openArtifact(page, 'a.txt', fileContents['a.txt'])
   await toggleArtifactPanel(page)
@@ -167,7 +174,7 @@ test('restores the selected artifact independently for each session and after co
 test('folder and plus open the secondary browser and previewing a file creates its tab', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   const api = await setupArtifactPage(page)
-  await page.goto('/#/hermes/session/session-a')
+  await gotoSession(page, 'session-a')
   await openArtifact(page, 'a.txt', fileContents['a.txt'])
 
   await page.getByRole('button', { name: 'Browse workspace' }).click()
@@ -190,7 +197,7 @@ test('folder and plus open the secondary browser and previewing a file creates i
 test('switches two artifact tabs and closes back to the overview', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   const api = await setupArtifactPage(page)
-  await page.goto('/#/hermes/session/session-a')
+  await gotoSession(page, 'session-a')
 
   await openArtifact(page, 'a.txt', fileContents['a.txt'])
   await openArtifact(page, 'SPEC.md', 'Beta specification')
@@ -214,7 +221,7 @@ test('switches two artifact tabs and closes back to the overview', async ({ page
 test('opens an empty session on the localized overview instead of the root file manager', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   const api = await setupArtifactPage(page)
-  await page.goto('/#/hermes/session/session-empty')
+  await gotoSession(page, 'session-empty')
   await expect(page.getByText('No artifacts produced.', { exact: true })).toBeVisible()
 
   await toggleArtifactPanel(page)
@@ -231,7 +238,7 @@ test('opens an empty session on the localized overview instead of the root file 
 test('narrow artifact panel stays within the viewport and keeps its tab across collapse', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 720, height: 900 })
   const api = await setupArtifactPage(page)
-  await page.goto('/#/hermes/session/session-a')
+  await gotoSession(page, 'session-a')
   await openArtifact(page, 'a.txt', fileContents['a.txt'])
 
   const panel = page.locator('.chat-tool-panel')

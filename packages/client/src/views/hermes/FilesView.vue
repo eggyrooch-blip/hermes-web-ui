@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useFilesStore } from '@/stores/hermes/files'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import FileTree from '@/components/hermes/files/FileTree.vue'
@@ -15,6 +15,8 @@ import type { FileEntry } from '@/api/hermes/files'
 
 const filesStore = useFilesStore()
 const profilesStore = useProfilesStore()
+const editorScope = computed(() => `files-view:${profilesStore.activeProfileName || '__default__'}`)
+const editorScopeActive = computed(() => filesStore.canAccessEditor(editorScope.value))
 
 const contextMenuRef = ref<InstanceType<typeof FileContextMenu> | null>(null)
 const showUpload = ref(false)
@@ -80,13 +82,23 @@ onMounted(() => {
       />
       <FileBreadcrumb />
       <div class="files-content">
-        <FileEditor v-if="filesStore.editingFile" />
+        <FileEditor
+          v-if="editorScopeActive && filesStore.editingFile"
+          :editor-scope="editorScope"
+        />
         <FilePreview v-else-if="filesStore.previewFile" />
-        <FileList v-else @contextmenu-entry="handleContextMenu" />
+        <FileList
+          v-else
+          :allow-edit="editorScopeActive"
+          :editor-scope="editorScope"
+          @contextmenu-entry="handleContextMenu"
+        />
       </div>
     </div>
     <FileContextMenu
       ref="contextMenuRef"
+      :allow-edit="editorScopeActive"
+      :editor-scope="editorScope"
       @rename="handleRename"
       @new-folder="handleContextNewFolder"
     />
@@ -96,6 +108,7 @@ onMounted(() => {
       :mode="renameMode"
       :entry="renameEntry"
       :target-path="renameTargetPath"
+      :editor-scope="editorScope"
     />
   </div>
 </template>

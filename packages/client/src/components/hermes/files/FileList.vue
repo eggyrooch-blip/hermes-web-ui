@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { NButton, NSpin, NEmpty, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { useFilesStore, isPreviewableFile, isTextFile } from '@/stores/hermes/files'
+import { DEFAULT_EDITOR_SCOPE, useFilesStore, isPreviewableFile, isTextFile } from '@/stores/hermes/files'
 import { downloadFile } from '@/api/hermes/download'
 import type { FileEntry } from '@/api/hermes/files'
 
 const { t } = useI18n()
 const message = useMessage()
 const filesStore = useFilesStore()
-withDefaults(defineProps<{ allowEdit?: boolean }>(), { allowEdit: true })
+const props = withDefaults(defineProps<{ allowEdit?: boolean, editorScope?: string }>(), {
+  allowEdit: true,
+  editorScope: DEFAULT_EDITOR_SCOPE,
+})
 
 const emit = defineEmits<{
   (e: 'contextmenu-entry', event: MouseEvent, entry: FileEntry): void
@@ -77,7 +80,7 @@ async function handleDownload(entry: FileEntry) {
 }
 
 async function handleEdit(entry: FileEntry) {
-  if (await filesStore.openEditor(entry.path)) emit('editor-opened')
+  if (await filesStore.openEditor(entry.path, props.editorScope)) emit('editor-opened')
 }
 </script>
 

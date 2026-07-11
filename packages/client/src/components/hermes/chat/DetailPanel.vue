@@ -44,7 +44,6 @@ const profilesStore = useProfilesStore()
 const { t } = useI18n()
 const artifactBrowserRef = ref<InstanceType<typeof ArtifactBrowser> | null>(null)
 const workspaces = new Map<string, SessionWorkspaceState>()
-const editorOwnerKey = ref<string | null>(filesStore.editingFile ? '__external__' : null)
 const tabPanelId = `detail-artifact-panel-${getCurrentInstance()?.uid ?? 0}`
 
 const workspaceScope = computed(() => [
@@ -53,7 +52,7 @@ const workspaceScope = computed(() => [
 ].join(':'))
 const sessionKey = computed(() => `${workspaceScope.value}:${chatStore.activeSessionId || '__new__'}`)
 const editorScopeActive = computed(() => (
-  !filesStore.editingFile || editorOwnerKey.value === sessionKey.value
+  filesStore.canAccessEditor(sessionKey.value)
 ))
 
 function workspaceFor(key: string): SessionWorkspaceState {
@@ -208,10 +207,6 @@ function openFiles(): void {
   workspace.value.surface = 'files'
 }
 
-function markEditorScope(): void {
-  editorOwnerKey.value = sessionKey.value
-}
-
 function restoreWorkspace(): void {
   if (workspace.value.surface === 'files') return
   const selected = selectedArtifact.value
@@ -243,9 +238,6 @@ watch(() => filesStore.previewFile?.path, path => {
   if (path) rememberPreviewArtifact()
 })
 watch(() => filesStore.browserArtifactRequestedAt, () => consumeBrowserArtifact())
-watch(() => filesStore.editingFile, editor => {
-  if (!editor) editorOwnerKey.value = null
-}, { flush: 'sync' })
 
 watch(sessionKey, key => {
   workspace.value = workspaceFor(key)
@@ -361,7 +353,7 @@ onMounted(() => {
         v-if="workspace.surface === 'files'"
         :key="sessionKey"
         :editor-scope-active="editorScopeActive"
-        @editor-opened="markEditorScope"
+        :editor-scope="sessionKey"
       />
 
       <div

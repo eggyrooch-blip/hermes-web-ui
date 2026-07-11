@@ -60,7 +60,7 @@ describe('FileList layout', () => {
     expect(openEditor).not.toHaveBeenCalled()
 
     await wrapper.find('button[title="files.edit"]').trigger('click')
-    expect(openEditor).toHaveBeenCalledWith('notes.txt')
+    expect(openEditor).toHaveBeenCalledWith('notes.txt', 'files-view:__default__')
     expect(wrapper.emitted('editor-opened')).toHaveLength(1)
   })
 

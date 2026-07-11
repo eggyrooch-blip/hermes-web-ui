@@ -31,6 +31,7 @@ vi.mock('@/components/hermes/chat/FilesPanel.vue', async () => {
       name: 'FilesPanel',
       props: {
         editorScopeActive: { type: Boolean, default: true },
+        editorScope: { type: String, default: 'files-view:__default__' },
       },
       emits: ['editor-opened'],
       setup(_, { emit }) {
@@ -49,6 +50,7 @@ vi.mock('@/components/hermes/chat/FilesPanel.vue', async () => {
             content: 'dirty A',
             originalContent: 'clean A',
             language: 'plaintext',
+            ownerScope: _.editorScope,
           }
           emit('editor-opened')
         }
@@ -326,6 +328,7 @@ describe('DetailPanel session workspace', () => {
       content: 'dirty',
       originalContent: 'clean',
       language: 'plaintext',
+      ownerScope: 'external',
     }
 
     await wrapper.find('[aria-label="Browse workspace"]').trigger('click')
