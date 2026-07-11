@@ -5,12 +5,13 @@ type SessionSeed = {
   id: string
   title: string
   lastActive: number
-  artifact: string
+  artifacts: string[]
 }
 
 const sessions: SessionSeed[] = [
-  { id: 'session-a', title: 'Alpha chat', lastActive: 100, artifact: 'a.txt' },
-  { id: 'session-b', title: 'Beta chat', lastActive: 200, artifact: 'SPEC.md' },
+  { id: 'session-a', title: 'Alpha chat', lastActive: 100, artifacts: ['a.txt', 'SPEC.md'] },
+  { id: 'session-b', title: 'Beta chat', lastActive: 200, artifacts: ['SPEC.md'] },
+  { id: 'session-empty', title: 'Empty chat', lastActive: 50, artifacts: [] },
 ]
 
 const fileContents: Record<string, string> = {
@@ -45,7 +46,7 @@ function sessionSummary({ id, title, lastActive }: SessionSeed) {
   }
 }
 
-function resumePayload({ id, artifact }: SessionSeed) {
+function resumePayload({ id, artifacts }: SessionSeed) {
   return {
     session_id: id,
     messages: [
@@ -53,7 +54,9 @@ function resumePayload({ id, artifact }: SessionSeed) {
         id: 1,
         session_id: id,
         role: 'assistant',
-        content: `Artifact ready.\n\nMEDIA:/workspace/${artifact}`,
+        content: artifacts.length
+          ? `Artifact ready.\n\n${artifacts.map(artifact => `MEDIA:/workspace/${artifact}`).join('\n')}`
+          : 'No artifacts produced.',
         timestamp: Date.now() / 1000,
         tool_call_id: null,
         tool_calls: null,
@@ -181,6 +184,47 @@ test('folder and plus open the secondary browser and previewing a file creates i
   await page.getByRole('tab', { name: 'notes.txt', exact: true }).click()
   await expect(page.getByText(fileContents['notes.txt'], { exact: true })).toBeVisible()
   await capture(page, testInfo, 'workspace-browser-preview-tab.png')
+  expect(api.unexpectedRequests).toEqual([])
+})
+
+test('switches two artifact tabs and closes back to the overview', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const api = await setupArtifactPage(page)
+  await page.goto('/#/hermes/session/session-a')
+
+  await openArtifact(page, 'a.txt', fileContents['a.txt'])
+  await openArtifact(page, 'SPEC.md', 'Beta specification')
+  await page.getByRole('tab', { name: 'a.txt', exact: true }).click()
+  await expect(page.getByText(fileContents['a.txt'], { exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Close a.txt', exact: true }).click()
+  await expect(page.getByRole('tab', { name: 'a.txt', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('tab', { name: 'SPEC.md', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByText('Beta specification', { exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Close SPEC.md', exact: true }).click()
+  await expect(page.getByRole('tablist', { name: 'Open artifacts' }).getByRole('tab')).toHaveCount(0)
+  await expect(page.locator('.detail-overview')).toBeVisible()
+  await expect(page.locator('.detail-open-files')).toBeVisible()
+  await expect(page.locator('.detail-open-files')).toHaveAccessibleName('Browse workspace')
+  await expect(page.locator('.file-list-row')).toHaveCount(0)
+  expect(api.unexpectedRequests).toEqual([])
+})
+
+test('opens an empty session on the localized overview instead of the root file manager', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const api = await setupArtifactPage(page)
+  await page.goto('/#/hermes/session/session-empty')
+  await expect(page.getByText('No artifacts produced.', { exact: true })).toBeVisible()
+
+  await toggleArtifactPanel(page)
+  await expect(page.locator('.chat-tool-panel')).toBeVisible()
+  await expect(page.locator('.detail-overview')).toBeVisible()
+  await expect(page.getByText('No artifacts yet', { exact: true })).toBeVisible()
+  await expect(page.locator('.detail-browse-workspace')).toBeVisible()
+  await expect(page.locator('.detail-browse-workspace')).toHaveAccessibleName('Browse workspace')
+  await expect(page.locator('.files-panel-drawer')).toHaveCount(0)
+  await expect(page.locator('.file-list-row')).toHaveCount(0)
   expect(api.unexpectedRequests).toEqual([])
 })
 
