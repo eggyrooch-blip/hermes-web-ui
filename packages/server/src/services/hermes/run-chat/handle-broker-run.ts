@@ -1,17 +1,16 @@
 import type { Socket } from 'socket.io'
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
 import type { Dirent } from 'fs'
-import { isAbsolute, join, resolve, sep } from 'path'
+import { join } from 'path'
 import yaml from 'js-yaml'
 import { getSystemPrompt } from '../../../lib/llm-prompt'
 import { getSession, updateSession } from '../../../db/hermes/session-store'
 import { config } from '../../../config'
 import { getProfileDir } from '../hermes-profile'
-import { isNearestExistingRealPathWithin } from '../hermes-path'
 import { buildBrokerMessagesForSession, contentBlocksToBrokerText } from './content-blocks'
 import { readSseFrames } from './sse-utils'
 import type { ContentBlock, ResponseRunState, SessionMessage, SessionState } from './types'
-import { defaultHermesWorkspace, ensureHermesRunWorkspace } from './workspace'
+import { ensureHermesRunWorkspace } from './workspace'
 import { completeWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint, type WorkspaceRunCheckpointHandle } from './workspace-diff-tracker'
 
 export { readSseFrames } from './sse-utils'
@@ -728,29 +727,6 @@ export function appendBrokerFailureMessage(
   })
 }
 
-async function brokerRunWorkspaceInput(
-  profile: string,
-  storedWorkspace?: string | null,
-  payloadWorkspace?: string | null,
-): Promise<string> {
-  const stored = String(storedWorkspace || '').trim()
-  if (stored) return stored
-
-  const profileWorkspace = resolve(defaultHermesWorkspace(profile))
-  const rawPayload = String(payloadWorkspace || '').trim()
-  if (!rawPayload) return profileWorkspace
-
-  const candidate = isAbsolute(rawPayload)
-    ? resolve(rawPayload)
-    : resolve(profileWorkspace, rawPayload)
-  const prefix = profileWorkspace.endsWith(sep) ? profileWorkspace : `${profileWorkspace}${sep}`
-  if (
-    (candidate === profileWorkspace || candidate.startsWith(prefix)) &&
-    await isNearestExistingRealPathWithin(candidate, profileWorkspace)
-  ) return candidate
-  return profileWorkspace
-}
-
 export async function handleBrokerRun(
   socket: Socket,
   data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; replay_run_id?: string },
@@ -785,7 +761,7 @@ export async function handleBrokerRun(
   const agentId = (socket.data?.agentId as string | undefined)?.trim()
   const sessionRow = (!isReplay && session_id) ? getSession(session_id) : null
   const workspace = (!isReplay && session_id)
-    ? await ensureHermesRunWorkspace(profile, await brokerRunWorkspaceInput(profile, sessionRow?.workspace, data.workspace))
+    ? await ensureHermesRunWorkspace(profile, sessionRow?.workspace || data.workspace)
     : null
   if (session_id && sessionRow && !sessionRow.workspace && workspace) updateSession(session_id, { workspace })
   let workspaceDiffRunId = runMarker || ''

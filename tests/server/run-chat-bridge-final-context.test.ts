@@ -293,7 +293,10 @@ describe('bridge run final context usage', () => {
     const socket = makeSocket()
     const state = makeState()
     const sessionMap = new Map([['session-1', state]])
-    const workspace = '/tmp/hermes-explicit-workspace'
+    // Explicit, but inside the profile workspace — ensureHermesRunWorkspace now
+    // contains every run path, so an out-of-tree value would be rewritten to the
+    // profile default (see run-workspace-containment.test.ts).
+    const workspace = '/tmp/hermes-bridge-final-context/default/workspace/explicit'
     completeWorkspaceRunCheckpointMock.mockReturnValue({
       change_id: 'change-1',
       session_id: 'session-1',
@@ -373,7 +376,10 @@ describe('bridge run final context usage', () => {
     const socket = makeSocket()
     const state = makeState()
     const sessionMap = new Map([['session-1', state]])
-    const workspace = '/tmp/hermes-explicit-workspace'
+    // Explicit, but inside the profile workspace — ensureHermesRunWorkspace now
+    // contains every run path, so an out-of-tree value would be rewritten to the
+    // profile default (see run-workspace-containment.test.ts).
+    const workspace = '/tmp/hermes-bridge-final-context/default/workspace/explicit'
     const order: string[] = []
     startWorkspaceRunCheckpointMock.mockImplementation(() => {
       order.push('checkpoint-started')
@@ -492,7 +498,10 @@ describe('bridge run final context usage', () => {
       flushedRunIds.push(targetState.runId)
     })
     const sessionMap = new Map([['session-1', state]])
-    const workspace = '/tmp/hermes-explicit-workspace'
+    // Explicit, but inside the profile workspace — ensureHermesRunWorkspace now
+    // contains every run path, so an out-of-tree value would be rewritten to the
+    // profile default (see run-workspace-containment.test.ts).
+    const workspace = '/tmp/hermes-bridge-final-context/default/workspace/explicit'
     completeWorkspaceRunCheckpointMock.mockReturnValue({
       change_id: 'change-failed',
       session_id: 'session-1',
