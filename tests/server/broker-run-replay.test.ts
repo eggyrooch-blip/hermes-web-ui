@@ -213,6 +213,54 @@ describe('handleBrokerRun replay mode', () => {
     expect(emit.mock.calls.map(call => call[0])).toEqual(['message.delta', 'workspace.diff.completed', 'run.completed'])
   })
 
+  it('finishes the workspace diff before completion can schedule a goal continuation', async () => {
+    const order: string[] = []
+    let finishDiff!: () => void
+    workspaceDiffTracker.complete.mockImplementationOnce(() => new Promise(resolve => {
+      order.push('diff.started')
+      finishDiff = () => {
+        order.push('diff.finished')
+        resolve({
+          change_id: 'change-1',
+          session_id: 's1',
+          run_id: 'run-1',
+          files_changed: 1,
+          files: [{ id: 7, path: 'a.txt', additions: 1, deletions: 0 }],
+        })
+      }
+    }))
+    const context = fakeContext()
+    context.markCompleted.mockImplementation(async () => {
+      order.push('mark.completed')
+      setTimeout(() => order.push('goal.continuation.started'), 0)
+    })
+    const emit = vi.fn((event: string) => order.push(`emit:${event}`))
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body: sseStream('event: done\ndata: {"kind":"done","run_id":"run-1","output":"done"}\n\n'),
+    })))
+
+    const pending = handleBrokerRun(socket, { input: 'hi', session_id: 's1' }, 'default', 'rm', emit, context)
+    await vi.waitFor(() => expect(workspaceDiffTracker.complete).toHaveBeenCalled())
+
+    expect(context.markCompleted).not.toHaveBeenCalled()
+    expect(emit).not.toHaveBeenCalledWith('run.completed', expect.anything())
+
+    finishDiff()
+    await pending
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(order).toEqual([
+      'diff.started',
+      'diff.finished',
+      'emit:workspace.diff.completed',
+      'mark.completed',
+      'emit:run.completed',
+      'goal.continuation.started',
+    ])
+  })
+
   it('falls back from a stored workspace pointing at another profile', async () => {
     // setWorkspace persists any string, so the stored value is attacker-controlled;
     // the prompt AND the diff tracker must both land on the profile default.

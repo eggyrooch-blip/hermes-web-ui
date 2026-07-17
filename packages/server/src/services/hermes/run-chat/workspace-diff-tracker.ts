@@ -324,22 +324,52 @@ async function runGit(cwd: string, args: string[], maxBuffer = 1024 * 1024): Pro
   return stdout
 }
 
-async function resolveGitRoot(workspace: string): Promise<string | null> {
+async function resolveGitRoot(
+  workspace: string,
+  deadline: number,
+  lease: WorkspaceDiffOperationLease,
+): Promise<string | null> {
   try {
-    const root = (await runGit(workspace, ['rev-parse', '--show-toplevel'])).trim()
+    const rootOutput = await waitForSnapshotOperation(
+      () => runGit(workspace, ['rev-parse', '--show-toplevel']),
+      deadline,
+      lease,
+    )
+    if (rootOutput === DEADLINE_EXCEEDED) return null
+    const root = rootOutput.trim()
     if (!root) return null
-    const resolvedWorkspace = await realpath(resolve(workspace))
-    const resolvedRoot = await realpath(resolve(root))
+    const resolvedWorkspace = await waitForSnapshotOperation(
+      () => realpath(resolve(workspace)),
+      deadline,
+      lease,
+    )
+    if (resolvedWorkspace === DEADLINE_EXCEEDED) return null
+    const resolvedRoot = await waitForSnapshotOperation(
+      () => realpath(resolve(root)),
+      deadline,
+      lease,
+    )
+    if (resolvedRoot === DEADLINE_EXCEEDED) return null
     return isPathInside(resolvedRoot, resolvedWorkspace) ? resolvedRoot : null
   } catch {
     return null
   }
 }
 
-async function resolveFilesystemRoot(workspace: string): Promise<string | null> {
+async function resolveFilesystemRoot(
+  workspace: string,
+  deadline: number,
+  lease: WorkspaceDiffOperationLease,
+): Promise<string | null> {
   try {
-    const root = await realpath(resolve(workspace))
-    return (await stat(root)).isDirectory() ? root : null
+    const root = await waitForSnapshotOperation(
+      () => realpath(resolve(workspace)),
+      deadline,
+      lease,
+    )
+    if (root === DEADLINE_EXCEEDED) return null
+    const rootStat = await waitForSnapshotOperation(() => stat(root), deadline, lease)
+    return rootStat !== DEADLINE_EXCEEDED && rootStat.isDirectory() ? root : null
   } catch {
     return null
   }
@@ -810,14 +840,15 @@ async function buildWorkspaceRunCheckpoint(args: {
   const sessionRowId = getSessionRowId(args.sessionId)
   const sessionIncarnation = getSessionIncarnation(args.sessionId)
   if (sessionRowId == null || sessionIncarnation == null) return null
-  const gitRoot = await resolveGitRoot(args.workspace)
+  const deadline = Date.now() + MAX_SCAN_MS
+  const gitRoot = await resolveGitRoot(args.workspace, deadline, lease)
   if (gitRoot) {
     const status = await getGitStatusPaths(gitRoot)
     const snapshot = await snapshotPaths(
       gitRoot,
       status.paths,
       MAX_TOTAL_SNAPSHOT_BYTES,
-      Date.now() + MAX_SCAN_MS,
+      deadline,
       lease,
     )
     return {
@@ -835,9 +866,8 @@ async function buildWorkspaceRunCheckpoint(args: {
     }
   }
 
-  const filesystemRoot = await resolveFilesystemRoot(args.workspace)
+  const filesystemRoot = await resolveFilesystemRoot(args.workspace, deadline, lease)
   if (!filesystemRoot) return null
-  const deadline = Date.now() + MAX_SCAN_MS
   const scan = await scanFilesystemPaths(filesystemRoot, lease, deadline)
   const snapshot = await snapshotPaths(filesystemRoot, scan.paths, MAX_TOTAL_SNAPSHOT_BYTES, deadline, lease)
   return {

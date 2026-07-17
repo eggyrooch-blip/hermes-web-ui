@@ -1028,12 +1028,12 @@ export async function handleBrokerRun(
             mapped.payload.error || output || 'Run broker failed',
           )
         }
+        await emitWorkspaceDiffCompleted()
         if (session_id) await context.markCompleted(socket, session_id, {
           event: mapped.event,
           run_id: runId,
           final_response: output,
         })
-        await emitWorkspaceDiffCompleted()
         emit(mapped.event, {
           ...mapped.payload,
           output,

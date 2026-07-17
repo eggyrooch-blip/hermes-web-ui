@@ -86,11 +86,14 @@ describe('workspace diff tracker', () => {
     } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
     const fakeBin = join(root, 'fake-bin')
     const fakeGit = join(fakeBin, 'git')
+    const releaseGitProbe = join(root, 'release-git-probe')
     mkdirSync(fakeBin)
-    writeFileSync(fakeGit, '#!/bin/sh\nsleep 0.2\nexit 1\n')
+    writeFileSync(fakeGit, '#!/bin/sh\nwhile [ ! -f "$HERMES_WORKSPACE_DIFF_TEST_RELEASE" ]; do sleep 0.01; done\nexit 1\n')
     chmodSync(fakeGit, 0o755)
     const originalPath = process.env.PATH
+    const originalRelease = process.env.HERMES_WORKSPACE_DIFF_TEST_RELEASE
     process.env.PATH = `${fakeBin}:${originalPath || ''}`
+    process.env.HERMES_WORKSPACE_DIFF_TEST_RELEASE = releaseGitProbe
 
     try {
       await createTrackedSession('session-nonblocking')
@@ -104,7 +107,10 @@ describe('workspace diff tracker', () => {
         return checkpoint
       })
 
-      await new Promise(resolve => setTimeout(resolve, 10))
+      await new Promise<void>(resolveTimer => setTimeout(() => {
+        writeFileSync(releaseGitProbe, 'continue\n')
+        resolveTimer()
+      }, 10))
       expect(checkpointResolved).toBe(false)
 
       const checkpoint = await checkpointPromise
@@ -118,7 +124,10 @@ describe('workspace diff tracker', () => {
       })
       expect(change?.files.map(file => file.path)).toEqual(['changed.txt'])
     } finally {
+      writeFileSync(releaseGitProbe, 'continue\n')
       process.env.PATH = originalPath
+      if (originalRelease == null) delete process.env.HERMES_WORKSPACE_DIFF_TEST_RELEASE
+      else process.env.HERMES_WORKSPACE_DIFF_TEST_RELEASE = originalRelease
     }
   })
 
@@ -222,6 +231,77 @@ describe('workspace diff tracker', () => {
       else process.env.HERMES_WORKSPACE_DIFF_TEST_LOG = originalLog
     }
   })
+
+  it.each(['realpath', 'stat'] as const)('bounds delayed workspace root %s and retains its lease until settlement', async (operationName) => {
+    const workspaces = operationName === 'realpath'
+      ? [repo, repo, repo]
+      : Array.from({ length: 3 }, (_, index) => join(root, `slow-root-stat-${index}`))
+    if (operationName === 'stat') {
+      for (const workspace of workspaces) mkdirSync(workspace)
+    }
+    for (let index = 0; index < workspaces.length; index += 1) {
+      await createTrackedSession(`session-slow-root-${operationName}-${index}`)
+    }
+
+    const realFs = await vi.importActual<typeof import('fs/promises')>('fs/promises')
+    const pendingRoots: Array<{ path: string; resolve: (value: any) => void }> = []
+    const delayedRootOperation = vi.fn((path: string) => new Promise<any>((resolveRoot) => {
+      pendingRoots.push({ path, resolve: resolveRoot })
+    }))
+    vi.doMock('fs/promises', () => ({
+      ...realFs,
+      [operationName]: delayedRootOperation,
+    }))
+
+    try {
+      const {
+        discardWorkspaceRunCheckpoint,
+        startWorkspaceRunCheckpoint,
+      } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+      const startedAt = Date.now()
+      const firstHandles = await Promise.all(workspaces.slice(0, 2).map((workspace, index) => startWorkspaceRunCheckpoint({
+        sessionId: `session-slow-root-${operationName}-${index}`,
+        runId: `run-slow-root-${operationName}-${index}`,
+        workspace,
+      })))
+      expect(Date.now() - startedAt).toBeLessThan(2_500)
+      expect(firstHandles).toEqual([null, null])
+      expect(delayedRootOperation).toHaveBeenCalledTimes(2)
+
+      const third = startWorkspaceRunCheckpoint({
+        sessionId: `session-slow-root-${operationName}-2`,
+        runId: `run-slow-root-${operationName}-2`,
+        workspace: workspaces[2],
+      })
+      await new Promise(resolve => setTimeout(resolve, 50))
+      expect(delayedRootOperation).toHaveBeenCalledTimes(2)
+
+      const settle = async (index: number): Promise<void> => {
+        const pending = pendingRoots[index]
+        pending.resolve(operationName === 'realpath'
+          ? await realFs.realpath(pending.path)
+          : await realFs.stat(pending.path))
+      }
+      await settle(0)
+      await vi.waitFor(() => expect(delayedRootOperation).toHaveBeenCalledTimes(3))
+      await settle(1)
+      await settle(2)
+      if (operationName === 'realpath') {
+        await vi.waitFor(() => expect(delayedRootOperation).toHaveBeenCalledTimes(4))
+        await settle(3)
+      }
+
+      const thirdHandle = await third
+      expect(thirdHandle).not.toBeNull()
+      discardWorkspaceRunCheckpoint({
+        sessionId: `session-slow-root-${operationName}-2`,
+        runId: `run-slow-root-${operationName}-2`,
+        checkpoint: thirdHandle,
+      })
+    } finally {
+      vi.doUnmock('fs/promises')
+    }
+  }, 10_000)
 
   it('closes late opendir handles and keeps their concurrency slots until cleanup', async () => {
     const workspaces = Array.from({ length: 3 }, (_, index) => join(root, `slow-workspace-${index}`))

@@ -13,14 +13,17 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
   no-index patch generation now use asynchronous child-process/filesystem APIs.
 - Broker, bridge, and coding-agent runs await the initial baseline before the
   real run starts, then await diff completion before their terminal chat event.
-  Diff failures remain non-fatal to the chat run.
+  Broker terminal handling also completes the old run's diff before
+  `markCompleted`, so a goal continuation cannot mutate the workspace before
+  that diff is captured. Diff failures remain non-fatal to the chat run.
 - Git commands have a 5-second timeout; non-Git workspace traversal keeps a
   1-second deadline, streams directory entries with `opendir`, and limits
   expensive checkpoint/diff work to two concurrent operations. The deadline
-  also covers snapshot `lstat`/`realpath`/`stat`/`readFile`, Git HEAD snapshots,
-  and no-index patch generation across the whole changed-path loop; there is no
-  new directory-entry cap. Existing depth, file, byte, patch, and secret-path
-  limits remain.
+  also covers workspace root Git probing/`realpath`/`stat`, snapshot
+  `lstat`/`realpath`/`stat`/`readFile`, Git HEAD snapshots, and no-index patch
+  generation across the whole changed-path loop; there is no new
+  directory-entry cap. Existing depth, file, byte, patch, and secret-path limits
+  remain.
 - If a timed-out `opendir`/`read` finishes late, its directory handle is closed
   and its limiter lease stays occupied until cleanup, so hidden filesystem I/O
   cannot accumulate beyond the same process-wide concurrency bound.
@@ -54,13 +57,19 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
   not start while two timed-out real opens remain unresolved; a delayed-lstat
   regression proves the same bound for snapshot I/O. Delete/recreate regressions
   prove old runs cannot bind to a replacement session with the same id.
+- Delayed workspace root `realpath` and `stat` regressions return within the
+  deadline while keeping both concurrency leases occupied until settlement; a
+  third checkpoint starts only after one delayed root operation settles.
 - Seven changed Git paths with four-second delayed HEAD and patch subprocesses prove terminal
   checkpoint completion returns on the single deadline, preserves the six
   completed paths, marks the result truncated, and waits for late cleanup. An
   oversized CJK/emoji patch proves the stored UTF-8 round trip is exact and its
   byte length remains at or below 256 KiB.
-- Focused workspace, bridge, broker, and coding-agent suites: 4 files / 73 passed.
-- Full Vitest suite: 318 files / 2490 passed / 2 skipped.
+- A delayed broker diff plus a `markCompleted` callback that schedules a goal
+  continuation proves the order is diff completion/emission, session completion,
+  terminal emission, then continuation.
+- Focused workspace, bridge, broker, and coding-agent suites: 4 files / 76 passed.
+- Full Vitest suite: 318 files / 2493 passed / 2 skipped.
 - Client/server TypeScript, production build, and `harness:check` passed.
 
 ## Release status
