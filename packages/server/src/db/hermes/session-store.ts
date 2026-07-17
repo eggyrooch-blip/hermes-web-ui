@@ -6,6 +6,7 @@ import { isSqliteAvailable, getDb } from '../index'
 import { SESSIONS_TABLE, MESSAGES_TABLE } from './schemas'
 import { normalizeMessageContentForStorageRole } from './message-content'
 import { deleteWorkspaceRunChangeRowsForSession } from './workspace-run-changes-store'
+import { clearSessionIncarnation, ensureSessionIncarnation, renewSessionIncarnation } from './session-incarnation'
 
 // Re-export types for compatibility with sessions-db.ts consumers
 export interface HermesSessionRow {
@@ -206,6 +207,7 @@ export function createSession(data: {
     now,
     data.workspace || null,
   )
+  renewSessionIncarnation(data.id)
   return getSession(data.id)!
 }
 
@@ -216,6 +218,20 @@ export function getSession(id: string): HermesSessionRow | null {
     `SELECT * FROM ${SESSIONS_TABLE} WHERE id = ?`,
   ).get(id) as Record<string, unknown> | undefined
   return row ? mapSessionRow(row) : null
+}
+
+export function getSessionRowId(id: string): number | null {
+  if (!isSqliteAvailable()) return null
+  const db = getDb()!
+  const row = db.prepare(
+    `SELECT rowid AS row_id FROM ${SESSIONS_TABLE} WHERE id = ?`,
+  ).get(id) as { row_id?: number } | undefined
+  return row?.row_id == null ? null : Number(row.row_id)
+}
+
+export function getSessionIncarnation(id: string): number | null {
+  if (getSessionRowId(id) == null) return null
+  return ensureSessionIncarnation(id)
 }
 
 export function updateSession(id: string, data: Partial<Omit<HermesSessionRow, 'id' | 'profile'>>): void {
@@ -256,6 +272,7 @@ export function deleteSession(id: string): boolean {
     db.prepare(`DELETE FROM ${MESSAGES_TABLE} WHERE session_id = ?`).run(id)
     const result = db.prepare(`DELETE FROM ${SESSIONS_TABLE} WHERE id = ?`).run(id)
     db.exec('COMMIT')
+    if (result.changes > 0) clearSessionIncarnation(id)
     return result.changes > 0
   } catch (err) {
     db.exec('ROLLBACK')

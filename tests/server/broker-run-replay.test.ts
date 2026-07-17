@@ -13,6 +13,8 @@ const workspaceDiffTracker = vi.hoisted(() => ({
 }))
 const sessionStore = vi.hoisted(() => ({
   getSession: vi.fn(() => null),
+  getSessionRowId: vi.fn(() => null),
+  getSessionIncarnation: vi.fn(() => null),
   updateSession: vi.fn(),
 }))
 const pathSecurity = vi.hoisted(() => ({
@@ -64,6 +66,10 @@ afterEach(() => {
   vi.restoreAllMocks()
   sessionStore.getSession.mockReset()
   sessionStore.getSession.mockReturnValue(null)
+  sessionStore.getSessionRowId.mockReset()
+  sessionStore.getSessionRowId.mockReturnValue(1)
+  sessionStore.getSessionIncarnation.mockReset()
+  sessionStore.getSessionIncarnation.mockReturnValue(1)
   sessionStore.updateSession.mockClear()
   workspaceDiffTracker.start.mockClear()
   workspaceDiffTracker.discard.mockClear()
@@ -104,14 +110,20 @@ describe('handleBrokerRun replay mode', () => {
     expect(seen[0]).not.toContain('/replay/')
   })
 
-  it('does not dispatch after the session is deleted during checkpoint startup', async () => {
+  it('does not dispatch after the session id is deleted and recreated during checkpoint startup', async () => {
     let resolveCheckpoint!: (value: { key: string }) => void
     workspaceDiffTracker.start.mockReturnValueOnce(new Promise(resolve => {
       resolveCheckpoint = resolve
     }))
     sessionStore.getSession
       .mockReturnValueOnce({ id: 's1', profile: 'default', workspace: '/tmp/work' })
-      .mockReturnValue(null)
+      .mockReturnValue({ id: 's1', profile: 'default', workspace: '/tmp/work' })
+    sessionStore.getSessionRowId
+      .mockReturnValueOnce(1)
+      .mockReturnValue(2)
+    sessionStore.getSessionIncarnation
+      .mockReturnValueOnce(1)
+      .mockReturnValue(2)
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 

@@ -4,7 +4,7 @@ import type { Dirent } from 'fs'
 import { join } from 'path'
 import yaml from 'js-yaml'
 import { getSystemPrompt } from '../../../lib/llm-prompt'
-import { getSession, updateSession } from '../../../db/hermes/session-store'
+import { getSession, getSessionIncarnation, getSessionRowId, updateSession } from '../../../db/hermes/session-store'
 import { config } from '../../../config'
 import { logger } from '../../logger'
 import { getProfileDir } from '../hermes-profile'
@@ -767,10 +767,16 @@ export async function handleBrokerRun(
   if (session_id && sessionRow && !sessionRow.workspace && workspace) updateSession(session_id, { workspace })
   let workspaceDiffRunId = runMarker || ''
   let workspaceDiffCompleted = false
+  const workspaceDiffSessionRowId = session_id ? getSessionRowId(session_id) : null
+  const workspaceDiffSessionIncarnation = session_id ? getSessionIncarnation(session_id) : null
   const workspaceDiffCheckpoint: WorkspaceRunCheckpointHandle | null = session_id && workspace
     ? await startWorkspaceRunCheckpoint({ sessionId: session_id, workspace })
     : null
-  if (session_id && sessionRow && !getSession(session_id)) {
+  if (session_id && sessionRow && (
+    workspaceDiffSessionRowId == null || getSessionRowId(session_id) !== workspaceDiffSessionRowId
+    || workspaceDiffSessionIncarnation == null
+    || getSessionIncarnation(session_id) !== workspaceDiffSessionIncarnation
+  )) {
     discardWorkspaceRunCheckpoint({ sessionId: session_id, checkpoint: workspaceDiffCheckpoint })
     return
   }

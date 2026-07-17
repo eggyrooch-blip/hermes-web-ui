@@ -2,7 +2,7 @@ import { dirname, join } from 'path'
 import { existsSync, accessSync, chmodSync, constants as fsConstants, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { spawn, type ChildProcess } from 'child_process'
-import { createSession, addMessage, getSession, updateSession, updateSessionStats } from '../../db/hermes/session-store'
+import { createSession, addMessage, getSession, getSessionIncarnation, getSessionRowId, updateSession, updateSessionStats } from '../../db/hermes/session-store'
 import { logger } from '../logger'
 import { applyResponseStreamEvent, flushResponseRunToDb } from '../hermes/run-chat/response-stream'
 import { extractResponseText } from '../hermes/run-chat/response-utils'
@@ -514,8 +514,15 @@ export class CodingAgentRunManager {
     this.addUserMessage(run, text, options.clientId)
     this.touch(run)
     this.emitTerminalStatus(run, 'Input sent to coding agent.')
+    const workspaceDiffSessionRowId = getSessionRowId(sessionId)
+    const workspaceDiffSessionIncarnation = getSessionIncarnation(sessionId)
     await this.startWorkspaceDiffCheckpoint(run)
-    if (this.getBySession(sessionId) !== run || run.exited) {
+    if (
+      this.getBySession(sessionId) !== run ||
+      run.exited ||
+      (workspaceDiffSessionRowId != null && getSessionRowId(sessionId) !== workspaceDiffSessionRowId) ||
+      (workspaceDiffSessionIncarnation != null && getSessionIncarnation(sessionId) !== workspaceDiffSessionIncarnation)
+    ) {
       discardWorkspaceRunCheckpoint({ sessionId, runId: run.id })
       throw new Error('Coding agent session no longer exists')
     }

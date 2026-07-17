@@ -163,6 +163,67 @@ describe('workspace diff tracker', () => {
     }
   })
 
+  it('closes late opendir handles and keeps their concurrency slots until cleanup', async () => {
+    const workspaces = Array.from({ length: 3 }, (_, index) => join(root, `slow-workspace-${index}`))
+    for (let index = 0; index < workspaces.length; index += 1) {
+      mkdirSync(workspaces[index])
+      await createTrackedSession(`session-slow-open-${index}`)
+    }
+    const realFs = await vi.importActual<typeof import('fs/promises')>('fs/promises')
+    const pendingOpens: Array<{ resolve: (dir: any) => void; close: ReturnType<typeof vi.fn> }> = []
+    const opendirMock = vi.fn(() => new Promise<any>((resolveOpen) => {
+      pendingOpens.push({ resolve: resolveOpen, close: vi.fn(async () => {}) })
+    }))
+    vi.doMock('fs/promises', () => ({ ...realFs, opendir: opendirMock }))
+
+    try {
+      const {
+        discardWorkspaceRunCheckpoint,
+        startWorkspaceRunCheckpoint,
+      } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+      const firstTwo = workspaces.slice(0, 2).map((workspace, index) => startWorkspaceRunCheckpoint({
+        sessionId: `session-slow-open-${index}`,
+        runId: `run-slow-open-${index}`,
+        workspace,
+      }))
+      await vi.waitFor(() => expect(opendirMock).toHaveBeenCalledTimes(2))
+      const firstHandles = await Promise.all(firstTwo)
+
+      const third = startWorkspaceRunCheckpoint({
+        sessionId: 'session-slow-open-2',
+        runId: 'run-slow-open-2',
+        workspace: workspaces[2],
+      })
+      await new Promise(resolve => setTimeout(resolve, 50))
+      expect(opendirMock).toHaveBeenCalledTimes(2)
+
+      pendingOpens[0].resolve({ close: pendingOpens[0].close })
+      await vi.waitFor(() => expect(pendingOpens[0].close).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(opendirMock).toHaveBeenCalledTimes(3))
+      pendingOpens[1].resolve({ close: pendingOpens[1].close })
+      pendingOpens[2].resolve({
+        read: vi.fn(async () => null),
+        close: pendingOpens[2].close,
+      })
+      const thirdHandle = await third
+
+      firstHandles.forEach((checkpoint, index) => discardWorkspaceRunCheckpoint({
+        sessionId: `session-slow-open-${index}`,
+        runId: `run-slow-open-${index}`,
+        checkpoint,
+      }))
+      discardWorkspaceRunCheckpoint({
+        sessionId: 'session-slow-open-2',
+        runId: 'run-slow-open-2',
+        checkpoint: thirdHandle,
+      })
+      await vi.waitFor(() => expect(pendingOpens[1].close).toHaveBeenCalledTimes(1))
+      expect(pendingOpens[2].close).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.doUnmock('fs/promises')
+    }
+  })
+
   it('yields and truncates while scanning a directory with more entries than the hard cap', async () => {
     const {
       discardWorkspaceRunCheckpoint,
@@ -173,6 +234,7 @@ describe('workspace diff tracker', () => {
     for (let index = 0; index < 5_200; index += 1) {
       writeFileSync(join(workspace, `.env.${String(index).padStart(5, '0')}`), '')
     }
+    await createTrackedSession('session-huge-scan')
 
     let timerFired = false
     const checkpointPromise = startWorkspaceRunCheckpoint({
@@ -408,7 +470,7 @@ describe('workspace diff tracker', () => {
   it('deletes session messages and workspace changes atomically', async () => {
     const { saveWorkspaceRunChange, listWorkspaceRunChangesForSession } =
       await import('../../packages/server/src/db/hermes/workspace-run-changes-store')
-    const { addMessage, createSession, deleteSession, getSession } =
+    const { addMessage, createSession, deleteSession, getSession, getSessionIncarnation, getSessionRowId } =
       await import('../../packages/server/src/db/hermes/session-store')
     const { MESSAGES_TABLE, WORKSPACE_RUN_CHANGES_TABLE, WORKSPACE_RUN_CHANGE_FILES_TABLE } =
       await import('../../packages/server/src/db/hermes/schemas')
@@ -419,6 +481,8 @@ describe('workspace diff tracker', () => {
     saveWorkspaceRunChange({
       change_id: 'change-1',
       session_id: 'session-delete',
+      session_rowid: getSessionRowId('session-delete')!,
+      session_incarnation: getSessionIncarnation('session-delete')!,
       run_id: 'run-delete',
       source: 'run',
       workspace: 'repo',
@@ -469,7 +533,7 @@ describe('workspace diff tracker', () => {
     expect(state.db!.prepare(`SELECT COUNT(*) AS count FROM ${WORKSPACE_RUN_CHANGE_FILES_TABLE} WHERE session_id = ?`).get('session-delete')).toEqual({ count: 0 })
   })
 
-  it('does not recreate workspace changes after the session is deleted during a run', async () => {
+  it('does not attach an old run diff after its session id is deleted and recreated', async () => {
     const {
       completeWorkspaceRunCheckpoint,
       startWorkspaceRunCheckpoint,
@@ -481,12 +545,14 @@ describe('workspace diff tracker', () => {
     await startWorkspaceRunCheckpoint({ sessionId: 'session-delete-race', runId: 'run-delete-race', workspace: repo })
     writeFileSync(join(repo, 'changed.txt'), 'changed after start\n')
     expect(deleteSession('session-delete-race')).toBe(true)
+    createSession({ id: 'session-delete-race', title: 'replacement session' })
 
     await expect(completeWorkspaceRunCheckpoint({
       sessionId: 'session-delete-race',
       runId: 'run-delete-race',
       workspace: repo,
     })).resolves.toBeNull()
+    expect((await import('../../packages/server/src/db/hermes/session-store')).getSession('session-delete-race')?.title).toBe('replacement session')
     expect(listWorkspaceRunChangesForSession('session-delete-race')).toEqual([])
   })
 
@@ -505,6 +571,8 @@ describe('workspace diff tracker', () => {
       const change = saveWorkspaceRunChange({
         change_id: `change-${path.replace(/[^a-z0-9]/gi, '-')}`,
         session_id: 'session-absolute-paths',
+        session_rowid: 0,
+        session_incarnation: 0,
         run_id: 'run-absolute-paths',
         source: 'run',
         workspace: 'repo',
@@ -538,6 +606,8 @@ describe('workspace diff tracker', () => {
     const change = saveWorkspaceRunChange({
       change_id: 'change-invalid-old-path',
       session_id: 'session-invalid-old-path',
+      session_rowid: 0,
+      session_incarnation: 0,
       run_id: 'run-invalid-old-path',
       source: 'run',
       workspace: 'repo',

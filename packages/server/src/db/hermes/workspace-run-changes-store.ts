@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { isAbsolute } from 'path'
 import { getDb, isSqliteAvailable } from '../index'
+import { currentSessionIncarnation } from './session-incarnation'
 import {
   SESSIONS_TABLE,
   WORKSPACE_RUN_CHANGES_TABLE,
@@ -49,6 +50,8 @@ export interface WorkspaceRunChangeSummary {
 export interface SaveWorkspaceRunChangeInput {
   change_id: string
   session_id: string
+  session_rowid: number
+  session_incarnation: number
   run_id?: string
   source?: 'run'
   workspace?: string
@@ -162,8 +165,12 @@ export function saveWorkspaceRunChange(change: SaveWorkspaceRunChangeInput): Wor
 
   db.exec('BEGIN')
   try {
-    const sessionExists = db.prepare(`SELECT 1 FROM ${SESSIONS_TABLE} WHERE id = ?`).get(change.session_id)
-    if (!sessionExists) {
+    const session = db.prepare(`SELECT rowid AS row_id FROM ${SESSIONS_TABLE} WHERE id = ?`).get(change.session_id) as { row_id?: number } | undefined
+    if (
+      session?.row_id == null ||
+      Number(session.row_id) !== change.session_rowid ||
+      currentSessionIncarnation(change.session_id) !== change.session_incarnation
+    ) {
       db.exec('ROLLBACK')
       return null
     }

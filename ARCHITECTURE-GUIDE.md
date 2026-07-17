@@ -23,14 +23,17 @@ related:
 > the terminal chat event. Git child processes have a 5-second timeout and the
 > filesystem walk has a 1-second deadline, uses capped `opendir` iteration, and
 > process-wide expensive diff work is limited to two concurrent operations.
+> Timed-out directory I/O is eventually closed and retains its limiter lease
+> until cleanup, so late filesystem promises cannot leak FDs or exceed the cap.
 > Existing file/byte/depth caps and secret/symlink exclusions remain unchanged.
 >
 > `deleteSession()` now removes messages plus both workspace change tables in
 > one SQLite transaction. Diff persistence transactionally requires the session
-> row, and delayed broker/bridge/coding-agent checkpoint starts recheck liveness
-> before launching work. Regressions cover rollback, delete-vs-await races,
-> a 5,200-entry scan, and six concurrent checkpoints. Focused verification is
-> 4 files / 87 passed; the full suite is 318 files / 2487 passed / 2 skipped;
+> row plus the original rowid/process incarnation, and delayed broker/bridge/
+> coding-agent checkpoint starts recheck the same identity before launching.
+> Regressions cover rollback, same-id delete/recreate races, a 5,200-entry scan,
+> late-opendir cleanup, and six concurrent checkpoints. Focused verification is
+> 4 files / 88 passed; the full suite is 318 files / 2488 passed / 2 skipped;
 > production build and `harness:check` pass. Evidence
 > is recorded in `docs/chat-chain-changes/2026-07-17-workspace-diff-release-blockers.md`.
 > This candidate is not merged, pushed, or published to production.
@@ -1359,7 +1362,7 @@ CLAUDE.md 写过：dev 模式下"`hermes` CLI 必须在 `$PATH`"——确实，s
 
 ## Changelog
 
-- 2026-07-17：`webui-release-blockers` 将 workspace diff 的 Git、目录、文件与 patch 子进程改为异步 I/O；broker、bridge、coding-agent 均在 baseline 完成后才启动 run，并在 terminal event 前等待 diff，Git 5 秒与扫描 1 秒硬截止保留。扫描改用 `opendir` 流式读取并设 5,000 条目上限，昂贵 diff 全局并发为 2；patch 写入在同一事务要求 session 仍存在，三条路径在 checkpoint await 后复查存活，避免删除后复活 patch 或启动进程。`deleteSession()` 同事务清理 message、session、workspace summary/file rows。Focused 4 files / 87 passed，full 318 files / 2487 passed / 2 skipped。当前仅 ftask worktree，未 push、未合入 main、未发布生产。
+- 2026-07-17：`webui-release-blockers` 将 workspace diff 的 Git、目录、文件与 patch 子进程改为异步 I/O；broker、bridge、coding-agent 均在 baseline 完成后才启动 run，并在 terminal event 前等待 diff，Git 5 秒与扫描 1 秒硬截止保留。扫描改用 `opendir` 流式读取并设 5,000 条目上限，昂贵 diff 全局并发为 2；超时目录 I/O eventual close 且清理前保留 lease。patch 写入与三条 await 后启动检查同时匹配 session rowid + 进程内 incarnation，避免同 ID 删除重建后复活旧 patch/run。`deleteSession()` 同事务清理 message、session、workspace summary/file rows。Focused 4 files / 88 passed，full 318 files / 2488 passed / 2 skipped。当前仅 ftask worktree，未 push、未合入 main、未发布生产。
 - 2026-07-10：`webui-message-list-hotfix` 修复 upstream chat hydration 回归。Socket resume 为空、stale-zero 或 15 秒超时时，client 查询 paginated history；迟到页与 foreground visibility resume 通过 per-session epoch/request-start serialized snapshot merge 保留新消息和 partial-page omissions，同时让未变的 same-ID 本地行接受服务端最终内容；current/server 顺序按稳定相邻 ID 合并，空 reconnect 不清 transcript。user/command `queue_id` 以 `messages.client_id` 贯通本地存储、普通/abort 后队列出队、DB-to-socket、broker sync、coding-agent、resume 与 paginated；恢复候选只认稳定 client identity 后的 server order 或明确 run marker。`messages.run_id` 贯通 Responses、Run Broker、coding-agent、bridge flush/resume 与 paginated contract。回归为 focused client 95 passed、server 186 passed、full 313 files / 2395 passed / 2 skipped，`harness:check` 与 build passed；隔离 worktree `:8750` 用真实 DB snapshot 在 resume timeout 后得到 paginated `200`、7 条可见消息、空态 0。历史页 10 条均有 `run_id` 字段但非空值为 0，因此浏览器只证明 hydration/shape，新写 identity 由测试证明。完整加固已合入本机 main `1931e4a1`，main build 通过并已重启 `com.hermes.ekko-webui`，`:8648/health` OK、等待用户浏览器验收；生产未部署/未验证。
 - 2026-06-24：修复 WebUI `HERMES_WEBUI_RUN_BROKER=1` 下历史会话打开/Socket.IO resume 读成 0 条消息的问题。根因是 legacy `BrokerRunController.loadSessionStateFromDb()` 仍优先读取 Hermes profile `state.db`，而 WebUI chat-plane 的 `api_server` 会话权威数据在 `HERMES_WEB_UI_HOME/hermes-web-ui.db`；因此像 `mqqp3wbly94h7d` 这种本地 WebUI 历史会话在列表和分页详情里存在，但 socket resume 会变成空上下文。修复为 broker resume 在当前 socket profile 匹配且 local row `source=api_server` 时先读取 WebUI local session store，否则按当前 profile fallback 到 profile `state.db`，保持 CLI/imported Hermes history 兼容；运行期 `sessionMap` 与 Socket.IO room 都按 profile scoped key 分桶，避免同名 session id 跨 profile hydrate/replay/live event 串流；broker follow-up 完成后的 usage 计算复用同一 profile-aware detail loader，避免本地会话缺 profile `state.db` 时把 usage 覆写成 0/0。回归：新增 `tests/server/broker-controller-resume-local-store.test.ts`，并通过 focused `broker-controller-resume-local-store/run-chat-load-state/run-chat-broker/sessions-controller/session-detail-db` 5 files / 51 passed；`npm run build` passed；补丁分支 built server 在本机临时 `:18935` 上 `/health` 返回 ok，带本地短期 admin JWT 调 `/api/hermes/sessions/conversations/mqqp3wbly94h7d/messages/paginated?profile=feishu_g41a5b5g&limit=5` 返回 `total=39/count=5/hasMore=true`。当前仅本机待合入 main，生产未发布。
 - 2026-06-29：本地分支 `kep-cli-pre-auth` 将 WebUI 连接器里的 `kep-cli` 拆成 `kep-cli online` / `kep-cli pre` 两个可独立授权的凭证页。前端保留 broker row 的 `action.env` 并 POST 到 `/api/auth/skill-credentials/:id/start`；BFF 也能从 `kep-cli-online` / `kep-cli-pre` id 推导 env，分别启动 profile-scoped `kep-auth --env online|pre login`。本地 fallback status 同时返回两个 row，skill 声明 `--env pre` 时只把 `required_by` 挂到 pre，不把 online 登录态误报成 pre 可用；legacy `kep-cli` / `keep-cli` 行仍归 Internal systems 并兼容 online。回归：`tests/server/connector-registry-client.test.ts tests/client/api.test.ts tests/client/credentials-view.test.ts tests/server/skill-credentials.test.ts` 为 91 passed；client/server typecheck 通过；full `bun run test` 为 298 files / 2193 passed / 2 skipped。TEST gate 里发现 worktree+symlinked `node_modules` 会把裸 `stream` 误解析为 `<worktree>/stream`，已把 runtime/type imports 规范化为 `node:stream`。生产未发布。

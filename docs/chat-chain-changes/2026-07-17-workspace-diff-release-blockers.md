@@ -18,12 +18,17 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
   1-second deadline, streams directory entries with `opendir`, caps each scan
   at 5,000 entries, and limits expensive checkpoint/diff work to two concurrent
   operations. Existing depth, file, byte, patch, and secret-path limits remain.
+- If a timed-out `opendir`/`read` finishes late, its directory handle is closed
+  and its limiter lease stays occupied until cleanup, so hidden filesystem I/O
+  cannot accumulate beyond the same process-wide concurrency bound.
 - Session deletion now removes messages, workspace change files, workspace
   change summaries, and the session row in one SQLite transaction. Older
   databases without the optional workspace tables remain deletable.
 - A completed diff can only insert rows while its session still exists in the
-  same SQLite transaction. Broker, bridge, and coding-agent paths also discard
-  a delayed checkpoint instead of launching work after that session was deleted.
+  same SQLite transaction and still matches both the original rowid and a
+  process-lifetime incarnation token. Broker, bridge, and coding-agent paths
+  also discard a delayed checkpoint instead of launching work after that session
+  id was deleted and recreated.
 
 ## Regression coverage
 
@@ -34,8 +39,11 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
 - Delayed-delete regressions cover broker, bridge, coding-agent, and final patch
   persistence; a 5,200-entry directory proves the scanner yields and truncates,
   while six parallel checkpoints prove the process-wide maximum stays at two.
-- Focused workspace, bridge, broker, and coding-agent suites: 4 files / 87 passed.
-- Full Vitest suite: 318 files / 2487 passed / 2 skipped.
+- A delayed-opendir regression proves eventual close and that a third scan does
+  not start while two timed-out real opens remain unresolved; delete/recreate
+  regressions prove old runs cannot bind to a replacement session with the same id.
+- Focused workspace, bridge, broker, and coding-agent suites: 4 files / 88 passed.
+- Full Vitest suite: 318 files / 2488 passed / 2 skipped.
 - Client/server TypeScript, production build, and `harness:check` passed.
 
 ## Release status

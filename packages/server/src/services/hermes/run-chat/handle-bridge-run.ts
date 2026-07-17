@@ -5,7 +5,7 @@
 
 import type { Server, Socket } from 'socket.io'
 import { getSystemPrompt } from '../../../lib/llm-prompt'
-import { getSession, getSessionDetail, createSession, addMessage, updateSession, updateSessionStats } from '../../../db/hermes/session-store'
+import { getSession, getSessionDetail, getSessionIncarnation, getSessionRowId, createSession, addMessage, updateSession, updateSessionStats } from '../../../db/hermes/session-store'
 import { updateUsage } from '../../../db/hermes/usage-store'
 import { logger, bridgeLogger } from '../../logger'
 import { AgentBridgeClient, type AgentBridgeContextEstimate, type AgentBridgeMessage, type AgentBridgeOutput } from '../agent-bridge'
@@ -545,13 +545,20 @@ export async function handleBridgeRun(
       hasInstructions: Boolean(fullInstructions),
       multimodalInput: isContentBlockArray(input),
     }, '[chat-run-socket] starting CLI bridge run')
+    const workspaceDiffSessionRowId = getSessionRowId(session_id)
+    const workspaceDiffSessionIncarnation = getSessionIncarnation(session_id)
     workspaceDiffCheckpoint = diffWorkspace
       ? await startWorkspaceRunCheckpoint({
           sessionId: session_id,
           workspace: diffWorkspace,
         })
       : null
-    if (!getSession(session_id)) {
+    if (
+      workspaceDiffSessionRowId == null ||
+      workspaceDiffSessionIncarnation == null ||
+      getSessionRowId(session_id) !== workspaceDiffSessionRowId ||
+      getSessionIncarnation(session_id) !== workspaceDiffSessionIncarnation
+    ) {
       discardWorkspaceRunCheckpoint({ sessionId: session_id, checkpoint: workspaceDiffCheckpoint })
       state.isWorking = false
       state.activeRunMarker = undefined

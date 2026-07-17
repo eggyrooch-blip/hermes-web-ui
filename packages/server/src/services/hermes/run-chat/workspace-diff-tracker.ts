@@ -5,6 +5,7 @@ import { tmpdir } from 'os'
 import { basename, extname, join, relative, resolve, sep } from 'path'
 import { promisify } from 'util'
 import { logger } from '../../logger'
+import { getSessionIncarnation, getSessionRowId } from '../../../db/hermes/session-store'
 import { saveWorkspaceRunChange, type WorkspaceRunChangeSummary } from '../../../db/hermes/workspace-run-changes-store'
 
 const MAX_TRACKED_STATUS_PATHS = 20_000
@@ -25,18 +26,32 @@ const execFileAsync = promisify(execFile)
 let activeDiffOperations = 0
 const diffOperationWaiters: Array<() => void> = []
 
-async function withWorkspaceDiffOperation<T>(operation: () => Promise<T>): Promise<T> {
+interface WorkspaceDiffOperationLease {
+  retainUntil(operation: Promise<unknown>): void
+}
+
+function releaseWorkspaceDiffOperation(): void {
+  const next = diffOperationWaiters.shift()
+  if (next) next()
+  else activeDiffOperations -= 1
+}
+
+async function withWorkspaceDiffOperation<T>(operation: (lease: WorkspaceDiffOperationLease) => Promise<T>): Promise<T> {
   if (activeDiffOperations >= MAX_CONCURRENT_DIFF_OPERATIONS) {
     await new Promise<void>(resolveWaiter => diffOperationWaiters.push(resolveWaiter))
   } else {
     activeDiffOperations += 1
   }
+  const retained: Promise<unknown>[] = []
   try {
-    return await operation()
+    return await operation({
+      retainUntil(pending) {
+        retained.push(pending.catch(() => undefined))
+      },
+    })
   } finally {
-    const next = diffOperationWaiters.shift()
-    if (next) next()
-    else activeDiffOperations -= 1
+    if (retained.length === 0) releaseWorkspaceDiffOperation()
+    else void Promise.allSettled(retained).then(releaseWorkspaceDiffOperation)
   }
 }
 
@@ -232,6 +247,8 @@ interface SnapshotFile {
 
 interface WorkspaceRunCheckpoint {
   sessionId: string
+  sessionRowId: number
+  sessionIncarnation: number
   runId: string
   changeId: string
   workspace: string
@@ -244,6 +261,8 @@ interface WorkspaceRunCheckpoint {
 
 export interface WorkspaceRunCheckpointHandle {
   key: string
+  sessionRowId: number
+  sessionIncarnation: number
 }
 
 interface WorkspacePathScan {
@@ -399,7 +418,7 @@ function shouldSkipFilesystemDir(name: string, relPath: string): boolean {
     IGNORED_DIR_SUFFIXES.some(suffix => name.endsWith(suffix))
 }
 
-async function scanFilesystemPaths(root: string): Promise<WorkspacePathScan> {
+async function scanFilesystemPaths(root: string, lease: WorkspaceDiffOperationLease): Promise<WorkspacePathScan> {
   const startedAt = Date.now()
   const deadline = startedAt + MAX_SCAN_MS
   const paths: string[] = []
@@ -423,9 +442,12 @@ async function scanFilesystemPaths(root: string): Promise<WorkspacePathScan> {
     dirsScanned += 1
 
     let dir
+    let deferredClose = false
     try {
-      const result = await waitUntilDeadline(opendir(current.absPath), deadline)
+      const openPromise = opendir(current.absPath)
+      const result = await waitUntilDeadline(openPromise, deadline)
       if (result === DEADLINE_EXCEEDED) {
+        lease.retainUntil(openPromise.then(openedDir => openedDir.close()).catch(() => undefined))
         truncated = true
         break
       }
@@ -441,8 +463,16 @@ async function scanFilesystemPaths(root: string): Promise<WorkspacePathScan> {
           truncated = true
           break
         }
-        const result = await waitUntilDeadline(dir.read(), deadline)
+        const readPromise = dir.read()
+        const result = await waitUntilDeadline(readPromise, deadline)
         if (result === DEADLINE_EXCEEDED) {
+          deferredClose = true
+          lease.retainUntil(
+            readPromise.then(
+              () => dir.close(),
+              () => dir.close(),
+            ).catch(() => undefined),
+          )
           truncated = true
           break
         }
@@ -474,7 +504,7 @@ async function scanFilesystemPaths(root: string): Promise<WorkspacePathScan> {
     } catch {
       truncated = true
     } finally {
-      await dir.close().catch(() => {})
+      if (!deferredClose) await dir.close().catch(() => {})
     }
   }
 
@@ -698,13 +728,18 @@ async function buildWorkspaceRunCheckpoint(args: {
   sessionId: string
   runId: string
   workspace: string
-}): Promise<WorkspaceRunCheckpoint | null> {
+}, lease: WorkspaceDiffOperationLease): Promise<WorkspaceRunCheckpoint | null> {
+  const sessionRowId = getSessionRowId(args.sessionId)
+  const sessionIncarnation = getSessionIncarnation(args.sessionId)
+  if (sessionRowId == null || sessionIncarnation == null) return null
   const gitRoot = await resolveGitRoot(args.workspace)
   if (gitRoot) {
     const status = await getGitStatusPaths(gitRoot)
     const snapshot = await snapshotPaths(gitRoot, status.paths, MAX_TOTAL_SNAPSHOT_BYTES)
     return {
       sessionId: args.sessionId,
+      sessionRowId,
+      sessionIncarnation,
       runId: args.runId,
       changeId: args.runId ? createRunChangeId(args.runId) : '',
       workspace: args.workspace,
@@ -718,10 +753,12 @@ async function buildWorkspaceRunCheckpoint(args: {
 
   const filesystemRoot = await resolveFilesystemRoot(args.workspace)
   if (!filesystemRoot) return null
-  const scan = await scanFilesystemPaths(filesystemRoot)
+  const scan = await scanFilesystemPaths(filesystemRoot, lease)
   const snapshot = await snapshotPaths(filesystemRoot, scan.paths, MAX_TOTAL_SNAPSHOT_BYTES)
   return {
     sessionId: args.sessionId,
+    sessionRowId,
+    sessionIncarnation,
     runId: args.runId,
     changeId: args.runId ? createRunChangeId(args.runId) : '',
     workspace: args.workspace,
@@ -744,21 +781,26 @@ export async function startWorkspaceRunCheckpoint(args: {
   const key = checkpointKey(args.sessionId, runId || `pending:${randomUUID()}`)
   let checkpointPromise = checkpoints.get(key)
   if (!checkpointPromise) {
-    checkpointPromise = withWorkspaceDiffOperation(() => buildWorkspaceRunCheckpoint({
+    checkpointPromise = withWorkspaceDiffOperation(lease => buildWorkspaceRunCheckpoint({
       sessionId: args.sessionId,
       runId,
       workspace,
-    })).catch((err) => {
+    }, lease)).catch((err) => {
       logger.warn({ err, workspace }, '[workspace-diff] failed to start checkpoint')
       return null
     })
     checkpoints.set(key, checkpointPromise)
   }
-  if (!await checkpointPromise) {
+  const checkpoint = await checkpointPromise
+  if (!checkpoint) {
     checkpoints.delete(key)
     return null
   }
-  return { key }
+  return {
+    key,
+    sessionRowId: checkpoint.sessionRowId,
+    sessionIncarnation: checkpoint.sessionIncarnation,
+  }
 }
 
 export function discardWorkspaceRunCheckpoint(args: {
@@ -788,10 +830,10 @@ export async function completeWorkspaceRunCheckpoint(args: {
   if (!checkpoint) return null
   if (!runId) return null
 
-  return withWorkspaceDiffOperation(async () => {
+  return withWorkspaceDiffOperation(async (lease) => {
   const status = checkpoint.kind === 'git'
     ? await getGitStatusPaths(checkpoint.root)
-    : await scanFilesystemPaths(checkpoint.root)
+    : await scanFilesystemPaths(checkpoint.root, lease)
   const relPaths = [...new Set([...checkpoint.files.keys(), ...status.paths].filter(path => !shouldSkipRelativePath(path)))]
   const files = []
   let totalPatchBytes = 0
@@ -845,6 +887,8 @@ export async function completeWorkspaceRunCheckpoint(args: {
   return saveWorkspaceRunChange({
     change_id: checkpoint.changeId || createRunChangeId(runId || checkpoint.runId),
     session_id: checkpoint.sessionId,
+    session_rowid: checkpoint.sessionRowId,
+    session_incarnation: checkpoint.sessionIncarnation,
     run_id: runId || checkpoint.runId,
     source: 'run',
     workspace: basename(checkpoint.root),

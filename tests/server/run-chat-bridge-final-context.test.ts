@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const getSystemPromptMock = vi.fn()
 const getSessionMock = vi.fn()
+const getSessionRowIdMock = vi.fn()
+const getSessionIncarnationMock = vi.fn()
 const createSessionMock = vi.fn()
 const addMessageMock = vi.fn()
 const updateSessionMock = vi.fn()
@@ -50,6 +52,8 @@ vi.mock('../../packages/server/src/lib/llm-prompt', () => ({
 
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSession: getSessionMock,
+  getSessionRowId: getSessionRowIdMock,
+  getSessionIncarnation: getSessionIncarnationMock,
   createSession: createSessionMock,
   addMessage: addMessageMock,
   updateSession: updateSessionMock,
@@ -145,6 +149,8 @@ describe('bridge run final context usage', () => {
     getSystemPromptMock.mockReturnValue('system prompt')
     issueModelRunJwtMock.mockResolvedValue('model-run-token')
     getSessionMock.mockReturnValue({ id: 'session-1', profile: 'default', model: '', provider: '' })
+    getSessionRowIdMock.mockReturnValue(1)
+    getSessionIncarnationMock.mockReturnValue(1)
     resolveBridgeRunModelConfigMock.mockResolvedValue({ model: 'gpt-test', provider: 'openai' })
     buildCompressedHistoryMock.mockResolvedValue([{ role: 'user', content: 'previous' }])
     buildDbHistoryMock.mockResolvedValue([
@@ -420,7 +426,7 @@ describe('bridge run final context usage', () => {
     expect(order.slice(0, 2)).toEqual(['checkpoint-started', 'bridge-chat'])
   })
 
-  it('does not launch a bridge run after its session is deleted during checkpoint startup', async () => {
+  it('does not launch a bridge run after its session id is deleted and recreated during checkpoint startup', async () => {
     let resolveCheckpoint!: (value: { key: string }) => void
     startWorkspaceRunCheckpointMock.mockReturnValue(new Promise(resolve => {
       resolveCheckpoint = resolve
@@ -449,7 +455,9 @@ describe('bridge run final context usage', () => {
       vi.fn(),
     )
     await vi.waitFor(() => expect(startWorkspaceRunCheckpointMock).toHaveBeenCalled())
-    getSessionMock.mockReturnValue(null)
+    getSessionMock.mockReturnValue({ id: 'session-1', profile: 'default', model: '', provider: '' })
+    getSessionRowIdMock.mockReturnValue(2)
+    getSessionIncarnationMock.mockReturnValue(2)
     resolveCheckpoint({ key: 'deleted-session-checkpoint' })
     await pending
 
