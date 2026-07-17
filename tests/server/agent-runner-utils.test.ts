@@ -319,7 +319,7 @@ describe('coding agent run state', () => {
     manager.shutdown()
   })
 
-  it('clears shared chat session run state when a print turn completes', () => {
+  it('clears shared chat session run state when a print turn completes', async () => {
     initAllHermesTables()
     const manager = new CodingAgentRunManager()
     const state: any = { messages: [], isWorking: false, events: [], queue: [] }
@@ -357,12 +357,14 @@ describe('coding agent run state', () => {
       },
     })
 
-    expect(state).toEqual(expect.objectContaining({
-      isWorking: false,
-      runId: undefined,
-      activeRunMarker: undefined,
-      events: [],
-    }))
+    await vi.waitFor(() => {
+      expect(state).toEqual(expect.objectContaining({
+        isWorking: false,
+        runId: undefined,
+        activeRunMarker: undefined,
+        events: [],
+      }))
+    })
     manager.shutdown()
   })
 
@@ -466,7 +468,7 @@ describe('coding agent run state', () => {
     manager.shutdown()
   })
 
-  it('maps Codex exec JSONL assistant deltas into chat messages', () => {
+  it('maps Codex exec JSONL assistant deltas into chat messages', async () => {
     initAllHermesTables()
     const manager = new CodingAgentRunManager()
     const state: any = { messages: [], isWorking: false, events: [], queue: [] }
@@ -521,7 +523,7 @@ describe('coding agent run state', () => {
       content: 'I am GPT-5-Codex',
       finish_reason: 'stop',
     }))
-    expect(state.isWorking).toBe(false)
+    await vi.waitFor(() => expect(state.isWorking).toBe(false))
     expect(emitted.map(event => event.event)).toContain('message.delta')
     expect(emitted.map(event => event.event)).not.toContain('usage.updated')
     expect(emitted.find(event => event.event === 'run.completed')?.payload).not.toHaveProperty('usage')
@@ -960,7 +962,7 @@ describe('coding agent run state', () => {
     manager.shutdown()
   })
 
-  it('waits for Codex process exit before flushing final text after tools', () => {
+  it('waits for Codex process exit before flushing final text after tools', async () => {
     initAllHermesTables()
     const manager = new CodingAgentRunManager()
     const state: any = { messages: [], isWorking: false, events: [], queue: [] }
@@ -1110,7 +1112,7 @@ describe('coding agent run state', () => {
       role: 'assistant',
       content: finalText,
     }))
-    expect(emitted.map(event => event.event)).toContain('run.completed')
+    await vi.waitFor(() => expect(emitted.map(event => event.event)).toContain('run.completed'))
     manager.shutdown()
   })
 
@@ -1296,7 +1298,7 @@ describe('coding agent run state', () => {
     expect(emitted).toEqual([])
   })
 
-  it('starts a workspace diff checkpoint when sending a coding-agent turn with a workspace', () => {
+  it('starts a workspace diff checkpoint when sending a coding-agent turn with a workspace', async () => {
     const manager = new CodingAgentRunManager()
     const agentSessionId = `agent-session-diff-start-${Date.now()}`
     const chatSessionId = `chat-session-diff-start-${Date.now()}`
@@ -1330,7 +1332,7 @@ describe('coding agent run state', () => {
     ;(manager as any).touch = () => {}
     ;(manager as any).emitTerminalStatus = () => {}
 
-    manager.send(chatSessionId, 'please change files')
+    await manager.send(chatSessionId, 'please change files')
 
     expect(workspaceDiffMocks.start).toHaveBeenCalledWith({
       sessionId: chatSessionId,
@@ -1340,7 +1342,7 @@ describe('coding agent run state', () => {
     expect(run.pty.write).toHaveBeenCalledWith('please change files\r')
   })
 
-  it('does not start a workspace diff checkpoint when the workspace was defaulted', () => {
+  it('does not start a workspace diff checkpoint when the workspace was defaulted', async () => {
     const manager = new CodingAgentRunManager()
     const agentSessionId = `agent-session-diff-default-${Date.now()}`
     const chatSessionId = `chat-session-diff-default-${Date.now()}`
@@ -1372,13 +1374,13 @@ describe('coding agent run state', () => {
     ;(manager as any).touch = () => {}
     ;(manager as any).emitTerminalStatus = () => {}
 
-    manager.send(chatSessionId, 'please change files')
+    await manager.send(chatSessionId, 'please change files')
 
     expect(workspaceDiffMocks.start).not.toHaveBeenCalled()
     expect(run.pty.write).toHaveBeenCalledWith('please change files\r')
   })
 
-  it('emits workspace diff summary before coding-agent run completion', () => {
+  it('emits workspace diff summary before coding-agent run completion', async () => {
     const manager = new CodingAgentRunManager()
     const emitted: Array<{ event: string; payload: any }> = []
     ;(manager as any).emitToChat = (_sessionId: string, event: string, payload: any) => {
@@ -1429,7 +1431,7 @@ describe('coding agent run state', () => {
       state: { messages: [], isWorking: true, events: [], queue: [] },
     }
 
-    ;(manager as any).emitAndMarkPrintChatRunCompleted(run, 'run.completed', {
+    await (manager as any).emitAndMarkPrintChatRunCompleted(run, 'run.completed', {
       event: 'run.completed',
       run_id: 'resp-1',
     })
@@ -1450,7 +1452,7 @@ describe('coding agent run state', () => {
     expect(emitted[1]).toEqual(expect.objectContaining({ event: 'run.completed' }))
   })
 
-  it('does not complete or emit a workspace diff when the coding-agent workspace was defaulted', () => {
+  it('does not complete or emit a workspace diff when the coding-agent workspace was defaulted', async () => {
     const manager = new CodingAgentRunManager()
     const emitted: Array<{ event: string; payload: any }> = []
     ;(manager as any).emitToChat = (_sessionId: string, event: string, payload: any) => {
@@ -1485,7 +1487,7 @@ describe('coding agent run state', () => {
       state: { messages: [], isWorking: true, events: [], queue: [] },
     }
 
-    ;(manager as any).emitAndMarkPrintChatRunCompleted(run, 'run.completed', {
+    await (manager as any).emitAndMarkPrintChatRunCompleted(run, 'run.completed', {
       event: 'run.completed',
       run_id: 'resp-1',
     })
@@ -1494,7 +1496,7 @@ describe('coding agent run state', () => {
     expect(emitted.map(event => event.event)).toEqual(['run.completed', 'run.completed'])
   })
 
-  it('cleans up coding-agent workspace diff checkpoints on user abort without run.failed', () => {
+  it('cleans up coding-agent workspace diff checkpoints on user abort without run.failed', async () => {
     const manager = new CodingAgentRunManager()
     const emitted: Array<{ event: string; payload: any }> = []
     ;(manager as any).emitToChat = (_sessionId: string, event: string, payload: any) => {
@@ -1536,6 +1538,7 @@ describe('coding agent run state', () => {
 
     ;(manager as any).cleanupRun(run, { kill: true, reportClosed: false })
 
+    await vi.waitFor(() => expect(emitted).toHaveLength(1))
     expect(emitted.map(event => event.event)).toEqual(['workspace.diff.completed'])
     expect(emitted[0].payload).toEqual(expect.objectContaining({
       event: 'workspace.diff.completed',
@@ -1543,7 +1546,7 @@ describe('coding agent run state', () => {
     }))
   })
 
-  it('defers queued-run release until a print coding-agent child exits', () => {
+  it('defers queued-run release until a print coding-agent child exits', async () => {
     initAllHermesTables()
     const manager = new CodingAgentRunManager()
     const state: any = { messages: [], isWorking: false, events: [], queue: [{ queue_id: 'queued-1', input: 'next' }] }
@@ -1586,7 +1589,7 @@ describe('coding agent run state', () => {
     }))
 
     run.currentChild = undefined
-    ;(manager as any).emitAndMarkPrintChatRunCompleted(run, run.pendingChatCompletionEvent, run.pendingChatCompletionPayload)
+    await (manager as any).emitAndMarkPrintChatRunCompleted(run, run.pendingChatCompletionEvent, run.pendingChatCompletionPayload)
 
     expect(completed).toHaveBeenCalledWith(chatSessionId, 'run.completed')
     expect(emitted).toContainEqual(expect.objectContaining({

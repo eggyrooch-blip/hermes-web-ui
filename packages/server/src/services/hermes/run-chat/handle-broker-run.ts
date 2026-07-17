@@ -6,6 +6,7 @@ import yaml from 'js-yaml'
 import { getSystemPrompt } from '../../../lib/llm-prompt'
 import { getSession, updateSession } from '../../../db/hermes/session-store'
 import { config } from '../../../config'
+import { logger } from '../../logger'
 import { getProfileDir } from '../hermes-profile'
 import { buildBrokerMessagesForSession, contentBlocksToBrokerText } from './content-blocks'
 import { readSseFrames } from './sse-utils'
@@ -767,18 +768,22 @@ export async function handleBrokerRun(
   let workspaceDiffRunId = runMarker || ''
   let workspaceDiffCompleted = false
   const workspaceDiffCheckpoint: WorkspaceRunCheckpointHandle | null = session_id && workspace
-    ? startWorkspaceRunCheckpoint({ sessionId: session_id, workspace })
+    ? await startWorkspaceRunCheckpoint({ sessionId: session_id, workspace })
     : null
-  const emitWorkspaceDiffCompleted = () => {
+  const emitWorkspaceDiffCompleted = async () => {
     if (!session_id || !workspace || workspaceDiffCompleted) return
     workspaceDiffCompleted = true
-    const change = completeWorkspaceRunCheckpoint({
-      sessionId: session_id,
-      runId: workspaceDiffRunId,
-      workspace,
-      checkpoint: workspaceDiffCheckpoint,
-    })
-    if (change) emit('workspace.diff.completed', { event: 'workspace.diff.completed', ...change })
+    try {
+      const change = await completeWorkspaceRunCheckpoint({
+        sessionId: session_id,
+        runId: workspaceDiffRunId,
+        workspace,
+        checkpoint: workspaceDiffCheckpoint,
+      })
+      if (change) emit('workspace.diff.completed', { event: 'workspace.diff.completed', ...change })
+    } catch (err) {
+      logger.warn({ err, sessionId: session_id, workspace }, '[workspace-diff] failed to complete broker checkpoint')
+    }
   }
   const request = isReplay ? null : await buildRunBrokerRequest({
     input,
@@ -831,7 +836,7 @@ export async function handleBrokerRun(
       const queueLen = session_id ? context.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
       const error = `Run broker ${res.status}: ${text}`
       appendBrokerFailureMessage(context, session_id, runMarker, error)
-      emitWorkspaceDiffCompleted()
+      await emitWorkspaceDiffCompleted()
       if (session_id) await context.markCompleted(socket, session_id, { event: 'run.failed' })
       emit('run.failed', { event: 'run.failed', error, queue_remaining: queueLen })
       if (session_id && queueLen > 0) context.dequeueNextQueuedRun(socket, session_id)
@@ -841,7 +846,7 @@ export async function handleBrokerRun(
       const queueLen = session_id ? context.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
       const error = 'Run broker response stream missing'
       appendBrokerFailureMessage(context, session_id, runMarker, error)
-      emitWorkspaceDiffCompleted()
+      await emitWorkspaceDiffCompleted()
       if (session_id) await context.markCompleted(socket, session_id, { event: 'run.failed' })
       emit('run.failed', { event: 'run.failed', error, queue_remaining: queueLen })
       if (session_id && queueLen > 0) context.dequeueNextQueuedRun(socket, session_id)
@@ -1018,7 +1023,7 @@ export async function handleBrokerRun(
           run_id: runId,
           final_response: output,
         })
-        emitWorkspaceDiffCompleted()
+        await emitWorkspaceDiffCompleted()
         emit(mapped.event, {
           ...mapped.payload,
           output,
@@ -1032,7 +1037,7 @@ export async function handleBrokerRun(
     const queueLen = session_id ? context.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
     const error = 'Run broker stream ended without a terminal event'
     appendBrokerFailureMessage(context, session_id, runMarker, error)
-    emitWorkspaceDiffCompleted()
+    await emitWorkspaceDiffCompleted()
     if (session_id) await context.markCompleted(socket, session_id, { event: 'run.failed', run_id: runId })
     emit('run.failed', {
       event: 'run.failed',
@@ -1046,7 +1051,7 @@ export async function handleBrokerRun(
     const queueLen = session_id ? context.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
     const error = err?.name === 'AbortError' ? 'aborted' : err?.message || String(err)
     appendBrokerFailureMessage(context, session_id, runMarker, error)
-    emitWorkspaceDiffCompleted()
+    await emitWorkspaceDiffCompleted()
     if (session_id) await context.markCompleted(socket, session_id, { event: 'run.failed' })
     emit('run.failed', {
       event: 'run.failed',

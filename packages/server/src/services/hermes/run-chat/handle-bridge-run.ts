@@ -466,25 +466,29 @@ export async function handleBridgeRun(
   let workspaceDiffRunId = ''
   let workspaceDiffCheckpoint: WorkspaceRunCheckpointHandle | null = null
   let workspaceDiffCompleted = false
-  const emitWorkspaceDiffCompleted = () => {
+  const emitWorkspaceDiffCompleted = async () => {
     if (!diffWorkspace || workspaceDiffCompleted) return
     if (!workspaceDiffRunId && !workspaceDiffCheckpoint) return
     workspaceDiffCompleted = true
-    if (!workspaceDiffRunId) {
-      completeWorkspaceRunCheckpoint({
+    try {
+      if (!workspaceDiffRunId) {
+        await completeWorkspaceRunCheckpoint({
+          sessionId: session_id,
+          workspace: diffWorkspace,
+          checkpoint: workspaceDiffCheckpoint,
+        })
+        return
+      }
+      const change = await completeWorkspaceRunCheckpoint({
         sessionId: session_id,
+        runId: workspaceDiffRunId,
         workspace: diffWorkspace,
-        checkpoint: workspaceDiffCheckpoint,
+        ...(workspaceDiffCheckpoint ? { checkpoint: workspaceDiffCheckpoint } : {}),
       })
-      return
+      if (change) emit('workspace.diff.completed', workspaceDiffCompletedPayload(change))
+    } catch (err) {
+      bridgeLogger.warn({ err, sessionId: session_id, workspace: diffWorkspace }, '[workspace-diff] failed to complete bridge checkpoint')
     }
-    const change = completeWorkspaceRunCheckpoint({
-      sessionId: session_id,
-      runId: workspaceDiffRunId,
-      workspace: diffWorkspace,
-      ...(workspaceDiffCheckpoint ? { checkpoint: workspaceDiffCheckpoint } : {}),
-    })
-    if (change) emit('workspace.diff.completed', workspaceDiffCompletedPayload(change))
   }
 
   const history = await buildCompressedHistory(
@@ -542,7 +546,7 @@ export async function handleBridgeRun(
       multimodalInput: isContentBlockArray(input),
     }, '[chat-run-socket] starting CLI bridge run')
     workspaceDiffCheckpoint = diffWorkspace
-      ? startWorkspaceRunCheckpoint({
+      ? await startWorkspaceRunCheckpoint({
           sessionId: session_id,
           workspace: diffWorkspace,
         })
@@ -649,11 +653,11 @@ export async function handleBridgeRun(
     }
   } catch (err: any) {
     if (state.activeRunMarker !== runMarker) {
-      emitWorkspaceDiffCompleted()
+      await emitWorkspaceDiffCompleted()
       return
     }
     if (!state.isWorking) {
-      emitWorkspaceDiffCompleted()
+      await emitWorkspaceDiffCompleted()
       return
     }
     const queueLen = state.queue?.length ?? 0
@@ -684,7 +688,7 @@ export async function handleBridgeRun(
       outputTokens: errUsage.outputTokens,
       profile,
     })
-    emitWorkspaceDiffCompleted()
+    await emitWorkspaceDiffCompleted()
     emit('run.failed', {
       event: 'run.failed',
       error: message,
@@ -939,7 +943,7 @@ async function applyBridgeChunkAsync(
   currentInputTokens = 0,
   currentInputIncludedInDb = true,
   modelGroups?: RunModelGroup[],
-  emitWorkspaceDiffCompleted?: () => void,
+  emitWorkspaceDiffCompleted?: () => Promise<void>,
 ): Promise<void> {
   if (state.activeRunMarker !== runMarker) {
     bridgeLogger.info({
@@ -1275,7 +1279,7 @@ async function applyBridgeChunkAsync(
       runId: chunk.run_id,
       status: chunk.status,
     }, '[chat-run-socket][abort] completing CLI bridge abort after terminal chunk')
-    emitWorkspaceDiffCompleted?.()
+    await emitWorkspaceDiffCompleted?.()
     await markAbortCompleted(
       nsp,
       socket,
@@ -1338,7 +1342,7 @@ async function applyBridgeChunkAsync(
     contextTokens,
     queue_remaining: state.queue.length,
   }
-  emitWorkspaceDiffCompleted?.()
+  await emitWorkspaceDiffCompleted?.()
   emit(eventName, payload)
 
   if (!terminalError) {

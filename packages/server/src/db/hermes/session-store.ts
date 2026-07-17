@@ -5,6 +5,7 @@
 import { isSqliteAvailable, getDb } from '../index'
 import { SESSIONS_TABLE, MESSAGES_TABLE } from './schemas'
 import { normalizeMessageContentForStorageRole } from './message-content'
+import { deleteWorkspaceRunChangeRowsForSession } from './workspace-run-changes-store'
 
 // Re-export types for compatibility with sessions-db.ts consumers
 export interface HermesSessionRow {
@@ -249,9 +250,17 @@ export function updateSession(id: string, data: Partial<Omit<HermesSessionRow, '
 export function deleteSession(id: string): boolean {
   if (!isSqliteAvailable()) return false
   const db = getDb()!
-  db.prepare(`DELETE FROM ${MESSAGES_TABLE} WHERE session_id = ?`).run(id)
-  const result = db.prepare(`DELETE FROM ${SESSIONS_TABLE} WHERE id = ?`).run(id)
-  return result.changes > 0
+  db.exec('BEGIN')
+  try {
+    deleteWorkspaceRunChangeRowsForSession(db, id)
+    db.prepare(`DELETE FROM ${MESSAGES_TABLE} WHERE session_id = ?`).run(id)
+    const result = db.prepare(`DELETE FROM ${SESSIONS_TABLE} WHERE id = ?`).run(id)
+    db.exec('COMMIT')
+    return result.changes > 0
+  } catch (err) {
+    db.exec('ROLLBACK')
+    throw err
+  }
 }
 
 export function clearSessionMessages(id: string): number {

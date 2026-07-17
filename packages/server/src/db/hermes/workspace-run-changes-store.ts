@@ -1,3 +1,4 @@
+import type { DatabaseSync } from 'node:sqlite'
 import { isAbsolute } from 'path'
 import { getDb, isSqliteAvailable } from '../index'
 import {
@@ -287,14 +288,28 @@ export function deleteWorkspaceRunChangesForSession(sessionId: string): void {
   if (!db) return
   db.exec('BEGIN')
   try {
-    db.prepare(`DELETE FROM ${WORKSPACE_RUN_CHANGE_FILES_TABLE} WHERE session_id = ?`).run(sessionId)
-    db.prepare(`DELETE FROM ${WORKSPACE_RUN_CHANGES_TABLE} WHERE session_id = ?`).run(sessionId)
+    deleteWorkspaceRunChangeRowsForSession(db, sessionId)
     db.exec('COMMIT')
   } catch (err) {
     db.exec('ROLLBACK')
     if (isOptionalCleanupSqliteError(err)) return
     throw err
   }
+}
+
+export function deleteWorkspaceRunChangeRowsForSession(db: DatabaseSync, sessionId: string): void {
+  for (const table of [WORKSPACE_RUN_CHANGE_FILES_TABLE, WORKSPACE_RUN_CHANGES_TABLE]) {
+    try {
+      db.prepare(`DELETE FROM ${table} WHERE session_id = ?`).run(sessionId)
+    } catch (err) {
+      if (isMissingCleanupTableError(err)) continue
+      throw err
+    }
+  }
+}
+
+function isMissingCleanupTableError(err: unknown): boolean {
+  return err instanceof Error && /no such table/i.test(err.message)
 }
 
 function isOptionalCleanupSqliteError(err: unknown): boolean {

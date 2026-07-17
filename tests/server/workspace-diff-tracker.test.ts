@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DatabaseSync } from 'node:sqlite'
 import { execFileSync } from 'child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -66,11 +66,53 @@ describe('workspace diff tracker', () => {
     } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
     const { listWorkspaceRunChangesForSession } = await import('../../packages/server/src/db/hermes/workspace-run-changes-store')
 
-    startWorkspaceRunCheckpoint({ sessionId: 'session-noworkspace', runId: 'run-noworkspace' })
+    await startWorkspaceRunCheckpoint({ sessionId: 'session-noworkspace', runId: 'run-noworkspace' })
     writeFileSync(join(repo, 'changed.txt'), 'new\n')
 
-    expect(completeWorkspaceRunCheckpoint({ sessionId: 'session-noworkspace', runId: 'run-noworkspace' })).toBeNull()
+    await expect(completeWorkspaceRunCheckpoint({ sessionId: 'session-noworkspace', runId: 'run-noworkspace' })).resolves.toBeNull()
     expect(listWorkspaceRunChangesForSession('session-noworkspace')).toEqual([])
+  })
+
+  it.runIf(process.platform !== 'win32')('yields the event loop while the initial git probe is pending', async () => {
+    const {
+      completeWorkspaceRunCheckpoint,
+      startWorkspaceRunCheckpoint,
+    } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+    const fakeBin = join(root, 'fake-bin')
+    const fakeGit = join(fakeBin, 'git')
+    mkdirSync(fakeBin)
+    writeFileSync(fakeGit, '#!/bin/sh\nsleep 0.2\nexit 1\n')
+    chmodSync(fakeGit, 0o755)
+    const originalPath = process.env.PATH
+    process.env.PATH = `${fakeBin}:${originalPath || ''}`
+
+    try {
+      let checkpointResolved = false
+      const checkpointPromise = startWorkspaceRunCheckpoint({
+        sessionId: 'session-nonblocking',
+        runId: 'run-nonblocking',
+        workspace: repo,
+      }).then((checkpoint) => {
+        checkpointResolved = true
+        return checkpoint
+      })
+
+      await new Promise(resolve => setTimeout(resolve, 10))
+      expect(checkpointResolved).toBe(false)
+
+      const checkpoint = await checkpointPromise
+      expect(checkpoint).not.toBeNull()
+      writeFileSync(join(repo, 'changed.txt'), 'new\n')
+      const change = await completeWorkspaceRunCheckpoint({
+        sessionId: 'session-nonblocking',
+        runId: 'run-nonblocking',
+        workspace: repo,
+        checkpoint,
+      })
+      expect(change?.files.map(file => file.path)).toEqual(['changed.txt'])
+    } finally {
+      process.env.PATH = originalPath
+    }
   })
 
   it('completes a pending workspace checkpoint with the final bridge run id', async () => {
@@ -79,10 +121,10 @@ describe('workspace diff tracker', () => {
       startWorkspaceRunCheckpoint,
     } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
 
-    const checkpoint = startWorkspaceRunCheckpoint({ sessionId: 'session-pending', workspace: repo })
+    const checkpoint = await startWorkspaceRunCheckpoint({ sessionId: 'session-pending', workspace: repo })
     writeFileSync(join(repo, 'changed.txt'), 'new\n')
 
-    const change = completeWorkspaceRunCheckpoint({
+    const change = await completeWorkspaceRunCheckpoint({
       sessionId: 'session-pending',
       runId: 'run-pending',
       workspace: repo,
@@ -112,10 +154,10 @@ describe('workspace diff tracker', () => {
     } = await import('../../packages/server/src/db/hermes/workspace-run-changes-store')
 
     writeFileSync(join(repo, 'dirty.txt'), 'preexisting dirty change\n')
-    startWorkspaceRunCheckpoint({ sessionId: 'session-git', runId: 'run-git', workspace: repo })
+    await startWorkspaceRunCheckpoint({ sessionId: 'session-git', runId: 'run-git', workspace: repo })
 
     writeFileSync(join(repo, 'changed.txt'), 'new\n')
-    const change = completeWorkspaceRunCheckpoint({ sessionId: 'session-git', runId: 'run-git', workspace: repo })
+    const change = await completeWorkspaceRunCheckpoint({ sessionId: 'session-git', runId: 'run-git', workspace: repo })
 
     expect(change).not.toBeNull()
     expect(change?.change_id).toMatch(/^run:run-git:/)
@@ -150,12 +192,12 @@ describe('workspace diff tracker', () => {
     writeFileSync(join(workspace, 'old.txt'), 'old\n')
     writeFileSync(join(workspace, 'unchanged.txt'), 'same\n')
 
-    startWorkspaceRunCheckpoint({ sessionId: 'session-plain', runId: 'run-plain', workspace })
+    await startWorkspaceRunCheckpoint({ sessionId: 'session-plain', runId: 'run-plain', workspace })
 
     rmSync(join(workspace, 'deleted.txt'))
     writeFileSync(join(workspace, 'added.txt'), 'added\n')
     writeFileSync(join(workspace, 'old.txt'), 'new\n')
-    const change = completeWorkspaceRunCheckpoint({ sessionId: 'session-plain', runId: 'run-plain', workspace })
+    const change = await completeWorkspaceRunCheckpoint({ sessionId: 'session-plain', runId: 'run-plain', workspace })
 
     expect(change).not.toBeNull()
     expect(change?.workspace_kind).toBe('filesystem')
@@ -174,9 +216,9 @@ describe('workspace diff tracker', () => {
     } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
     const { listWorkspaceRunChangesForSession } = await import('../../packages/server/src/db/hermes/workspace-run-changes-store')
 
-    startWorkspaceRunCheckpoint({ sessionId: 'session-empty', runId: 'run-empty', workspace: repo })
+    await startWorkspaceRunCheckpoint({ sessionId: 'session-empty', runId: 'run-empty', workspace: repo })
 
-    expect(completeWorkspaceRunCheckpoint({ sessionId: 'session-empty', runId: 'run-empty', workspace: repo })).toBeNull()
+    await expect(completeWorkspaceRunCheckpoint({ sessionId: 'session-empty', runId: 'run-empty', workspace: repo })).resolves.toBeNull()
     expect(listWorkspaceRunChangesForSession('session-empty')).toEqual([])
   })
 
@@ -198,7 +240,7 @@ describe('workspace diff tracker', () => {
     writeFileSync(join(workspace, 'node_modules', 'ignored.js'), 'before\n')
     writeFileSync(join(workspace, '.git', 'ignored'), 'before\n')
 
-    startWorkspaceRunCheckpoint({ sessionId: 'session-ignore', runId: 'run-ignore', workspace })
+    await startWorkspaceRunCheckpoint({ sessionId: 'session-ignore', runId: 'run-ignore', workspace })
 
     writeFileSync(join(workspace, 'src', 'app.ts'), 'new\n')
     writeFileSync(join(workspace, 'image.png'), Buffer.from([0, 1, 2, 3, 4]))
@@ -206,7 +248,7 @@ describe('workspace diff tracker', () => {
     writeFileSync(join(workspace, '.hermes', 'profiles', 'sunke', 'config.yaml'), 'secret: after\n')
     writeFileSync(join(workspace, 'node_modules', 'ignored.js'), 'after\n')
     writeFileSync(join(workspace, '.git', 'ignored'), 'after\n')
-    const change = completeWorkspaceRunCheckpoint({ sessionId: 'session-ignore', runId: 'run-ignore', workspace })
+    const change = await completeWorkspaceRunCheckpoint({ sessionId: 'session-ignore', runId: 'run-ignore', workspace })
 
     expect(change).not.toBeNull()
     expect(change?.files.map(file => file.path)).toEqual(['src/app.ts'])
@@ -223,10 +265,10 @@ describe('workspace diff tracker', () => {
     git(repo, ['add', '.env'])
     git(repo, ['commit', '-m', 'tracked secret for parser regression'])
 
-    startWorkspaceRunCheckpoint({ sessionId: 'session-secret-rename', runId: 'run-secret-rename', workspace: repo })
+    await startWorkspaceRunCheckpoint({ sessionId: 'session-secret-rename', runId: 'run-secret-rename', workspace: repo })
 
     git(repo, ['mv', '.env', 'public-token.txt'])
-    const change = completeWorkspaceRunCheckpoint({ sessionId: 'session-secret-rename', runId: 'run-secret-rename', workspace: repo })
+    const change = await completeWorkspaceRunCheckpoint({ sessionId: 'session-secret-rename', runId: 'run-secret-rename', workspace: repo })
 
     expect(change).toBeNull()
     expect(listWorkspaceRunChangesForSession('session-secret-rename')).toEqual([])
@@ -248,10 +290,10 @@ describe('workspace diff tracker', () => {
     for (let index = 0; index < 81; index += 1) {
       writeFileSync(join(repo, `preexisting-${String(index).padStart(3, '0')}.txt`), 'dirty before run\n')
     }
-    startWorkspaceRunCheckpoint({ sessionId: 'session-many-dirty', runId: 'run-many-dirty', workspace: repo })
+    await startWorkspaceRunCheckpoint({ sessionId: 'session-many-dirty', runId: 'run-many-dirty', workspace: repo })
 
     writeFileSync(join(repo, 'zz-runtime.txt'), 'after\n')
-    const change = completeWorkspaceRunCheckpoint({ sessionId: 'session-many-dirty', runId: 'run-many-dirty', workspace: repo })
+    const change = await completeWorkspaceRunCheckpoint({ sessionId: 'session-many-dirty', runId: 'run-many-dirty', workspace: repo })
 
     expect(change).not.toBeNull()
     expect(change?.truncated).toBe(true)
@@ -271,9 +313,9 @@ describe('workspace diff tracker', () => {
     git(repo, ['add', 'large.txt'])
     git(repo, ['commit', '-m', 'large'])
 
-    startWorkspaceRunCheckpoint({ sessionId: 'session-large', runId: 'run-large', workspace: repo })
+    await startWorkspaceRunCheckpoint({ sessionId: 'session-large', runId: 'run-large', workspace: repo })
     writeFileSync(join(repo, 'large.txt'), after)
-    const change = completeWorkspaceRunCheckpoint({ sessionId: 'session-large', runId: 'run-large', workspace: repo })
+    const change = await completeWorkspaceRunCheckpoint({ sessionId: 'session-large', runId: 'run-large', workspace: repo })
 
     expect(change).not.toBeNull()
     expect(change?.truncated).toBe(true)
@@ -283,9 +325,16 @@ describe('workspace diff tracker', () => {
     expect(Buffer.byteLength(detail?.patch || '', 'utf8')).toBeLessThanOrEqual(256 * 1024)
   })
 
-  it('deletes workspace run changes by session', async () => {
-    const { saveWorkspaceRunChange, deleteWorkspaceRunChangesForSession, listWorkspaceRunChangesForSession } =
+  it('deletes session messages and workspace changes atomically', async () => {
+    const { saveWorkspaceRunChange, listWorkspaceRunChangesForSession } =
       await import('../../packages/server/src/db/hermes/workspace-run-changes-store')
+    const { addMessage, createSession, deleteSession, getSession } =
+      await import('../../packages/server/src/db/hermes/session-store')
+    const { MESSAGES_TABLE, WORKSPACE_RUN_CHANGES_TABLE, WORKSPACE_RUN_CHANGE_FILES_TABLE } =
+      await import('../../packages/server/src/db/hermes/schemas')
+
+    createSession({ id: 'session-delete' })
+    addMessage({ session_id: 'session-delete', role: 'user', content: 'hello' })
 
     saveWorkspaceRunChange({
       change_id: 'change-1',
@@ -316,8 +365,28 @@ describe('workspace diff tracker', () => {
     })
 
     expect(listWorkspaceRunChangesForSession('session-delete')).toHaveLength(1)
-    deleteWorkspaceRunChangesForSession('session-delete')
+    state.db!.exec(`
+      CREATE TRIGGER fail_session_message_delete
+      BEFORE DELETE ON ${MESSAGES_TABLE}
+      WHEN OLD.session_id = 'session-delete'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced delete failure');
+      END
+    `)
+
+    expect(() => deleteSession('session-delete')).toThrow('forced delete failure')
+    expect(getSession('session-delete')).not.toBeNull()
+    expect(state.db!.prepare(`SELECT COUNT(*) AS count FROM ${MESSAGES_TABLE} WHERE session_id = ?`).get('session-delete')).toEqual({ count: 1 })
+    expect(state.db!.prepare(`SELECT COUNT(*) AS count FROM ${WORKSPACE_RUN_CHANGES_TABLE} WHERE session_id = ?`).get('session-delete')).toEqual({ count: 1 })
+    expect(state.db!.prepare(`SELECT COUNT(*) AS count FROM ${WORKSPACE_RUN_CHANGE_FILES_TABLE} WHERE session_id = ?`).get('session-delete')).toEqual({ count: 1 })
+
+    state.db!.exec('DROP TRIGGER fail_session_message_delete')
+    expect(deleteSession('session-delete')).toBe(true)
+    expect(getSession('session-delete')).toBeNull()
     expect(listWorkspaceRunChangesForSession('session-delete')).toEqual([])
+    expect(state.db!.prepare(`SELECT COUNT(*) AS count FROM ${MESSAGES_TABLE} WHERE session_id = ?`).get('session-delete')).toEqual({ count: 0 })
+    expect(state.db!.prepare(`SELECT COUNT(*) AS count FROM ${WORKSPACE_RUN_CHANGES_TABLE} WHERE session_id = ?`).get('session-delete')).toEqual({ count: 0 })
+    expect(state.db!.prepare(`SELECT COUNT(*) AS count FROM ${WORKSPACE_RUN_CHANGE_FILES_TABLE} WHERE session_id = ?`).get('session-delete')).toEqual({ count: 0 })
   })
 
   it('rejects absolute file paths before saving workspace run changes', async () => {

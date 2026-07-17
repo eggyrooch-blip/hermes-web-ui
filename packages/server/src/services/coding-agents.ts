@@ -1758,7 +1758,7 @@ export async function startCodingAgentRun(
   }
 }
 
-export function sendCodingAgentRunInput(sessionId: string, input: string, systemPrompt?: string, clientId?: string): { runId: string } {
+export function sendCodingAgentRunInput(sessionId: string, input: string, systemPrompt?: string, clientId?: string): Promise<{ runId: string }> {
   return codingAgentRunManager.send(sessionId, input, { systemPrompt, clientId })
 }
 

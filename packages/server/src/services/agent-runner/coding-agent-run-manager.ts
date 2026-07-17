@@ -504,7 +504,7 @@ export class CodingAgentRunManager {
     return { runId: run.id, pid: proc.pid }
   }
 
-  send(sessionId: string, input: string, options: CodingAgentRunSendOptions = {}): { runId: string } {
+  async send(sessionId: string, input: string, options: CodingAgentRunSendOptions = {}): Promise<{ runId: string }> {
     const run = this.getBySession(sessionId)
     if (!run) throw new Error('Coding agent session not found')
     const text = String(input || '').trim()
@@ -514,7 +514,7 @@ export class CodingAgentRunManager {
     this.addUserMessage(run, text, options.clientId)
     this.touch(run)
     this.emitTerminalStatus(run, 'Input sent to coding agent.')
-    this.startWorkspaceDiffCheckpoint(run)
+    await this.startWorkspaceDiffCheckpoint(run)
     if (run.launch.agentId === 'claude-code') {
       this.startClaudePrintTurn(run, text, systemPrompt)
       return { runId: run.id }
@@ -599,7 +599,7 @@ export class CodingAgentRunManager {
         run.pendingChatCompletionEvent = chatCompletionEvent
         run.pendingChatCompletionPayload = chatCompletionPayload
       } else {
-        this.emitAndMarkPrintChatRunCompleted(run, chatCompletionEvent, chatCompletionPayload)
+        void this.emitAndMarkPrintChatRunCompleted(run, chatCompletionEvent, chatCompletionPayload)
       }
     }
   }
@@ -707,13 +707,16 @@ export class CodingAgentRunManager {
     }
     run.exited = true
     run.state.isWorking = false
-    this.emitWorkspaceDiffCompleted(run)
     if (shouldReportClosed) {
-      this.emitToChat(run.launch.sessionId, 'run.failed', {
-        event: 'run.failed',
-        error: 'Coding agent session closed',
+      void this.emitWorkspaceDiffCompleted(run).finally(() => {
+        this.emitToChat(run.launch.sessionId, 'run.failed', {
+          event: 'run.failed',
+          error: 'Coding agent session closed',
+        })
+        this.markChatRunCompleted(run.launch.sessionId, 'run.failed')
       })
-      this.markChatRunCompleted(run.launch.sessionId, 'run.failed')
+    } else {
+      void this.emitWorkspaceDiffCompleted(run)
     }
   }
 
@@ -811,7 +814,7 @@ export class CodingAgentRunManager {
       logger.info({ runId: run.id, sessionId: run.launch.sessionId, code }, '[coding-agent-run] claude print exited')
       if (run.stoppedByUser) return
       if (run.pendingChatCompletionEvent) {
-        this.emitAndMarkPrintChatRunCompleted(run, run.pendingChatCompletionEvent, run.pendingChatCompletionPayload)
+        void this.emitAndMarkPrintChatRunCompleted(run, run.pendingChatCompletionEvent, run.pendingChatCompletionPayload)
         return
       }
       if (code === 0) {
@@ -1248,7 +1251,7 @@ export class CodingAgentRunManager {
       logger.info({ runId: run.id, sessionId: run.launch.sessionId, code }, '[coding-agent-run] codex exec exited')
       if (run.stoppedByUser) return
       if (run.pendingChatCompletionEvent) {
-        this.emitAndMarkPrintChatRunCompleted(run, run.pendingChatCompletionEvent, run.pendingChatCompletionPayload)
+        void this.emitAndMarkPrintChatRunCompleted(run, run.pendingChatCompletionEvent, run.pendingChatCompletionPayload)
         return
       }
       if (code === 0) {
@@ -1620,11 +1623,11 @@ export class CodingAgentRunManager {
     this.completeClaudePrintTurn(run, usage)
   }
 
-  private emitAndMarkPrintChatRunCompleted(run: ManagedCodingAgentRun, event: 'run.completed' | 'run.failed', payload?: Record<string, unknown>) {
+  private async emitAndMarkPrintChatRunCompleted(run: ManagedCodingAgentRun, event: 'run.completed' | 'run.failed', payload?: Record<string, unknown>) {
     run.pendingChatCompletionEvent = undefined
     run.pendingChatCompletionPayload = undefined
     const queueRemaining = run.state.queue.length
-    this.emitWorkspaceDiffCompleted(run)
+    await this.emitWorkspaceDiffCompleted(run)
     this.emitToChat(run.launch.sessionId, event, {
       ...(payload || { event }),
       ...(queueRemaining > 0 ? { queue_remaining: queueRemaining } : {}),
@@ -1673,27 +1676,31 @@ export class CodingAgentRunManager {
     logger.debug({ runId: run.id, sessionId: run.launch.sessionId, text }, '[coding-agent-run] status')
   }
 
-  private startWorkspaceDiffCheckpoint(run: ManagedCodingAgentRun) {
+  private async startWorkspaceDiffCheckpoint(run: ManagedCodingAgentRun): Promise<void> {
     if (run.launch.workspaceExplicit !== true) return
     const workspace = String(run.launch.workspaceDir || '').trim()
     if (!workspace) return
-    startWorkspaceRunCheckpoint({
+    await startWorkspaceRunCheckpoint({
       sessionId: run.launch.sessionId,
       runId: run.id,
       workspace,
     })
   }
 
-  private emitWorkspaceDiffCompleted(run: ManagedCodingAgentRun) {
+  private async emitWorkspaceDiffCompleted(run: ManagedCodingAgentRun): Promise<void> {
     if (run.launch.workspaceExplicit !== true) return
     const workspace = String(run.launch.workspaceDir || '').trim()
     if (!workspace) return
-    const change = completeWorkspaceRunCheckpoint({
-      sessionId: run.launch.sessionId,
-      runId: run.id,
-      workspace,
-    })
-    if (change) this.emitToChat(run.launch.sessionId, 'workspace.diff.completed', workspaceDiffCompletedPayload(change))
+    try {
+      const change = await completeWorkspaceRunCheckpoint({
+        sessionId: run.launch.sessionId,
+        runId: run.id,
+        workspace,
+      })
+      if (change) this.emitToChat(run.launch.sessionId, 'workspace.diff.completed', workspaceDiffCompletedPayload(change))
+    } catch (err) {
+      logger.warn({ err, runId: run.id, sessionId: run.launch.sessionId }, '[coding-agent-run] workspace diff failed')
+    }
   }
 
   private bufferTerminalOutput(run: ManagedCodingAgentRun, chunk: string) {
