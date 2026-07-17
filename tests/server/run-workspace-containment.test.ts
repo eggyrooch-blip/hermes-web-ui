@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -21,7 +21,10 @@ describe('ensureHermesRunWorkspace containment', () => {
   let theirWorkspace: string
 
   beforeEach(() => {
-    state.hermesBase = mkdtempSync(join(tmpdir(), 'hermes-ws-'))
+    // realpathSync so the fixture root is stable across platforms whose tmpdir is
+    // itself a symlink (macOS: /var -> /private/var). Prod (Linux) has no symlink
+    // here, so this is a no-op there — it must not be what makes the tests pass.
+    state.hermesBase = realpathSync(mkdtempSync(join(tmpdir(), 'hermes-ws-')))
     mineWorkspace = defaultHermesWorkspace('mine')
     theirWorkspace = defaultHermesWorkspace('theirs')
     mkdirSync(mineWorkspace, { recursive: true })
@@ -67,6 +70,34 @@ describe('ensureHermesRunWorkspace containment', () => {
     } finally {
       spy.mockRestore()
     }
+  })
+
+  it('refuses to run when the workspace root itself links out of the profile', async () => {
+    // The root is the boundary every other check measures against — if it may point
+    // anywhere, it vouches for itself and everything "inside" it passes.
+    rmSync(mineWorkspace, { recursive: true, force: true })
+    symlinkSync('/etc', mineWorkspace)
+    await expect(ensureHermesRunWorkspace('mine')).rejects.toThrow(/links outside the profile/)
+  })
+
+  it('allows a workspace root linked to somewhere inside the profile', async () => {
+    const real = join(state.hermesBase, 'profiles', 'mine', 'real-workspace')
+    mkdirSync(real, { recursive: true })
+    rmSync(mineWorkspace, { recursive: true, force: true })
+    symlinkSync(real, mineWorkspace)
+    expect(await ensureHermesRunWorkspace('mine')).toBe(mineWorkspace)
+  })
+
+  it('refuses to run when the workspace root is not a directory', async () => {
+    rmSync(mineWorkspace, { recursive: true, force: true })
+    writeFileSync(mineWorkspace, 'not a dir')
+    await expect(ensureHermesRunWorkspace('mine')).rejects.toThrow(/not a directory/)
+  })
+
+  it('falls back on a dangling symlink instead of crashing the run', async () => {
+    const dangling = join(mineWorkspace, 'dangling')
+    symlinkSync(join(state.hermesBase, 'gone', 'target'), dangling)
+    expect(await ensureHermesRunWorkspace('mine', dangling)).toBe(mineWorkspace)
   })
 
   it('keeps a compliant stored workspace (the shape all 10 prod rows have)', async () => {
