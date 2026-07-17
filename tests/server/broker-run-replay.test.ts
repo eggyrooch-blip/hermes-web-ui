@@ -13,8 +13,8 @@ const workspaceDiffTracker = vi.hoisted(() => ({
 }))
 const sessionStore = vi.hoisted(() => ({
   getSession: vi.fn(() => null),
-  getSessionRowId: vi.fn(() => null),
-  getSessionIncarnation: vi.fn(() => null),
+  getSessionRowId: vi.fn(() => 1),
+  getSessionIncarnation: vi.fn(() => 1),
   updateSession: vi.fn(),
 }))
 const pathSecurity = vi.hoisted(() => ({
