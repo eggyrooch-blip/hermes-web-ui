@@ -168,6 +168,22 @@ describe('handleBrokerRun replay mode', () => {
     expect(emit.mock.calls.map(call => call[0])).toEqual(['message.delta', 'workspace.diff.completed', 'run.completed'])
   })
 
+  it('falls back from a stored workspace pointing at another profile', async () => {
+    // setWorkspace persists any string, so the stored value is attacker-controlled;
+    // the prompt AND the diff tracker must both land on the profile default.
+    sessionStore.getSession.mockReturnValueOnce({ id: 's1', workspace: '/tmp/other-profile/workspace' } as any)
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || '{}'))
+      expect(body.metadata.instructions).toContain('[Current working directory: /tmp/workspace]')
+      expect(body.metadata.instructions).not.toContain('/tmp/other-profile')
+      return { ok: true, status: 200, body: sseStream('event: done\ndata: {"kind":"done","run_id":"r"}\n\n') } as any
+    }))
+
+    await handleBrokerRun(socket, { input: 'hi', session_id: 's1', workspace: 'sub' }, 'default', 'rm', vi.fn(), fakeContext())
+
+    expect(workspaceDiffTracker.start).toHaveBeenCalledWith({ sessionId: 's1', workspace: '/tmp/workspace' })
+  })
+
   it('falls back from broker payload workspaces outside the profile workspace', async () => {
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body || '{}'))
