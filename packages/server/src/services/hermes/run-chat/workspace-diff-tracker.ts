@@ -15,7 +15,6 @@ const MAX_TOTAL_SNAPSHOT_BYTES = 64 * 1024 * 1024
 const MAX_PATCH_BYTES_PER_FILE = 256 * 1024
 const MAX_TOTAL_PATCH_BYTES = 1024 * 1024
 const MAX_SCAN_DIRS = 5_000
-const MAX_SCAN_ENTRIES = 5_000
 const MAX_SCAN_DEPTH = 16
 const MAX_SCAN_MS = 1_000
 const MAX_GIT_MS = 5_000
@@ -69,6 +68,18 @@ async function waitUntilDeadline<T>(operation: Promise<T>, deadline: number): Pr
   } finally {
     if (timer) clearTimeout(timer)
   }
+}
+
+async function waitForSnapshotOperation<T>(
+  start: () => Promise<T>,
+  deadline: number,
+  lease: WorkspaceDiffOperationLease,
+): Promise<T | typeof DEADLINE_EXCEEDED> {
+  if (Date.now() >= deadline) return DEADLINE_EXCEEDED
+  const operation = start()
+  const result = await waitUntilDeadline(operation, deadline)
+  if (result === DEADLINE_EXCEEDED) lease.retainUntil(operation)
+  return result
 }
 
 export const WORKSPACE_DIFF_LIMITS = {
@@ -418,9 +429,11 @@ function shouldSkipFilesystemDir(name: string, relPath: string): boolean {
     IGNORED_DIR_SUFFIXES.some(suffix => name.endsWith(suffix))
 }
 
-async function scanFilesystemPaths(root: string, lease: WorkspaceDiffOperationLease): Promise<WorkspacePathScan> {
-  const startedAt = Date.now()
-  const deadline = startedAt + MAX_SCAN_MS
+async function scanFilesystemPaths(
+  root: string,
+  lease: WorkspaceDiffOperationLease,
+  deadline = Date.now() + MAX_SCAN_MS,
+): Promise<WorkspacePathScan> {
   const paths: string[] = []
   const queue: Array<{ absPath: string; relPath: string; depth: number }> = [{ absPath: root, relPath: '', depth: 0 }]
   let queueIndex = 0
@@ -429,7 +442,7 @@ async function scanFilesystemPaths(root: string, lease: WorkspaceDiffOperationLe
   let truncated = false
 
   while (queueIndex < queue.length) {
-    if (Date.now() >= deadline || dirsScanned >= MAX_SCAN_DIRS || entriesScanned >= MAX_SCAN_ENTRIES) {
+    if (Date.now() >= deadline || dirsScanned >= MAX_SCAN_DIRS) {
       truncated = true
       break
     }
@@ -459,7 +472,7 @@ async function scanFilesystemPaths(root: string, lease: WorkspaceDiffOperationLe
 
     try {
       while (true) {
-        if (Date.now() >= deadline || entriesScanned >= MAX_SCAN_ENTRIES) {
+        if (Date.now() >= deadline) {
           truncated = true
           break
         }
@@ -512,7 +525,13 @@ async function scanFilesystemPaths(root: string, lease: WorkspaceDiffOperationLe
   return { paths, truncated }
 }
 
-async function snapshotPath(root: string, relPath: string, maxContentBytes = MAX_SNAPSHOT_BYTES): Promise<SnapshotFile> {
+async function snapshotPath(
+  root: string,
+  relPath: string,
+  maxContentBytes: number,
+  deadline: number,
+  lease: WorkspaceDiffOperationLease,
+): Promise<SnapshotFile | typeof DEADLINE_EXCEEDED> {
   if (shouldSkipRelativePath(relPath)) {
     return { exists: false, size: null, mtimeMs: null, binary: false, content: null }
   }
@@ -521,15 +540,18 @@ async function snapshotPath(root: string, relPath: string, maxContentBytes = MAX
     return { exists: false, size: null, mtimeMs: null, binary: false, content: null }
   }
   try {
-    const linkStat = await lstat(absPath)
+    const linkStat = await waitForSnapshotOperation(() => lstat(absPath), deadline, lease)
+    if (linkStat === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
     if (linkStat.isSymbolicLink()) {
       return { exists: false, size: null, mtimeMs: null, binary: false, content: null }
     }
-    const realPath = await realpath(absPath)
+    const realPath = await waitForSnapshotOperation(() => realpath(absPath), deadline, lease)
+    if (realPath === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
     if (!isPathInside(root, realPath)) {
       return { exists: false, size: null, mtimeMs: null, binary: false, content: null }
     }
-    const fileStat = await stat(realPath)
+    const fileStat = await waitForSnapshotOperation(() => stat(realPath), deadline, lease)
+    if (fileStat === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
     if (!fileStat.isFile()) {
       return { exists: true, size: fileStat.size, mtimeMs: fileStat.mtimeMs, binary: false, content: null }
     }
@@ -537,7 +559,8 @@ async function snapshotPath(root: string, relPath: string, maxContentBytes = MAX
     if (contentLimit <= 0 || fileStat.size > contentLimit) {
       return { exists: true, size: fileStat.size, mtimeMs: fileStat.mtimeMs, binary: false, content: null }
     }
-    const content = await readFile(realPath)
+    const content = await waitForSnapshotOperation(() => readFile(realPath), deadline, lease)
+    if (content === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
     return {
       exists: true,
       size: fileStat.size,
@@ -550,7 +573,13 @@ async function snapshotPath(root: string, relPath: string, maxContentBytes = MAX
   }
 }
 
-async function snapshotPaths(root: string, paths: string[], totalContentBytes = Number.POSITIVE_INFINITY): Promise<{
+async function snapshotPaths(
+  root: string,
+  paths: string[],
+  totalContentBytes: number,
+  deadline: number,
+  lease: WorkspaceDiffOperationLease,
+): Promise<{
   files: Map<string, SnapshotFile>
   truncated: boolean
 }> {
@@ -558,7 +587,11 @@ async function snapshotPaths(root: string, paths: string[], totalContentBytes = 
   let remainingContentBytes = totalContentBytes
   let truncated = false
   for (const relPath of paths) {
-    const snapshot = await snapshotPath(root, relPath, remainingContentBytes)
+    const snapshot = await snapshotPath(root, relPath, remainingContentBytes, deadline, lease)
+    if (snapshot === DEADLINE_EXCEEDED) {
+      truncated = true
+      break
+    }
     if (snapshot.content) {
       remainingContentBytes -= snapshot.content.length
     } else if (remainingContentBytes <= 0 && snapshot.exists) {
@@ -735,7 +768,13 @@ async function buildWorkspaceRunCheckpoint(args: {
   const gitRoot = await resolveGitRoot(args.workspace)
   if (gitRoot) {
     const status = await getGitStatusPaths(gitRoot)
-    const snapshot = await snapshotPaths(gitRoot, status.paths, MAX_TOTAL_SNAPSHOT_BYTES)
+    const snapshot = await snapshotPaths(
+      gitRoot,
+      status.paths,
+      MAX_TOTAL_SNAPSHOT_BYTES,
+      Date.now() + MAX_SCAN_MS,
+      lease,
+    )
     return {
       sessionId: args.sessionId,
       sessionRowId,
@@ -753,8 +792,9 @@ async function buildWorkspaceRunCheckpoint(args: {
 
   const filesystemRoot = await resolveFilesystemRoot(args.workspace)
   if (!filesystemRoot) return null
-  const scan = await scanFilesystemPaths(filesystemRoot, lease)
-  const snapshot = await snapshotPaths(filesystemRoot, scan.paths, MAX_TOTAL_SNAPSHOT_BYTES)
+  const deadline = Date.now() + MAX_SCAN_MS
+  const scan = await scanFilesystemPaths(filesystemRoot, lease, deadline)
+  const snapshot = await snapshotPaths(filesystemRoot, scan.paths, MAX_TOTAL_SNAPSHOT_BYTES, deadline, lease)
   return {
     sessionId: args.sessionId,
     sessionRowId,
@@ -831,9 +871,11 @@ export async function completeWorkspaceRunCheckpoint(args: {
   if (!runId) return null
 
   return withWorkspaceDiffOperation(async (lease) => {
+  const filesystemDeadline = Date.now() + MAX_SCAN_MS
   const status = checkpoint.kind === 'git'
     ? await getGitStatusPaths(checkpoint.root)
-    : await scanFilesystemPaths(checkpoint.root, lease)
+    : await scanFilesystemPaths(checkpoint.root, lease, filesystemDeadline)
+  const snapshotDeadline = checkpoint.kind === 'git' ? Date.now() + MAX_SCAN_MS : filesystemDeadline
   const relPaths = [...new Set([...checkpoint.files.keys(), ...status.paths].filter(path => !shouldSkipRelativePath(path)))]
   const files = []
   let totalPatchBytes = 0
@@ -847,7 +889,11 @@ export async function completeWorkspaceRunCheckpoint(args: {
       truncated = true
       break
     }
-    const after = await snapshotPath(checkpoint.root, relPath, remainingSnapshotBytes)
+    const after = await snapshotPath(checkpoint.root, relPath, remainingSnapshotBytes, snapshotDeadline, lease)
+    if (after === DEADLINE_EXCEEDED) {
+      truncated = true
+      break
+    }
     if (after.content) {
       remainingSnapshotBytes -= after.content.length
     } else if (remainingSnapshotBytes <= 0 && after.exists) {

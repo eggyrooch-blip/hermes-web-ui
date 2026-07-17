@@ -224,9 +224,65 @@ describe('workspace diff tracker', () => {
     }
   })
 
-  it('yields and truncates while scanning a directory with more entries than the hard cap', async () => {
+  it('keeps timed-out snapshot I/O inside the global concurrency bound', async () => {
+    const workspaces = Array.from({ length: 3 }, (_, index) => join(root, `slow-snapshot-${index}`))
+    for (let index = 0; index < workspaces.length; index += 1) {
+      mkdirSync(workspaces[index])
+      writeFileSync(join(workspaces[index], 'tracked.txt'), 'before\n')
+      await createTrackedSession(`session-slow-snapshot-${index}`)
+    }
+    const realFs = await vi.importActual<typeof import('fs/promises')>('fs/promises')
+    const pendingStats: Array<{ path: string; resolve: (value: any) => void }> = []
+    const lstatMock = vi.fn((path: string) => new Promise<any>((resolveStat) => {
+      pendingStats.push({ path, resolve: resolveStat })
+    }))
+    vi.doMock('fs/promises', () => ({ ...realFs, lstat: lstatMock }))
+
+    try {
+      const {
+        discardWorkspaceRunCheckpoint,
+        startWorkspaceRunCheckpoint,
+      } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+      const firstTwo = workspaces.slice(0, 2).map((workspace, index) => startWorkspaceRunCheckpoint({
+        sessionId: `session-slow-snapshot-${index}`,
+        runId: `run-slow-snapshot-${index}`,
+        workspace,
+      }))
+      await vi.waitFor(() => expect(lstatMock).toHaveBeenCalledTimes(2))
+      const firstHandles = await Promise.all(firstTwo)
+
+      const third = startWorkspaceRunCheckpoint({
+        sessionId: 'session-slow-snapshot-2',
+        runId: 'run-slow-snapshot-2',
+        workspace: workspaces[2],
+      })
+      await new Promise(resolve => setTimeout(resolve, 50))
+      expect(lstatMock).toHaveBeenCalledTimes(2)
+
+      pendingStats[0].resolve(await realFs.lstat(pendingStats[0].path))
+      await vi.waitFor(() => expect(lstatMock).toHaveBeenCalledTimes(3))
+      pendingStats[1].resolve(await realFs.lstat(pendingStats[1].path))
+      pendingStats[2].resolve(await realFs.lstat(pendingStats[2].path))
+      const thirdHandle = await third
+
+      firstHandles.forEach((checkpoint, index) => discardWorkspaceRunCheckpoint({
+        sessionId: `session-slow-snapshot-${index}`,
+        runId: `run-slow-snapshot-${index}`,
+        checkpoint,
+      }))
+      discardWorkspaceRunCheckpoint({
+        sessionId: 'session-slow-snapshot-2',
+        runId: 'run-slow-snapshot-2',
+        checkpoint: thirdHandle,
+      })
+    } finally {
+      vi.doUnmock('fs/promises')
+    }
+  })
+
+  it('tracks a valid file after more than 5,000 skipped directory entries', async () => {
     const {
-      discardWorkspaceRunCheckpoint,
+      completeWorkspaceRunCheckpoint,
       startWorkspaceRunCheckpoint,
     } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
     const workspace = join(root, 'huge-plain-workspace')
@@ -234,6 +290,7 @@ describe('workspace diff tracker', () => {
     for (let index = 0; index < 5_200; index += 1) {
       writeFileSync(join(workspace, `.env.${String(index).padStart(5, '0')}`), '')
     }
+    writeFileSync(join(workspace, 'zzzz-tracked.txt'), 'before\n')
     await createTrackedSession('session-huge-scan')
 
     let timerFired = false
@@ -246,7 +303,14 @@ describe('workspace diff tracker', () => {
     await vi.waitFor(() => expect(timerFired).toBe(true))
     const checkpoint = await checkpointPromise
     expect(checkpoint).not.toBeNull()
-    discardWorkspaceRunCheckpoint({ sessionId: 'session-huge-scan', runId: 'run-huge-scan', checkpoint })
+    writeFileSync(join(workspace, 'zzzz-tracked.txt'), 'after\n')
+    const change = await completeWorkspaceRunCheckpoint({
+      sessionId: 'session-huge-scan',
+      runId: 'run-huge-scan',
+      workspace,
+      checkpoint,
+    })
+    expect(change?.files.map(file => file.path)).toContain('zzzz-tracked.txt')
   })
 
   it('completes a pending workspace checkpoint with the final bridge run id', async () => {

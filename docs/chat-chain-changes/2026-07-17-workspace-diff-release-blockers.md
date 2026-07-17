@@ -15,12 +15,16 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
   real run starts, then await diff completion before their terminal chat event.
   Diff failures remain non-fatal to the chat run.
 - Git commands have a 5-second timeout; non-Git workspace traversal keeps a
-  1-second deadline, streams directory entries with `opendir`, caps each scan
-  at 5,000 entries, and limits expensive checkpoint/diff work to two concurrent
-  operations. Existing depth, file, byte, patch, and secret-path limits remain.
+  1-second deadline, streams directory entries with `opendir`, and limits
+  expensive checkpoint/diff work to two concurrent operations. The deadline
+  also covers snapshot `lstat`/`realpath`/`stat`/`readFile`; there is no new
+  directory-entry cap. Existing depth, file, byte, patch, and secret-path limits
+  remain.
 - If a timed-out `opendir`/`read` finishes late, its directory handle is closed
   and its limiter lease stays occupied until cleanup, so hidden filesystem I/O
   cannot accumulate beyond the same process-wide concurrency bound.
+- Timed-out snapshot filesystem promises likewise retain their limiter lease
+  until settlement, while the visible checkpoint returns promptly as truncated.
 - Session deletion now removes messages, workspace change files, workspace
   change summaries, and the session row in one SQLite transaction. Older
   databases without the optional workspace tables remain deletable.
@@ -37,13 +41,15 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
 - A forced SQLite message-delete failure proves all session and patch rows roll
   back; the subsequent successful delete proves all four record sets are empty.
 - Delayed-delete regressions cover broker, bridge, coding-agent, and final patch
-  persistence; a 5,200-entry directory proves the scanner yields and truncates,
-  while six parallel checkpoints prove the process-wide maximum stays at two.
+  persistence; a valid file created after 5,200 skipped directory entries is
+  still tracked while the deadline has time, and six parallel checkpoints prove
+  the process-wide maximum stays at two.
 - A delayed-opendir regression proves eventual close and that a third scan does
-  not start while two timed-out real opens remain unresolved; delete/recreate
-  regressions prove old runs cannot bind to a replacement session with the same id.
-- Focused workspace, bridge, broker, and coding-agent suites: 4 files / 88 passed.
-- Full Vitest suite: 318 files / 2488 passed / 2 skipped.
+  not start while two timed-out real opens remain unresolved; a delayed-lstat
+  regression proves the same bound for snapshot I/O. Delete/recreate regressions
+  prove old runs cannot bind to a replacement session with the same id.
+- Focused workspace, bridge, broker, and coding-agent suites: 4 files / 95 passed.
+- Full Vitest suite: 318 files / 2489 passed / 2 skipped.
 - Client/server TypeScript, production build, and `harness:check` passed.
 
 ## Release status
