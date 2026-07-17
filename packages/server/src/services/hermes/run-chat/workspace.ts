@@ -23,20 +23,18 @@ async function resolvedOr(path: string): Promise<string> {
 
 /**
  * The workspace root is the boundary every other check is measured against, so it
- * cannot be allowed to vouch for itself: if `<profile>/workspace` is a symlink out
- * of the profile, both sides of a realpath comparison resolve to the target and any
- * path "inside" it passes. Anchor on the profile dir (deployment-owned) instead and
- * fail closed if the root has been swapped for an escaping link or a non-directory.
+ * must be a real directory the deployment created — never a symlink. A symlinked
+ * root can't vouch for itself (a realpath comparison would resolve both sides to the
+ * link target), a link into the profile root would widen the run to the whole profile
+ * incl. credentials, and a dangling link would ENOENT the run at mkdir. Deployments
+ * create these as plain directories (verified: 0 of 1447 prod profiles use a symlink),
+ * so reject any symlink root outright and fail closed on a non-directory.
  */
-async function assertWorkspaceRootSafe(profile: string, base: string): Promise<void> {
+async function assertWorkspaceRootSafe(base: string): Promise<void> {
   const stats = await lstat(base).catch(() => null)
   if (!stats) return // absent → mkdir creates a real directory under the profile
   if (stats.isSymbolicLink()) {
-    const trustedRoot = await resolvedOr(getProfileDir(profile || 'default'))
-    if (!within(await resolvedOr(base), trustedRoot)) {
-      throw new Error(`Refusing to run: workspace root ${base} links outside the profile`)
-    }
-    return
+    throw new Error(`Refusing to run: workspace root ${base} is a symlink`)
   }
   if (!stats.isDirectory()) {
     throw new Error(`Refusing to run: workspace root ${base} is not a directory`)
@@ -58,7 +56,7 @@ export async function ensureHermesRunWorkspace(profile: string, workspace?: stri
   // path under a symlinked deployment root. realpath is used only where it is the
   // actual question — whether a link escapes the profile.
   const base = defaultHermesWorkspace(profile)
-  await assertWorkspaceRootSafe(profile, base)
+  await assertWorkspaceRootSafe(base)
 
   const raw = String(workspace || '').trim()
   const candidate = !raw

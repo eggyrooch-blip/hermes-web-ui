@@ -72,20 +72,29 @@ describe('ensureHermesRunWorkspace containment', () => {
     }
   })
 
-  it('refuses to run when the workspace root itself links out of the profile', async () => {
+  it('refuses to run when the workspace root is a symlink out of the profile', async () => {
     // The root is the boundary every other check measures against — if it may point
     // anywhere, it vouches for itself and everything "inside" it passes.
     rmSync(mineWorkspace, { recursive: true, force: true })
     symlinkSync('/etc', mineWorkspace)
-    await expect(ensureHermesRunWorkspace('mine')).rejects.toThrow(/links outside the profile/)
+    await expect(ensureHermesRunWorkspace('mine')).rejects.toThrow(/is a symlink/)
   })
 
-  it('allows a workspace root linked to somewhere inside the profile', async () => {
-    const real = join(state.hermesBase, 'profiles', 'mine', 'real-workspace')
-    mkdirSync(real, { recursive: true })
+  it('refuses to run when the workspace root is a symlink to the profile root', async () => {
+    // A profile-internal symlink would widen the run to the whole profile (credentials,
+    // memory), not just <profile>/workspace — reject it too, not only escaping links.
+    const profileRoot = join(state.hermesBase, 'profiles', 'mine')
     rmSync(mineWorkspace, { recursive: true, force: true })
-    symlinkSync(real, mineWorkspace)
-    expect(await ensureHermesRunWorkspace('mine')).toBe(mineWorkspace)
+    symlinkSync(profileRoot, mineWorkspace)
+    await expect(ensureHermesRunWorkspace('mine')).rejects.toThrow(/is a symlink/)
+  })
+
+  it('refuses to run when the workspace root is a dangling symlink (no ENOENT crash)', async () => {
+    // Previously the dangling root cleared the realpath check via an ancestor and then
+    // ENOENT'd the run at mkdir; now it fails closed with a clear message.
+    rmSync(mineWorkspace, { recursive: true, force: true })
+    symlinkSync(join(state.hermesBase, 'profiles', 'mine', 'gone-target'), mineWorkspace)
+    await expect(ensureHermesRunWorkspace('mine')).rejects.toThrow(/is a symlink/)
   })
 
   it('refuses to run when the workspace root is not a directory', async () => {
