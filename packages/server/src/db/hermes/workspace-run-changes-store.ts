@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { isAbsolute } from 'path'
 import { getDb, isSqliteAvailable } from '../index'
 import {
+  SESSIONS_TABLE,
   WORKSPACE_RUN_CHANGES_TABLE,
   WORKSPACE_RUN_CHANGE_FILES_TABLE,
 } from './schemas'
@@ -161,6 +162,11 @@ export function saveWorkspaceRunChange(change: SaveWorkspaceRunChangeInput): Wor
 
   db.exec('BEGIN')
   try {
+    const sessionExists = db.prepare(`SELECT 1 FROM ${SESSIONS_TABLE} WHERE id = ?`).get(change.session_id)
+    if (!sessionExists) {
+      db.exec('ROLLBACK')
+      return null
+    }
     db.prepare(`DELETE FROM ${WORKSPACE_RUN_CHANGE_FILES_TABLE} WHERE change_id = ?`).run(change.change_id)
     db.prepare(`DELETE FROM ${WORKSPACE_RUN_CHANGES_TABLE} WHERE change_id = ?`).run(change.change_id)
     db.prepare(

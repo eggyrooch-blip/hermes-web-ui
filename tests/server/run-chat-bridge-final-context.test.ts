@@ -41,6 +41,7 @@ const resolveBridgeRunModelConfigMock = vi.fn()
 const issueModelRunJwtMock = vi.fn(async () => 'model-run-token')
 const startWorkspaceRunCheckpointMock = vi.fn()
 const completeWorkspaceRunCheckpointMock = vi.fn()
+const discardWorkspaceRunCheckpointMock = vi.fn()
 const homes: string[] = []
 
 vi.mock('../../packages/server/src/lib/llm-prompt', () => ({
@@ -97,6 +98,7 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/model-config', () =>
 vi.mock('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker', () => ({
   startWorkspaceRunCheckpoint: startWorkspaceRunCheckpointMock,
   completeWorkspaceRunCheckpoint: completeWorkspaceRunCheckpointMock,
+  discardWorkspaceRunCheckpoint: discardWorkspaceRunCheckpointMock,
 }))
 
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
@@ -155,6 +157,7 @@ describe('bridge run final context usage', () => {
     startWorkspaceRunCheckpointMock.mockReset()
     completeWorkspaceRunCheckpointMock.mockReset()
     completeWorkspaceRunCheckpointMock.mockReturnValue(null)
+    discardWorkspaceRunCheckpointMock.mockReset()
     getCachedBridgeContextOverheadMock.mockImplementation((state: any) => {
       const fixed = state?.bridgeContext?.fixedContextTokens
       return typeof fixed === 'number' ? fixed : undefined
@@ -415,6 +418,47 @@ describe('bridge run final context usage', () => {
     )
 
     expect(order.slice(0, 2)).toEqual(['checkpoint-started', 'bridge-chat'])
+  })
+
+  it('does not launch a bridge run after its session is deleted during checkpoint startup', async () => {
+    let resolveCheckpoint!: (value: { key: string }) => void
+    startWorkspaceRunCheckpointMock.mockReturnValue(new Promise(resolve => {
+      resolveCheckpoint = resolve
+    }))
+    const emit = vi.fn()
+    const nsp = makeNamespace(emit)
+    const socket = makeSocket()
+    const state = makeState()
+    const sessionMap = new Map([['session-1', state]])
+    const bridge = {
+      chat: vi.fn(),
+      contextEstimate: vi.fn(),
+      streamOutput: vi.fn(),
+    } as any
+
+    const { handleBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
+    const pending = handleBridgeRun(
+      nsp,
+      socket,
+      { input: 'hello', session_id: 'session-1', workspace: '/tmp/hermes-bridge-final-context/default/workspace/explicit' },
+      'default',
+      sessionMap,
+      bridge,
+      false,
+      vi.fn(),
+      vi.fn(),
+    )
+    await vi.waitFor(() => expect(startWorkspaceRunCheckpointMock).toHaveBeenCalled())
+    getSessionMock.mockReturnValue(null)
+    resolveCheckpoint({ key: 'deleted-session-checkpoint' })
+    await pending
+
+    expect(discardWorkspaceRunCheckpointMock).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      checkpoint: { key: 'deleted-session-checkpoint' },
+    })
+    expect(bridge.chat).not.toHaveBeenCalled()
+    expect(sessionMap.has('session-1')).toBe(false)
   })
 
   it('does not emit workspace diff for default no-workspace bridge runs', async () => {

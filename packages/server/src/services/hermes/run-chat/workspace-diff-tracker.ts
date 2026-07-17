@@ -1,6 +1,6 @@
 import { execFile } from 'child_process'
 import { randomUUID } from 'crypto'
-import { lstat, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'fs/promises'
+import { lstat, mkdtemp, opendir, readFile, realpath, rm, stat, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { basename, extname, join, relative, resolve, sep } from 'path'
 import { promisify } from 'util'
@@ -14,12 +14,31 @@ const MAX_TOTAL_SNAPSHOT_BYTES = 64 * 1024 * 1024
 const MAX_PATCH_BYTES_PER_FILE = 256 * 1024
 const MAX_TOTAL_PATCH_BYTES = 1024 * 1024
 const MAX_SCAN_DIRS = 5_000
+const MAX_SCAN_ENTRIES = 5_000
 const MAX_SCAN_DEPTH = 16
 const MAX_SCAN_MS = 1_000
 const MAX_GIT_MS = 5_000
+const MAX_CONCURRENT_DIFF_OPERATIONS = 2
 const DEADLINE_EXCEEDED = Symbol('deadline-exceeded')
 
 const execFileAsync = promisify(execFile)
+let activeDiffOperations = 0
+const diffOperationWaiters: Array<() => void> = []
+
+async function withWorkspaceDiffOperation<T>(operation: () => Promise<T>): Promise<T> {
+  if (activeDiffOperations >= MAX_CONCURRENT_DIFF_OPERATIONS) {
+    await new Promise<void>(resolveWaiter => diffOperationWaiters.push(resolveWaiter))
+  } else {
+    activeDiffOperations += 1
+  }
+  try {
+    return await operation()
+  } finally {
+    const next = diffOperationWaiters.shift()
+    if (next) next()
+    else activeDiffOperations -= 1
+  }
+}
 
 async function waitUntilDeadline<T>(operation: Promise<T>, deadline: number): Promise<T | typeof DEADLINE_EXCEEDED> {
   const remainingMs = deadline - Date.now()
@@ -385,64 +404,81 @@ async function scanFilesystemPaths(root: string): Promise<WorkspacePathScan> {
   const deadline = startedAt + MAX_SCAN_MS
   const paths: string[] = []
   const queue: Array<{ absPath: string; relPath: string; depth: number }> = [{ absPath: root, relPath: '', depth: 0 }]
+  let queueIndex = 0
   let dirsScanned = 0
+  let entriesScanned = 0
   let truncated = false
 
-  while (queue.length > 0) {
-    if (Date.now() - startedAt > MAX_SCAN_MS || dirsScanned >= MAX_SCAN_DIRS) {
+  while (queueIndex < queue.length) {
+    if (Date.now() >= deadline || dirsScanned >= MAX_SCAN_DIRS || entriesScanned >= MAX_SCAN_ENTRIES) {
       truncated = true
       break
     }
 
-    const current = queue.shift()!
+    const current = queue[queueIndex++]
     if (current.depth > MAX_SCAN_DEPTH) {
       truncated = true
       continue
     }
     dirsScanned += 1
 
-    let entries
+    let dir
     try {
-      const result = await waitUntilDeadline(readdir(current.absPath, { withFileTypes: true }), deadline)
+      const result = await waitUntilDeadline(opendir(current.absPath), deadline)
       if (result === DEADLINE_EXCEEDED) {
         truncated = true
         break
       }
-      entries = result
+      dir = result
     } catch {
       truncated = true
       continue
     }
 
-    entries.sort((left, right) => left.name.localeCompare(right.name))
-    for (const entry of entries) {
-      if (Date.now() - startedAt > MAX_SCAN_MS) {
-        truncated = true
-        break
-      }
-      if (entry.isSymbolicLink()) continue
-
-      const childRelPath = current.relPath ? `${current.relPath}/${entry.name}` : entry.name
-      const childAbsPath = join(current.absPath, entry.name)
-      if (entry.isDirectory()) {
-        if (shouldSkipFilesystemDir(entry.name, childRelPath)) continue
-        if (current.depth + 1 > MAX_SCAN_DEPTH) {
+    try {
+      while (true) {
+        if (Date.now() >= deadline || entriesScanned >= MAX_SCAN_ENTRIES) {
           truncated = true
+          break
+        }
+        const result = await waitUntilDeadline(dir.read(), deadline)
+        if (result === DEADLINE_EXCEEDED) {
+          truncated = true
+          break
+        }
+        const entry = result
+        if (!entry) break
+        entriesScanned += 1
+        if (entriesScanned % 128 === 0) await new Promise<void>(resolveYield => setImmediate(resolveYield))
+        if (entry.isSymbolicLink()) continue
+
+        const childRelPath = current.relPath ? `${current.relPath}/${entry.name}` : entry.name
+        const childAbsPath = join(current.absPath, entry.name)
+        if (entry.isDirectory()) {
+          if (shouldSkipFilesystemDir(entry.name, childRelPath)) continue
+          if (current.depth + 1 > MAX_SCAN_DEPTH) {
+            truncated = true
+            continue
+          }
+          queue.push({ absPath: childAbsPath, relPath: childRelPath, depth: current.depth + 1 })
           continue
         }
-        queue.push({ absPath: childAbsPath, relPath: childRelPath, depth: current.depth + 1 })
-        continue
-      }
 
-      if (!entry.isFile() || shouldSkipRelativePath(childRelPath)) continue
-      paths.push(childRelPath)
-      if (paths.length >= MAX_TRACKED_STATUS_PATHS) {
-        truncated = true
-        break
+        if (!entry.isFile() || shouldSkipRelativePath(childRelPath)) continue
+        paths.push(childRelPath)
+        if (paths.length >= MAX_TRACKED_STATUS_PATHS) {
+          truncated = true
+          break
+        }
       }
+    } catch {
+      truncated = true
+    } finally {
+      await dir.close().catch(() => {})
     }
   }
 
+  paths.sort((left, right) => left.localeCompare(right))
   return { paths, truncated }
 }
 
@@ -708,11 +744,11 @@ export async function startWorkspaceRunCheckpoint(args: {
   const key = checkpointKey(args.sessionId, runId || `pending:${randomUUID()}`)
   let checkpointPromise = checkpoints.get(key)
   if (!checkpointPromise) {
-    checkpointPromise = buildWorkspaceRunCheckpoint({
+    checkpointPromise = withWorkspaceDiffOperation(() => buildWorkspaceRunCheckpoint({
       sessionId: args.sessionId,
       runId,
       workspace,
-    }).catch((err) => {
+    })).catch((err) => {
       logger.warn({ err, workspace }, '[workspace-diff] failed to start checkpoint')
       return null
     })
@@ -723,6 +759,18 @@ export async function startWorkspaceRunCheckpoint(args: {
     return null
   }
   return { key }
+}
+
+export function discardWorkspaceRunCheckpoint(args: {
+  sessionId: string
+  runId?: string | null
+  checkpoint?: WorkspaceRunCheckpointHandle | null
+}): void {
+  const runId = args.runId || ''
+  const key = args.checkpoint?.key || checkpointKey(args.sessionId, runId)
+  const checkpointPromise = checkpoints.get(key)
+  checkpoints.delete(key)
+  void checkpointPromise?.catch(() => null)
 }
 
 export async function completeWorkspaceRunCheckpoint(args: {
@@ -740,6 +788,7 @@ export async function completeWorkspaceRunCheckpoint(args: {
   if (!checkpoint) return null
   if (!runId) return null
 
+  return withWorkspaceDiffOperation(async () => {
   const status = checkpoint.kind === 'git'
     ? await getGitStatusPaths(checkpoint.root)
     : await scanFilesystemPaths(checkpoint.root)
@@ -808,5 +857,6 @@ export async function completeWorkspaceRunCheckpoint(args: {
     truncated,
     total_patch_bytes: totalPatchBytes,
     files,
+  })
   })
 }

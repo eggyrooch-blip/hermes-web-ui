@@ -12,7 +12,7 @@ import { buildBrokerMessagesForSession, contentBlocksToBrokerText } from './cont
 import { readSseFrames } from './sse-utils'
 import type { ContentBlock, ResponseRunState, SessionMessage, SessionState } from './types'
 import { ensureHermesRunWorkspace } from './workspace'
-import { completeWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint, type WorkspaceRunCheckpointHandle } from './workspace-diff-tracker'
+import { completeWorkspaceRunCheckpoint, discardWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint, type WorkspaceRunCheckpointHandle } from './workspace-diff-tracker'
 
 export { readSseFrames } from './sse-utils'
 
@@ -770,6 +770,10 @@ export async function handleBrokerRun(
   const workspaceDiffCheckpoint: WorkspaceRunCheckpointHandle | null = session_id && workspace
     ? await startWorkspaceRunCheckpoint({ sessionId: session_id, workspace })
     : null
+  if (session_id && sessionRow && !getSession(session_id)) {
+    discardWorkspaceRunCheckpoint({ sessionId: session_id, checkpoint: workspaceDiffCheckpoint })
+    return
+  }
   const emitWorkspaceDiffCompleted = async () => {
     if (!session_id || !workspace || workspaceDiffCompleted) return
     workspaceDiffCompleted = true

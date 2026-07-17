@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DatabaseSync } from 'node:sqlite'
 import { execFileSync } from 'child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -28,6 +28,11 @@ vi.mock('../../packages/server/src/config', () => ({
 
 function git(cwd: string, args: string[]): void {
   execFileSync('git', args, { cwd, stdio: 'ignore' })
+}
+
+async function createTrackedSession(id: string): Promise<void> {
+  const { createSession, getSession } = await import('../../packages/server/src/db/hermes/session-store')
+  if (!getSession(id)) createSession({ id })
 }
 
 describe('workspace diff tracker', () => {
@@ -66,6 +71,7 @@ describe('workspace diff tracker', () => {
     } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
     const { listWorkspaceRunChangesForSession } = await import('../../packages/server/src/db/hermes/workspace-run-changes-store')
 
+    await createTrackedSession('session-noworkspace')
     await startWorkspaceRunCheckpoint({ sessionId: 'session-noworkspace', runId: 'run-noworkspace' })
     writeFileSync(join(repo, 'changed.txt'), 'new\n')
 
@@ -87,6 +93,7 @@ describe('workspace diff tracker', () => {
     process.env.PATH = `${fakeBin}:${originalPath || ''}`
 
     try {
+      await createTrackedSession('session-nonblocking')
       let checkpointResolved = false
       const checkpointPromise = startWorkspaceRunCheckpoint({
         sessionId: 'session-nonblocking',
@@ -115,12 +122,78 @@ describe('workspace diff tracker', () => {
     }
   })
 
+  it.runIf(process.platform !== 'win32')('bounds concurrent workspace checkpoint builds', async () => {
+    const {
+      discardWorkspaceRunCheckpoint,
+      startWorkspaceRunCheckpoint,
+    } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+    const fakeBin = join(root, 'bounded-fake-bin')
+    const fakeGit = join(fakeBin, 'git')
+    const logPath = join(root, 'git-concurrency.log')
+    mkdirSync(fakeBin)
+    writeFileSync(fakeGit, '#!/bin/sh\nprintf "start\\n" >> "$HERMES_WORKSPACE_DIFF_TEST_LOG"\nsleep 0.1\nprintf "end\\n" >> "$HERMES_WORKSPACE_DIFF_TEST_LOG"\nexit 1\n')
+    chmodSync(fakeGit, 0o755)
+    const originalPath = process.env.PATH
+    const originalLog = process.env.HERMES_WORKSPACE_DIFF_TEST_LOG
+    process.env.PATH = `${fakeBin}:${originalPath || ''}`
+    process.env.HERMES_WORKSPACE_DIFF_TEST_LOG = logPath
+
+    try {
+      const handles = await Promise.all(Array.from({ length: 6 }, async (_, index) => {
+        const sessionId = `session-bounded-${index}`
+        const runId = `run-bounded-${index}`
+        await createTrackedSession(sessionId)
+        const checkpoint = await startWorkspaceRunCheckpoint({ sessionId, runId, workspace: repo })
+        return { sessionId, runId, checkpoint }
+      }))
+      for (const handle of handles) discardWorkspaceRunCheckpoint(handle)
+
+      let active = 0
+      let maximum = 0
+      for (const line of readFileSync(logPath, 'utf8').trim().split('\n')) {
+        active += line === 'start' ? 1 : -1
+        maximum = Math.max(maximum, active)
+      }
+      expect(active).toBe(0)
+      expect(maximum).toBe(2)
+    } finally {
+      process.env.PATH = originalPath
+      if (originalLog === undefined) delete process.env.HERMES_WORKSPACE_DIFF_TEST_LOG
+      else process.env.HERMES_WORKSPACE_DIFF_TEST_LOG = originalLog
+    }
+  })
+
+  it('yields and truncates while scanning a directory with more entries than the hard cap', async () => {
+    const {
+      discardWorkspaceRunCheckpoint,
+      startWorkspaceRunCheckpoint,
+    } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+    const workspace = join(root, 'huge-plain-workspace')
+    mkdirSync(workspace)
+    for (let index = 0; index < 5_200; index += 1) {
+      writeFileSync(join(workspace, `.env.${String(index).padStart(5, '0')}`), '')
+    }
+
+    let timerFired = false
+    const checkpointPromise = startWorkspaceRunCheckpoint({
+      sessionId: 'session-huge-scan',
+      runId: 'run-huge-scan',
+      workspace,
+    })
+    setTimeout(() => { timerFired = true }, 0)
+    await vi.waitFor(() => expect(timerFired).toBe(true))
+    const checkpoint = await checkpointPromise
+    expect(checkpoint).not.toBeNull()
+    discardWorkspaceRunCheckpoint({ sessionId: 'session-huge-scan', runId: 'run-huge-scan', checkpoint })
+  })
+
   it('completes a pending workspace checkpoint with the final bridge run id', async () => {
     const {
       completeWorkspaceRunCheckpoint,
       startWorkspaceRunCheckpoint,
     } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
 
+    await createTrackedSession('session-pending')
     const checkpoint = await startWorkspaceRunCheckpoint({ sessionId: 'session-pending', workspace: repo })
     writeFileSync(join(repo, 'changed.txt'), 'new\n')
 
@@ -154,6 +227,7 @@ describe('workspace diff tracker', () => {
     } = await import('../../packages/server/src/db/hermes/workspace-run-changes-store')
 
     writeFileSync(join(repo, 'dirty.txt'), 'preexisting dirty change\n')
+    await createTrackedSession('session-git')
     await startWorkspaceRunCheckpoint({ sessionId: 'session-git', runId: 'run-git', workspace: repo })
 
     writeFileSync(join(repo, 'changed.txt'), 'new\n')
@@ -192,6 +266,7 @@ describe('workspace diff tracker', () => {
     writeFileSync(join(workspace, 'old.txt'), 'old\n')
     writeFileSync(join(workspace, 'unchanged.txt'), 'same\n')
 
+    await createTrackedSession('session-plain')
     await startWorkspaceRunCheckpoint({ sessionId: 'session-plain', runId: 'run-plain', workspace })
 
     rmSync(join(workspace, 'deleted.txt'))
@@ -216,6 +291,7 @@ describe('workspace diff tracker', () => {
     } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
     const { listWorkspaceRunChangesForSession } = await import('../../packages/server/src/db/hermes/workspace-run-changes-store')
 
+    await createTrackedSession('session-empty')
     await startWorkspaceRunCheckpoint({ sessionId: 'session-empty', runId: 'run-empty', workspace: repo })
 
     await expect(completeWorkspaceRunCheckpoint({ sessionId: 'session-empty', runId: 'run-empty', workspace: repo })).resolves.toBeNull()
@@ -240,6 +316,7 @@ describe('workspace diff tracker', () => {
     writeFileSync(join(workspace, 'node_modules', 'ignored.js'), 'before\n')
     writeFileSync(join(workspace, '.git', 'ignored'), 'before\n')
 
+    await createTrackedSession('session-ignore')
     await startWorkspaceRunCheckpoint({ sessionId: 'session-ignore', runId: 'run-ignore', workspace })
 
     writeFileSync(join(workspace, 'src', 'app.ts'), 'new\n')
@@ -265,6 +342,7 @@ describe('workspace diff tracker', () => {
     git(repo, ['add', '.env'])
     git(repo, ['commit', '-m', 'tracked secret for parser regression'])
 
+    await createTrackedSession('session-secret-rename')
     await startWorkspaceRunCheckpoint({ sessionId: 'session-secret-rename', runId: 'run-secret-rename', workspace: repo })
 
     git(repo, ['mv', '.env', 'public-token.txt'])
@@ -290,6 +368,7 @@ describe('workspace diff tracker', () => {
     for (let index = 0; index < 81; index += 1) {
       writeFileSync(join(repo, `preexisting-${String(index).padStart(3, '0')}.txt`), 'dirty before run\n')
     }
+    await createTrackedSession('session-many-dirty')
     await startWorkspaceRunCheckpoint({ sessionId: 'session-many-dirty', runId: 'run-many-dirty', workspace: repo })
 
     writeFileSync(join(repo, 'zz-runtime.txt'), 'after\n')
@@ -313,6 +392,7 @@ describe('workspace diff tracker', () => {
     git(repo, ['add', 'large.txt'])
     git(repo, ['commit', '-m', 'large'])
 
+    await createTrackedSession('session-large')
     await startWorkspaceRunCheckpoint({ sessionId: 'session-large', runId: 'run-large', workspace: repo })
     writeFileSync(join(repo, 'large.txt'), after)
     const change = await completeWorkspaceRunCheckpoint({ sessionId: 'session-large', runId: 'run-large', workspace: repo })
@@ -387,6 +467,27 @@ describe('workspace diff tracker', () => {
     expect(state.db!.prepare(`SELECT COUNT(*) AS count FROM ${MESSAGES_TABLE} WHERE session_id = ?`).get('session-delete')).toEqual({ count: 0 })
     expect(state.db!.prepare(`SELECT COUNT(*) AS count FROM ${WORKSPACE_RUN_CHANGES_TABLE} WHERE session_id = ?`).get('session-delete')).toEqual({ count: 0 })
     expect(state.db!.prepare(`SELECT COUNT(*) AS count FROM ${WORKSPACE_RUN_CHANGE_FILES_TABLE} WHERE session_id = ?`).get('session-delete')).toEqual({ count: 0 })
+  })
+
+  it('does not recreate workspace changes after the session is deleted during a run', async () => {
+    const {
+      completeWorkspaceRunCheckpoint,
+      startWorkspaceRunCheckpoint,
+    } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+    const { createSession, deleteSession } = await import('../../packages/server/src/db/hermes/session-store')
+    const { listWorkspaceRunChangesForSession } = await import('../../packages/server/src/db/hermes/workspace-run-changes-store')
+
+    createSession({ id: 'session-delete-race' })
+    await startWorkspaceRunCheckpoint({ sessionId: 'session-delete-race', runId: 'run-delete-race', workspace: repo })
+    writeFileSync(join(repo, 'changed.txt'), 'changed after start\n')
+    expect(deleteSession('session-delete-race')).toBe(true)
+
+    await expect(completeWorkspaceRunCheckpoint({
+      sessionId: 'session-delete-race',
+      runId: 'run-delete-race',
+      workspace: repo,
+    })).resolves.toBeNull()
+    expect(listWorkspaceRunChangesForSession('session-delete-race')).toEqual([])
   })
 
   it('rejects absolute file paths before saving workspace run changes', async () => {

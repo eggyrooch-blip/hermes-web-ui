@@ -5,11 +5,13 @@ import { join } from 'path'
 
 const workspaceDiffMocks = vi.hoisted(() => ({
   start: vi.fn(),
+  discard: vi.fn(),
   complete: vi.fn(),
 }))
 
 vi.mock('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker', () => ({
   startWorkspaceRunCheckpoint: workspaceDiffMocks.start,
+  discardWorkspaceRunCheckpoint: workspaceDiffMocks.discard,
   completeWorkspaceRunCheckpoint: workspaceDiffMocks.complete,
 }))
 
@@ -30,6 +32,7 @@ import { addMessage, getSession, getSessionDetail, listSessions } from '../../pa
 
 beforeEach(() => {
   workspaceDiffMocks.start.mockReset()
+  workspaceDiffMocks.discard.mockReset()
   workspaceDiffMocks.complete.mockReset()
   workspaceDiffMocks.complete.mockReturnValue(null)
 })
@@ -1340,6 +1343,57 @@ describe('coding agent run state', () => {
       workspace: workspaceDir,
     })
     expect(run.pty.write).toHaveBeenCalledWith('please change files\r')
+  })
+
+  it('does not launch a coding-agent turn after deletion during checkpoint startup', async () => {
+    const manager = new CodingAgentRunManager()
+    const agentSessionId = `agent-session-diff-delete-${Date.now()}`
+    const chatSessionId = `chat-session-diff-delete-${Date.now()}`
+    const workspaceDir = process.cwd()
+    const run = {
+      id: agentSessionId,
+      launch: {
+        agentSessionId,
+        agentId: 'terminal-agent',
+        mode: 'scoped',
+        profile: 'default',
+        provider: 'test-provider',
+        model: 'test-model',
+        sessionId: chatSessionId,
+        command: 'agent',
+        args: [],
+        shellCommand: 'agent',
+        workspaceDir,
+        workspaceExplicit: true,
+      },
+      pty: { write: vi.fn() },
+      state: { messages: [], isWorking: false, events: [], queue: [] },
+      lastActiveAt: Date.now(),
+      startedAt: Date.now(),
+      exited: false,
+    }
+    ;(manager as any).runs.set(agentSessionId, run)
+    ;(manager as any).sessionIndex.set(chatSessionId, agentSessionId)
+    ;(manager as any).ensureDbSession = () => {}
+    ;(manager as any).addUserMessage = () => {}
+    ;(manager as any).touch = () => {}
+    ;(manager as any).emitTerminalStatus = () => {}
+    let resolveCheckpoint!: (value: { key: string }) => void
+    workspaceDiffMocks.start.mockReturnValue(new Promise(resolve => {
+      resolveCheckpoint = resolve
+    }))
+
+    const pending = manager.send(chatSessionId, 'please change files')
+    await vi.waitFor(() => expect(workspaceDiffMocks.start).toHaveBeenCalled())
+    expect(manager.stop(chatSessionId, { reportClosed: false })).toBe(true)
+    resolveCheckpoint({ key: 'deleted-session-checkpoint' })
+
+    await expect(pending).rejects.toThrow('Coding agent session no longer exists')
+    expect(workspaceDiffMocks.discard).toHaveBeenCalledWith({
+      sessionId: chatSessionId,
+      runId: agentSessionId,
+    })
+    expect(run.pty.write).not.toHaveBeenCalled()
   })
 
   it('does not start a workspace diff checkpoint when the workspace was defaulted', async () => {

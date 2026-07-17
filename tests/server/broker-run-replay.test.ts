@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const workspaceDiffTracker = vi.hoisted(() => ({
   start: vi.fn(() => ({ key: 'checkpoint-1' })),
+  discard: vi.fn(),
   complete: vi.fn(() => ({
     change_id: 'change-1',
     session_id: 's1',
@@ -30,6 +31,7 @@ vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
 vi.mock('../../packages/server/src/services/hermes/hermes-path', () => pathSecurity)
 vi.mock('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker', () => ({
   startWorkspaceRunCheckpoint: workspaceDiffTracker.start,
+  discardWorkspaceRunCheckpoint: workspaceDiffTracker.discard,
   completeWorkspaceRunCheckpoint: workspaceDiffTracker.complete,
 }))
 
@@ -64,6 +66,7 @@ afterEach(() => {
   sessionStore.getSession.mockReturnValue(null)
   sessionStore.updateSession.mockClear()
   workspaceDiffTracker.start.mockClear()
+  workspaceDiffTracker.discard.mockClear()
   workspaceDiffTracker.complete.mockClear()
   pathSecurity.isNearestExistingRealPathWithin.mockReset()
   pathSecurity.isNearestExistingRealPathWithin.mockResolvedValue(true)
@@ -99,6 +102,36 @@ describe('handleBrokerRun replay mode', () => {
 
     expect(seen[0]).toBe('http://broker.test/api/run-broker/runs')
     expect(seen[0]).not.toContain('/replay/')
+  })
+
+  it('does not dispatch after the session is deleted during checkpoint startup', async () => {
+    let resolveCheckpoint!: (value: { key: string }) => void
+    workspaceDiffTracker.start.mockReturnValueOnce(new Promise(resolve => {
+      resolveCheckpoint = resolve
+    }))
+    sessionStore.getSession
+      .mockReturnValueOnce({ id: 's1', profile: 'default', workspace: '/tmp/work' })
+      .mockReturnValue(null)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = handleBrokerRun(
+      socket,
+      { input: 'hi', session_id: 's1', workspace: '/tmp/work' },
+      'default',
+      'rm',
+      vi.fn(),
+      fakeContext(),
+    )
+    await vi.waitFor(() => expect(workspaceDiffTracker.start).toHaveBeenCalled())
+    resolveCheckpoint({ key: 'deleted-session-checkpoint' })
+    await pending
+
+    expect(workspaceDiffTracker.discard).toHaveBeenCalledWith({
+      sessionId: 's1',
+      checkpoint: { key: 'deleted-session-checkpoint' },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('attaches the broker run id to live session messages', async () => {

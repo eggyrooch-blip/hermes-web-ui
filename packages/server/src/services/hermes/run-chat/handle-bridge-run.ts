@@ -34,7 +34,7 @@ import { markAbortCompleted } from './abort'
 import { writeModelRunProfileToken } from './model-run-prompt'
 import type { AuthenticatedUser } from '../../../middleware/user-auth'
 import { ensureHermesRunWorkspace } from './workspace'
-import { completeWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint, type WorkspaceRunCheckpointHandle } from './workspace-diff-tracker'
+import { completeWorkspaceRunCheckpoint, discardWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint, type WorkspaceRunCheckpointHandle } from './workspace-diff-tracker'
 import type { WorkspaceRunChangeSummary } from '../../../db/hermes/workspace-run-changes-store'
 
 const BRIDGE_USAGE_FLUSH_DELAY_MS = 200
@@ -551,6 +551,13 @@ export async function handleBridgeRun(
           workspace: diffWorkspace,
         })
       : null
+    if (!getSession(session_id)) {
+      discardWorkspaceRunCheckpoint({ sessionId: session_id, checkpoint: workspaceDiffCheckpoint })
+      state.isWorking = false
+      state.activeRunMarker = undefined
+      sessionMap.delete(session_id)
+      return
+    }
     const started = await bridge.chat(
       session_id,
       bridgeInput as AgentBridgeMessage,

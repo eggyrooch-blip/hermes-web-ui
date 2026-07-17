@@ -10,7 +10,7 @@ import type { SessionState } from '../hermes/run-chat/types'
 import type { CanonicalResponsesEvent } from './adapters/responses-stream'
 import { mapCodingAgentResponseEvent } from './coding-agent-event-mapper'
 import { normalizeWindowsCommandPath, windowsCmdShimExecution, windowsCommandNeedsShell } from '../windows-command'
-import { completeWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint } from '../hermes/run-chat/workspace-diff-tracker'
+import { completeWorkspaceRunCheckpoint, discardWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint } from '../hermes/run-chat/workspace-diff-tracker'
 import type { WorkspaceRunChangeSummary } from '../../db/hermes/workspace-run-changes-store'
 
 const DEFAULT_IDLE_MS = 30 * 60 * 1000
@@ -515,6 +515,10 @@ export class CodingAgentRunManager {
     this.touch(run)
     this.emitTerminalStatus(run, 'Input sent to coding agent.')
     await this.startWorkspaceDiffCheckpoint(run)
+    if (this.getBySession(sessionId) !== run || run.exited) {
+      discardWorkspaceRunCheckpoint({ sessionId, runId: run.id })
+      throw new Error('Coding agent session no longer exists')
+    }
     if (run.launch.agentId === 'claude-code') {
       this.startClaudePrintTurn(run, text, systemPrompt)
       return { runId: run.id }

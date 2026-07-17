@@ -15,11 +15,15 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
   real run starts, then await diff completion before their terminal chat event.
   Diff failures remain non-fatal to the chat run.
 - Git commands have a 5-second timeout; non-Git workspace traversal keeps a
-  1-second deadline plus the existing directory, depth, file, byte, patch, and
-  secret-path limits.
+  1-second deadline, streams directory entries with `opendir`, caps each scan
+  at 5,000 entries, and limits expensive checkpoint/diff work to two concurrent
+  operations. Existing depth, file, byte, patch, and secret-path limits remain.
 - Session deletion now removes messages, workspace change files, workspace
   change summaries, and the session row in one SQLite transaction. Older
   databases without the optional workspace tables remain deletable.
+- A completed diff can only insert rows while its session still exists in the
+  same SQLite transaction. Broker, bridge, and coding-agent paths also discard
+  a delayed checkpoint instead of launching work after that session was deleted.
 
 ## Regression coverage
 
@@ -27,11 +31,12 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
   pending, and the post-baseline edit is still recorded.
 - A forced SQLite message-delete failure proves all session and patch rows roll
   back; the subsequent successful delete proves all four record sets are empty.
-- Focused workspace, bridge, broker, coding-agent, and Windows process suites:
-  5 files / 87 passed.
-- Full Vitest suite: 318 files / 2481 passed / 2 skipped.
-- `npm run build`, `npm run harness:check`, server TypeScript, and
-  `git diff --check` passed.
+- Delayed-delete regressions cover broker, bridge, coding-agent, and final patch
+  persistence; a 5,200-entry directory proves the scanner yields and truncates,
+  while six parallel checkpoints prove the process-wide maximum stays at two.
+- Focused workspace, bridge, broker, and coding-agent suites: 4 files / 87 passed.
+- Full Vitest suite: 318 files / 2487 passed / 2 skipped.
+- Client/server TypeScript, production build, and `harness:check` passed.
 
 ## Release status
 

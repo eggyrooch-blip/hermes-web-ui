@@ -65,4 +65,5 @@ constraint directly.
 ## Known gotchas
 - (root causes from 排障 sessions accrue here so the same bug is never debugged twice)
 - 2026-06-23：WebUI chat-plane 上传图片会落在 routed profile 的 `workspace/uploads`；Run Broker `content` 不能把 ContentBlock 直接 JSON.stringify，否则 multitenancy AIAgent 只会看到普通 JSON 文本并让工具去错误目录按 basename 搜图。broker 当前用户消息必须提供 `/workspace/uploads/...` 语义的工具路径。
+- 2026-07-17：异步 workspace checkpoint 可能跨过会话删除边界；patch 写入必须在同一 SQLite 事务确认 session 仍存在，所有等待 checkpoint 的启动路径也必须在 await 后复查 run/session 存活并丢弃失效 checkpoint。
 <!-- /ftask:managed -->
