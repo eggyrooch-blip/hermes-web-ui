@@ -17,14 +17,20 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
 - Git commands have a 5-second timeout; non-Git workspace traversal keeps a
   1-second deadline, streams directory entries with `opendir`, and limits
   expensive checkpoint/diff work to two concurrent operations. The deadline
-  also covers snapshot `lstat`/`realpath`/`stat`/`readFile`; there is no new
-  directory-entry cap. Existing depth, file, byte, patch, and secret-path limits
-  remain.
+  also covers snapshot `lstat`/`realpath`/`stat`/`readFile`, Git HEAD snapshots,
+  and no-index patch generation across the whole changed-path loop; there is no
+  new directory-entry cap. Existing depth, file, byte, patch, and secret-path
+  limits remain.
 - If a timed-out `opendir`/`read` finishes late, its directory handle is closed
   and its limiter lease stays occupied until cleanup, so hidden filesystem I/O
   cannot accumulate beyond the same process-wide concurrency bound.
 - Timed-out snapshot filesystem promises likewise retain their limiter lease
   until settlement, while the visible checkpoint returns promptly as truncated.
+- Timed-out Git HEAD and patch promises retain the same lease until the child
+  settles and any temporary patch directory is removed, but do not start more
+  Git work after the absolute deadline. Stored patches are truncated to a valid
+  UTF-8 byte prefix, so CJK and emoji cannot exceed the byte budget or leave a
+  broken code point.
 - Session deletion now removes messages, workspace change files, workspace
   change summaries, and the session row in one SQLite transaction. Older
   databases without the optional workspace tables remain deletable.
@@ -48,8 +54,13 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
   not start while two timed-out real opens remain unresolved; a delayed-lstat
   regression proves the same bound for snapshot I/O. Delete/recreate regressions
   prove old runs cannot bind to a replacement session with the same id.
-- Focused workspace, bridge, broker, and coding-agent suites: 4 files / 95 passed.
-- Full Vitest suite: 318 files / 2489 passed / 2 skipped.
+- Seven changed Git paths with four-second delayed HEAD and patch subprocesses prove terminal
+  checkpoint completion returns on the single deadline, preserves the six
+  completed paths, marks the result truncated, and waits for late cleanup. An
+  oversized CJK/emoji patch proves the stored UTF-8 round trip is exact and its
+  byte length remains at or below 256 KiB.
+- Focused workspace, bridge, broker, and coding-agent suites: 4 files / 73 passed.
+- Full Vitest suite: 318 files / 2490 passed / 2 skipped.
 - Client/server TypeScript, production build, and `harness:check` passed.
 
 ## Release status

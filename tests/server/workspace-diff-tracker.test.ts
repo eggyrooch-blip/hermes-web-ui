@@ -122,6 +122,66 @@ describe('workspace diff tracker', () => {
     }
   })
 
+  it.runIf(process.platform !== 'win32')('bounds terminal checkpoint completion across delayed Git work on multiple changed paths', async () => {
+    const {
+      completeWorkspaceRunCheckpoint,
+      startWorkspaceRunCheckpoint,
+    } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+    const fakeBin = join(root, 'deadline-fake-bin')
+    const fakeGit = join(fakeBin, 'git')
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim()
+    const originalPath = process.env.PATH
+    const originalRealGit = process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT
+    const originalLog = process.env.HERMES_WORKSPACE_DIFF_TEST_LOG
+    mkdirSync(fakeBin)
+
+    try {
+      process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT = realGit
+      for (const phase of ['head', 'patch'] as const) {
+        const fastPaths = Array.from({ length: 6 }, (_, index) => `a-${phase}-${index}.txt`)
+        const slowPath = `z-${phase}.txt`
+        const logPath = join(root, `${phase}.log`)
+        for (const fastPath of fastPaths) writeFileSync(join(repo, fastPath), 'before\n')
+        writeFileSync(join(repo, slowPath), 'before\n')
+        git(repo, ['add', '.'])
+        git(repo, ['commit', '-m', `${phase} deadline`])
+
+        const sessionId = `session-${phase}-deadline`
+        const runId = `run-${phase}-deadline`
+        await createTrackedSession(sessionId)
+        const checkpoint = await startWorkspaceRunCheckpoint({ sessionId, runId, workspace: repo })
+        for (const fastPath of fastPaths) writeFileSync(join(repo, fastPath), 'fast after\n')
+        writeFileSync(join(repo, slowPath), 'slow after\n')
+
+        const delayCondition = phase === 'head'
+          ? `if [ "$1" = "cat-file" ] && [ "$2" = "-e" ] && [ "$3" = "HEAD:${slowPath}" ]; then delay_git; fi\n`
+          : 'if [ "$1" = "diff" ] && [ "$2" = "--no-index" ] && grep -q "^slow after$" "$6"; then delay_git; fi\n'
+        writeFileSync(fakeGit, `#!/bin/sh\ndelay_git() {\n  printf "start\\n" >> "$HERMES_WORKSPACE_DIFF_TEST_LOG"\n  sleep 4\n  printf "end\\n" >> "$HERMES_WORKSPACE_DIFF_TEST_LOG"\n}\n${delayCondition}exec "$HERMES_WORKSPACE_DIFF_TEST_REAL_GIT" "$@"\n`)
+        chmodSync(fakeGit, 0o755)
+        process.env.PATH = `${fakeBin}:${originalPath || ''}`
+        process.env.HERMES_WORKSPACE_DIFF_TEST_LOG = logPath
+
+        const startedAt = Date.now()
+        const change = await completeWorkspaceRunCheckpoint({ sessionId, runId, workspace: repo, checkpoint })
+        const elapsed = Date.now() - startedAt
+
+        expect(elapsed).toBeLessThan(3_500)
+        expect(readFileSync(logPath, 'utf8')).toBe('start\n')
+        expect(change?.truncated).toBe(true)
+        expect(change?.files.map(file => file.path)).toEqual(fastPaths)
+        await vi.waitFor(() => expect(readFileSync(logPath, 'utf8')).toContain('end\n'), { timeout: 5_500 })
+        await new Promise(resolve => setTimeout(resolve, 100))
+        process.env.PATH = originalPath
+      }
+    } finally {
+      process.env.PATH = originalPath
+      if (originalRealGit === undefined) delete process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT
+      else process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT = originalRealGit
+      if (originalLog === undefined) delete process.env.HERMES_WORKSPACE_DIFF_TEST_LOG
+      else process.env.HERMES_WORKSPACE_DIFF_TEST_LOG = originalLog
+    }
+  }, 25_000)
+
   it.runIf(process.platform !== 'win32')('bounds concurrent workspace checkpoint builds', async () => {
     const {
       discardWorkspaceRunCheckpoint,
@@ -505,15 +565,15 @@ describe('workspace diff tracker', () => {
     expect(change?.files.map(file => file.path)).toContain('zz-runtime.txt')
   })
 
-  it('truncates large patch bodies', async () => {
+  it('truncates CJK and emoji patch bodies by UTF-8 bytes without malformed code points', async () => {
     const {
       completeWorkspaceRunCheckpoint,
       startWorkspaceRunCheckpoint,
     } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
     const { getWorkspaceRunChangeFile } = await import('../../packages/server/src/db/hermes/workspace-run-changes-store')
 
-    const before = Array.from({ length: 20_000 }, (_, index) => `old-${index}`).join('\n') + '\n'
-    const after = Array.from({ length: 20_000 }, (_, index) => `new-${index}`).join('\n') + '\n'
+    const before = Array.from({ length: 12_000 }, (_, index) => `old-${index}`).join('\n') + '\n'
+    const after = Array.from({ length: 12_000 }, (_, index) => `新🙂-${index}`).join('\n') + '\n'
     writeFileSync(join(repo, 'large.txt'), before)
     git(repo, ['add', 'large.txt'])
     git(repo, ['commit', '-m', 'large'])
@@ -529,6 +589,8 @@ describe('workspace diff tracker', () => {
     const detail = getWorkspaceRunChangeFile('session-large', change!.change_id, change!.files[0].id)
     expect(detail?.truncated).toBe(true)
     expect(Buffer.byteLength(detail?.patch || '', 'utf8')).toBeLessThanOrEqual(256 * 1024)
+    expect(detail?.patch).toContain('新🙂-')
+    expect(Buffer.from(detail?.patch || '', 'utf8').toString('utf8')).toBe(detail?.patch)
   })
 
   it('deletes session messages and workspace changes atomically', async () => {

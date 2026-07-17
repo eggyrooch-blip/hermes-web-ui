@@ -65,5 +65,5 @@ constraint directly.
 ## Known gotchas
 - (root causes from 排障 sessions accrue here so the same bug is never debugged twice)
 - 2026-06-23：WebUI chat-plane 上传图片会落在 routed profile 的 `workspace/uploads`；Run Broker `content` 不能把 ContentBlock 直接 JSON.stringify，否则 multitenancy AIAgent 只会看到普通 JSON 文本并让工具去错误目录按 basename 搜图。broker 当前用户消息必须提供 `/workspace/uploads/...` 语义的工具路径。
-- 2026-07-17：异步 workspace checkpoint 可能跨过会话删除边界；只查 id 或 rowid 不够（SQLite 可复用末尾 rowid），patch 写入和 await 后启动检查必须同时匹配 rowid + 进程内 incarnation token。超时的 `opendir/read` 必须 eventual close，超时的 `lstat/realpath/stat/readFile` 必须等真实 I/O settlement；两者在清理完成前都保留并发 lease。不要用目录项数量硬截断替代时间 deadline，否则会漏掉后续普通文件。
+- 2026-07-17：异步 workspace checkpoint 可能跨过会话删除边界；只查 id 或 rowid 不够（SQLite 可复用末尾 rowid），patch 写入和 await 后启动检查必须同时匹配 rowid + 进程内 incarnation token。超时的 `opendir/read` 必须 eventual close，超时的 `lstat/realpath/stat/readFile`、Git HEAD 与 no-index patch 必须等真实 I/O settlement/临时目录清理；完成前都保留并发 lease，且 changed-path loop 共用同一绝对 deadline。不要用目录项数量硬截断替代时间 deadline；patch 也不能按 UTF-16 下标冒充 UTF-8 字节上限。
 <!-- /ftask:managed -->

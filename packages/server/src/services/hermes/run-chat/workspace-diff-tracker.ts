@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto'
 import { lstat, mkdtemp, opendir, readFile, realpath, rm, stat, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { basename, extname, join, relative, resolve, sep } from 'path'
+import { StringDecoder } from 'string_decoder'
 import { promisify } from 'util'
 import { logger } from '../../logger'
 import { getSessionIncarnation, getSessionRowId } from '../../../db/hermes/session-store'
@@ -602,28 +603,50 @@ async function snapshotPaths(
   return { files, truncated }
 }
 
-async function snapshotGitHeadPath(gitRoot: string, relPath: string): Promise<SnapshotFile> {
+async function snapshotGitHeadPath(
+  gitRoot: string,
+  relPath: string,
+  deadline: number,
+  lease: WorkspaceDiffOperationLease,
+): Promise<SnapshotFile | typeof DEADLINE_EXCEEDED> {
   if (shouldSkipRelativePath(relPath)) {
     return { exists: false, size: null, mtimeMs: null, binary: false, content: null }
   }
   try {
-    await runGit(gitRoot, ['cat-file', '-e', `HEAD:${relPath}`], 1024)
+    const exists = await waitForSnapshotOperation(
+      () => runGit(gitRoot, ['cat-file', '-e', `HEAD:${relPath}`], 1024),
+      deadline,
+      lease,
+    )
+    if (exists === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
   } catch {
     return { exists: false, size: null, mtimeMs: null, binary: false, content: null }
   }
 
   try {
-    const sizeText = (await runGit(gitRoot, ['cat-file', '-s', `HEAD:${relPath}`])).trim()
+    const sizeOutput = await waitForSnapshotOperation(
+      () => runGit(gitRoot, ['cat-file', '-s', `HEAD:${relPath}`]),
+      deadline,
+      lease,
+    )
+    if (sizeOutput === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
+    const sizeText = sizeOutput.trim()
     const size = Number.parseInt(sizeText, 10)
     if (!Number.isFinite(size) || size > MAX_SNAPSHOT_BYTES) {
       return { exists: true, size: Number.isFinite(size) ? size : null, mtimeMs: null, binary: false, content: null }
     }
-    const { stdout } = await execFileAsync('git', ['show', `HEAD:${relPath}`], {
-      cwd: gitRoot,
-      encoding: 'buffer',
-      maxBuffer: MAX_SNAPSHOT_BYTES + 1024,
-      timeout: MAX_GIT_MS,
-    })
+    const shown = await waitForSnapshotOperation(
+      () => execFileAsync('git', ['show', `HEAD:${relPath}`], {
+        cwd: gitRoot,
+        encoding: 'buffer',
+        maxBuffer: MAX_SNAPSHOT_BYTES + 1024,
+        timeout: MAX_GIT_MS,
+      }),
+      deadline,
+      lease,
+    )
+    if (shown === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
+    const { stdout } = shown
     const content = stdout as Buffer
     return {
       exists: true,
@@ -655,29 +678,50 @@ function countPatchLines(patch: string): { additions: number; deletions: number 
   return { additions, deletions }
 }
 
-async function makeNoIndexPatch(before: Buffer, after: Buffer, relPath: string): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'hermes-workspace-diff-'))
-  const beforePath = join(dir, 'before')
-  const afterPath = join(dir, 'after')
-  try {
-    await Promise.all([writeFile(beforePath, before), writeFile(afterPath, after)])
+async function makeNoIndexPatch(
+  before: Buffer,
+  after: Buffer,
+  relPath: string,
+  deadline: number,
+  lease: WorkspaceDiffOperationLease,
+): Promise<string | typeof DEADLINE_EXCEEDED> {
+  const operation = (async (): Promise<string | typeof DEADLINE_EXCEEDED> => {
+    const dir = await mkdtemp(join(tmpdir(), 'hermes-workspace-diff-'))
+    const beforePath = join(dir, 'before')
+    const afterPath = join(dir, 'after')
     try {
-      const { stdout } = await execFileAsync('git', ['diff', '--no-index', '--no-color', '--unified=3', beforePath, afterPath], {
-        encoding: 'utf8',
-        maxBuffer: MAX_PATCH_BYTES_PER_FILE + 64 * 1024,
-        timeout: MAX_GIT_MS,
-      })
-      return normalizePatchHeader(stdout, relPath)
-    } catch (err: any) {
-      const stdout = typeof err?.stdout === 'string' ? err.stdout : err?.stdout?.toString?.('utf8') || ''
-      return stdout ? normalizePatchHeader(stdout, relPath) : ''
+      if (Date.now() >= deadline) return DEADLINE_EXCEEDED
+      await Promise.all([writeFile(beforePath, before), writeFile(afterPath, after)])
+      if (Date.now() >= deadline) return DEADLINE_EXCEEDED
+      try {
+        const { stdout } = await execFileAsync('git', ['diff', '--no-index', '--no-color', '--unified=3', beforePath, afterPath], {
+          encoding: 'utf8',
+          maxBuffer: MAX_PATCH_BYTES_PER_FILE + 64 * 1024,
+          timeout: MAX_GIT_MS,
+        })
+        return normalizePatchHeader(stdout, relPath)
+      } catch (err: any) {
+        const stdout = typeof err?.stdout === 'string' ? err.stdout : err?.stdout?.toString?.('utf8') || ''
+        return stdout ? normalizePatchHeader(stdout, relPath) : ''
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
     }
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
+  })()
+  const result = await waitUntilDeadline(operation, deadline)
+  if (result === DEADLINE_EXCEEDED) lease.retainUntil(operation)
+  return result
 }
 
-async function compareSnapshots(before: SnapshotFile | undefined, after: SnapshotFile, relPath: string, patchBudget: number): Promise<SnapshotComparison> {
+async function compareSnapshots(
+  before: SnapshotFile | undefined,
+  after: SnapshotFile,
+  relPath: string,
+  patchBudget: number,
+  deadline: number,
+  lease: WorkspaceDiffOperationLease,
+): Promise<SnapshotComparison | typeof DEADLINE_EXCEEDED> {
+  if (Date.now() >= deadline) return DEADLINE_EXCEEDED
   const safeBefore = before || { exists: false, size: null, mtimeMs: null, binary: false, content: null }
   const contentChanged = safeBefore.content != null && after.content != null
     ? !safeBefore.content.equals(after.content)
@@ -716,10 +760,11 @@ async function compareSnapshots(before: SnapshotFile | undefined, after: Snapsho
   const afterContent = after.exists ? after.content : Buffer.alloc(0)
 
   if (!binary && beforeContent != null && afterContent != null && patchBudget > 0) {
-    const generated = await makeNoIndexPatch(beforeContent, afterContent, relPath)
+    const generated = await makeNoIndexPatch(beforeContent, afterContent, relPath, deadline, lease)
+    if (generated === DEADLINE_EXCEEDED || Date.now() >= deadline) return DEADLINE_EXCEEDED
     const limit = Math.min(MAX_PATCH_BYTES_PER_FILE, patchBudget)
     if (Buffer.byteLength(generated, 'utf8') > limit) {
-      patch = generated.slice(0, limit)
+      patch = new StringDecoder('utf8').write(Buffer.from(generated, 'utf8').subarray(0, limit))
       truncated = true
     } else {
       patch = generated
@@ -899,17 +944,27 @@ export async function completeWorkspaceRunCheckpoint(args: {
     } else if (remainingSnapshotBytes <= 0 && after.exists) {
       truncated = true
     }
-    const before = checkpoint.files.get(relPath) ?? await (
-      checkpoint.kind === 'git'
-        ? snapshotGitHeadPath(checkpoint.root, relPath)
-        : Promise.resolve(undefined)
-    )
+    let before = checkpoint.files.get(relPath)
+    if (before === undefined && checkpoint.kind === 'git') {
+      const headSnapshot = await snapshotGitHeadPath(checkpoint.root, relPath, snapshotDeadline, lease)
+      if (headSnapshot === DEADLINE_EXCEEDED) {
+        truncated = true
+        break
+      }
+      before = headSnapshot
+    }
     const comparison = await compareSnapshots(
       before,
       after,
       relPath,
       Math.max(0, MAX_TOTAL_PATCH_BYTES - totalPatchBytes),
+      snapshotDeadline,
+      lease,
     )
+    if (comparison === DEADLINE_EXCEEDED) {
+      truncated = true
+      break
+    }
     if (!comparison.changed || comparison.binary || isEmptyContentOnlyChange(comparison)) continue
     totalPatchBytes += comparison.patchBytes
     totalAdditions += comparison.additions
