@@ -68,8 +68,11 @@ export interface SessionState {
   isWorking: boolean
   events: Array<{ event: string; data: any }>
   abortController?: AbortController
+  goalEvaluationAbortController?: AbortController
   runId?: string
   activeRunMarker?: string
+  sessionRowId?: number | null
+  sessionIncarnation?: number | null
   profile?: string
   inputTokens?: number
   outputTokens?: number

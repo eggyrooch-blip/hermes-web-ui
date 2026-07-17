@@ -24,6 +24,10 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
   generation across the whole changed-path loop; there is no new
   directory-entry cap. Existing depth, file, byte, patch, and secret-path limits
   remain.
+- A workspace-root Git deadline is propagated explicitly instead of being
+  treated as an ordinary "not a Git repository" result. This prevents a
+  filesystem fallback from starting fresh root I/O in the final timer tick
+  after the shared deadline has already won the Git probe race.
 - If a timed-out `opendir`/`read` finishes late, its directory handle is closed
   and its limiter lease stays occupied until cleanup, so hidden filesystem I/O
   cannot accumulate beyond the same process-wide concurrency bound.
@@ -42,11 +46,44 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
   process-lifetime incarnation token. Broker, bridge, and coding-agent paths
   also discard a delayed checkpoint instead of launching work after that session
   id was deleted and recreated.
+- Broker run cleanup now matches the exact in-memory session state and run marker.
+  A generation mismatch cancels the old queue through a controller callback that
+  performs no DB writes and deletes the map entry only when it still points to the
+  old object. Setup rejection uses the same scoped finalizer. Abort only signals
+  the stream; after diff completion that stream performs the sole finalizer and
+  dequeues once from the latest queue, so an old completion cannot clear a new run.
+- The relay rechecks the exact state/generation before every SSE frame emit, so an
+  old stream cannot leak content, tools, terminal events, or workspace diff into a
+  same-id replacement room. Goal continuations enter the normal session FIFO and
+  yield to queued user work or abort. Identity/finalization persistence errors now
+  emit a visible failure, clear the exact run, and release the latest queue.
+- Controller state now binds SQLite rowid plus process incarnation. The public
+  socket replaces stale state after a real HTTP delete/recreate, while a shared
+  create-and-bind helper covers user, command, and completion-created sessions.
+  Resume/replay DB hydration uses a generation CAS, and finding a stale live state
+  immediately aborts/releases its old upstream rather than waiting for another frame.
+  Clean aborts emit only `abort.completed`; hanging goal evaluation uses a dedicated
+  controller linked to the run signal, so user queue admission can cancel only the
+  evaluation. Abort cleanup errors mark completion as failure-pending so the WebUI
+  keeps its handler for the following concrete failure, and usage emits recheck exact ownership.
+  The never-populated `hermesSessionIds` late-sync path was removed rather than
+  adding another completion epoch.
+- `/plan` and `/goal` use the same FIFO as user runs. Their command HTTP lookup owns
+  an exact state/marker/generation reservation until it atomically hands off to the
+  hidden run; command failure, abort, or same-id recreation releases that reservation
+  without letting stale results persist or emit. An exact mapped stale command state
+  is abandoned even for an immediate nonserialized control, while a post-create
+  one-time generation read failure rebinds before surfacing the setup error so its
+  queued runs remain on the new row. A pre-admission identity failure is
+  requester-scoped as `run.rejected` with `queue_id`; the client settles only the
+  rejected owner (or removes only that follow-up), without closing a live sibling.
 
 ## Regression coverage
 
-- A delayed fake Git executable proves a timer can run while the checkpoint is
-  pending, and the post-baseline edit is still recorded.
+- A delayed fake Git executable is released by an already-pending event-loop
+  callback; the callback runs while the checkpoint is unresolved. The test
+  accepts the documented deadline fallback when a loaded runner delays the
+  child long enough to return an empty checkpoint.
 - A forced SQLite message-delete failure proves all session and patch rows roll
   back; the subsequent successful delete proves all four record sets are empty.
 - Delayed-delete regressions cover broker, bridge, coding-agent, and final patch
@@ -59,7 +96,9 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
   prove old runs cannot bind to a replacement session with the same id.
 - Delayed workspace root `realpath` and `stat` regressions return within the
   deadline while keeping both concurrency leases occupied until settlement; a
-  third checkpoint starts only after one delayed root operation settles.
+  third checkpoint starts only after one delayed root operation settles. The
+  Git-root timeout regression also proves the near-deadline filesystem fallback
+  cannot start an extra root operation.
 - Seven changed Git paths with four-second delayed HEAD and patch subprocesses prove terminal
   checkpoint completion returns on the single deadline, preserves the six
   completed paths, marks the result truncated, and waits for late cleanup. An
@@ -68,9 +107,27 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
 - A delayed broker diff plus a `markCompleted` callback that schedules a goal
   continuation proves the order is diff completion/emission, session completion,
   terminal emission, then continuation.
+- Controller-level delayed checkpoint delete/recreate, setup rejection,
+  diff-await enqueue, and abort-with-queued-run regressions prove the old state is
+  released, replacement state is untouched, and exactly one next run starts only
+  after the old diff/finalizer completes. Per-frame replacement-room fencing,
+  idle/user/abort goal FIFO, identity getter rejection, and persistence rejection
+  cover the remaining finalizer exits. Public-socket + real-SQLite same-id reuse,
+  new user/plan bootstrap, setup/handoff/addMessage rejection, clean/exception abort,
+  hanging goal evaluation cancelled by queue admission alone, guarded usage,
+  resume/replay load CAS, active command FIFO/reservation/recreate/abort, first/follow-up
+  request rejection, and immediate cancellation of a hanging old generation cover
+  production entry points. An explicit-abort regression also proves a hanging goal
+  evaluation exits from its linked signal without any upstream response. The final
+  lifecycle/auth/expert set is 11 files / 161 passed. Server/client TypeScript
+  and `git diff --check` pass. The delayed Git fixture uses a pending callback instead
+  of a fixed timer delay, so full-suite load cannot expire the shared deadline before
+  the test action starts.
 - Focused workspace, bridge, broker, and coding-agent suites: 4 files / 76 passed.
-- Full Vitest suite: 318 files / 2493 passed / 2 skipped.
-- Client/server TypeScript, production build, and `harness:check` passed.
+- Current full Vitest: 320 files / 2542 passed / 2 skipped.
+- Client/server TypeScript, production build, `harness:check`, and
+  `git diff --check` pass. Independent review of the new frozen hash remains
+  required before release consideration.
 
 ## Release status
 

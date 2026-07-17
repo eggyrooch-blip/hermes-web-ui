@@ -6,6 +6,8 @@ const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
 const switchModelMock = vi.hoisted(() => vi.fn())
 const setSessionModelMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)))
 const startRunViaSocketMock = vi.hoisted(() => vi.fn(() => ({ abort: vi.fn() })))
+const registerSessionHandlersMock = vi.hoisted(() => vi.fn())
+const unregisterSessionHandlersMock = vi.hoisted(() => vi.fn())
 const respondClarifyMock = vi.hoisted(() => vi.fn())
 const fetchSessionMock = vi.hoisted(() => vi.fn())
 const fetchSessionMessagesPageMock = vi.hoisted(() => vi.fn())
@@ -45,8 +47,8 @@ vi.mock('@/stores/hermes/app', () => ({
 vi.mock('@/api/hermes/chat', () => ({
   startRunViaSocket: startRunViaSocketMock,
   resumeSession: resumeSessionMock,
-  registerSessionHandlers: vi.fn(),
-  unregisterSessionHandlers: vi.fn(),
+  registerSessionHandlers: registerSessionHandlersMock,
+  unregisterSessionHandlers: unregisterSessionHandlersMock,
   getChatRunSocket: vi.fn(() => null),
   respondToolApproval: vi.fn(),
   respondClarify: respondClarifyMock,
@@ -637,6 +639,141 @@ describe('chat store user-mode model selection', () => {
       'first running request',
       'queued request one',
     ])
+  })
+
+  it('shows a request-scoped rejection without ending the active sibling run', async () => {
+    const store = useChatStore()
+    store.newChat()
+
+    await store.sendMessage('first running request')
+    await store.sendMessage('queued request one')
+    await store.sendMessage('queued request two')
+
+    const sid = store.activeSession!.id
+    const onEvent = startRunViaSocketMock.mock.calls[0][1]
+    const rejectedId = store.queuedUserMessages.get(sid)![0].id
+    onEvent({
+      event: 'run.rejected',
+      session_id: sid,
+      queue_id: rejectedId,
+      error: 'admission identity failed',
+    })
+
+    expect(store.queuedUserMessages.get(sid)?.map(message => message.content)).toEqual([
+      'queued request two',
+    ])
+    expect(store.activeSession!.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: 'assistant',
+        systemType: 'error',
+        content: 'Error: admission identity failed',
+      }),
+    ]))
+    expect(store.isSessionLive(sid)).toBe(true)
+  })
+
+  it('settles the first rejected request while keeping its visible error', async () => {
+    const store = useChatStore()
+    store.newChat()
+
+    await store.sendMessage('first rejected request')
+
+    const sid = store.activeSession!.id
+    const [runPayload, onEvent, onDone] = startRunViaSocketMock.mock.calls[0]
+    onEvent({
+      event: 'run.rejected',
+      session_id: sid,
+      queue_id: runPayload.queue_id,
+      error: 'admission identity failed',
+    })
+    onDone()
+
+    expect(store.activeSession!.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: 'assistant',
+        systemType: 'error',
+        content: 'Error: admission identity failed',
+      }),
+    ]))
+    expect(store.isSessionLive(sid)).toBe(false)
+  })
+
+  it('keeps resumed handlers until a failure pending after abort completion is visible', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({ session_id: session.id, messages: [], isWorking: true, events: [] })
+      return { disconnect: vi.fn() }
+    })
+
+    await store.switchSession(session.id)
+    const registered = registerSessionHandlersMock.mock.calls.find(call => call[0] === session.id)?.[1]
+    expect(registered).toBeDefined()
+
+    registered.onAbortStarted({ event: 'abort.started', session_id: session.id })
+    registered.onAbortCompleted({
+      event: 'abort.completed',
+      session_id: session.id,
+      queue_length: 0,
+      failure_pending: true,
+      synced: true,
+    })
+
+    expect(store.isSessionLive(session.id)).toBe(true)
+    expect(unregisterSessionHandlersMock).not.toHaveBeenCalledWith(session.id)
+
+    registered.onRunFailed({
+      event: 'run.failed',
+      session_id: session.id,
+      queue_remaining: 0,
+      error: 'Run finalization failed: stats failed',
+    })
+
+    expect(store.activeSession!.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: 'assistant',
+        systemType: 'error',
+        content: 'Error: Run finalization failed: stats failed',
+      }),
+    ]))
+    expect(unregisterSessionHandlersMock).toHaveBeenCalledWith(session.id)
+    expect(store.isSessionLive(session.id)).toBe(false)
+  })
+
+  it('settles a resumed command reservation only when its session command is terminal', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({ session_id: session.id, messages: [], isWorking: true, events: [] })
+      return { disconnect: vi.fn() }
+    })
+
+    await store.switchSession(session.id)
+    const registered = registerSessionHandlersMock.mock.calls.find(call => call[0] === session.id)?.[1]
+    expect(registered).toBeDefined()
+
+    registered.onSessionCommand({
+      event: 'session.command',
+      session_id: session.id,
+      command: 'plan',
+      started: true,
+      terminal: false,
+      message: 'Plan started.',
+    })
+    expect(store.isSessionLive(session.id)).toBe(true)
+    expect(unregisterSessionHandlersMock).not.toHaveBeenCalledWith(session.id)
+
+    registered.onSessionCommand({
+      event: 'session.command',
+      session_id: session.id,
+      command: 'plan',
+      action: 'noop',
+      started: false,
+      terminal: true,
+      message: 'No plan started.',
+    })
+    expect(unregisterSessionHandlersMock).toHaveBeenCalledWith(session.id)
+    expect(store.isSessionLive(session.id)).toBe(false)
   })
 
   it('keeps streamed run failure errors visible after the socket error callback', async () => {

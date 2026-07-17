@@ -50,12 +50,14 @@ function sseStream(...frames: string[]): ReadableStream<Uint8Array> {
 }
 
 function fakeContext() {
+  const state = { messages: [], isWorking: false, events: [], queue: [], runId: undefined, abortController: undefined } as any
   return {
-    sessionMap: new Map(),
-    getOrCreateSession: () => ({ messages: [], isWorking: false, events: [], queue: [], runId: undefined, abortController: undefined }),
-    getResponseRunState: () => ({ responseId: undefined }),
-    markCompleted: vi.fn(async () => {}),
-    dequeueNextQueuedRun: vi.fn(),
+    sessionMap: new Map([['s1', state]]),
+    getOrCreateSession: () => state,
+    getResponseRunState: () => ({ responseId: undefined, insertedKeys: new Set(), toolCalls: new Map() }),
+    markCompleted: vi.fn(async () => ({ finalized: true })),
+    abandonRun: vi.fn(() => true),
+    dequeueNextQueuedRun: vi.fn(() => true),
     buildInput: (x: any) => x,
   } as any
 }
@@ -118,12 +120,6 @@ describe('handleBrokerRun replay mode', () => {
     sessionStore.getSession
       .mockReturnValueOnce({ id: 's1', profile: 'default', workspace: '/tmp/work' })
       .mockReturnValue({ id: 's1', profile: 'default', workspace: '/tmp/work' })
-    sessionStore.getSessionRowId
-      .mockReturnValueOnce(1)
-      .mockReturnValue(2)
-    sessionStore.getSessionIncarnation
-      .mockReturnValueOnce(1)
-      .mockReturnValue(2)
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
@@ -136,6 +132,8 @@ describe('handleBrokerRun replay mode', () => {
       fakeContext(),
     )
     await vi.waitFor(() => expect(workspaceDiffTracker.start).toHaveBeenCalled())
+    sessionStore.getSessionRowId.mockReturnValue(2)
+    sessionStore.getSessionIncarnation.mockReturnValue(2)
     resolveCheckpoint({ key: 'deleted-session-checkpoint' })
     await pending
 
@@ -153,8 +151,9 @@ describe('handleBrokerRun replay mode', () => {
       sessionMap: new Map([['s1', state]]),
       getOrCreateSession: () => state,
       getResponseRunState: () => run,
-      markCompleted: vi.fn(async () => {}),
-      dequeueNextQueuedRun: vi.fn(),
+      markCompleted: vi.fn(async () => ({ finalized: true })),
+      abandonRun: vi.fn(() => true),
+      dequeueNextQueuedRun: vi.fn(() => true),
       buildInput: (value: any) => value,
     } as any
     vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -182,8 +181,9 @@ describe('handleBrokerRun replay mode', () => {
       sessionMap: new Map([['s1', state]]),
       getOrCreateSession: () => state,
       getResponseRunState: () => run,
-      markCompleted: vi.fn(async () => {}),
-      dequeueNextQueuedRun: vi.fn(),
+      markCompleted: vi.fn(async () => ({ finalized: true })),
+      abandonRun: vi.fn(() => true),
+      dequeueNextQueuedRun: vi.fn(() => true),
       buildInput: (value: any) => value,
     } as any
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
@@ -233,6 +233,7 @@ describe('handleBrokerRun replay mode', () => {
     context.markCompleted.mockImplementation(async () => {
       order.push('mark.completed')
       setTimeout(() => order.push('goal.continuation.started'), 0)
+      return { finalized: true }
     })
     const emit = vi.fn((event: string) => order.push(`emit:${event}`))
     vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -313,8 +314,12 @@ describe('handleBrokerRun replay mode', () => {
       sessionMap: new Map([['s1', state]]),
       getOrCreateSession: () => state,
       getResponseRunState: () => run,
-      markCompleted: vi.fn(async () => persistedRunIds.push(...state.messages.map((message: any) => message.run_id))),
-      dequeueNextQueuedRun: vi.fn(),
+      markCompleted: vi.fn(async () => {
+        persistedRunIds.push(...state.messages.map((message: any) => message.run_id))
+        return { finalized: true }
+      }),
+      abandonRun: vi.fn(() => true),
+      dequeueNextQueuedRun: vi.fn(() => true),
       buildInput: (value: any) => value,
     } as any
     vi.stubGlobal('fetch', vi.fn(async () => ({

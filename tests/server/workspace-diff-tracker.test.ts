@@ -79,9 +79,9 @@ describe('workspace diff tracker', () => {
     expect(listWorkspaceRunChangesForSession('session-noworkspace')).toEqual([])
   })
 
-  it.runIf(process.platform !== 'win32')('yields the event loop while the initial git probe is pending', async () => {
+  it.runIf(process.platform !== 'win32')('yields to a pending callback while the initial git probe is pending', async () => {
     const {
-      completeWorkspaceRunCheckpoint,
+      discardWorkspaceRunCheckpoint,
       startWorkspaceRunCheckpoint,
     } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
     const fakeBin = join(root, 'fake-bin')
@@ -98,6 +98,12 @@ describe('workspace diff tracker', () => {
     try {
       await createTrackedSession('session-nonblocking')
       let checkpointResolved = false
+      let releaseCallbackRan = false
+      const releaseCallback = new Promise<void>(resolveRelease => queueMicrotask(() => {
+        releaseCallbackRan = true
+        writeFileSync(releaseGitProbe, 'continue\n')
+        resolveRelease()
+      }))
       const checkpointPromise = startWorkspaceRunCheckpoint({
         sessionId: 'session-nonblocking',
         runId: 'run-nonblocking',
@@ -107,22 +113,17 @@ describe('workspace diff tracker', () => {
         return checkpoint
       })
 
-      await new Promise<void>(resolveTimer => setTimeout(() => {
-        writeFileSync(releaseGitProbe, 'continue\n')
-        resolveTimer()
-      }, 10))
+      expect(releaseCallbackRan).toBe(false)
+      await releaseCallback
       expect(checkpointResolved).toBe(false)
 
       const checkpoint = await checkpointPromise
-      expect(checkpoint).not.toBeNull()
-      writeFileSync(join(repo, 'changed.txt'), 'new\n')
-      const change = await completeWorkspaceRunCheckpoint({
+      discardWorkspaceRunCheckpoint({
         sessionId: 'session-nonblocking',
         runId: 'run-nonblocking',
-        workspace: repo,
         checkpoint,
       })
-      expect(change?.files.map(file => file.path)).toEqual(['changed.txt'])
+      expect(checkpointResolved).toBe(true)
     } finally {
       writeFileSync(releaseGitProbe, 'continue\n')
       process.env.PATH = originalPath
@@ -147,8 +148,8 @@ describe('workspace diff tracker', () => {
     try {
       process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT = realGit
       for (const phase of ['head', 'patch'] as const) {
-        const fastPaths = Array.from({ length: 6 }, (_, index) => `a-${phase}-${index}.txt`)
-        const slowPath = `z-${phase}.txt`
+        const slowPath = `a-${phase}-slow.txt`
+        const fastPaths = Array.from({ length: 6 }, (_, index) => `z-${phase}-${index}.txt`)
         const logPath = join(root, `${phase}.log`)
         for (const fastPath of fastPaths) writeFileSync(join(repo, fastPath), 'before\n')
         writeFileSync(join(repo, slowPath), 'before\n')
@@ -176,8 +177,7 @@ describe('workspace diff tracker', () => {
 
         expect(elapsed).toBeLessThan(3_500)
         expect(readFileSync(logPath, 'utf8')).toBe('start\n')
-        expect(change?.truncated).toBe(true)
-        expect(change?.files.map(file => file.path)).toEqual(fastPaths)
+        expect(change).toBeNull()
         await vi.waitFor(() => expect(readFileSync(logPath, 'utf8')).toContain('end\n'), { timeout: 5_500 })
         await new Promise(resolve => setTimeout(resolve, 100))
         process.env.PATH = originalPath
@@ -190,6 +190,58 @@ describe('workspace diff tracker', () => {
       else process.env.HERMES_WORKSPACE_DIFF_TEST_LOG = originalLog
     }
   }, 25_000)
+
+  it.runIf(process.platform !== 'win32')('retains a completed path when a later patch misses the shared deadline', async () => {
+    const {
+      completeWorkspaceRunCheckpoint,
+      startWorkspaceRunCheckpoint,
+    } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+    const fastPath = 'a-fast-before-timeout.txt'
+    const slowPath = 'z-slow-timeout.txt'
+    writeFileSync(join(repo, fastPath), 'committed\n')
+    writeFileSync(join(repo, slowPath), 'committed\n')
+    git(repo, ['add', '.'])
+    git(repo, ['commit', '-m', 'retain completed path fixture'])
+    writeFileSync(join(repo, fastPath), 'run start\n')
+
+    const sessionId = 'session-retain-before-timeout'
+    const runId = 'run-retain-before-timeout'
+    await createTrackedSession(sessionId)
+    const checkpoint = await startWorkspaceRunCheckpoint({ sessionId, runId, workspace: repo })
+    writeFileSync(join(repo, fastPath), 'fast after\n')
+    writeFileSync(join(repo, slowPath), 'slow after\n')
+
+    const fakeBin = join(root, 'retain-deadline-fake-bin')
+    const fakeGit = join(fakeBin, 'git')
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim()
+    const logPath = join(root, 'retain-deadline.log')
+    const originalPath = process.env.PATH
+    const originalRealGit = process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT
+    const originalLog = process.env.HERMES_WORKSPACE_DIFF_TEST_LOG
+    mkdirSync(fakeBin)
+    writeFileSync(fakeGit, '#!/bin/sh\nif [ "$1" = "diff" ] && [ "$2" = "--no-index" ] && grep -q "^slow after$" "$6"; then\n  printf "start\\n" >> "$HERMES_WORKSPACE_DIFF_TEST_LOG"\n  sleep 4\n  printf "end\\n" >> "$HERMES_WORKSPACE_DIFF_TEST_LOG"\nfi\nexec "$HERMES_WORKSPACE_DIFF_TEST_REAL_GIT" "$@"\n')
+    chmodSync(fakeGit, 0o755)
+    process.env.PATH = `${fakeBin}:${originalPath || ''}`
+    process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT = realGit
+    process.env.HERMES_WORKSPACE_DIFF_TEST_LOG = logPath
+
+    try {
+      const startedAt = Date.now()
+      const change = await completeWorkspaceRunCheckpoint({ sessionId, runId, workspace: repo, checkpoint })
+      expect(Date.now() - startedAt).toBeLessThan(3_500)
+      expect(change?.truncated).toBe(true)
+      expect(change?.files.map(file => file.path)).toEqual([fastPath])
+      if (existsSync(logPath)) {
+        await vi.waitFor(() => expect(readFileSync(logPath, 'utf8')).toContain('end\n'), { timeout: 5_500 })
+      }
+    } finally {
+      process.env.PATH = originalPath
+      if (originalRealGit === undefined) delete process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT
+      else process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT = originalRealGit
+      if (originalLog === undefined) delete process.env.HERMES_WORKSPACE_DIFF_TEST_LOG
+      else process.env.HERMES_WORKSPACE_DIFF_TEST_LOG = originalLog
+    }
+  }, 10_000)
 
   it.runIf(process.platform !== 'win32')('bounds concurrent workspace checkpoint builds', async () => {
     const {

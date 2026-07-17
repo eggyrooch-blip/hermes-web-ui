@@ -328,14 +328,14 @@ async function resolveGitRoot(
   workspace: string,
   deadline: number,
   lease: WorkspaceDiffOperationLease,
-): Promise<string | null> {
+): Promise<string | null | typeof DEADLINE_EXCEEDED> {
   try {
     const rootOutput = await waitForSnapshotOperation(
       () => runGit(workspace, ['rev-parse', '--show-toplevel']),
       deadline,
       lease,
     )
-    if (rootOutput === DEADLINE_EXCEEDED) return null
+    if (rootOutput === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
     const root = rootOutput.trim()
     if (!root) return null
     const resolvedWorkspace = await waitForSnapshotOperation(
@@ -343,13 +343,13 @@ async function resolveGitRoot(
       deadline,
       lease,
     )
-    if (resolvedWorkspace === DEADLINE_EXCEEDED) return null
+    if (resolvedWorkspace === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
     const resolvedRoot = await waitForSnapshotOperation(
       () => realpath(resolve(root)),
       deadline,
       lease,
     )
-    if (resolvedRoot === DEADLINE_EXCEEDED) return null
+    if (resolvedRoot === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
     return isPathInside(resolvedRoot, resolvedWorkspace) ? resolvedRoot : null
   } catch {
     return null
@@ -842,6 +842,7 @@ async function buildWorkspaceRunCheckpoint(args: {
   if (sessionRowId == null || sessionIncarnation == null) return null
   const deadline = Date.now() + MAX_SCAN_MS
   const gitRoot = await resolveGitRoot(args.workspace, deadline, lease)
+  if (gitRoot === DEADLINE_EXCEEDED) return null
   if (gitRoot) {
     const status = await getGitStatusPaths(gitRoot)
     const snapshot = await snapshotPaths(

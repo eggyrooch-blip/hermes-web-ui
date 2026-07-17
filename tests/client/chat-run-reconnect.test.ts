@@ -181,6 +181,135 @@ describe('chat-run socket reconnect handling', () => {
     expect(socket.emit).toHaveBeenCalledWith('run', body)
   })
 
+  it('settles and removes the owning handler when the first request is rejected', async () => {
+    const { startRunViaSocket } = await import('../../packages/client/src/api/hermes/chat')
+    const onEvent = vi.fn()
+    const onDone = vi.fn()
+    const body = {
+      session_id: 'session-1',
+      input: 'hello',
+      queue_id: 'owner-request',
+      profile: 'default',
+      source: 'cli' as const,
+    }
+
+    startRunViaSocket(body, onEvent, onDone, vi.fn())
+    const socket = socketState.sockets[0]
+    const rejected = {
+      event: 'run.rejected',
+      session_id: 'session-1',
+      queue_id: 'owner-request',
+      error: 'identity failed',
+    }
+    socket.__trigger('run.rejected', rejected)
+
+    expect(onEvent).toHaveBeenCalledWith(rejected)
+    expect(onDone).toHaveBeenCalledOnce()
+    expect(socket.__listenerCount('connect')).toBe(0)
+    socket.__trigger('message.delta', { event: 'message.delta', session_id: 'session-1', delta: 'stale' })
+    expect(onEvent).toHaveBeenCalledTimes(1)
+
+    startRunViaSocket({ ...body, queue_id: 'retry' }, vi.fn(), vi.fn(), vi.fn())
+    expect(socket.__listenerCount('connect')).toBe(1)
+  })
+
+  it('keeps the owning handler alive when only an active sibling follow-up is rejected', async () => {
+    const { startRunViaSocket } = await import('../../packages/client/src/api/hermes/chat')
+    const onEvent = vi.fn()
+    const onDone = vi.fn()
+    const owner = {
+      session_id: 'session-1',
+      input: 'owner',
+      queue_id: 'owner-request',
+      profile: 'default',
+      source: 'cli' as const,
+    }
+
+    startRunViaSocket(owner, onEvent, onDone, vi.fn())
+    startRunViaSocket({ ...owner, input: 'follow-up', queue_id: 'follow-up' }, vi.fn(), vi.fn(), vi.fn())
+    const socket = socketState.sockets[0]
+    const rejected = {
+      event: 'run.rejected',
+      session_id: 'session-1',
+      queue_id: 'follow-up',
+      error: 'identity failed',
+    }
+    socket.__trigger('run.rejected', rejected)
+
+    expect(onEvent).toHaveBeenCalledWith(rejected)
+    expect(onDone).not.toHaveBeenCalled()
+    expect(socket.__listenerCount('connect')).toBe(1)
+    const delta = { event: 'message.delta', session_id: 'session-1', delta: 'owner continues' }
+    socket.__trigger('message.delta', delta)
+    expect(onEvent).toHaveBeenCalledWith(delta)
+  })
+
+  it('keeps handlers through a nonterminal goal continuation command', async () => {
+    const { startRunViaSocket } = await import('../../packages/client/src/api/hermes/chat')
+    const onEvent = vi.fn()
+    const onDone = vi.fn()
+
+    startRunViaSocket(
+      { session_id: 'session-1', input: 'goal run', queue_id: 'owner', profile: 'default', source: 'cli' },
+      onEvent,
+      onDone,
+      vi.fn(),
+    )
+    const socket = socketState.sockets[0]
+    socket.__trigger('session.command', {
+      event: 'session.command',
+      session_id: 'session-1',
+      command: 'goal',
+      action: 'continue',
+      terminal: false,
+      started: true,
+    })
+    expect(onDone).not.toHaveBeenCalled()
+
+    const delta = { event: 'message.delta', session_id: 'session-1', delta: 'continuation output' }
+    socket.__trigger('message.delta', delta)
+    expect(onEvent).toHaveBeenCalledWith(delta)
+    socket.__trigger('run.completed', {
+      event: 'run.completed',
+      session_id: 'session-1',
+      queue_remaining: 0,
+    })
+    expect(onDone).toHaveBeenCalledOnce()
+  })
+
+  it('keeps handlers until the concrete failure following abort cleanup is delivered', async () => {
+    const { startRunViaSocket } = await import('../../packages/client/src/api/hermes/chat')
+    const onEvent = vi.fn()
+    const onDone = vi.fn()
+
+    startRunViaSocket(
+      { session_id: 'session-1', input: 'abort', queue_id: 'owner', profile: 'default', source: 'cli' },
+      onEvent,
+      onDone,
+      vi.fn(),
+    )
+    const socket = socketState.sockets[0]
+    const completed = {
+      event: 'abort.completed',
+      session_id: 'session-1',
+      queue_length: 0,
+      failure_pending: true,
+    }
+    socket.__trigger('abort.completed', completed)
+
+    expect(onEvent).toHaveBeenCalledWith(completed)
+    expect(onDone).not.toHaveBeenCalled()
+    const failed = {
+      event: 'run.failed',
+      session_id: 'session-1',
+      queue_remaining: 0,
+      error: 'Run finalization failed: stats failed',
+    }
+    socket.__trigger('run.failed', failed)
+    expect(onEvent).toHaveBeenCalledWith(failed)
+    expect(onDone).toHaveBeenCalledOnce()
+  })
+
   it('fans session.command events to run-local and global handlers', async () => {
     const { onSessionCommand, startRunViaSocket } = await import('../../packages/client/src/api/hermes/chat')
     const onEvent = vi.fn()

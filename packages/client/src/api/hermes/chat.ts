@@ -75,6 +75,10 @@ export interface RunEvent {
   title?: string
   /** Queue length from run.queued event */
   queue_length?: number
+  /** Abort cleanup will be followed by a concrete run.failed event. */
+  failure_pending?: boolean
+  /** Request-scoped queue item rejected before admission. */
+  queue_id?: string
   /** Queue item that was just removed because it is starting now. */
   dequeued_queue_id?: string
   /** Queued user messages from run.queued/resume payloads. */
@@ -164,6 +168,7 @@ const sessionEventHandlers = new Map<string, {
   onSessionCommand?: (event: RunEvent) => void
   onSessionTitleUpdated?: (event: RunEvent) => void
   onRunQueued?: (event: RunEvent) => void
+  onRunRejected?: (event: RunEvent) => void
   onApprovalRequested?: (event: RunEvent) => void
   onApprovalResolved?: (event: RunEvent) => void
   onPeerUserMessage?: (event: RunEvent) => void
@@ -326,6 +331,12 @@ function globalRunQueuedHandler(event: RunEvent): void {
   }
 }
 
+function globalRunRejectedHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+  sessionEventHandlers.get(sid)?.onRunRejected?.(event)
+}
+
 /**
  * Global compression.started event handler
  */
@@ -392,6 +403,7 @@ function globalAbortCompletedHandler(event: RunEvent): void {
 
   // If abort completion is followed by queued runs, keep the handler alive so
   // the next run.started/message.delta/run.completed events are still received.
+  if (event.failure_pending) return
   if ((event as any).queue_length > 0) return
   sessionEventHandlers.delete(sid)
 }
@@ -560,6 +572,7 @@ export function registerSessionHandlers(
     onSessionCommand?: (event: RunEvent) => void
     onSessionTitleUpdated?: (event: RunEvent) => void
     onRunQueued?: (event: RunEvent) => void
+    onRunRejected?: (event: RunEvent) => void
     onApprovalRequested?: (event: RunEvent) => void
     onApprovalResolved?: (event: RunEvent) => void
     onPeerUserMessage?: (event: RunEvent) => void
@@ -725,6 +738,7 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
     chatRunSocket.on('run.failed', globalRunFailedHandler)
     chatRunSocket.on('run.completed', globalRunCompletedHandler)
     chatRunSocket.on('run.queued', globalRunQueuedHandler)
+    chatRunSocket.on('run.rejected', globalRunRejectedHandler)
     chatRunSocket.on('approval.requested', globalApprovalRequestedHandler)
     chatRunSocket.on('approval.resolved', globalApprovalResolvedHandler)
     chatRunSocket.on('run.peer_user_message', globalPeerUserMessageHandler)
@@ -962,6 +976,7 @@ export function startRunViaSocket(
     onAbortCompleted: (evt: RunEvent) => {
       if (closed) return
       onEvent(evt)
+      if (evt.failure_pending) return
       if ((evt as any).queue_length > 0) return
       closed = true
       removeTerminalSocketListeners()
@@ -990,6 +1005,15 @@ export function startRunViaSocket(
     onRunQueued: (evt: RunEvent) => {
       if (closed) return
       onEvent(evt)
+    },
+    onRunRejected: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+      if (evt.queue_id !== body.queue_id) return
+      closed = true
+      removeTerminalSocketListeners()
+      sessionEventHandlers.delete(sid)
+      onDone()
     },
     onApprovalRequested: (evt: RunEvent) => {
       if (closed) return

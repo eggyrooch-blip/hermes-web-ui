@@ -2062,6 +2062,22 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
+  function handleRunRejectedEvent(sessionId: string, evt: RunEvent) {
+    const queueId = evt.queue_id != null ? String(evt.queue_id) : ''
+    if (queueId) dropQueuedUserMessage(sessionId, queueId)
+    const message = errorMessageText(evt.error)
+    const content = message ? `Error: ${message}` : 'Request rejected'
+    const messages = getSessionMsgs(sessionId)
+    if (messages.some(item => item.role === 'assistant' && item.systemType === 'error' && item.content === content)) return
+    addMessage(sessionId, {
+      id: uid(),
+      role: 'assistant',
+      content,
+      timestamp: Date.now(),
+      systemType: 'error',
+    })
+  }
+
   function setPendingApproval(evt: RunEvent) {
     const sid = evt.session_id
     const approvalId = (evt as any).approval_id as string | undefined
@@ -2322,7 +2338,9 @@ export const useChatStore = defineStore('chat', () => {
     const isBridgeSkillCommand = isBridgeSlashCommand && /^\/skill(?:\s|$)/i.test(content.trim())
     const isBridgeGoalCommand = isBridgeSlashCommand && /^\/goal(?:\s|$)/i.test(content.trim())
     const wasLiveBeforeSend = isSessionLive(sid)
-    const shouldQueue = wasLiveBeforeSend && (!isBridgeSlashCommand || isBridgePlanCommand || isBridgeSkillCommand)
+    const shouldQueue = wasLiveBeforeSend && (
+      !isBridgeSlashCommand || isBridgePlanCommand || isBridgeGoalCommand || isBridgeSkillCommand
+    )
 
     const userMsg: Message = {
       id: uid(),
@@ -2691,6 +2709,11 @@ export const useChatStore = defineStore('chat', () => {
               break
             }
 
+            case 'run.rejected': {
+              handleRunRejectedEvent(sid, evt)
+              break
+            }
+
             case 'session.command': {
               handleSessionCommandEvent(evt)
               break
@@ -2768,6 +2791,10 @@ export const useChatStore = defineStore('chat', () => {
               const lastMsg = msgs[msgs.length - 1]
               if (lastMsg?.isStreaming) {
                 updateMessage(sid, lastMsg.id, { isStreaming: false })
+              }
+              if (evt.failure_pending) {
+                setAbortState(null)
+                break
               }
               msgs.forEach((m, i) => {
                 if (m.role === 'tool' && m.toolStatus === 'running') {
@@ -3325,8 +3352,21 @@ export const useChatStore = defineStore('chat', () => {
           break
         }
 
+        case 'run.rejected': {
+          handleRunRejectedEvent(sid, evt)
+          break
+        }
+
         case 'session.command': {
           handleSessionCommandEvent(evt)
+          if ((evt as any).terminal !== false) {
+            cleanup()
+            setAbortState(null)
+            activeAssistantMessageId = null
+            reasoningAssistantMessageId = null
+            activeRunMarker = null
+            activeRunId = null
+          }
           break
         }
 
@@ -3422,6 +3462,10 @@ export const useChatStore = defineStore('chat', () => {
           const lastMsg = msgs[msgs.length - 1]
           if (lastMsg?.isStreaming) {
             updateMessage(sid, lastMsg.id, { isStreaming: false })
+          }
+          if (evt.failure_pending) {
+            setAbortState(null)
+            break
           }
           msgs.forEach((m, i) => {
             if (m.role === 'tool' && m.toolStatus === 'running') {
@@ -3848,6 +3892,7 @@ export const useChatStore = defineStore('chat', () => {
       onAgentEvent: (evt) => handleEvent(evt),
       onSessionCommand: (evt) => handleEvent(evt),
       onRunQueued: (evt) => handleEvent(evt),
+      onRunRejected: (evt) => handleEvent(evt),
       onClarifyRequested: (evt) => handleEvent(evt),
       onClarifyResolved: (evt) => handleEvent(evt),
       onAuthRequired: (evt) => handleEvent(evt),

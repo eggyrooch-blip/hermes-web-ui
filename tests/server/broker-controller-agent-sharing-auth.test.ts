@@ -40,7 +40,10 @@ vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSessionDetail: vi.fn(),
   createSession: vi.fn(),
   addMessage: vi.fn(),
+  updateSession: vi.fn(),
   updateSessionStats: vi.fn(),
+  getSessionRowId: vi.fn(() => null),
+  getSessionIncarnation: vi.fn(() => null),
 }))
 vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
   getSessionDetailFromDb: vi.fn(),

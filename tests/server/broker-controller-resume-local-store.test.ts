@@ -17,6 +17,8 @@ vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   addMessage: addMessageMock,
   updateSession: updateSessionMock,
   updateSessionStats: vi.fn(),
+  getSessionRowId: vi.fn(() => 1),
+  getSessionIncarnation: vi.fn(() => 1),
 }))
 
 vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
@@ -399,25 +401,33 @@ describe('BrokerRunController local session resume', () => {
       to: vi.fn(() => ({ emit: vi.fn() })),
       adapter: { rooms: new Map() },
     }
-    ;(controller as any).setSessionState('abort-session', 'research', {
+    const state = {
       messages: [],
       isWorking: true,
       isAborting: true,
       events: [],
       runId: 'run-1',
+      activeRunMarker: 'marker-1',
       profile: 'research',
       queue: [{
         queue_id: 'queued-client-after-abort',
         input: 'retry after abort',
         profile: 'research',
       }],
-    })
-    await (controller as any).markAbortCompleted(
-      { connected: false, emit: vi.fn(), join: vi.fn(), data: {} },
+    }
+    const socket = { connected: false, emit: vi.fn(), join: vi.fn(), data: {} }
+    ;(controller as any).setSessionState('abort-session', 'research', state)
+    await (controller as any).markCompleted(
+      socket,
       'abort-session',
       'research',
-      'run-1',
+      state,
+      'marker-1',
+      { event: 'run.failed', run_id: 'run-1' },
+      () => true,
+      true,
     )
+    ;(controller as any).dequeueNextQueuedRun(socket, 'abort-session', 'research', state)
 
     expect(addMessageMock).toHaveBeenCalledWith(expect.objectContaining({
       session_id: 'abort-session',
