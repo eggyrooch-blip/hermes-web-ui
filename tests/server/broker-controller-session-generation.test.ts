@@ -6,6 +6,8 @@ import { join } from 'path'
 
 const dbState = vi.hoisted(() => ({ db: null as DatabaseSync | null, appHome: '' }))
 const tracker = vi.hoisted(() => ({ start: vi.fn(), complete: vi.fn(), discard: vi.fn() }))
+const remoteDelete = vi.hoisted(() => ({ inspect: vi.fn(), remove: vi.fn() }))
+const chatRun = vi.hoisted(() => ({ server: undefined as any }))
 
 vi.mock('../../packages/server/src/db/index', () => ({
   getDb: () => dbState.db,
@@ -29,11 +31,18 @@ vi.mock('../../packages/server/src/config', () => ({
 vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
   getSessionDetailFromDb: vi.fn(async () => null),
   getSessionDetailFromDbWithProfile: vi.fn(async () => null),
+  getExactSessionDetailFromDbWithProfile: remoteDelete.inspect,
 }))
 vi.mock('../../packages/server/src/db/hermes/compression-snapshot', () => ({ getCompressionSnapshot: vi.fn(() => null) }))
-vi.mock('../../packages/server/src/db/hermes/usage-store', () => ({ updateUsage: vi.fn() }))
+vi.mock('../../packages/server/src/db/hermes/usage-store', () => ({
+  deleteUsage: vi.fn(),
+  getUsage: vi.fn(),
+  getUsageBatch: vi.fn(),
+  updateUsage: vi.fn(),
+}))
 vi.mock('../../packages/server/src/lib/context-compressor', () => ({
   ChatContextCompressor: vi.fn(),
+  DEFAULT_COMPRESSION_CONFIG: {},
   SUMMARY_PREFIX: '[Previous context summary]',
   countTokens: vi.fn(() => 0),
 }))
@@ -46,7 +55,11 @@ vi.mock('../../packages/server/src/services/feishu-oauth', () => ({
   getFeishuSessionSecret: vi.fn(() => 'secret'),
   parseFeishuSessionCookie: vi.fn(),
 }))
-vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({ getProfileDir: vi.fn(() => '/tmp/profile') }))
+vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
+  getActiveProfileName: vi.fn(() => 'research'),
+  getProfileDir: vi.fn(() => '/tmp/profile'),
+  listProfileNamesFromDisk: vi.fn(() => ['research']),
+}))
 vi.mock('../../packages/server/src/services/hermes/agent-ownership', () => ({
   ownerOwnsProfile: vi.fn(() => false),
   resolveOwnedProfileAgentId: vi.fn(),
@@ -56,7 +69,10 @@ vi.mock('../../packages/server/src/middleware/user-auth', () => ({
   authenticateUserToken: vi.fn(),
   isAuthEnabled: vi.fn(async () => false),
 }))
-vi.mock('../../packages/server/src/db/hermes/users-store', () => ({ userCanAccessProfile: vi.fn(() => true) }))
+vi.mock('../../packages/server/src/db/hermes/users-store', () => ({
+  listUserProfiles: vi.fn(() => []),
+  userCanAccessProfile: vi.fn(() => true),
+}))
 vi.mock('../../packages/server/src/services/hermes/model-context', () => ({ getModelContextLength: vi.fn(() => 200000) }))
 vi.mock('../../packages/server/src/services/hermes/run-chat/workspace', () => ({
   ensureHermesRunWorkspace: vi.fn(async () => '/tmp/workspace'),
@@ -65,6 +81,22 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/workspace-diff-track
   startWorkspaceRunCheckpoint: tracker.start,
   completeWorkspaceRunCheckpoint: tracker.complete,
   discardWorkspaceRunCheckpoint: tracker.discard,
+}))
+vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({
+  deleteSessionForProfile: remoteDelete.remove,
+}))
+vi.mock('../../packages/server/src/routes/hermes/chat-run', () => ({
+  getChatRunServer: () => chatRun.server,
+}))
+vi.mock('../../packages/server/src/routes/hermes/group-chat', () => ({
+  getGroupChatServer: vi.fn(() => undefined),
+}))
+vi.mock('../../packages/server/src/services/agent-runner/coding-agent-run-manager', () => ({
+  codingAgentRunManager: { stop: vi.fn() },
+}))
+vi.mock('../../packages/server/src/services/hermes/agent-bridge', () => ({
+  AgentBridgeClient: vi.fn(),
+  getAgentBridgeManager: vi.fn(() => ({ getRuntimeState: () => ({ ready: false, running: false }) })),
 }))
 
 import { initAllHermesTables } from '../../packages/server/src/db/hermes/schemas'
@@ -76,7 +108,10 @@ import {
   getSessionIncarnation,
   getSessionRowId,
 } from '../../packages/server/src/db/hermes/session-store'
+import { saveWorkspaceRunChange, listWorkspaceRunChangesForSession } from '../../packages/server/src/db/hermes/workspace-run-changes-store'
+import { MESSAGES_TABLE, WORKSPACE_RUN_CHANGES_TABLE, WORKSPACE_RUN_CHANGE_FILES_TABLE } from '../../packages/server/src/db/hermes/schemas'
 import { BrokerRunController } from '../../packages/server/src/services/hermes/broker-controller'
+import { batchRemove, remove } from '../../packages/server/src/controllers/hermes/sessions'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -156,11 +191,43 @@ function parkCredentialRun(controller: BrokerRunController, runId = 'parked-run'
   return state
 }
 
+function seedWorkspaceChange(sessionId = 'same-id') {
+  saveWorkspaceRunChange({
+    change_id: `change-${sessionId}`,
+    session_id: sessionId,
+    session_rowid: getSessionRowId(sessionId)!,
+    session_incarnation: getSessionIncarnation(sessionId)!,
+    run_id: `run-${sessionId}`,
+    workspace: 'workspace',
+    workspace_kind: 'filesystem',
+    started_at: 1,
+    finished_at: 2,
+    files: [{
+      path: 'changed.txt',
+      change_type: 'modified',
+      additions: 1,
+      deletions: 0,
+      patch: '+changed',
+      patch_bytes: 8,
+    }],
+  })
+}
+
+function expectSessionPurged(sessionId = 'same-id') {
+  expect(getSession(sessionId)).toBeNull()
+  expect(getSessionDetail(sessionId)).toBeNull()
+  expect(listWorkspaceRunChangesForSession(sessionId)).toEqual([])
+  for (const table of [MESSAGES_TABLE, WORKSPACE_RUN_CHANGES_TABLE, WORKSPACE_RUN_CHANGE_FILES_TABLE]) {
+    expect(dbState.db!.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE session_id = ?`).get(sessionId)).toEqual({ count: 0 })
+  }
+}
+
 describe('BrokerRunController session generation integration', () => {
   let root: string
 
   beforeEach(() => {
     vi.clearAllMocks()
+    chatRun.server = undefined
     root = mkdtempSync(join(tmpdir(), 'hermes-broker-generation-'))
     dbState.appHome = root
     dbState.db = new DatabaseSync(join(root, 'sessions.db'))
@@ -215,6 +282,76 @@ describe('BrokerRunController session generation integration', () => {
     newResponse.resolve({ ok: true, status: 200, body: sseDone('new-run') })
     await newRun
     expect(newState.isWorking).toBe(false)
+  })
+
+  it('purges an active public run generation before awaiting remote single-session deletion', async () => {
+    seedWorkspaceChange()
+    const remote = deferred<boolean>()
+    remoteDelete.inspect.mockResolvedValue({ id: 'same-id', messages: [] })
+    remoteDelete.remove.mockReturnValue(remote.promise)
+    let runSignal: AbortSignal | undefined
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      runSignal = init?.signal || undefined
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, handlers } = harness()
+    chatRun.server = controller
+
+    const running = handlers.get('run')!({ input: 'active write', session_id: 'same-id', queue_id: 'active' })
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(getSessionDetail('same-id')?.messages).toEqual([
+      expect.objectContaining({ role: 'user', content: 'active write' }),
+    ])
+
+    const ctx: any = {
+      params: { id: 'same-id' },
+      state: { user: { id: 1, role: 'super_admin' } },
+      body: null,
+    }
+    const deleting = remove(ctx)
+    await vi.waitFor(() => expect(remoteDelete.remove).toHaveBeenCalledWith('same-id', 'research'))
+
+    expect(runSignal?.aborted).toBe(true)
+    expectSessionPurged()
+    await running
+    expectSessionPurged()
+
+    remote.resolve(true)
+    await deleting
+    expectSessionPurged()
+    expect(ctx.body).toEqual({
+      ok: true,
+      deleted: true,
+      hermes: { attempted: true, deleted: true, profile: 'research', error: undefined },
+    })
+  })
+
+  it('purges a batch target before awaiting its remote deletion and preserves result counts', async () => {
+    seedWorkspaceChange()
+    const remote = deferred<boolean>()
+    remoteDelete.inspect.mockResolvedValue({ id: 'same-id', messages: [] })
+    remoteDelete.remove.mockReturnValue(remote.promise)
+    const ctx: any = {
+      request: { body: { sessions: [{ id: 'same-id', profile: 'research' }] } },
+      state: { user: { id: 1, role: 'super_admin' } },
+      body: null,
+    }
+
+    const deleting = batchRemove(ctx)
+    await vi.waitFor(() => expect(remoteDelete.remove).toHaveBeenCalledWith('same-id', 'research'))
+    expectSessionPurged()
+
+    remote.resolve(true)
+    await deleting
+    expectSessionPurged()
+    expect(ctx.body).toMatchObject({
+      ok: true,
+      deleted: 1,
+      failed: 0,
+      hermesDeleted: 1,
+      hermesFailed: 0,
+    })
   })
 
   it('rejects public credential replay after a real session deletion without recreating it', async () => {

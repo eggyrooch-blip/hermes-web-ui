@@ -674,38 +674,51 @@ export async function handleBridgeRun(
       await emitWorkspaceDiffCompleted()
       return
     }
-    const queueLen = state.queue?.length ?? 0
+    await emitWorkspaceDiffCompleted()
+    if (sessionMap.get(session_id) !== state || state.activeRunMarker !== runMarker || !state.isWorking) return
+    const message = err instanceof Error ? err.message : String(err)
+    let errUsage = { inputTokens: 0, outputTokens: 0 }
+    let errContextTokens: number | undefined
+    let finalizationError: unknown
+    try {
+      state.bridgePendingToolCallMarkup = undefined
+      flushBridgePendingToDb(state, session_id)
+      updateSessionStats(session_id)
+      errUsage = await calcAndUpdateUsage(session_id, state, emit)
+      errContextTokens = await refreshFinalContextUsage({
+        sessionId: session_id,
+        profile,
+        model: resolvedModel,
+        provider: resolvedProvider,
+        instructions: fullInstructions,
+        state,
+        usage: errUsage,
+        emit,
+        bridge,
+      })
+      if (sessionMap.get(session_id) !== state || state.activeRunMarker !== runMarker || !state.isWorking) return
+      updateUsage(session_id, {
+        inputTokens: errUsage.inputTokens,
+        outputTokens: errUsage.outputTokens,
+        profile,
+      })
+    } catch (finalizeErr) {
+      finalizationError = finalizeErr
+    }
+    if (sessionMap.get(session_id) !== state || state.activeRunMarker !== runMarker || !state.isWorking) return
     state.isWorking = false
     state.isAborting = false
+    state.abortController = undefined
     state.profile = undefined
+    state.runId = undefined
     state.activeRunMarker = undefined
     state.events = []
-    state.bridgePendingToolCallMarkup = undefined
-    flushBridgePendingToDb(state, session_id)
-    state.runId = undefined
-    updateSessionStats(session_id)
-    const message = err instanceof Error ? err.message : String(err)
-    const errUsage = await calcAndUpdateUsage(session_id, state, emit)
-    const errContextTokens = await refreshFinalContextUsage({
-      sessionId: session_id,
-      profile,
-      model: resolvedModel,
-      provider: resolvedProvider,
-      instructions: fullInstructions,
-      state,
-      usage: errUsage,
-      emit,
-      bridge,
-    })
-    updateUsage(session_id, {
-      inputTokens: errUsage.inputTokens,
-      outputTokens: errUsage.outputTokens,
-      profile,
-    })
-    await emitWorkspaceDiffCompleted()
+    const queueLen = state.queue?.length ?? 0
     emit('run.failed', {
       event: 'run.failed',
-      error: message,
+      error: finalizationError
+        ? `${message}; finalization failed: ${finalizationError instanceof Error ? finalizationError.message : String(finalizationError)}`
+        : message,
       inputTokens: errUsage.inputTokens,
       outputTokens: errUsage.outputTokens,
       contextTokens: errContextTokens,

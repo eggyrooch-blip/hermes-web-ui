@@ -1299,7 +1299,12 @@ export class BrokerRunController {
         })
         this.dequeueNextQueuedRun(socket, session_id, profile, state)
       } else {
-        emit('run.failed', { event: 'run.failed', run_id: runMarker, error, queue_remaining: 0 })
+        socket.emit('run.rejected', {
+          event: 'run.rejected',
+          session_id,
+          queue_id: data.queue_id,
+          error,
+        })
       }
       return
     }

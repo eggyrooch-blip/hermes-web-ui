@@ -1368,6 +1368,38 @@ describe('BrokerRunController run lifecycle', () => {
     expect(state.isWorking).toBe(false)
   })
 
+  it('rejects a non-owner setup failure only to its requester while an active sibling keeps streaming', async () => {
+    const activeResponse = deferred<any>()
+    const fetchMock = vi.fn().mockReturnValue(activeResponse.promise)
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, emitted, handlers, socket } = makeHarness()
+
+    const active = handlers.get('run')!({ input: 'active', session_id: 's1', queue_id: 'active' })
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    const state = (controller as any).getSessionState('s1', 'research')
+    const activeMarker = state.activeRunMarker
+    const requester = { ...socket, id: 'socket-requester', emit: vi.fn(), join: vi.fn() }
+    store.getSessionRowId.mockImplementationOnce(() => { throw new Error('setup identity failed') })
+
+    await (controller as any).handleRun(requester, {
+      input: 'second',
+      session_id: 's1',
+      queue_id: 'second',
+    }, 'research')
+
+    expect(requester.emit).toHaveBeenCalledWith('run.rejected', expect.objectContaining({
+      session_id: 's1',
+      queue_id: 'second',
+      error: 'setup identity failed',
+    }))
+    expect(emitted.filter(item => item.event === 'run.failed')).toHaveLength(0)
+    expect(state).toMatchObject({ isWorking: true, activeRunMarker: activeMarker })
+
+    activeResponse.resolve({ ok: true, status: 200, body: sseDone('run-active') })
+    await active
+    expect(state.isWorking).toBe(false)
+  })
+
   it('fails closed and releases the queue when generation lookup throws inside the stream catch path', async () => {
     const firstResponse = deferred<any>()
     const secondResponse = deferred<any>()

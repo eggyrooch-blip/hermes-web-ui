@@ -906,10 +906,10 @@ export async function remove(ctx: any) {
   const codingAgentSession = isCodingAgentSession(existing)
   if (codingAgentSession) codingAgentRunManager.stop(sessionId, { reportClosed: false })
   if (existing) abandonActiveSessionRun(sessionId, existing.profile || hermesProfile)
+  const localDeleted = existing ? localDeleteSession(sessionId) : true
   const hermes = codingAgentSession
     ? { attempted: false, deleted: false, profile: hermesProfile }
     : await deleteHermesSessionIfPresent(sessionId, hermesProfile)
-  const localDeleted = existing ? localDeleteSession(sessionId) : true
   if (!localDeleted) {
     ctx.status = 500
     ctx.body = { error: 'Failed to delete session' }
@@ -979,6 +979,7 @@ export async function batchRemove(ctx: any) {
     if (codingAgentSession) codingAgentRunManager.stop(id, { reportClosed: false })
     const shouldDeleteLocal = Boolean(existing && (!targetProfile || existing.profile === targetProfile))
     if (shouldDeleteLocal) abandonActiveSessionRun(id, existing?.profile || targetProfile)
+    const localDeleted = shouldDeleteLocal ? localDeleteSession(id) : true
     const hermes = codingAgentSession
       ? { attempted: false, deleted: false, profile: targetProfile || 'default' }
       : await deleteHermesSessionIfPresent(id, targetProfile)
@@ -990,8 +991,7 @@ export async function batchRemove(ctx: any) {
     }
 
     if (shouldDeleteLocal) {
-      const ok = localDeleteSession(id)
-      if (ok) {
+      if (localDeleted) {
         deleteUsage(id)
         results.deleted++
       } else {

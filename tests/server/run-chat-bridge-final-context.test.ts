@@ -554,7 +554,7 @@ describe('bridge run final context usage', () => {
     // contains every run path, so an out-of-tree value would be rewritten to the
     // profile default (see run-workspace-containment.test.ts).
     const workspace = '/tmp/hermes-bridge-final-context/default/workspace/explicit'
-    completeWorkspaceRunCheckpointMock.mockReturnValue({
+    const change = {
       change_id: 'change-failed',
       session_id: 'session-1',
       run_id: 'run-1',
@@ -570,7 +570,12 @@ describe('bridge run final context usage', () => {
       total_patch_bytes: 12,
       created_at: 2,
       files: [],
-    })
+    }
+    let resolveDiff!: (value: typeof change) => void
+    const delayedDiff = new Promise<typeof change>(resolve => { resolveDiff = resolve })
+    completeWorkspaceRunCheckpointMock.mockReturnValue(delayedDiff)
+    updateSessionStatsMock.mockImplementationOnce(() => { throw new Error('stats failed') })
+    const dequeueNextQueuedRun = vi.fn()
     const bridge = {
       chat: vi.fn().mockResolvedValue({ run_id: 'run-1', status: 'started' }),
       contextEstimate: vi.fn().mockResolvedValue({
@@ -586,7 +591,7 @@ describe('bridge run final context usage', () => {
     } as any
 
     const { handleBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
-    await handleBridgeRun(
+    const pending = handleBridgeRun(
       nsp,
       socket,
       { input: 'hello', session_id: 'session-1', workspace },
@@ -595,8 +600,15 @@ describe('bridge run final context usage', () => {
       bridge,
       false,
       vi.fn(),
-      vi.fn(),
+      dequeueNextQueuedRun,
     )
+
+    await vi.waitFor(() => expect(completeWorkspaceRunCheckpointMock).toHaveBeenCalled())
+    expect(state).toMatchObject({ isWorking: true, activeRunMarker: expect.any(String) })
+    expect(emit.mock.calls.map(call => call[0])).not.toContain('run.failed')
+    state.queue.push({ queue_id: 'during-diff', input: 'follow-up', profile: 'default' })
+    resolveDiff(change)
+    await pending
 
     expect(completeWorkspaceRunCheckpointMock).toHaveBeenCalledWith({ sessionId: 'session-1', runId: 'run-1', workspace })
     const diffIndex = emit.mock.calls.findIndex(call => call[0] === 'workspace.diff.completed')
@@ -604,6 +616,13 @@ describe('bridge run final context usage', () => {
     expect(diffIndex).toBeGreaterThanOrEqual(0)
     expect(diffIndex).toBeLessThan(failedIndex)
     expect(flushedRunIds).toContain('run-1')
+    expect(emit).toHaveBeenCalledWith('run.failed', expect.objectContaining({
+      error: 'stream failed; finalization failed: stats failed',
+      queue_remaining: 1,
+    }))
+    expect(dequeueNextQueuedRun).toHaveBeenCalledTimes(1)
+    expect(dequeueNextQueuedRun).toHaveBeenCalledWith(socket, 'session-1')
+    expect(state).toMatchObject({ isWorking: false, activeRunMarker: undefined })
   })
 
   it('stores a super admin model-run token for the profile without adding it to bridge instructions', async () => {

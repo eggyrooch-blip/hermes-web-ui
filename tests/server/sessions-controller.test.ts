@@ -1831,6 +1831,9 @@ describe('session conversations controller', () => {
     expect(abandonSessionRunMock.mock.invocationCallOrder[0]).toBeLessThan(
       localDeleteSessionMock.mock.invocationCallOrder[0],
     )
+    expect(localDeleteSessionMock.mock.invocationCallOrder[0]).toBeLessThan(
+      getExactSessionDetailFromDbWithProfileMock.mock.invocationCallOrder[0],
+    )
     expect(ctx.body).toMatchObject({ ok: true, deleted: true })
   })
 
@@ -1910,6 +1913,12 @@ describe('session conversations controller', () => {
     expect(deleteHermesSessionForProfileMock).toHaveBeenCalledWith('travel-session', 'travel')
     expect(localDeleteSessionMock).toHaveBeenCalledWith('default-session')
     expect(localDeleteSessionMock).toHaveBeenCalledWith('travel-session')
+    expect(localDeleteSessionMock.mock.invocationCallOrder[0]).toBeLessThan(
+      getExactSessionDetailFromDbWithProfileMock.mock.invocationCallOrder[0],
+    )
+    expect(localDeleteSessionMock.mock.invocationCallOrder[1]).toBeLessThan(
+      getExactSessionDetailFromDbWithProfileMock.mock.invocationCallOrder[1],
+    )
     expect(ctx.body).toMatchObject({ ok: true, deleted: 2, failed: 0, hermesDeleted: 2 })
   })
 
