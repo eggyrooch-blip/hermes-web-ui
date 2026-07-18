@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-07-18
+updated: 2026-07-19
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
@@ -15,7 +15,7 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
-> [!info] 2026-07-18 local ftask candidate `838ea196` — workspace diff / session lifecycle release blockers
+> [!success] 2026-07-19 production `b38e8a39` — workspace diff / session lifecycle release blockers
 > `webui-release-blockers` removes synchronous Git, directory scan, file read,
 > and no-index diff work from the single Node event loop. Checkpoint start is
 > now awaited asynchronously before broker, bridge, or coding-agent execution
@@ -156,7 +156,21 @@ related:
 > `docs/chat-chain-changes/2026-07-18-release-review-lifecycle-fences.md` and
 > `docs/chat-chain-changes/2026-07-18-release-review-exact-run-ownership.md`, plus
 > `docs/chat-chain-changes/2026-07-18-final-release-review-concurrency.md`.
-> This candidate is not merged, pushed, or published to production.
+> ftask finalized and pushed exact `main@b38e8a39`; production was fast-forwarded
+> to the same SHA after the private release backup and rollback artifacts were
+> verified. Production-focused evidence is 28/28 workspace-diff tests plus an
+> isolated session DELETE through the public API that removed the session,
+> messages, workspace summary, and workspace file rows together. The authenticated
+> model catalog and a no-tools completion also confirmed the configured default
+> `kimi/k3[1m]`; visual browser rendering was not screenshot-verified.
+>
+> Release gotcha: files pulled under the wrong OS owner were unreadable by the
+> service account, so a unit could appear active while its authenticated broker
+> port was absent. The exact changed files were re-owned and services restarted;
+> future releases must pull as the service user or verify changed-file ownership,
+> authenticated health, and logs before declaring success. No Feishu message or
+> CardKit canary was sent, and `hermes-agent` was not modified, updated, installed,
+> or deployed in this release.
 
 > [!info] 2026-07-11 local worktree — chat 右侧产物 workspace 两阶段，尚未 main/生产
 > `artifact-sidebar-workspace` 把 chat 右侧栏从「重新展开即回到文件管理器」改为 session-aware、file-first 的产物 workspace。阶段一在 `ChatPanel` 首次打开侧栏时才挂载 `DetailPanel`，之后用 `v-show` 收起/展开，保留组件状态；阶段二用可关闭、可键盘切换的文件 tab 取代四模式下拉，并把 `FilesPanel` 降为文件夹/`+` 打开的 secondary browser。没有产物记忆时先显示本轮产物概览，不默认进入根目录。
