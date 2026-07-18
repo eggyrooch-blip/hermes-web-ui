@@ -638,8 +638,13 @@ export function registerSessionHandlers(
     let disposed = false
     let sawTransientDisconnect = !socket.connected
     let resumedHandler: ((data: ResumeSessionPayload) => void) | null = null
+    let resumedTimeout: ReturnType<typeof setTimeout> | null = null
 
     const clearResumedHandler = () => {
+      if (resumedTimeout !== null) {
+        clearTimeout(resumedTimeout)
+        resumedTimeout = null
+      }
       if (!resumedHandler) return
       removeSocketListener(socket, 'resumed', resumedHandler)
       resumedHandler = null
@@ -694,6 +699,7 @@ export function registerSessionHandlers(
         options.onDone?.()
       }
       socket.on('resumed', resumedHandler)
+      resumedTimeout = setTimeout(clearResumedHandler, RESUME_RESPONSE_TIMEOUT_MS)
       socket.emit('resume', {
         session_id: sessionId,
         ...(options.profile ? { profile: options.profile } : {}),
@@ -1077,8 +1083,13 @@ export function startRunViaSocket(
   let sawTransientDisconnect = false
   let removeTerminalSocketListeners: () => void = () => {}
   let reconnectResumeHandler: ((data: ResumeSessionPayload) => void) | null = null
+  let reconnectResumeTimeout: ReturnType<typeof setTimeout> | null = null
 
   const clearReconnectResumeHandler = () => {
+    if (reconnectResumeTimeout !== null) {
+      clearTimeout(reconnectResumeTimeout)
+      reconnectResumeTimeout = null
+    }
     if (!reconnectResumeHandler) return
     removeSocketListener(socket, 'resumed', reconnectResumeHandler)
     reconnectResumeHandler = null
@@ -1113,6 +1124,7 @@ export function startRunViaSocket(
       onDone()
     }
     socket.on('resumed', reconnectResumeHandler)
+    reconnectResumeTimeout = setTimeout(clearReconnectResumeHandler, RESUME_RESPONSE_TIMEOUT_MS)
     socket.emit('resume', { session_id: sid, ...(body.profile ? { profile: body.profile } : {}) })
   }
 

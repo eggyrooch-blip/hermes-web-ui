@@ -541,6 +541,54 @@ describe('chat-run socket reconnect handling', () => {
     }
   })
 
+  it('removes an unanswered run-owner reconnect listener after its response timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const { startRunViaSocket } = await import('../../packages/client/src/api/hermes/chat')
+      startRunViaSocket(
+        { session_id: 'missing-run', input: 'hello', profile: 'default', source: 'cli' },
+        vi.fn(),
+        vi.fn(),
+        vi.fn(),
+        undefined,
+        { onReconnectResume: vi.fn(() => true) },
+      )
+
+      const socket = socketState.sockets[0]
+      socket.__trigger('disconnect', 'ping timeout')
+      socket.__trigger('connect')
+      expect(socket.__listenerCount('resumed')).toBe(1)
+
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(socket.__listenerCount('resumed')).toBe(0)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('removes an unanswered attached-owner reconnect listener after its response timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const { registerSessionHandlers } = await import('../../packages/client/src/api/hermes/chat')
+      registerSessionHandlers('missing-attached-run', { onMessageDelta: vi.fn() } as any, {
+        profile: 'default',
+        onReconnectResume: vi.fn(() => true),
+      })
+
+      const socket = socketState.sockets[0]
+      socket.__trigger('disconnect', 'transport close')
+      socket.__trigger('connect')
+      expect(socket.__listenerCount('resumed')).toBe(1)
+
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(socket.__listenerCount('resumed')).toBe(0)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('resumes an attached run after each transient reconnect and retires it when idle', async () => {
     const { registerSessionHandlers } = await import('../../packages/client/src/api/hermes/chat')
     const onReconnectResume = vi.fn((data: any) => data.events.map((event: any) => event.id))

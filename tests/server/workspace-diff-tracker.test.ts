@@ -412,6 +412,67 @@ describe('workspace diff tracker', () => {
     }
   })
 
+  it.runIf(process.platform !== 'win32')('force-kills timed-out Git children and releases their operation leases', async () => {
+    for (let index = 0; index < 3; index += 1) {
+      await createTrackedSession(`session-git-hard-timeout-${index}`)
+    }
+    const fakeBin = join(root, 'hard-timeout-fake-bin')
+    const fakeGit = join(fakeBin, 'git')
+    const logPath = join(root, 'git-hard-timeout.log')
+    const originalPath = process.env.PATH
+    const originalLog = process.env.HERMES_WORKSPACE_DIFF_TEST_LOG
+    mkdirSync(fakeBin)
+    writeFileSync(fakeGit, `#!/usr/bin/env node
+const { appendFileSync } = require('node:fs')
+const log = process.env.HERMES_WORKSPACE_DIFF_TEST_LOG
+appendFileSync(log, String(Date.now()) + ' start\\n')
+process.on('SIGTERM', () => appendFileSync(log, String(Date.now()) + ' SIGTERM\\n'))
+setTimeout(() => process.exit(1), 8_000)
+`)
+    chmodSync(fakeGit, 0o755)
+    process.env.PATH = `${fakeBin}:${originalPath || ''}`
+    process.env.HERMES_WORKSPACE_DIFF_TEST_LOG = logPath
+
+    try {
+      const {
+        awaitWorkspaceDiffSettlement,
+        discardWorkspaceRunCheckpoint,
+        startWorkspaceRunCheckpoint,
+      } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+      await expect(Promise.all([0, 1].map(index => startWorkspaceRunCheckpoint({
+        sessionId: `session-git-hard-timeout-${index}`,
+        runId: `run-git-hard-timeout-${index}`,
+        workspace: repo,
+      })))).resolves.toEqual([null, null])
+      const childStarts = readFileSync(logPath, 'utf8')
+        .trim()
+        .split('\n')
+        .map(line => Number.parseInt(line, 10))
+      expect(childStarts).toHaveLength(2)
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(...childStarts) + 4_500 - Date.now())))
+
+      process.env.PATH = originalPath
+      const recovered = await startWorkspaceRunCheckpoint({
+        sessionId: 'session-git-hard-timeout-2',
+        runId: 'run-git-hard-timeout-2',
+        workspace: repo,
+      })
+      expect(recovered).not.toBeNull()
+      expect(recovered).not.toHaveProperty('degradedReason')
+      await discardWorkspaceRunCheckpoint({
+        sessionId: 'session-git-hard-timeout-2',
+        runId: 'run-git-hard-timeout-2',
+        checkpoint: recovered,
+      })
+      await awaitWorkspaceDiffSettlement()
+      expect(readFileSync(logPath, 'utf8')).not.toContain('SIGTERM')
+    } finally {
+      process.env.PATH = originalPath
+      if (originalLog === undefined) delete process.env.HERMES_WORKSPACE_DIFF_TEST_LOG
+      else process.env.HERMES_WORKSPACE_DIFF_TEST_LOG = originalLog
+    }
+  }, 12_000)
+
   it.each(['realpath', 'stat'] as const)('bounds delayed workspace root %s and retains its lease until settlement', async (operationName) => {
     const workspaces = operationName === 'realpath'
       ? [repo, repo, repo]

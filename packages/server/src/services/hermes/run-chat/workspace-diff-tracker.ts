@@ -479,6 +479,7 @@ async function runGit(cwd: string, args: string[], maxBuffer = 1024 * 1024): Pro
     encoding: 'utf8',
     maxBuffer,
     timeout: MAX_GIT_MS,
+    killSignal: 'SIGKILL',
   })
   return stdout
 }
@@ -879,6 +880,7 @@ async function snapshotGitHeadPath(
         encoding: 'buffer',
         maxBuffer: MAX_SNAPSHOT_BYTES + 1024,
         timeout: MAX_GIT_MS,
+        killSignal: 'SIGKILL',
       }),
       deadline,
       lease,
@@ -936,6 +938,7 @@ async function makeNoIndexPatch(
           encoding: 'utf8',
           maxBuffer: MAX_PATCH_BYTES_PER_FILE + 64 * 1024,
           timeout: MAX_GIT_MS,
+          killSignal: 'SIGKILL',
         })
         return normalizePatchHeader(stdout, relPath)
       } catch (err: any) {
