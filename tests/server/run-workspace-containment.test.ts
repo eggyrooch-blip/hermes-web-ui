@@ -109,7 +109,7 @@ describe('ensureHermesRunWorkspace containment', () => {
     expect(await ensureHermesRunWorkspace('mine', dangling)).toBe(mineWorkspace)
   })
 
-  it('keeps a compliant stored workspace (the shape all 10 prod rows have)', async () => {
+  it('keeps a compliant stored workspace', async () => {
     expect(await ensureHermesRunWorkspace('mine', mineWorkspace)).toBe(mineWorkspace)
   })
 

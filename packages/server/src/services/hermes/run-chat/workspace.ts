@@ -27,8 +27,8 @@ async function resolvedOr(path: string): Promise<string> {
  * root can't vouch for itself (a realpath comparison would resolve both sides to the
  * link target), a link into the profile root would widen the run to the whole profile
  * incl. credentials, and a dangling link would ENOENT the run at mkdir. Deployments
- * create these as plain directories (verified: 0 of 1447 prod profiles use a symlink),
- * so reject any symlink root outright and fail closed on a non-directory.
+ * create these as plain directories, so reject any symlink root outright and
+ * fail closed on a non-directory.
  */
 async function assertWorkspaceRootSafe(base: string): Promise<void> {
   const stats = await lstat(base).catch(() => null)
