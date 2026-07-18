@@ -15,7 +15,7 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
-> [!info] 2026-07-18 local ftask candidate `8401b9b7` — workspace diff / session lifecycle release blockers
+> [!info] 2026-07-18 local ftask candidate `838ea196` — workspace diff / session lifecycle release blockers
 > `webui-release-blockers` removes synchronous Git, directory scan, file read,
 > and no-index diff work from the single Node event loop. Checkpoint start is
 > now awaited asynchronously before broker, bridge, or coding-agent execution
@@ -40,7 +40,10 @@ related:
 > A Git-root deadline is propagated as a distinct result, preventing the
 > filesystem fallback from starting another root operation in the last timer
 > tick after the Git probe has already timed out.
-> Existing file/byte/depth caps and secret/symlink exclusions remain unchanged.
+> Git timeout now uses `SIGKILL`, so a child that ignores `SIGTERM` cannot retain
+> both process-wide leases forever; a real fake-Git regression proves the child
+> settles, cleanup runs, and a later checkpoint acquires a lease. Existing
+> file/byte/depth caps and secret/symlink exclusions remain unchanged.
 >
 > `deleteSession()` now removes messages plus both workspace change tables in
 > one SQLite transaction. Diff persistence transactionally requires the session
@@ -137,10 +140,13 @@ related:
 > Typechecks and `git diff --check` pass. Final command replay focused coverage is
 > 2 files / 110 passed; final broker/bridge/coding-agent lifecycle SIM coverage is
 > 192/192, and client reconnect/replay SIM coverage is 161/161. Final candidate
-> passed twice independently at 322 test files / 2653 tests with 2 skipped, plus
+> passed finally at 322 test files / 2656 tests with 2 skipped, plus
 > client/server production build, `harness:check`, and `git diff --check`. Its
-> final-hash SIM recapture and
-> fresh independent review remain release gates. Evidence is recorded in
+> hard-kill and reconnect-listener SIM recaptures pass; the final SIM ledger is
+> 33 pass / 7 narrowly documented inconclusive. A fresh internal read-only review
+> of exact code HEAD `838ea196` found no P1/P2. The required opposite-family ftask
+> review remains a release gate and cannot receive private-repository diff data
+> without explicit user consent. Evidence is recorded in
 > `docs/chat-chain-changes/2026-07-17-workspace-diff-release-blockers.md` and
 > `docs/chat-chain-changes/2026-07-18-session-command-replay-idempotency.md`, plus
 > `docs/chat-chain-changes/2026-07-18-release-review-lifecycle-fences.md` and
