@@ -15,7 +15,7 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
-> [!info] 2026-07-18 local ftask candidate `00bc2a0f` — workspace diff / session lifecycle release blockers
+> [!info] 2026-07-18 local ftask candidate `98eaa876` — workspace diff / session lifecycle release blockers
 > `webui-release-blockers` removes synchronous Git, directory scan, file read,
 > and no-index diff work from the single Node event loop. Checkpoint start is
 > now awaited asynchronously before broker, bridge, or coding-agent execution
@@ -123,14 +123,14 @@ related:
 > multi-tab `auth.resolved` replay/ACK, and Global Agent forwarding. Server/client
 > typechecks and `git diff --check` pass. Final command replay focused coverage is
 > 2 files / 110 passed; final broker/bridge/coding-agent lifecycle SIM coverage is
-> 192/192, and client reconnect/replay SIM coverage is 161/161. The immediately
-> preceding candidate's full suite was 320 files / 2596 passed / 2 skipped; final
-> `00bc2a0f` focused lifecycle coverage is 139/139 and its full rerun is pending.
-> Server typecheck and `harness:check` pass; independent review must still approve
-> the new frozen hash. Evidence is recorded in
+> 192/192, and client reconnect/replay SIM coverage is 161/161. Final candidate
+> `98eaa876` passed 322 test files / 2646 tests with 2 skipped, plus client/server
+> build, `harness:check`, and `git diff --check`. Its final-hash SIM recapture and
+> fresh independent review remain release gates. Evidence is recorded in
 > `docs/chat-chain-changes/2026-07-17-workspace-diff-release-blockers.md` and
 > `docs/chat-chain-changes/2026-07-18-session-command-replay-idempotency.md`, plus
-> `docs/chat-chain-changes/2026-07-18-release-review-lifecycle-fences.md`.
+> `docs/chat-chain-changes/2026-07-18-release-review-lifecycle-fences.md` and
+> `docs/chat-chain-changes/2026-07-18-release-review-exact-run-ownership.md`.
 > This candidate is not merged, pushed, or published to production.
 
 > [!info] 2026-07-11 local worktree — chat 右侧产物 workspace 两阶段，尚未 main/生产
