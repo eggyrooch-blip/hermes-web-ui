@@ -78,7 +78,10 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
   requester-scoped as `run.rejected` with `queue_id`; the client settles only the
   rejected owner (or removes only that follow-up), without closing a live sibling.
 - Socket reconnect now keeps one Socket.IO object for the same profile, transport,
-  and active agent while its manager is still reconnecting. An attached owner added
+  and active agent while its manager is still reconnecting. The implicit-profile
+  path resolves the current Pinia profile before the reuse guard, so changing the
+  active profile retires the old socket and its exact owner even when the caller
+  omits the optional profile argument. An attached owner added
   after the disconnect observes the next connect and resumes its exact session;
   an actual profile/transport/agent replacement retires the old owner and its store
   runtime instead of leaving a permanently live spinner. Reconnect callbacks recheck
@@ -95,6 +98,10 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
   distinct event IDs is intentionally preserved. If current resume state says an
   abort is still in progress, an older replayed `abort.completed` is acknowledged but
   cannot clear that authoritative abort state.
+- Successful terminal `/plan` and `/goal` `session.command` results now enter the
+  same generation-bound pending terminal store as failures. Live delivery and
+  reconnect replay share one ID; acknowledgement removes the event only for the
+  acknowledging socket, while other session tabs can still replay it.
 - Credential replay is tied to the session generation that emitted `auth.required`
   and is consumed only by a valid one-shot replay. A stale card cannot inject an old
   parked request after the same session ID is deleted and recreated. Replay uses the
@@ -170,8 +177,13 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
   `git diff --check` pass. The delayed Git fixture uses a pending callback instead
   of a fixed timer delay, so full-suite load cannot expire the shared deadline before
   the test action starts.
+- The reconnect suite changes the active profile while calling `connectChatRun()`
+  without a profile and proves the old owner is retired and the new socket queries
+  the selected profile. Client/server lifecycle tests also prove successful terminal
+  commands ACK after live handling and replay with the same ID until each socket ACKs.
 - Focused workspace, bridge, broker, and coding-agent suites: 4 files / 76 passed.
-- Final full Vitest: 320 files / 2591 passed / 2 skipped (2593 total).
+- Final reconnect/command lifecycle: 2 files / 80 passed.
+- Final full Vitest: 320 files / 2594 passed / 2 skipped (2596 total).
 - Client/server TypeScript, production build, `harness:check`, and
   `git diff --check` pass. Independent review of the new frozen hash remains
   required before release consideration.

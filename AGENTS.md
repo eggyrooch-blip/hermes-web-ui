@@ -72,3 +72,5 @@ constraint directly.
 - 2026-07-17: Session deletion owns messages and both workspace-change tables as one SQLite unit; independent cleanup can leave permanent patches or partial deletion after a later statement fails.
 - 2026-07-18: A Socket.IO `connect_error` is retryable only while `socket.active`; replayed terminal events must not override newer authoritative resume state.
 - 2026-07-18: HTTP session deletion must abandon the exact in-memory session generation before deleting its row; a follow-up browser socket abort is not a server lifecycle guarantee.
+- 2026-07-18: Resolve the effective active profile before the Socket.IO reuse guard; an omitted profile argument must not reuse a socket owned by the previously selected profile.
+- 2026-07-18: Every terminal `session.command`, including successful `/plan` and `/goal` results, needs one generation-bound pending ID before live emit so reconnect and per-socket ACK cannot lose it.

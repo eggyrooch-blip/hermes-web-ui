@@ -5,6 +5,7 @@ const socketState = vi.hoisted(() => ({
   nextConnected: true,
   nextActive: true,
 }))
+const profileState = vi.hoisted(() => ({ activeProfileName: 'default' }))
 
 vi.mock('socket.io-client', () => {
   function createSocket() {
@@ -76,13 +77,19 @@ vi.mock('socket.io-client', () => {
   }
 
   return {
-    io: vi.fn(() => {
+    io: vi.fn((url?: string, options?: any) => {
       const socket = createSocket()
+      socket.__url = url
+      socket.__options = options
       socketState.sockets.push(socket)
       return socket
     }),
   }
 })
+
+vi.mock('@/stores/hermes/profiles', () => ({
+  useProfilesStore: () => profileState,
+}))
 
 vi.mock('../../packages/client/src/api/client', () => ({
   getApiKey: () => 'test-token',
@@ -95,6 +102,7 @@ describe('chat-run socket reconnect handling', () => {
     socketState.sockets = []
     socketState.nextConnected = true
     socketState.nextActive = true
+    profileState.activeProfileName = 'default'
   })
 
   it('keeps transient mobile disconnects alive and resumes after reconnect', async () => {
@@ -389,6 +397,29 @@ describe('chat-run socket reconnect handling', () => {
     })
     expect(profileAEvent).not.toHaveBeenCalled()
     expect(profileBEvent).toHaveBeenCalledWith(expect.objectContaining({ delta: 'current profile output' }))
+  })
+
+  it('retires the old owner when an implicit active profile change makes the socket stale', async () => {
+    profileState.activeProfileName = 'profile-a'
+    const { connectChatRun, startRunViaSocket } = await import('../../packages/client/src/api/hermes/chat')
+    const profileAError = vi.fn()
+    startRunViaSocket(
+      { session_id: 'shared-session', queue_id: 'profile-a', input: 'first', profile: 'profile-a', source: 'cli' },
+      vi.fn(),
+      vi.fn(),
+      profileAError,
+    )
+    const profileASocket = socketState.sockets[0]
+
+    profileState.activeProfileName = 'profile-b'
+    const profileBSocket = connectChatRun() as any
+
+    expect(profileBSocket).not.toBe(profileASocket)
+    expect(profileASocket.disconnect).toHaveBeenCalledOnce()
+    expect(profileAError).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'Chat connection changed before the run finished',
+    }))
+    expect(profileBSocket.__options.query).toEqual({ profile: 'profile-b' })
   })
 
   it('does not acknowledge a live terminal event until its handler succeeds', async () => {
@@ -770,6 +801,67 @@ describe('chat-run socket reconnect handling', () => {
       session_id: 'session-a',
       event_ids: ['stable-auth-resolved-id'],
     })
+  })
+
+  it('acknowledges successful terminal session commands live and after resume', async () => {
+    const { resumeSession, startRunViaSocket } = await import('../../packages/client/src/api/hermes/chat')
+    const onEvent = vi.fn()
+    const onDone = vi.fn()
+    startRunViaSocket(
+      { session_id: 'session-a', input: '/goal status', profile: 'default', source: 'cli' },
+      onEvent,
+      onDone,
+      vi.fn(),
+    )
+    const socket = socketState.sockets[0]
+    const liveCommand = {
+      event: 'session.command',
+      session_id: 'session-a',
+      command: 'goal',
+      action: 'status',
+      terminal: true,
+      message: 'Goal is active',
+      resume_event_id: 'terminal-command-live',
+    }
+
+    socket.__trigger('session.command', liveCommand)
+    socket.__trigger('session.command', liveCommand)
+
+    expect(onEvent).toHaveBeenCalledOnce()
+    expect(onEvent).toHaveBeenCalledWith(liveCommand)
+    expect(onDone).toHaveBeenCalledOnce()
+    expect(socket.emit).toHaveBeenCalledWith('resume.events.ack', {
+      session_id: 'session-a',
+      event_ids: ['terminal-command-live'],
+    })
+
+    const onResumed = vi.fn(() => ['terminal-command-resumed'])
+    resumeSession('session-b', onResumed, 'default')
+    socket.__trigger('resumed', {
+      session_id: 'session-b',
+      messages: [],
+      isWorking: false,
+      events: [{
+        id: 'terminal-command-resumed',
+        event: 'session.command',
+        data: {
+          event: 'session.command',
+          session_id: 'session-b',
+          command: 'goal',
+          action: 'status',
+          terminal: true,
+          message: 'Goal is active',
+        },
+      }],
+    })
+
+    await vi.waitFor(() => expect(onResumed).toHaveBeenCalledWith(expect.objectContaining({
+      events: [expect.objectContaining({ id: 'terminal-command-resumed', event: 'session.command' })],
+    })))
+    await vi.waitFor(() => expect(socket.emit).toHaveBeenCalledWith('resume.events.ack', {
+      session_id: 'session-b',
+      event_ids: ['terminal-command-resumed'],
+    }))
   })
 
   it('keeps fatal disconnects fatal and removes per-run listeners', async () => {

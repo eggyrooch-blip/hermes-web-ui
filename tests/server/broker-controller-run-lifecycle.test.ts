@@ -729,6 +729,57 @@ describe('BrokerRunController run lifecycle', () => {
     expect(acknowledgedResume.events).not.toContainEqual(expect.objectContaining({ id: liveFailure.resume_event_id }))
   })
 
+  it('replays a successful terminal session command with one stable id until each socket acknowledges it', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(String(url)).toMatch(/\/session-commands$/)
+      return {
+        ok: true,
+        json: async () => ({
+          handled: true,
+          command: 'goal',
+          action: 'status',
+          message: 'Goal is active',
+        }),
+      }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, emitted, handlers, socket } = makeHarness()
+
+    await handlers.get('run')!({ input: '/goal status', session_id: 's1', queue_id: 'goal-status' })
+
+    const liveCommand = emitted.find(item => item.event === 'session.command')?.payload
+    expect(liveCommand).toMatchObject({
+      event: 'session.command',
+      session_id: 's1',
+      ok: true,
+      command: 'goal',
+      action: 'status',
+      terminal: true,
+      message: 'Goal is active',
+      resume_event_id: expect.stringMatching(/^terminal_/),
+    })
+
+    socket.emit.mockClear()
+    await (controller as any).resumeSession(socket, 's1', 'research')
+    const firstResume = socket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    expect(firstResume.events).toContainEqual(expect.objectContaining({
+      id: liveCommand.resume_event_id,
+      event: 'session.command',
+      data: expect.objectContaining({ terminal: true, message: 'Goal is active' }),
+    }))
+
+    handlers.get('resume.events.ack')!({ session_id: 's1', event_ids: [liveCommand.resume_event_id] })
+    socket.emit.mockClear()
+    await (controller as any).resumeSession(socket, 's1', 'research')
+    const acknowledgedResume = socket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    expect(acknowledgedResume.events).not.toContainEqual(expect.objectContaining({ id: liveCommand.resume_event_id }))
+
+    const otherSocket = { ...socket, id: 'socket-2', emit: vi.fn() }
+    await (controller as any).resumeSession(otherSocket, 's1', 'research')
+    const otherResume = otherSocket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    expect(otherResume.events).toContainEqual(expect.objectContaining({ id: liveCommand.resume_event_id }))
+  })
+
   it('aborts replay without emitting or persisting after same-id recreation', async () => {
     const upstream = controlledSse()
     let replaySignal: AbortSignal | undefined

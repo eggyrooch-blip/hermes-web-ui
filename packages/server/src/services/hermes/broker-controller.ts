@@ -1428,12 +1428,30 @@ export class BrokerRunController {
     })
   }
 
-  private emitSessionCommand(socket: Socket, sessionId: string, profile: string, payload: Record<string, unknown>) {
-    this.emitToSession(socket, sessionId, profile, 'session.command', {
+  private emitSessionCommand(
+    socket: Socket,
+    sessionId: string,
+    profile: string,
+    payload: Record<string, unknown>,
+    state?: SessionState,
+    generation?: SessionGeneration,
+  ) {
+    const commandPayload: Record<string, unknown> = {
       event: 'session.command',
       session_id: sessionId,
       ok: true,
       ...payload,
+    }
+    const resumeEventId = commandPayload.terminal === true
+      && state
+      && generation
+      && this.getSessionState(sessionId, profile) === state
+      && stateMatchesSessionGeneration(state, generation)
+      ? this.recordPendingTerminalEvent(state, 'session.command', commandPayload)
+      : undefined
+    this.emitToSession(socket, sessionId, profile, 'session.command', {
+      ...commandPayload,
+      ...(resumeEventId ? { resume_event_id: resumeEventId } : {}),
     })
   }
 
@@ -1603,7 +1621,7 @@ export class BrokerRunController {
         type: result.type,
         historyCount: result.history_count,
         handled: result.handled,
-      })
+      }, state, commandGeneration)
       if (shouldStartRun) {
         releaseCommand()
         await this.handleRun(socket, {
@@ -1677,13 +1695,9 @@ export class BrokerRunController {
           terminal: serialized ? state.queue.length === 0 : !state.isWorking,
           message,
         }
-        const resumeEventId = generationError
-          ? this.recordPendingTerminalEvent(state, 'session.command', commandFailed)
-          : undefined
         this.emitSessionCommand(socket, sessionId, profile, {
           ...commandFailed,
-          ...(resumeEventId ? { resume_event_id: resumeEventId } : {}),
-        })
+        }, state, commandGeneration)
       }
       if (serialized) this.dequeueNextQueuedRun(socket, sessionId, profile, state)
     }

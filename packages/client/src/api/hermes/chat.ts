@@ -1,5 +1,6 @@
 import { io, type Socket } from 'socket.io-client'
 import { getBaseUrlValue, getApiKey } from '../client'
+import { useProfilesStore } from '@/stores/hermes/profiles'
 
 export type ContentBlock =
   | { type: 'text'; text: string }
@@ -795,11 +796,24 @@ function readLocalStorageItem(key: string): string | null {
 export function connectChatRun(requestedProfile?: string | null, transport: ChatRunTransport = 'chat-run'): Socket {
   const normalizedRequestedProfile = requestedProfile?.trim() || null
   const activeAgentId = readLocalStorageItem('hermes_active_agent_id')?.trim() || null
+
+  // Resolve the implicit profile before deciding whether the current socket is
+  // reusable. The active profile can change while callers continue to omit the
+  // optional profile argument.
+  let profile = normalizedRequestedProfile || 'default'
+  if (!normalizedRequestedProfile) {
+    try {
+      const profilesStore = useProfilesStore()
+      profile = String(profilesStore.activeProfileName || '').trim() || 'default'
+    } catch {
+      profile = readLocalStorageItem('hermes_active_profile_name')?.trim() || 'default'
+    }
+  }
   if (
     chatRunSocket &&
     (chatRunSocket.connected || chatRunSocket.active) &&
     chatRunSocketTransport === transport &&
-    (!normalizedRequestedProfile || chatRunSocketProfile === normalizedRequestedProfile) &&
+    chatRunSocketProfile === profile &&
     chatRunSocketAgentId === activeAgentId
   ) {
     return chatRunSocket
@@ -817,19 +831,6 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
 
   const baseUrl = getBaseUrlValue()
   const token = getApiKey()
-
-  // Get active profile from store (authoritative source)
-  let profile = normalizedRequestedProfile || 'default'
-  try {
-    if (!normalizedRequestedProfile) {
-      const { useProfilesStore } = require('@/stores/hermes/profiles')
-      const profilesStore = useProfilesStore()
-      profile = profilesStore.activeProfileName || 'default'
-    }
-  } catch {
-    // Fallback to localStorage during early initialization
-    profile = normalizedRequestedProfile || localStorage.getItem('hermes_active_profile_name') || 'default'
-  }
   chatRunSocketProfile = profile
   chatRunSocketAgentId = activeAgentId
   chatRunSocketTransport = transport

@@ -75,13 +75,17 @@ related:
 > remains attached to the correct generation.
 > Pre-admission identity failures use requester-scoped `run.rejected(queue_id)`;
 > the client settles only a rejected owning request and leaves an active sibling live.
-> Reconnecting runs reuse the same Socket.IO instance for an unchanged profile,
-> transport, and agent. `connect_error` is retryable only while `socket.active`;
+> Reconnecting runs reuse the same Socket.IO instance only after resolving the
+> current active profile, transport, and agent. An omitted profile argument does
+> not make an old profile socket reusable after the Pinia selection changes.
+> `connect_error` is retryable only while `socket.active`;
 > inactive initial or exhausted reconnect failures dispose the exact owner and its
 > listeners. Resume processing also treats current `isAborting` as authoritative, so
 > an older replayed `abort.completed` is acknowledged without clearing a live abort.
 > Stable resume IDs are applied before exact per-socket ACK and include accepted
-> `auth.resolved` events.
+> `auth.resolved` events plus successful terminal `/plan` and `/goal` command
+> results. Terminal command recording is generation-bound and shared by normal
+> success and failure emission, so reconnect replay uses the same live event ID.
 > Credential replay is row/incarnation/run-bound and uses only the server's parked
 > connector/provider metadata. Busy replay rotates and re-surfaces the card, while a
 > pre-dispatch identity/load failure restores a fresh card before its terminal error.
@@ -103,9 +107,10 @@ related:
 > inactive socket fatal cleanup, historical abort-completion fencing, exact-generation
 > HTTP deletion ordering, server-authoritative replay, pre-dispatch card restoration,
 > multi-tab `auth.resolved` replay/ACK, and Global Agent forwarding. Server/client
-> typechecks and `git diff --check` pass. The broad workspace verification was
-> 4 files / 76 passed; the final full suite is 320 files / 2591 passed / 2 skipped
-> (2593 total).
+> typechecks and `git diff --check` pass. The final reconnect/command lifecycle
+> verification is 2 files / 80 passed; the broad workspace verification was
+> 4 files / 76 passed; the final full suite is 320 files / 2594 passed / 2 skipped
+> (2596 total).
 > Production build and `harness:check` pass; independent review must still approve
 > the new frozen hash. Evidence
 > is recorded in `docs/chat-chain-changes/2026-07-17-workspace-diff-release-blockers.md`.
