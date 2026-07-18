@@ -1402,10 +1402,17 @@ export class BrokerRunController {
     return latestAssistant.content
   }
 
-  private persistCommandMessage(sessionId: string, state: SessionState, content: string) {
+  private persistCommandMessage(
+    sessionId: string,
+    state: SessionState,
+    content: string,
+    requestedClientId?: string,
+  ): string | undefined {
     const text = String(content || '').trim()
-    if (!text) return
+    if (!text) return undefined
     const now = Math.floor(Date.now() / 1000)
+    const clientId = String(requestedClientId || '').trim()
+      || `command_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
     if (!getSession(sessionId)) {
       createSessionAndBind(state, {
         id: sessionId,
@@ -1413,19 +1420,22 @@ export class BrokerRunController {
         title: text.replace(/[\r\n]/g, ' ').slice(0, 100),
       })
     }
-    state.messages.push({
-      id: state.messages.length + 1,
-      session_id: sessionId,
-      role: 'command',
-      content: text,
-      timestamp: now,
-    })
     addMessage({
       session_id: sessionId,
       role: 'command',
       content: text,
       timestamp: now,
+      client_id: clientId,
     })
+    state.messages.push({
+      id: clientId,
+      session_id: sessionId,
+      role: 'command',
+      content: text,
+      timestamp: now,
+      client_id: clientId,
+    })
+    return clientId
   }
 
   private emitSessionCommand(
@@ -1435,6 +1445,7 @@ export class BrokerRunController {
     payload: Record<string, unknown>,
     state?: SessionState,
     generation?: SessionGeneration,
+    forcePending = false,
   ) {
     const commandPayload: Record<string, unknown> = {
       event: 'session.command',
@@ -1442,13 +1453,16 @@ export class BrokerRunController {
       ok: true,
       ...payload,
     }
-    const resumeEventId = commandPayload.terminal === true
+    const resumeEventId = (commandPayload.terminal === true || forcePending)
       && state
       && generation
       && this.getSessionState(sessionId, profile) === state
       && stateMatchesSessionGeneration(state, generation)
       ? this.recordPendingTerminalEvent(state, 'session.command', commandPayload)
       : undefined
+    if (resumeEventId && commandPayload.message && !commandPayload.command_message_id) {
+      commandPayload.command_message_id = resumeEventId
+    }
     this.emitToSession(socket, sessionId, profile, 'session.command', {
       ...commandPayload,
       ...(resumeEventId ? { resume_event_id: resumeEventId } : {}),
@@ -1563,7 +1577,7 @@ export class BrokerRunController {
       state.profile = profile
       socket.join(this.sessionRoom(sessionId, profile))
       try {
-        this.persistCommandMessage(sessionId, state, parsed.raw)
+        this.persistCommandMessage(sessionId, state, parsed.raw, data.queue_id)
       } finally {
         if (state.sessionRowId !== undefined && state.sessionIncarnation !== undefined) {
           commandGeneration = {
@@ -1606,9 +1620,9 @@ export class BrokerRunController {
       const shouldStartRun = Boolean(result.handled && hiddenPrompt && (commandName === 'plan' || commandName === 'goal'))
       const eventMessage = commandName === 'plan' && shouldStartRun ? 'Plan started.' : message
 
-      if (eventMessage) {
-        this.persistCommandMessage(sessionId, state, eventMessage)
-      }
+      const commandMessageId = eventMessage
+        ? this.persistCommandMessage(sessionId, state, eventMessage)
+        : undefined
       if (!shouldStartRun) releaseCommand()
       this.emitSessionCommand(socket, sessionId, profile, {
         command: commandName,
@@ -1618,6 +1632,7 @@ export class BrokerRunController {
           : !state.isWorking,
         started: shouldStartRun,
         message: eventMessage,
+        ...(commandMessageId ? { command_message_id: commandMessageId } : {}),
         type: result.type,
         historyCount: result.history_count,
         handled: result.handled,
@@ -1679,9 +1694,10 @@ export class BrokerRunController {
       }
       if (!aborted || generationError) {
         const message = `Command failed: ${detail}`
+        let commandMessageId: string | undefined
         if (!generationError) {
           try {
-            this.persistCommandMessage(sessionId, state, message)
+            commandMessageId = this.persistCommandMessage(sessionId, state, message)
           } catch (persistErr) {
             logger.warn({ err: persistErr, sessionId }, '[chat-run-socket] failed to persist command error')
           }
@@ -1694,10 +1710,11 @@ export class BrokerRunController {
           action: 'error',
           terminal: serialized ? state.queue.length === 0 : !state.isWorking,
           message,
+          ...(commandMessageId ? { command_message_id: commandMessageId } : {}),
         }
         this.emitSessionCommand(socket, sessionId, profile, {
           ...commandFailed,
-        }, state, commandGeneration)
+        }, state, commandGeneration, Boolean(generationError))
       }
       if (serialized) this.dequeueNextQueuedRun(socket, sessionId, profile, state)
     }
@@ -1747,13 +1764,14 @@ export class BrokerRunController {
     const message = typeof result.message === 'string' && result.message.trim()
       ? result.message.trim()
       : 'Continuing goal.'
-    this.persistCommandMessage(sessionId, state, message)
+    const commandMessageId = this.persistCommandMessage(sessionId, state, message)
     this.emitSessionCommand(socket, sessionId, profile, {
       command: 'goal',
       action: 'continue',
       terminal: false,
       started: true,
       message,
+      ...(commandMessageId ? { command_message_id: commandMessageId } : {}),
       verdict: result.verdict,
       reason: result.reason,
     })

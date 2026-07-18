@@ -1031,6 +1031,51 @@ describe('chat store user-mode model selection', () => {
     expect(session.messages.at(-1)?.content).toBe('new run partial')
   })
 
+  it('reuses the hydrated command message when its pending terminal event is replayed', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    let consumed!: Promise<string[]> | string[]
+    resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => Promise<string[]> | string[]) => {
+      consumed = onResumed({
+        session_id: session.id,
+        messages: [{
+          id: 41,
+          client_id: 'command_goal_status_1',
+          session_id: session.id,
+          role: 'command',
+          content: 'Goal is active',
+          timestamp: 1_700_000_000,
+        }],
+        isWorking: false,
+        events: [{
+          id: 'terminal-goal-status-1',
+          event: 'session.command',
+          data: {
+            event: 'session.command',
+            session_id: session.id,
+            command: 'goal',
+            action: 'status',
+            terminal: true,
+            message: 'Goal is active',
+            command_message_id: 'command_goal_status_1',
+          },
+        }],
+      })
+      return { disconnect: vi.fn() }
+    })
+
+    await store.switchSession(session.id)
+
+    expect(await consumed).toEqual(['terminal-goal-status-1'])
+    expect(session.messages.filter(message => message.content === 'Goal is active')).toEqual([
+      expect.objectContaining({
+        id: 'command_goal_status_1',
+        role: 'command',
+        commandAction: 'status',
+      }),
+    ])
+  })
+
   it('keeps an authoritative in-progress abort while switch resume consumes an older completion', async () => {
     const store = useChatStore()
     const session = store.newChat({ profile: 'tester' })

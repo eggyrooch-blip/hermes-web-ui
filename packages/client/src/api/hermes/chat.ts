@@ -82,6 +82,8 @@ export interface RunEvent {
   queue_id?: string
   /** Stable identity shared by a live terminal event and its resume replay. */
   resume_event_id?: string
+  /** Stable displayed-command identity; equals client_id when the message was persisted. */
+  command_message_id?: string
   /** Exact server-side session generation for credential lifecycle events. */
   session_row_id?: number
   session_incarnation?: number

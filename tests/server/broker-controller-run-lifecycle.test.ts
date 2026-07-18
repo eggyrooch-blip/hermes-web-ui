@@ -756,6 +756,7 @@ describe('BrokerRunController run lifecycle', () => {
       action: 'status',
       terminal: true,
       message: 'Goal is active',
+      command_message_id: expect.stringMatching(/^command_/),
       resume_event_id: expect.stringMatching(/^terminal_/),
     })
 
@@ -765,7 +766,29 @@ describe('BrokerRunController run lifecycle', () => {
     expect(firstResume.events).toContainEqual(expect.objectContaining({
       id: liveCommand.resume_event_id,
       event: 'session.command',
-      data: expect.objectContaining({ terminal: true, message: 'Goal is active' }),
+      data: expect.objectContaining({
+        terminal: true,
+        message: 'Goal is active',
+        command_message_id: liveCommand.command_message_id,
+      }),
+    }))
+    expect(firstResume.messages.filter((message: any) => message.content === 'Goal is active')).toEqual([
+      expect.objectContaining({
+        id: liveCommand.command_message_id,
+        client_id: liveCommand.command_message_id,
+        role: 'command',
+      }),
+    ])
+    expect(firstResume.messages.filter((message: any) => message.content === '/goal status')).toEqual([
+      expect.objectContaining({
+        id: 'goal-status',
+        client_id: 'goal-status',
+        role: 'command',
+      }),
+    ])
+    expect(store.addMessage).toHaveBeenCalledWith(expect.objectContaining({
+      content: 'Goal is active',
+      client_id: liveCommand.command_message_id,
     }))
 
     handlers.get('resume.events.ack')!({ session_id: 's1', event_ids: [liveCommand.resume_event_id] })
@@ -778,6 +801,62 @@ describe('BrokerRunController run lifecycle', () => {
     await (controller as any).resumeSession(otherSocket, 's1', 'research')
     const otherResume = otherSocket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
     expect(otherResume.events).toContainEqual(expect.objectContaining({ id: liveCommand.resume_event_id }))
+  })
+
+  it('replays a generation lookup failure even when a queued run makes the command event non-terminal', async () => {
+    const commandResult = deferred<any>()
+    const queuedRun = deferred<any>()
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(commandResult.promise)
+      .mockReturnValueOnce(queuedRun.promise)
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, emitted, handlers, socket } = makeHarness()
+
+    const command = handlers.get('run')!({ input: '/goal status', session_id: 's1', queue_id: 'goal-status' })
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    await handlers.get('run')!({ input: 'queued input', session_id: 's1', queue_id: 'next-run' })
+    const state = (controller as any).getSessionState('s1', 'research')
+    expect(state.queue).toEqual([expect.objectContaining({ queue_id: 'next-run' })])
+    store.getSessionRowId
+      .mockImplementationOnce(() => { throw new Error('command identity failed') })
+      .mockImplementationOnce(() => { throw new Error('command identity failed') })
+      .mockReturnValue(1)
+    commandResult.resolve({
+      ok: true,
+      json: async () => ({ handled: true, command: 'goal', action: 'status', message: 'must not leak' }),
+    })
+    await command
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+
+    const liveFailure = emitted.find(item => item.event === 'session.command' && item.payload?.ok === false)?.payload
+    expect(liveFailure).toMatchObject({
+      terminal: false,
+      message: 'Command failed: command identity failed',
+      resume_event_id: expect.stringMatching(/^terminal_/),
+    })
+    expect(liveFailure.command_message_id).toBe(liveFailure.resume_event_id)
+    socket.emit.mockClear()
+    await (controller as any).resumeSession(socket, 's1', 'research')
+    const resumed = socket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    expect(resumed).toMatchObject({ isWorking: true })
+    expect(resumed.events).toContainEqual(expect.objectContaining({
+      id: liveFailure.resume_event_id,
+      event: 'session.command',
+      data: expect.objectContaining({
+        terminal: false,
+        message: 'Command failed: command identity failed',
+        command_message_id: liveFailure.resume_event_id,
+      }),
+    }))
+
+    handlers.get('resume.events.ack')!({ session_id: 's1', event_ids: [liveFailure.resume_event_id] })
+    socket.emit.mockClear()
+    await (controller as any).resumeSession(socket, 's1', 'research')
+    const acknowledged = socket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    expect(acknowledged.events).not.toContainEqual(expect.objectContaining({ id: liveFailure.resume_event_id }))
+
+    queuedRun.resolve({ ok: true, status: 200, body: sseDone('queued-run') })
+    await vi.waitFor(() => expect(state.isWorking).toBe(false))
   })
 
   it('aborts replay without emitting or persisting after same-id recreation', async () => {

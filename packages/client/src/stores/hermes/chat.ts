@@ -1886,8 +1886,22 @@ export const useChatStore = defineStore('chat', () => {
     const target = sessions.value.find(s => s.id === sid)
     const action = (evt as any).action as string | undefined
     const command = String((evt as any).command || '').toLowerCase()
+    const commandMessageId = String((evt as any).command_message_id || '').trim()
     const placeCommandMessage = (message: Message) => {
       const msgs = getSessionMsgs(sid)
+      const existing = commandMessageId
+        ? msgs.find(item => item.id === commandMessageId)
+        : undefined
+      if (existing) {
+        Object.assign(existing, {
+          role: message.role,
+          content: message.content,
+          systemType: message.systemType,
+          commandAction: message.commandAction,
+          commandData: message.commandData,
+        })
+        return
+      }
       const insertionIndex = beforeMessageId ? msgs.findIndex(item => item.id === beforeMessageId) : -1
       if (insertionIndex >= 0) msgs.splice(insertionIndex, 0, message)
       else addMessage(sid, message)
@@ -1904,7 +1918,7 @@ export const useChatStore = defineStore('chat', () => {
         const message = String((evt as any).message || '')
         if (message) {
           placeCommandMessage({
-            id: uid(),
+            id: commandMessageId || uid(),
             role: 'command',
             content: message,
             timestamp: Date.now(),
@@ -1944,7 +1958,7 @@ export const useChatStore = defineStore('chat', () => {
     const message = String((evt as any).message || '')
     if (message) {
       placeCommandMessage({
-        id: uid(),
+        id: commandMessageId || uid(),
         role: 'command',
         content: message,
         timestamp: Date.now(),
