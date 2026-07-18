@@ -3,6 +3,7 @@ import {
   getSessionIncarnation,
   getSessionRowId,
 } from '../../../db/hermes/session-store'
+import type { SessionState } from './types'
 
 export interface SessionGeneration {
   rowId: number | null
@@ -15,9 +16,10 @@ export interface SessionGenerationState {
 }
 
 export function readSessionGeneration(sessionId: string): SessionGeneration {
+  const rowId = getSessionRowId(sessionId)
   return {
-    rowId: getSessionRowId(sessionId),
-    incarnation: getSessionIncarnation(sessionId),
+    rowId,
+    incarnation: getSessionIncarnation(sessionId, rowId),
   }
 }
 
@@ -45,6 +47,36 @@ export function sessionGenerationsEqual(
   right: SessionGeneration,
 ): boolean {
   return left.rowId === right.rowId && left.incarnation === right.incarnation
+}
+
+/** Return state bound to the current SQLite row, discarding any deleted generation. */
+export function getOrCreateGenerationBoundSessionState(
+  sessionMap: Map<string, SessionState>,
+  sessionId: string,
+): SessionState {
+  const generation = readSessionGeneration(sessionId)
+  let state = sessionMap.get(sessionId)
+  if (state && !stateMatchesSessionGeneration(state, generation)) {
+    state.abortController?.abort()
+    state.goalEvaluationAbortController?.abort()
+    state.queue.length = 0
+    state.isWorking = false
+    state.isAborting = false
+    state.abortController = undefined
+    state.goalEvaluationAbortController = undefined
+    state.runId = undefined
+    state.activeRunMarker = undefined
+    state.commandReservationMarker = undefined
+    state.responseRun = undefined
+    state.profile = undefined
+    state = undefined
+  }
+  if (!state) {
+    state = { messages: [], isWorking: false, events: [], queue: [] }
+    bindSessionGeneration(state, generation)
+    sessionMap.set(sessionId, state)
+  }
+  return state
 }
 
 export async function loadSessionStateWithGenerationFence<T extends SessionGenerationState>(options: {

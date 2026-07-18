@@ -19,6 +19,8 @@ vi.mock('../../packages/server/src/services/logger', () => ({
 
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSession: vi.fn(() => null),
+  getSessionRowId: vi.fn(() => 1),
+  getSessionIncarnation: vi.fn(() => 1),
 }))
 
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({

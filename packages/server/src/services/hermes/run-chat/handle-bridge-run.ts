@@ -5,11 +5,11 @@
 
 import type { Server, Socket } from 'socket.io'
 import { getSystemPrompt } from '../../../lib/llm-prompt'
-import { getSession, getSessionDetail, getSessionIncarnation, getSessionRowId, createSession, addMessage, updateSession, updateSessionStats } from '../../../db/hermes/session-store'
+import { getSession, getSessionDetail, addMessage, updateSession, updateSessionStats } from '../../../db/hermes/session-store'
 import { updateUsage } from '../../../db/hermes/usage-store'
 import { logger, bridgeLogger } from '../../logger'
 import { AgentBridgeClient, type AgentBridgeContextEstimate, type AgentBridgeMessage, type AgentBridgeOutput } from '../agent-bridge'
-import { contentBlocksToString, convertContentBlocksForAgent, extractTextForPreview, isContentBlockArray } from './content-blocks'
+import { contentBlocksToString, convertContentBlocksForAgent, isContentBlockArray } from './content-blocks'
 import { buildCompressedHistory, buildDbHistory, buildSnapshotAwareHistory, forceCompressBridgeHistory, pushState, replaceState } from './compression'
 import {
   calcAndUpdateUsage,
@@ -36,6 +36,14 @@ import type { AuthenticatedUser } from '../../../middleware/user-auth'
 import { ensureHermesRunWorkspace } from './workspace'
 import { completeWorkspaceRunCheckpoint, discardWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint, type WorkspaceRunCheckpointHandle } from './workspace-diff-tracker'
 import type { WorkspaceRunChangeSummary } from '../../../db/hermes/workspace-run-changes-store'
+import { captureSessionRunOwnership, ownsSessionGeneration, ownsSessionRun, type SessionRunOwnership } from './session-run-ownership'
+import { finalizeBridgeAbort, registerBridgeAbortFinalizer, unregisterBridgeAbortFinalizer } from './bridge-abort-finalizer'
+import {
+  releaseBridgeRunAdmission,
+  reserveBridgeRunAdmission,
+  type BridgeRunAdmission,
+} from './bridge-run-admission'
+import { awaitWithAbortSignal, awaitWithTimeoutAndAbortSignal, isAbortError } from './abortable-await'
 
 const BRIDGE_USAGE_FLUSH_DELAY_MS = 200
 const BRIDGE_TITLE_EVENT_POLL_INTERVAL_MS = 500
@@ -329,71 +337,97 @@ export async function handleBridgeRun(
   skipUserMessage = false,
   loadSessionStateFromDbFn: (sid: string, sessionMap: Map<string, SessionState>) => Promise<SessionState>,
   dequeueNextQueuedRun: (socket: Socket, sessionId: string, fallbackProfile?: string) => void,
+  admittedRun?: BridgeRunAdmission,
 ) {
   const { input, session_id, instructions } = data
-  const runSource = data.session_source === 'global_agent' || data.source === 'global_agent' ? 'global_agent' : 'cli'
   if (!session_id) {
     socket.emit('run.failed', { event: 'run.failed', error: 'session_id is required for cli source' })
     return
   }
 
+  const runOwnership = admittedRun || reserveBridgeRunAdmission(sessionMap, data, profile)
+  if (!runOwnership) return
+  const state = runOwnership.state
+  const runMarker = runOwnership.runMarker
+  const ownsRun = () => ownsSessionRun(sessionMap, runOwnership)
+  const ownsGeneration = () => ownsSessionGeneration(sessionMap, runOwnership)
+
   let fullInstructions = instructions
     ? `${getSystemPrompt()}\n${instructions}`
     : getSystemPrompt()
-  const sessionRow = getSession(session_id)
-  const workspace = await ensureHermesRunWorkspace(profile, sessionRow?.workspace || data.workspace)
-  const diffWorkspace = explicitBridgeWorkspace(data.workspace) ? workspace : ''
-  if (sessionRow && !sessionRow.workspace) updateSession(session_id, { workspace })
-  const sessionModel = sessionRow?.model || ''
-  const sessionProvider = sessionRow?.provider || ''
-  const { model: resolvedModel, provider: resolvedProvider } = await resolveBridgeRunModelConfig({
-    profile,
-    sessionModel,
-    sessionProvider,
-    requestedModel: data.model,
-    requestedProvider: data.provider,
-    modelGroups: data.model_groups,
-  })
-  if (sessionRow) {
-    const updates: { model?: string; provider?: string } = {}
-    if (resolvedModel && sessionRow.model !== resolvedModel) updates.model = resolvedModel
-    if (resolvedProvider && sessionRow.provider !== resolvedProvider) updates.provider = resolvedProvider
-    if (Object.keys(updates).length > 0) updateSession(session_id, updates)
+  let workspace = ''
+  let diffWorkspace = ''
+  let resolvedModel = ''
+  let resolvedProvider = ''
+  try {
+    if (runOwnership.needsStateLoad) {
+      const loadedState = await awaitWithAbortSignal(
+        loadSessionStateFromDbFn(session_id, sessionMap),
+        runOwnership.abortController.signal,
+      )
+      if (!ownsRun()) return
+      state.messages = loadedState.messages
+      state.messageTotal = loadedState.messageTotal
+      state.messageLoadedCount = loadedState.messageLoadedCount
+      state.messagePageLimit = loadedState.messagePageLimit
+      state.hasMoreBefore = loadedState.hasMoreBefore
+      state.inputTokens = loadedState.inputTokens
+      state.outputTokens = loadedState.outputTokens
+      state.contextTokens = loadedState.contextTokens
+    }
+
+    const sessionRow = getSession(session_id)
+    workspace = await awaitWithAbortSignal(
+      ensureHermesRunWorkspace(profile, sessionRow?.workspace || data.workspace),
+      runOwnership.abortController.signal,
+    )
+    if (!ownsRun()) return
+    diffWorkspace = explicitBridgeWorkspace(data.workspace) ? workspace : ''
+    if (runOwnership.createdSession || (sessionRow && !sessionRow.workspace)) {
+      updateSession(session_id, { workspace })
+    }
+    const sessionModel = sessionRow?.model || ''
+    const sessionProvider = sessionRow?.provider || ''
+    const resolved = await awaitWithAbortSignal(resolveBridgeRunModelConfig({
+      profile,
+      sessionModel,
+      sessionProvider,
+      requestedModel: data.model,
+      requestedProvider: data.provider,
+      modelGroups: data.model_groups,
+    }), runOwnership.abortController.signal)
+    if (!ownsRun()) return
+    resolvedModel = resolved.model
+    resolvedProvider = resolved.provider
+    if (sessionRow || runOwnership.createdSession) {
+      const updates: { model?: string; provider?: string } = {}
+      if (resolvedModel && sessionRow?.model !== resolvedModel) updates.model = resolvedModel
+      if (resolvedProvider && sessionRow?.provider !== resolvedProvider) updates.provider = resolvedProvider
+      if (Object.keys(updates).length > 0) updateSession(session_id, updates)
+    }
+    const socketUser = socket.data.user as AuthenticatedUser | undefined
+    await awaitWithAbortSignal(
+      writeModelRunProfileToken(socketUser, profile),
+      runOwnership.abortController.signal,
+    )
+    if (!ownsRun()) return
+  } catch (err) {
+    if (runOwnership.abortController.signal.aborted && isAbortError(err)) {
+      if (ownsRun()) await finalizeBridgeAbort(state, true)
+      return
+    }
+    if (!ownsRun()) return
+    releaseBridgeRunAdmission(sessionMap, runOwnership)
+    throw err
   }
-  const socketUser = socket.data.user as AuthenticatedUser | undefined
-  await writeModelRunProfileToken(socketUser, profile)
+
   const runPrompt = [
     workspace ? `[Current working directory: ${workspace}]` : '',
     'When calling Hermes Web UI endpoints from tools or skills, include the current Hermes profile as the X-Hermes-Profile header if the endpoint supports profile-scoped behavior.',
   ].filter(Boolean).join('\n')
   fullInstructions = `\n${runPrompt}\n${fullInstructions}`
 
-  const runMarker = `cli_run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   const now = Math.floor(Date.now() / 1000)
-  let state = sessionMap.get(session_id)
-  if (!state) {
-    state = getSession(session_id)
-      ? await loadSessionStateFromDbFn(session_id, sessionMap)
-      : { messages: [], isWorking: false, events: [], queue: [] }
-    sessionMap.set(session_id, state)
-  }
-
-  state.isWorking = true
-  state.isAborting = false
-  state.events = []
-  state.profile = profile
-  state.source = runSource
-  state.activeRunMarker = runMarker
-  state.runId = undefined
-  state.abortController = undefined
-  state.bridgeOutput = ''
-  state.bridgePendingAssistantContent = ''
-  state.bridgePendingReasoningContent = ''
-  state.bridgePendingToolCallMarkup = ''
-  state.bridgeToolCounter = 0
-  state.bridgePendingTools = []
-  state.responseRun = undefined
-
   const displayInput = data.display_input === undefined ? input : data.display_input
   const inputStr = displayInput == null ? '' : contentBlocksToString(displayInput)
   const actualInputStr = contentBlocksToString(input)
@@ -420,11 +454,6 @@ export async function handleBridgeRun(
       timestamp: now,
     })
 
-    if (!getSession(session_id)) {
-      const previewText = extractTextForPreview(displayInput || input)
-      const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
-      createSession({ id: session_id, profile, source: runSource, model: resolvedModel, provider: resolvedProvider, title: preview, workspace })
-    }
     messageId = addMessage({
       session_id,
       client_id: data.queue_id || null,
@@ -434,14 +463,10 @@ export async function handleBridgeRun(
       display_content: displayContentForStorage,
       timestamp: now,
     })
-  } else if (!getSession(session_id)) {
-    const previewText = displayInput === null ? extractTextForPreview(input) : extractTextForPreview(displayInput || input)
-    const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
-    createSession({ id: session_id, profile, source: runSource, model: resolvedModel, provider: resolvedProvider, title: preview, workspace })
   }
 
   socket.join(`session:${session_id}`)
-  if (shouldPersistUserMessage) {
+  if (shouldPersistUserMessage && ownsRun()) {
     const peerTarget = data.peerExcludeSocketId
       ? nsp.to(`session:${session_id}`).except(data.peerExcludeSocketId)
       : socket.to(`session:${session_id}`)
@@ -456,81 +481,148 @@ export async function handleBridgeRun(
       },
     })
   }
-  const emit = (event: string, payload: any) => {
+  const emitToRoom = (event: string, payload: any) => {
     const tagged = { ...payload, session_id }
     nsp.to(`session:${session_id}`).emit(event, tagged)
     if (!nsp.adapter.rooms.get(`session:${session_id}`)?.size && socket.connected) {
       socket.emit(event, tagged)
     }
   }
+  const emit = (event: string, payload: any) => {
+    if (ownsRun()) emitToRoom(event, payload)
+  }
+  const emitForGeneration = (event: string, payload: any) => {
+    if (ownsGeneration()) emitToRoom(event, payload)
+  }
   let workspaceDiffRunId = ''
   let workspaceDiffCheckpoint: WorkspaceRunCheckpointHandle | null = null
-  let workspaceDiffCompleted = false
-  const emitWorkspaceDiffCompleted = async () => {
-    if (!diffWorkspace || workspaceDiffCompleted) return
-    if (!workspaceDiffRunId && !workspaceDiffCheckpoint) return
-    workspaceDiffCompleted = true
-    try {
-      if (!workspaceDiffRunId) {
-        await completeWorkspaceRunCheckpoint({
+  let workspaceDiffCompletion: Promise<void> | null = null
+  const emitWorkspaceDiffCompleted = (): Promise<void> => {
+    if (!diffWorkspace || (!workspaceDiffRunId && !workspaceDiffCheckpoint)) return Promise.resolve()
+    if (workspaceDiffCompletion) return workspaceDiffCompletion
+    workspaceDiffCompletion = (async () => {
+      try {
+        if (!workspaceDiffRunId) {
+          await completeWorkspaceRunCheckpoint({
+            sessionId: session_id,
+            workspace: diffWorkspace,
+            checkpoint: workspaceDiffCheckpoint,
+          })
+          return
+        }
+        const change = await completeWorkspaceRunCheckpoint({
           sessionId: session_id,
+          runId: workspaceDiffRunId,
           workspace: diffWorkspace,
-          checkpoint: workspaceDiffCheckpoint,
+          ...(workspaceDiffCheckpoint ? { checkpoint: workspaceDiffCheckpoint } : {}),
         })
-        return
+        if (change && ownsRun()) emit('workspace.diff.completed', workspaceDiffCompletedPayload(change))
+      } catch (err) {
+        bridgeLogger.warn({ err, sessionId: session_id, workspace: diffWorkspace }, '[workspace-diff] failed to complete bridge checkpoint')
       }
-      const change = await completeWorkspaceRunCheckpoint({
-        sessionId: session_id,
-        runId: workspaceDiffRunId,
-        workspace: diffWorkspace,
-        ...(workspaceDiffCheckpoint ? { checkpoint: workspaceDiffCheckpoint } : {}),
-      })
-      if (change) emit('workspace.diff.completed', workspaceDiffCompletedPayload(change))
-    } catch (err) {
-      bridgeLogger.warn({ err, sessionId: session_id, workspace: diffWorkspace }, '[workspace-diff] failed to complete bridge checkpoint')
-    }
+    })()
+    return workspaceDiffCompletion
   }
 
-  const history = await buildCompressedHistory(
-    session_id, profile,
-    '',
-    undefined,
-    emit,
-    sessionMap,
-    { model: resolvedModel, provider: resolvedProvider },
-    async (_messages, localMessageTokens) => {
-      const fixedContextTokens = await ensureBridgeFixedContext({
-        sessionId: session_id,
-        profile,
-        model: resolvedModel,
-        provider: resolvedProvider,
-        instructions: fullInstructions,
-        state,
-        bridge,
-        refresh: true,
-      })
-      const contextTokens = fixedContextTokens == null
-        ? localMessageTokens
-        : fixedContextTokens + localMessageTokens
-      bridgeLogger.info({
-        sessionId: session_id,
-        profile,
-        model: resolvedModel,
-        provider: resolvedProvider,
-        fixedContextTokens,
-        messageTokens: localMessageTokens,
-        contextTokens,
-      }, '[chat-run-socket] local context estimate')
-      return contextTokens
-    },
-    currentInputTokens,
-  )
+  let abortFinalization: Promise<boolean> | null = null
+  const bridgeAbortFinalizer = (synced: boolean): Promise<boolean> => {
+    if (abortFinalization) return abortFinalization
+    const pending = (async () => {
+      if (!ownsRun()) return false
+      await emitWorkspaceDiffCompleted()
+      if (!ownsRun()) return false
+      const finalized = await markAbortCompleted(
+        nsp,
+        socket,
+        session_id,
+        state.runId || runMarker,
+        sessionMap,
+        dequeueNextQueuedRun,
+        synced,
+        runOwnership,
+      )
+      if (!finalized) return false
+      unregisterBridgeAbortFinalizer(state, bridgeAbortFinalizer)
+      return true
+    })()
+    abortFinalization = pending
+    void pending.catch(() => {
+      if (abortFinalization === pending) abortFinalization = null
+    })
+    return pending
+  }
+  registerBridgeAbortFinalizer(state, bridgeAbortFinalizer)
+
+  let history: ChatMessage[]
+  try {
+    history = await awaitWithAbortSignal(buildCompressedHistory(
+      session_id, profile,
+      '',
+      undefined,
+      emit,
+      sessionMap,
+      { model: resolvedModel, provider: resolvedProvider },
+      async (_messages, localMessageTokens) => {
+        const fixedContextTokens = await ensureBridgeFixedContext({
+          sessionId: session_id,
+          profile,
+          model: resolvedModel,
+          provider: resolvedProvider,
+          instructions: fullInstructions,
+          state,
+          bridge,
+          refresh: true,
+        })
+        if (!ownsRun()) return localMessageTokens
+        const contextTokens = fixedContextTokens == null
+          ? localMessageTokens
+          : fixedContextTokens + localMessageTokens
+        bridgeLogger.info({
+          sessionId: session_id,
+          profile,
+          model: resolvedModel,
+          provider: resolvedProvider,
+          fixedContextTokens,
+          messageTokens: localMessageTokens,
+          contextTokens,
+        }, '[chat-run-socket] local context estimate')
+        return contextTokens
+      },
+      currentInputTokens,
+    ), runOwnership.abortController.signal)
+  } catch (err) {
+    if (runOwnership.abortController.signal.aborted && isAbortError(err)) {
+      if (ownsRun()) await finalizeBridgeAbort(state, true)
+      return
+    }
+    unregisterBridgeAbortFinalizer(state, bridgeAbortFinalizer)
+    throw err
+  }
   const bridgeHistory = history
+  if (!ownsRun()) {
+    unregisterBridgeAbortFinalizer(state, bridgeAbortFinalizer)
+    return
+  }
+  if (state.isAborting) {
+    await finalizeBridgeAbort(state, true)
+    return
+  }
 
   try {
     const bridgeInput = isContentBlockArray(input)
-      ? await convertContentBlocksForAgent(input)
+      ? await awaitWithAbortSignal(
+          convertContentBlocksForAgent(input),
+          runOwnership.abortController.signal,
+        )
       : input
+    if (!ownsRun()) {
+      unregisterBridgeAbortFinalizer(state, bridgeAbortFinalizer)
+      return
+    }
+    if (state.isAborting) {
+      await finalizeBridgeAbort(state, true)
+      return
+    }
     const bridgeStorageInput = data.storage_message !== undefined
       ? data.storage_message
       : isContentBlockArray(input)
@@ -545,27 +637,30 @@ export async function handleBridgeRun(
       hasInstructions: Boolean(fullInstructions),
       multimodalInput: isContentBlockArray(input),
     }, '[chat-run-socket] starting CLI bridge run')
-    const workspaceDiffSessionRowId = getSessionRowId(session_id)
-    const workspaceDiffSessionIncarnation = getSessionIncarnation(session_id)
     workspaceDiffCheckpoint = diffWorkspace
       ? await startWorkspaceRunCheckpoint({
           sessionId: session_id,
           workspace: diffWorkspace,
         })
       : null
-    if (
-      workspaceDiffSessionRowId == null ||
-      workspaceDiffSessionIncarnation == null ||
-      getSessionRowId(session_id) !== workspaceDiffSessionRowId ||
-      getSessionIncarnation(session_id) !== workspaceDiffSessionIncarnation
-    ) {
+    if (!ownsRun()) {
       discardWorkspaceRunCheckpoint({ sessionId: session_id, checkpoint: workspaceDiffCheckpoint })
-      state.isWorking = false
-      state.activeRunMarker = undefined
-      sessionMap.delete(session_id)
+      if (!ownsGeneration() && sessionMap.get(session_id) === state) {
+        state.abortController?.abort()
+        state.goalEvaluationAbortController?.abort()
+        state.queue.length = 0
+        state.isWorking = false
+        state.activeRunMarker = undefined
+        sessionMap.delete(session_id)
+      }
+      unregisterBridgeAbortFinalizer(state, bridgeAbortFinalizer)
       return
     }
-    const started = await bridge.chat(
+    if (state.isAborting) {
+      await finalizeBridgeAbort(state, true)
+      return
+    }
+    const started = await awaitWithAbortSignal(bridge.chat(
       session_id,
       bridgeInput as AgentBridgeMessage,
       bridgeHistory,
@@ -578,9 +673,20 @@ export async function handleBridgeRun(
         // Local patch (reasoning-effort): per-session reasoning effort override.
         ...(data.reasoning_effort ? { reasoning_effort: data.reasoning_effort } : {}),
       },
-    )
+    ), runOwnership.abortController.signal)
+    if (!ownsRun()) {
+      discardWorkspaceRunCheckpoint({ sessionId: session_id, checkpoint: workspaceDiffCheckpoint })
+      unregisterBridgeAbortFinalizer(state, bridgeAbortFinalizer)
+      return
+    }
     state.runId = started.run_id
     workspaceDiffRunId = started.run_id
+    if (state.isAborting) {
+      await bridge.interrupt(session_id, 'Aborted by user', profile).catch((err) => {
+        bridgeLogger.warn({ err, sessionId: session_id, runId: started.run_id }, '[chat-run-socket][abort] failed to repeat interrupt after bridge startup')
+      })
+      if (!ownsRun()) return
+    }
     bridgeLogger.info({
       sessionId: session_id,
       runId: started.run_id,
@@ -619,14 +725,15 @@ export async function handleBridgeRun(
         shouldPersistUserMessage && displayRole === 'user',
         data.model_groups,
         emitWorkspaceDiffCompleted,
+        runOwnership,
       )
       if (chunk.done) {
         sawTerminalChunk = true
-        void pollBridgeGeneratedTitleAfterRun(bridge, session_id, profile, emit)
+        void pollBridgeGeneratedTitleAfterRun(bridge, session_id, profile, emitForGeneration, ownsGeneration)
         break
       }
     }
-    if (!sawTerminalChunk && state.activeRunMarker === runMarker && state.isWorking) {
+    if (!sawTerminalChunk && ownsRun() && state.isWorking) {
       bridgeLogger.warn({
         sessionId: session_id,
         runId: started.run_id,
@@ -663,19 +770,26 @@ export async function handleBridgeRun(
         shouldPersistUserMessage && displayRole === 'user',
         data.model_groups,
         emitWorkspaceDiffCompleted,
+        runOwnership,
       )
     }
   } catch (err: any) {
-    if (state.activeRunMarker !== runMarker) {
+    if (!ownsRun()) {
       await emitWorkspaceDiffCompleted()
+      unregisterBridgeAbortFinalizer(state, bridgeAbortFinalizer)
       return
     }
     if (!state.isWorking) {
       await emitWorkspaceDiffCompleted()
+      unregisterBridgeAbortFinalizer(state, bridgeAbortFinalizer)
       return
     }
     await emitWorkspaceDiffCompleted()
-    if (sessionMap.get(session_id) !== state || state.activeRunMarker !== runMarker || !state.isWorking) return
+    if (!ownsRun() || !state.isWorking) return
+    if (state.isAborting) {
+      await finalizeBridgeAbort(state, true)
+      return
+    }
     const message = err instanceof Error ? err.message : String(err)
     let errUsage = { inputTokens: 0, outputTokens: 0 }
     let errContextTokens: number | undefined
@@ -696,7 +810,7 @@ export async function handleBridgeRun(
         emit,
         bridge,
       })
-      if (sessionMap.get(session_id) !== state || state.activeRunMarker !== runMarker || !state.isWorking) return
+      if (!ownsRun() || !state.isWorking) return
       updateUsage(session_id, {
         inputTokens: errUsage.inputTokens,
         outputTokens: errUsage.outputTokens,
@@ -705,14 +819,7 @@ export async function handleBridgeRun(
     } catch (finalizeErr) {
       finalizationError = finalizeErr
     }
-    if (sessionMap.get(session_id) !== state || state.activeRunMarker !== runMarker || !state.isWorking) return
-    state.isWorking = false
-    state.isAborting = false
-    state.abortController = undefined
-    state.profile = undefined
-    state.runId = undefined
-    state.activeRunMarker = undefined
-    state.events = []
+    if (!ownsRun() || !state.isWorking) return
     const queueLen = state.queue?.length ?? 0
     emit('run.failed', {
       event: 'run.failed',
@@ -724,6 +831,14 @@ export async function handleBridgeRun(
       contextTokens: errContextTokens,
       queue_remaining: queueLen,
     })
+    state.isWorking = false
+    state.isAborting = false
+    state.abortController = undefined
+    state.profile = undefined
+    state.runId = undefined
+    state.activeRunMarker = undefined
+    state.events = []
+    unregisterBridgeAbortFinalizer(state, bridgeAbortFinalizer)
     if (queueLen > 0) dequeueNextQueuedRun(socket, session_id)
   }
 }
@@ -772,8 +887,11 @@ export async function resumeBridgeRun(
   state.bridgePendingToolCallMarkup = state.bridgePendingToolCallMarkup || ''
   state.bridgePendingTools = state.bridgePendingTools || []
   state.bridgeToolCounter = state.bridgeToolCounter || 0
+  const runOwnership = captureSessionRunOwnership(sessionId, state, runMarker)
+  const ownsRun = () => ownsSessionRun(sessionMap, runOwnership)
 
   const emit = (event: string, payload: any) => {
+    if (!ownsRun()) return
     const tagged = { ...payload, session_id: sessionId }
     nsp.to(`session:${sessionId}`).emit(event, tagged)
     if (!nsp.adapter.rooms.get(`session:${sessionId}`)?.size && socket.connected) {
@@ -781,10 +899,38 @@ export async function resumeBridgeRun(
     }
   }
 
+  let abortFinalization: Promise<boolean> | null = null
+  const resumeAbortFinalizer = (synced: boolean): Promise<boolean> => {
+    if (abortFinalization) return abortFinalization
+    const pending = (async () => {
+      if (!ownsRun()) return false
+      const finalized = await markAbortCompleted(
+        nsp,
+        socket,
+        sessionId,
+        runId,
+        sessionMap,
+        dequeueNextQueuedRun,
+        synced,
+        runOwnership,
+      )
+      if (!finalized) return false
+      unregisterBridgeAbortFinalizer(state, resumeAbortFinalizer)
+      return true
+    })()
+    abortFinalization = pending
+    void pending.catch(() => {
+      if (abortFinalization === pending) abortFinalization = null
+    })
+    return pending
+  }
+  registerBridgeAbortFinalizer(state, resumeAbortFinalizer)
+
   let cursor = 0
   let eventCursor = 0
   try {
     const snapshot = await bridge.getResult(runId)
+    if (!ownsRun()) return
     const deltas = Array.isArray(snapshot.deltas) ? snapshot.deltas.map(String) : []
     const output = typeof snapshot.output === 'string' ? snapshot.output : deltas.join('')
     const persisted = state.bridgeOutput || ''
@@ -816,6 +962,11 @@ export async function resumeBridgeRun(
         dequeueNextQueuedRun,
         instructions,
         { model: args.model, provider: args.provider },
+        0,
+        true,
+        undefined,
+        undefined,
+        runOwnership,
       )
     }
     cursor = deltas.length
@@ -831,6 +982,7 @@ export async function resumeBridgeRun(
   try {
     for (;;) {
       const chunk = await bridge.getOutput(runId, cursor, eventCursor)
+      if (!ownsRun()) return
       cursor = chunk.cursor
       eventCursor = chunk.event_cursor
       if (chunk.delta || chunk.done || (chunk.events && chunk.events.length > 0)) {
@@ -848,25 +1000,43 @@ export async function resumeBridgeRun(
           dequeueNextQueuedRun,
           instructions,
           { model: args.model, provider: args.provider },
+          0,
+          true,
+          undefined,
+          undefined,
+          runOwnership,
         )
       }
       if (chunk.done) return
       await delay(100)
+      if (!ownsRun()) return
     }
   } catch (err) {
-    if (state.activeRunMarker !== runMarker) return
-    state.isWorking = false
-    state.isAborting = false
-    state.profile = undefined
-    state.runId = undefined
-    state.activeRunMarker = undefined
-    state.events = []
+    if (!ownsRun()) return
+    if (state.isAborting) {
+      await finalizeBridgeAbort(state, true)
+      return
+    }
     emit('run.failed', {
       event: 'run.failed',
       run_id: runId,
       error: err instanceof Error ? err.message : String(err),
       resumed: true,
+      queue_remaining: state.queue.length,
     })
+    if (!ownsRun()) return
+    const queueLength = state.queue.length
+    state.isWorking = false
+    state.isAborting = false
+    state.abortController = undefined
+    state.profile = undefined
+    state.runId = undefined
+    state.activeRunMarker = undefined
+    state.commandReservationMarker = undefined
+    state.responseRun = undefined
+    state.events = []
+    unregisterBridgeAbortFinalizer(state, resumeAbortFinalizer)
+    if (queueLength > 0) dequeueNextQueuedRun(socket, sessionId, profile)
   }
 }
 
@@ -971,8 +1141,12 @@ async function applyBridgeChunkAsync(
   currentInputIncludedInDb = true,
   modelGroups?: RunModelGroup[],
   emitWorkspaceDiffCompleted?: () => Promise<void>,
+  runOwnership?: SessionRunOwnership,
 ): Promise<void> {
-  if (state.activeRunMarker !== runMarker) {
+  const ownsRun = () => runOwnership
+    ? ownsSessionRun(sessionMap, runOwnership)
+    : sessionMap.get(sessionId) === state && state.activeRunMarker === runMarker
+  if (!ownsRun()) {
     bridgeLogger.info({
       sessionId,
       runId: chunk.run_id,
@@ -991,6 +1165,7 @@ async function applyBridgeChunkAsync(
   let sawStreamDeltaEvent = false
 
   for (const ev of chunk.events || []) {
+    if (!ownsRun()) return
     const evType = ev.event as string | undefined
     if (evType === 'stream.delta') {
       sawStreamDeltaEvent = true
@@ -1002,6 +1177,7 @@ async function applyBridgeChunkAsync(
     } else if (evType === 'bridge.context.ready') {
       cacheBridgeContext(state, ev)
       const usage = await calcAndUpdateUsage(sessionId, state, emit)
+      if (!ownsRun()) return
       const snapshotAware = await estimateSnapshotAwareMessageTokens({
         sessionId,
         profile,
@@ -1010,6 +1186,7 @@ async function applyBridgeChunkAsync(
         currentInputTokens,
         currentInputIncludedInDb,
       })
+      if (!ownsRun()) return
       updateMessageContextTokenUsage(
         sessionId,
         state,
@@ -1149,6 +1326,7 @@ async function applyBridgeChunkAsync(
       emit('clarify.resolved', payload)
     } else if (evType === 'bridge.compression.requested') {
       const bridgeHistory = await buildDbHistory(sessionId, { excludeLastUser: true })
+      if (!ownsRun()) return
       const bridgeUsage = estimateUsageTokensFromMessages(bridgeHistory)
       const messageOnlyTokens = bridgeUsage.inputTokens + bridgeUsage.outputTokens
       const runInputTokens = typeof currentInputTokens === 'number' && Number.isFinite(currentInputTokens) && currentInputTokens > 0
@@ -1186,13 +1364,16 @@ async function applyBridgeChunkAsync(
             ev.messages as ChatMessage[],
             tokenCount,
           )
+          if (!ownsRun()) return
           state.bridgeCompressionResults = state.bridgeCompressionResults || {}
           state.bridgeCompressionResults[String(ev.request_id)] = compressed
           await bridge.compressionRespond(String(ev.request_id), { messages: compressed.messages })
+          if (!ownsRun()) return
         } catch (err: any) {
           await bridge.compressionRespond(String(ev.request_id), {
             error: err?.message || String(err),
           }).catch(() => undefined)
+          if (!ownsRun()) return
         }
       }
     } else if (evType === 'bridge.compression.completed') {
@@ -1231,6 +1412,7 @@ async function applyBridgeChunkAsync(
       replaceState(sessionMap, sessionId, 'compression.completed', payload)
       emit('compression.completed', payload)
       const usage = await calcAndUpdateUsage(sessionId, state, emit)
+      if (!ownsRun()) return
       if (messageAfterTokensWithInput != null) {
         updateMessageContextTokenUsage(sessionId, state, emit, messageAfterTokensWithInput, usage)
       }
@@ -1262,6 +1444,7 @@ async function applyBridgeChunkAsync(
     }
   }
 
+  if (!ownsRun()) return
   // Only process the aggregated chunk.delta when the bridge did NOT emit
   // ordered stream.delta events for this chunk. With ordered events, the text
   // was already handled above in true interleaved order; processing it again
@@ -1299,25 +1482,25 @@ async function applyBridgeChunkAsync(
   }
 
   if (!chunk.done) return
-  if (!state.isWorking) return
+  if (!ownsRun() || !state.isWorking) return
   if (state.isAborting) {
     bridgeLogger.info({
       sessionId,
       runId: chunk.run_id,
       status: chunk.status,
     }, '[chat-run-socket][abort] completing CLI bridge abort after terminal chunk')
+    if (await finalizeBridgeAbort(state, true)) return
     await emitWorkspaceDiffCompleted?.()
+    if (!ownsRun()) return
     await markAbortCompleted(
       nsp,
       socket,
       sessionId,
       chunk.run_id || runMarker,
       sessionMap,
-      (queuedSocket, queuedSessionId, nextQueuedRun, fallbackProfile) => {
-        const queuedState = sessionMap.get(queuedSessionId)
-        if (queuedState) queuedState.queue.unshift(nextQueuedRun)
-        dequeueNextQueuedRun(queuedSocket, queuedSessionId, fallbackProfile)
-      },
+      dequeueNextQueuedRun,
+      true,
+      runOwnership,
     )
     return
   }
@@ -1331,7 +1514,9 @@ async function applyBridgeChunkAsync(
   state.bridgePendingToolCallMarkup = undefined
   updateSessionStats(sessionId)
   await delay(BRIDGE_USAGE_FLUSH_DELAY_MS)
+  if (!ownsRun()) return
   const usage = await calcAndUpdateUsage(sessionId, state, emit)
+  if (!ownsRun()) return
   const contextTokens = await refreshFinalContextUsage({
     sessionId,
     profile,
@@ -1343,20 +1528,13 @@ async function applyBridgeChunkAsync(
     emit,
     bridge,
   })
+  if (!ownsRun()) return
   updateUsage(sessionId, {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     profile: state.profile,
   })
   const terminalError = bridgeTerminalError(chunk)
-  const hadQueuedRunBeforeGoalEvaluation = state.queue.length > 0
-  state.isWorking = hadQueuedRunBeforeGoalEvaluation
-  state.isAborting = false
-  state.profile = hadQueuedRunBeforeGoalEvaluation ? (state.queue[0]?.profile || profile) : undefined
-  state.source = hadQueuedRunBeforeGoalEvaluation ? state.queue[0]?.source : state.source
-  state.runId = undefined
-  state.activeRunMarker = undefined
-  state.events = []
   const eventName = terminalError ? 'run.failed' : 'run.completed'
   const payload = {
     event: eventName,
@@ -1370,6 +1548,7 @@ async function applyBridgeChunkAsync(
     queue_remaining: state.queue.length,
   }
   await emitWorkspaceDiffCompleted?.()
+  if (!ownsRun()) return
   emit(eventName, payload)
 
   if (!terminalError) {
@@ -1384,18 +1563,38 @@ async function applyBridgeChunkAsync(
       modelGroups,
       instructions,
       finalResponse: bridgeFinalResponse(chunk, state),
+      ownsRun,
     })
+    if (!ownsRun()) return
+    if (state.isAborting) {
+      if (await finalizeBridgeAbort(state, true)) return
+      await markAbortCompleted(
+        nsp,
+        socket,
+        sessionId,
+        chunk.run_id || runMarker,
+        sessionMap,
+        dequeueNextQueuedRun,
+        true,
+        runOwnership,
+      )
+      return
+    }
   }
 
-  if (state.queue.length > 0 && !state.activeRunMarker) {
-    const nextQueuedRun = state.queue[0]
-    state.isWorking = true
-    state.profile = nextQueuedRun.profile || profile
-    state.source = nextQueuedRun.source
+  const hasQueuedRun = state.queue.length > 0
+  state.isWorking = false
+  state.isAborting = false
+  state.abortController = undefined
+  state.goalEvaluationAbortController = undefined
+  state.profile = undefined
+  state.runId = undefined
+  state.activeRunMarker = undefined
+  state.events = []
+  unregisterBridgeAbortFinalizer(state)
+
+  if (hasQueuedRun) {
     dequeueNextQueuedRun(socket, sessionId)
-  } else if (!state.activeRunMarker) {
-    state.isWorking = false
-    state.profile = undefined
   }
 }
 
@@ -1404,14 +1603,17 @@ async function pollBridgeGeneratedTitleAfterRun(
   sessionId: string,
   profile: string,
   emit: (event: string, payload: any) => void,
+  ownsRun: () => boolean,
 ) {
   if (!shouldPollBridgeGeneratedTitle(sessionId)) return
   const deadline = Date.now() + BRIDGE_TITLE_EVENT_POLL_TIMEOUT_MS
   while (Date.now() < deadline) {
     await delay(BRIDGE_TITLE_EVENT_POLL_INTERVAL_MS)
+    if (!ownsRun()) return
     let title = ''
     try {
       const result = await bridge.getSessionTitle(sessionId, profile, { timeoutMs: 2000 })
+      if (!ownsRun()) return
       title = normalizeTitleText(result.title)
     } catch (err) {
       logger.debug(err, '[chat-run-socket] stopped polling bridge generated title for session %s', sessionId)
@@ -1449,24 +1651,42 @@ async function maybeEnqueueGoalContinuation(args: {
   modelGroups?: RunModelGroup[]
   instructions: string
   finalResponse: string
+  ownsRun: () => boolean
 }) {
+  if (!args.ownsRun()) return
   const finalResponse = args.finalResponse || ''
   if (!finalResponse.trim()) return
   if (hasRealQueuedRun(args.state)) return
 
+  const goalEvaluationAbortController = new AbortController()
+  const runSignal = args.state.abortController?.signal
+  const abortGoalEvaluation = () => goalEvaluationAbortController.abort()
+  if (runSignal?.aborted) abortGoalEvaluation()
+  else runSignal?.addEventListener('abort', abortGoalEvaluation, { once: true })
+  args.state.goalEvaluationAbortController = goalEvaluationAbortController
   let decision
   try {
-    decision = await withTimeout(
+    decision = await awaitWithTimeoutAndAbortSignal(
       args.bridge.goalEvaluate(args.sessionId, finalResponse, args.profile),
       BRIDGE_GOAL_EVALUATE_TIMEOUT_MS,
       'goal evaluation timed out',
+      goalEvaluationAbortController.signal,
     )
+    if (!args.ownsRun()) return
   } catch (err) {
-    logger.warn(err, '[chat-run-socket] /goal evaluation failed for session %s', args.sessionId)
+    if (!isAbortError(err)) {
+      logger.warn(err, '[chat-run-socket] /goal evaluation failed for session %s', args.sessionId)
+    }
     return
+  } finally {
+    runSignal?.removeEventListener('abort', abortGoalEvaluation)
+    if (args.state.goalEvaluationAbortController === goalEvaluationAbortController) {
+      args.state.goalEvaluationAbortController = undefined
+    }
   }
 
   if (isGoalJudgeUnavailable(decision.reason)) {
+    if (!args.ownsRun()) return
     emitGoalStatus(
       args.nsp,
       args.socket,
@@ -1479,6 +1699,7 @@ async function maybeEnqueueGoalContinuation(args: {
   }
 
   const message = typeof decision.message === 'string' ? decision.message.trim() : ''
+  if (!args.ownsRun()) return
   if (message) emitGoalStatus(args.nsp, args.socket, args.sessionId, args.state, decision.verdict || 'goal', message)
 
   if (!decision.should_continue) return
@@ -1488,6 +1709,7 @@ async function maybeEnqueueGoalContinuation(args: {
     ? decision.continuation_prompt.trim()
     : ''
   if (!prompt) return
+  if (!args.ownsRun()) return
 
   const next: QueuedRun = {
     queue_id: `goal_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
@@ -1502,6 +1724,7 @@ async function maybeEnqueueGoalContinuation(args: {
     source: args.state.source === 'global_agent' ? 'global_agent' : 'cli',
     goalContinuation: true,
   }
+  if (!args.ownsRun()) return
   args.state.queue.push(next)
 }
 

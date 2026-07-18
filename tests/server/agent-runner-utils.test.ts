@@ -28,7 +28,16 @@ import { CodingAgentRunManager, sanitizeCodingAgentTerminalOutput } from '../../
 import { mapCodingAgentResponseEvent } from '../../packages/server/src/services/agent-runner/coding-agent-event-mapper'
 import { applyResponseStreamEvent } from '../../packages/server/src/services/hermes/run-chat/response-stream'
 import { initAllHermesTables } from '../../packages/server/src/db/hermes/schemas'
-import { addMessage, getSession, getSessionDetail, listSessions } from '../../packages/server/src/db/hermes/session-store'
+import {
+  addMessage,
+  createSession,
+  deleteSession,
+  getSession,
+  getSessionDetail,
+  getSessionIncarnation,
+  getSessionRowId,
+  listSessions,
+} from '../../packages/server/src/db/hermes/session-store'
 
 beforeEach(() => {
   workspaceDiffMocks.start.mockReset()
@@ -1330,6 +1339,8 @@ describe('coding agent run state', () => {
     }
     ;(manager as any).runs.set(agentSessionId, run)
     ;(manager as any).sessionIndex.set(chatSessionId, agentSessionId)
+    ;(manager as any).ensureDbSession(run)
+    ;(manager as any).bindSessionIdentity(run)
     ;(manager as any).ensureDbSession = () => {}
     ;(manager as any).addUserMessage = () => {}
     ;(manager as any).touch = () => {}
@@ -1374,6 +1385,8 @@ describe('coding agent run state', () => {
     }
     ;(manager as any).runs.set(agentSessionId, run)
     ;(manager as any).sessionIndex.set(chatSessionId, agentSessionId)
+    ;(manager as any).ensureDbSession(run)
+    ;(manager as any).bindSessionIdentity(run)
     ;(manager as any).ensureDbSession = () => {}
     ;(manager as any).addUserMessage = () => {}
     ;(manager as any).touch = () => {}
@@ -1423,6 +1436,8 @@ describe('coding agent run state', () => {
     }
     ;(manager as any).runs.set(agentSessionId, run)
     ;(manager as any).sessionIndex.set(chatSessionId, agentSessionId)
+    ;(manager as any).ensureDbSession(run)
+    ;(manager as any).bindSessionIdentity(run)
     ;(manager as any).ensureDbSession = () => {}
     ;(manager as any).addUserMessage = () => {}
     ;(manager as any).touch = () => {}
@@ -1504,6 +1519,216 @@ describe('coding agent run state', () => {
       }),
     })
     expect(emitted[1]).toEqual(expect.objectContaining({ event: 'run.completed' }))
+  })
+
+  it('ignores a killed coding-agent callback after its SQLite session is deleted and recreated', async () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const roomEmit = vi.fn()
+    const namespace = {
+      adapter: { rooms: new Map() },
+      sockets: new Map(),
+      to: vi.fn(() => ({ emit: roomEmit })),
+    }
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { setChatRunServer } = await import('../../packages/server/src/routes/hermes/chat-run')
+    const chatRunServer = new ChatRunSocket({ of: vi.fn(() => namespace) } as any)
+    setChatRunServer(chatRunServer)
+    let resolveStaleCallback!: () => void
+    const staleCallbackSettled = new Promise<void>(resolve => {
+      resolveStaleCallback = resolve
+    })
+    ;(manager as any).emitToChat = (sessionId: string, event: string, payload: any, identity: any) => {
+      ;(chatRunServer as any).emitExternalEvent(sessionId, event, payload, identity)
+    }
+    ;(manager as any).markChatRunCompleted = (sessionId: string, event: string, identity: any) => {
+      const marked = (chatRunServer as any).markExternalRunCompleted(sessionId, event, identity)
+      resolveStaleCallback()
+      return marked
+    }
+
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const agentSessionId = `agent-session-stale-callback-${suffix}`
+    const chatSessionId = `chat-session-stale-callback-${suffix}`
+    const oldState = { messages: [], isWorking: false, events: [], queue: [] }
+    manager.start({
+      agentSessionId,
+      agentId: 'codex',
+      mode: 'scoped',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'gpt-5-codex',
+      sessionId: chatSessionId,
+      command: 'codex',
+      args: [],
+      shellCommand: 'codex',
+      workspaceDir: process.cwd(),
+      workspaceExplicit: true,
+      state: oldState,
+    })
+    const oldGeneration = {
+      rowId: getSessionRowId(chatSessionId),
+      incarnation: getSessionIncarnation(chatSessionId),
+    }
+
+    let resolveDiff!: (change: any) => void
+    workspaceDiffMocks.complete.mockReturnValue(new Promise(resolve => {
+      resolveDiff = resolve
+    }))
+    expect(manager.stop(chatSessionId)).toBe(true)
+    await vi.waitFor(() => expect(workspaceDiffMocks.complete).toHaveBeenCalled())
+
+    expect(deleteSession(chatSessionId)).toBe(true)
+    createSession({
+      id: chatSessionId,
+      profile: 'default',
+      source: 'coding_agent',
+      agent: 'codex',
+      agent_session_id: 'replacement-agent-run',
+      model: 'gpt-5-codex',
+      provider: 'test-provider',
+      workspace: process.cwd(),
+    })
+    const replacementState = {
+      messages: [],
+      isWorking: true,
+      events: [{ event: 'replacement.started', data: { event: 'replacement.started' } }],
+      queue: [],
+      runId: 'replacement-agent-run',
+      activeRunMarker: 'replacement-marker',
+      sessionRowId: getSessionRowId(chatSessionId),
+      sessionIncarnation: getSessionIncarnation(chatSessionId),
+      profile: 'default',
+    }
+    expect({
+      rowId: replacementState.sessionRowId,
+      incarnation: replacementState.sessionIncarnation,
+    }).not.toEqual(oldGeneration)
+    ;(chatRunServer as any).sessionMap.set(chatSessionId, replacementState)
+
+    resolveDiff({
+      change_id: 'stale-coding-agent-change',
+      session_id: chatSessionId,
+      run_id: agentSessionId,
+      source: 'run',
+      workspace: process.cwd(),
+      workspace_kind: 'filesystem',
+      started_at: 1,
+      finished_at: 2,
+      files_changed: 1,
+      additions: 1,
+      deletions: 0,
+      truncated: false,
+      total_patch_bytes: 10,
+      created_at: 2,
+      files: [],
+    })
+
+    await staleCallbackSettled
+    expect(roomEmit).not.toHaveBeenCalled()
+    expect((chatRunServer as any).sessionMap.get(chatSessionId)).toBe(replacementState)
+    expect(replacementState).toEqual(expect.objectContaining({
+      isWorking: true,
+      runId: 'replacement-agent-run',
+      activeRunMarker: 'replacement-marker',
+      profile: 'default',
+    }))
+    expect(replacementState.events).toEqual([
+      { event: 'replacement.started', data: { event: 'replacement.started' } },
+    ])
+  })
+
+  it('does not let a delayed completion from one turn clear the next turn in the same coding-agent run', async () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const roomEmit = vi.fn()
+    const namespace = {
+      adapter: { rooms: new Map() },
+      sockets: new Map(),
+      to: vi.fn(() => ({ emit: roomEmit })),
+    }
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { setChatRunServer } = await import('../../packages/server/src/routes/hermes/chat-run')
+    const chatRunServer = new ChatRunSocket({ of: vi.fn(() => namespace) } as any)
+    setChatRunServer(chatRunServer)
+
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const agentSessionId = `agent-session-turn-fence-${suffix}`
+    const chatSessionId = `chat-session-turn-fence-${suffix}`
+    const state = { messages: [], isWorking: false, events: [], queue: [] } as any
+    manager.start({
+      agentSessionId,
+      agentId: 'codex',
+      mode: 'scoped',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'gpt-5-codex',
+      sessionId: chatSessionId,
+      command: 'codex',
+      args: [],
+      shellCommand: 'codex',
+      workspaceDir: process.cwd(),
+      workspaceExplicit: true,
+      state,
+    })
+    const run = (manager as any).runs.get(agentSessionId)
+    ;(chatRunServer as any).sessionMap.set(chatSessionId, state)
+
+    let resolveDiff!: (change: any) => void
+    workspaceDiffMocks.complete.mockReturnValue(new Promise(resolve => {
+      resolveDiff = resolve
+    }))
+
+    run.runMarker = 'turn-1'
+    state.isWorking = true
+    state.runId = agentSessionId
+    state.activeRunMarker = 'turn-1'
+    const firstCompletion = (manager as any).emitAndMarkPrintChatRunCompleted(run, 'run.completed', {
+      event: 'run.completed',
+      run_id: 'response-turn-1',
+    })
+    await vi.waitFor(() => expect(workspaceDiffMocks.complete).toHaveBeenCalled())
+
+    run.runMarker = 'turn-2'
+    state.isWorking = true
+    state.runId = agentSessionId
+    state.activeRunMarker = 'turn-2'
+    state.events = [{ event: 'turn-2.started', data: { event: 'turn-2.started' } }]
+    roomEmit.mockClear()
+    resolveDiff({
+      change_id: 'change-turn-1',
+      session_id: chatSessionId,
+      run_id: agentSessionId,
+      source: 'run',
+      workspace: process.cwd(),
+      workspace_kind: 'filesystem',
+      started_at: 1,
+      finished_at: 2,
+      files_changed: 1,
+      additions: 1,
+      deletions: 0,
+      truncated: false,
+      total_patch_bytes: 10,
+      created_at: 2,
+      files: [],
+    })
+
+    try {
+      await firstCompletion
+      expect(roomEmit).not.toHaveBeenCalled()
+      expect(state).toEqual(expect.objectContaining({
+        isWorking: true,
+        runId: agentSessionId,
+        activeRunMarker: 'turn-2',
+      }))
+      expect(state.events).toEqual([
+        { event: 'turn-2.started', data: { event: 'turn-2.started' } },
+      ])
+      expect(run.runMarker).toBe('turn-2')
+    } finally {
+      manager.stop(chatSessionId, { reportClosed: false })
+      setChatRunServer(undefined as any)
+    }
   })
 
   it('does not complete or emit a workspace diff when the coding-agent workspace was defaulted', async () => {
@@ -1645,7 +1870,13 @@ describe('coding agent run state', () => {
     run.currentChild = undefined
     await (manager as any).emitAndMarkPrintChatRunCompleted(run, run.pendingChatCompletionEvent, run.pendingChatCompletionPayload)
 
-    expect(completed).toHaveBeenCalledWith(chatSessionId, 'run.completed')
+    expect(completed).toHaveBeenCalledWith(chatSessionId, 'run.completed', expect.objectContaining({
+      state,
+      runId: agentSessionId,
+      turnMarker: expect.any(String),
+      sessionRowId: expect.any(Number),
+      sessionIncarnation: expect.any(Number),
+    }))
     expect(emitted).toContainEqual(expect.objectContaining({
       event: 'run.completed',
       payload: expect.objectContaining({
@@ -1725,12 +1956,12 @@ describe('response stream tool detail events', () => {
 
 describe('Claude Code stream-json mapping', () => {
   it('maps top-level tool_result messages to tool.completed', () => {
+    initAllHermesTables()
     const manager = new CodingAgentRunManager()
     const emitted: Array<{ event: string; payload: any }> = []
     ;(manager as any).emitToChat = (_sessionId: string, event: string, payload: any) => {
       emitted.push({ event, payload })
     }
-    ;(manager as any).ensureDbSession = () => {}
     const run = {
       id: 'agent-session-1',
       launch: {
@@ -1754,6 +1985,9 @@ describe('Claude Code stream-json mapping', () => {
       printToolBlocks: new Map(),
     }
     ;(manager as any).runs.set(run.id, run)
+    ;(manager as any).ensureDbSession(run)
+    ;(manager as any).bindSessionIdentity(run)
+    ;(manager as any).ensureDbSession = () => {}
 
     ;(manager as any).handleClaudePrintLine(run, JSON.stringify({
       type: 'assistant',

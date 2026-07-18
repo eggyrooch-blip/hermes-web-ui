@@ -29,6 +29,20 @@ export interface SessionMessage {
   reasoning_content?: string | null
 }
 
+export interface QueuedSessionCommand {
+  name: 'plan' | 'goal' | 'subgoal'
+  rawName: string
+  args: string
+  sessionRowId: number | null
+  sessionIncarnation: number | null
+}
+
+export interface SessionCommandReservation {
+  marker: string
+  sessionRowId: number | null
+  sessionIncarnation: number | null
+}
+
 export interface QueuedRun {
   queue_id: string
   input: string | ContentBlock[]
@@ -57,6 +71,8 @@ export interface QueuedRun {
   expert_id?: string
   expert_label?: string
   expert_avatar?: string
+  sessionCommand?: QueuedSessionCommand
+  commandReservation?: SessionCommandReservation
 }
 
 export interface PendingResumeEvent {
@@ -86,6 +102,7 @@ export interface SessionState {
   goalEvaluationAbortController?: AbortController
   runId?: string
   activeRunMarker?: string
+  commandReservationMarker?: string
   sessionRowId?: number | null
   sessionIncarnation?: number | null
   profile?: string
@@ -94,6 +111,7 @@ export interface SessionState {
   contextTokens?: number
   bridgeContext?: BridgeContextState
   isAborting?: boolean
+  abortFinalizationError?: string
   queue: QueuedRun[]
   responseRun?: ResponseRunState
   source?: ChatRunSource
@@ -109,6 +127,14 @@ export interface SessionState {
     startedAt: number
   }>
   bridgeCompressionResults?: Record<string, BridgeCompressionResult>
+}
+
+export interface ExternalRunIdentity {
+  state: SessionState
+  runId: string
+  turnMarker: string | null
+  sessionRowId: number | null
+  sessionIncarnation: number | null
 }
 
 export interface ResponseRunState {

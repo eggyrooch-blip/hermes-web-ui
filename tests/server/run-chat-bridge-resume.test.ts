@@ -12,6 +12,8 @@ vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   addMessage: addMessageMock,
   createSession: vi.fn(),
   getSession: vi.fn(() => ({ id: 'session-resume', profile: 'default', model: 'gpt-test', provider: 'openai' })),
+  getSessionIncarnation: vi.fn(() => 1),
+  getSessionRowId: vi.fn(() => 1),
   updateSession: vi.fn(),
   updateSessionStats: updateSessionStatsMock,
 }))
@@ -250,5 +252,119 @@ describe('resumeBridgeRun', () => {
       isAborting: false,
       runId: undefined,
     }))
+  })
+
+  it('dequeues a normal queued run after resumed bridge polling fails', async () => {
+    const { resumeBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
+    const { nsp, emitted } = createNamespace()
+    const socket = { id: 'socket-1', connected: true, emit: vi.fn() }
+    const state = {
+      messages: [],
+      isWorking: true,
+      events: [],
+      queue: [{ queue_id: 'queued-normal', input: 'next', profile: 'other', source: 'cli' }],
+    }
+    const sessionMap = new Map<string, any>([['session-resume', state]])
+    const bridge = {
+      getResult: vi.fn(async () => ({ output: '', deltas: [], events: [] })),
+      getOutput: vi.fn(async () => { throw new Error('resume polling failed') }),
+    }
+    const dequeueNextQueuedRun = vi.fn()
+
+    await resumeBridgeRun(
+      nsp as any,
+      socket as any,
+      {
+        sessionId: 'session-resume',
+        runId: 'run-resume',
+        profile: 'default',
+        instructions: 'system prompt',
+      },
+      sessionMap,
+      bridge as any,
+      dequeueNextQueuedRun,
+    )
+
+    expect(emitted).toContainEqual(expect.objectContaining({
+      event: 'run.failed',
+      payload: expect.objectContaining({
+        run_id: 'run-resume',
+        error: 'resume polling failed',
+        queue_remaining: 1,
+      }),
+    }))
+    expect(state).toMatchObject({
+      isWorking: false,
+      isAborting: false,
+      runId: undefined,
+      activeRunMarker: undefined,
+    })
+    expect(dequeueNextQueuedRun).toHaveBeenCalledWith(socket, 'session-resume', 'default')
+  })
+
+  it('lets unified dequeue reserve a session command after resumed bridge polling fails', async () => {
+    const { resumeBridgeRun } = await import('../../packages/server/src/services/hermes/run-chat/handle-bridge-run')
+    const { reserveQueuedSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command-queue')
+    const { nsp } = createNamespace()
+    const socket = { id: 'socket-1', connected: true, emit: vi.fn() }
+    const queuedCommand: any = {
+      queue_id: 'queued-command',
+      input: '/goal status',
+      profile: 'default',
+      source: 'cli',
+      sessionCommand: {
+        name: 'goal',
+        rawName: 'goal',
+        args: 'status',
+        sessionRowId: 1,
+        sessionIncarnation: 1,
+      },
+    }
+    const state: any = {
+      messages: [],
+      isWorking: true,
+      events: [],
+      queue: [queuedCommand],
+    }
+    const sessionMap = new Map<string, any>([['session-resume', state]])
+    const bridge = {
+      getResult: vi.fn(async () => ({ output: '', deltas: [], events: [] })),
+      getOutput: vi.fn(async () => { throw new Error('resume polling failed') }),
+    }
+    const dequeueNextQueuedRun = vi.fn((_socket: any, sessionId: string) => {
+      const exactState = sessionMap.get(sessionId)
+      const next = exactState.queue.shift()
+      const reservation = reserveQueuedSessionCommand(sessionId, exactState, next)
+      expect(reservation).not.toBeNull()
+    })
+
+    await resumeBridgeRun(
+      nsp as any,
+      socket as any,
+      {
+        sessionId: 'session-resume',
+        runId: 'run-resume',
+        profile: 'default',
+        instructions: 'system prompt',
+      },
+      sessionMap,
+      bridge as any,
+      dequeueNextQueuedRun,
+    )
+
+    expect(dequeueNextQueuedRun).toHaveBeenCalledWith(socket, 'session-resume', 'default')
+    expect(queuedCommand.commandReservation).toEqual(expect.objectContaining({
+      marker: expect.stringMatching(/^command_/),
+      sessionRowId: 1,
+      sessionIncarnation: 1,
+    }))
+    expect(state).toMatchObject({
+      isWorking: true,
+      isAborting: false,
+      runId: expect.stringMatching(/^command_/),
+      activeRunMarker: expect.stringMatching(/^command_/),
+      commandReservationMarker: expect.stringMatching(/^command_/),
+    })
+    expect(state.runId).toBe(state.commandReservationMarker)
   })
 })

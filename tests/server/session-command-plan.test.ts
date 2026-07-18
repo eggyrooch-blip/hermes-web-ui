@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const addMessageMock = vi.fn()
 const createSessionMock = vi.fn()
 const getSessionMock = vi.fn()
+const getSessionIncarnationMock = vi.fn(() => 1)
+const getSessionRowIdMock = vi.fn(() => 1)
 const updateSessionStatsMock = vi.fn()
 
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
@@ -10,6 +12,8 @@ vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   clearSessionMessages: vi.fn(),
   createSession: createSessionMock,
   getSession: getSessionMock,
+  getSessionIncarnation: getSessionIncarnationMock,
+  getSessionRowId: getSessionRowIdMock,
   renameSession: vi.fn(),
   updateSessionStats: updateSessionStatsMock,
 }))
@@ -94,12 +98,14 @@ describe('plan session command', () => {
 
     expect(addMessageMock).not.toHaveBeenCalled()
     expect(runQueuedItem).not.toHaveBeenCalled()
+    expect(bridge.command).not.toHaveBeenCalled()
     expect(state.queue).toEqual([expect.objectContaining({
       queue_id: 'client-queue-id',
-      input: '[IMPORTANT: expanded plan skill prompt]',
+      input: '/plan build the feature',
       displayInput: '/plan build the feature',
       displayRole: 'command',
       storageMessage: '/plan build the feature',
+      sessionCommand: expect.objectContaining({ name: 'plan', args: 'build the feature' }),
     })])
     expect(namespaceEmit).toHaveBeenCalledWith('run.queued', expect.objectContaining({
       queue_length: 1,
@@ -261,7 +267,7 @@ describe('plan session command', () => {
     }), 'default')
   })
 
-  it('clears queued goal continuations when pausing a goal', async () => {
+  it('queues goal pause behind the active run before bridge lookup', async () => {
     const state = {
       messages: [],
       isWorking: true,
@@ -291,14 +297,25 @@ describe('plan session command', () => {
     })
 
     expect(runQueuedItem).not.toHaveBeenCalled()
-    expect(state.queue).toEqual([expect.objectContaining({ queue_id: 'user-1' })])
+    expect(bridge.command).not.toHaveBeenCalled()
+    expect(state.queue).toEqual([
+      expect.objectContaining({ queue_id: 'goal-1' }),
+      expect.objectContaining({ queue_id: 'user-1' }),
+      expect.objectContaining({
+        input: '/goal pause',
+        sessionCommand: expect.objectContaining({ name: 'goal', args: 'pause' }),
+      }),
+    ])
     expect(namespaceEmit).toHaveBeenCalledWith('run.queued', expect.objectContaining({
-      queue_length: 1,
-      queued_messages: [expect.objectContaining({ id: 'user-1', content: 'user message' })],
+      queue_length: 3,
+      queued_messages: expect.arrayContaining([
+        expect.objectContaining({ id: 'user-1', content: 'user message' }),
+        expect.objectContaining({ role: 'command', content: '/goal pause' }),
+      ]),
     }))
   })
 
-  it('emits a goal-specific clear action for goal done', async () => {
+  it('keeps goal done behind an already queued continuation', async () => {
     const state = {
       messages: [],
       isWorking: false,
@@ -326,16 +343,16 @@ describe('plan session command', () => {
       runQueuedItem,
     })
 
-    expect(bridge.command).toHaveBeenCalledWith('session-1', 'goal done', 'default')
+    expect(bridge.command).not.toHaveBeenCalled()
     expect(runQueuedItem).not.toHaveBeenCalled()
-    expect(state.queue).toEqual([])
-    expect(namespaceEmit).toHaveBeenCalledWith('session.command', expect.objectContaining({
-      command: 'goal',
-      action: 'goal_clear',
-      message: 'Goal cleared.',
-      terminal: true,
-      started: false,
-    }))
+    expect(state.queue).toEqual([
+      expect.objectContaining({ queue_id: 'goal-1' }),
+      expect.objectContaining({
+        input: '/goal done',
+        sessionCommand: expect.objectContaining({ name: 'goal', args: 'done' }),
+      }),
+    ])
+    expect(namespaceEmit).not.toHaveBeenCalledWith('session.command', expect.anything())
   })
 
   it('starts a resumed goal as a hidden continuation run', async () => {

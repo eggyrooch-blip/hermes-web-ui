@@ -19,17 +19,34 @@ import { redactAgentBridgeError } from '../agent-bridge/redact'
 import { handleApiRun, resolveRunSource, loadSessionStateFromDb } from './handle-api-run'
 import { handleBridgeRun, resumeBridgeRun } from './handle-bridge-run'
 import { handleCodingAgentRun } from './handle-coding-agent-run'
-import { handleAbort } from './abort'
-import { getOrCreateSession } from './compression'
+import { handleAbort, markAbortCompleted } from './abort'
 import { handleSessionCommand, isSessionCommand, parseSessionCommand } from './session-command'
+import { reserveQueuedSessionCommand } from './session-command-queue'
 import { contentBlocksToString } from './content-blocks'
-import type { ContentBlock, QueuedRun, SessionState } from './types'
+import type { ContentBlock, ExternalRunIdentity, QueuedRun, SessionState } from './types'
 import { authenticateUserToken, isAuthEnabled, type AuthenticatedUser } from '../../../middleware/user-auth'
 import { userCanAccessProfile } from '../../../db/hermes/users-store'
 import { config } from '../../../config'
 import { BrokerRunController } from '../broker-controller'
-import { ensureHermesRunWorkspace } from './workspace'
-import type { SessionGeneration } from './session-generation'
+import {
+  loadSessionStateWithGenerationFence,
+  getOrCreateGenerationBoundSessionState,
+  readSessionGeneration,
+  sessionGenerationsEqual,
+  type SessionGeneration,
+} from './session-generation'
+import {
+  releaseBridgeRunAdmission,
+  reserveBridgeRunAdmission,
+} from './bridge-run-admission'
+import {
+  captureSessionRunOwnership,
+  ownsSessionGeneration,
+  ownsSessionRun,
+} from './session-run-ownership'
+import { registerBridgeAbortFinalizer, unregisterBridgeAbortFinalizer } from './bridge-abort-finalizer'
+import { awaitWithAbortSignal, isAbortError } from './abortable-await'
+import { acknowledgePendingResumeEvents, pendingResumeEventsForSocket } from './pending-resume-events'
 
 export type { ContentBlock } from './types'
 
@@ -201,7 +218,17 @@ export class ChatRunSocket {
         return
       }
       if (data.session_id) {
-        const state = getOrCreateSession(this.sessionMap, data.session_id)
+        let state: SessionState
+        try {
+          state = getOrCreateGenerationBoundSessionState(this.sessionMap, data.session_id)
+        } catch (err) {
+          socket.emit('run.failed', {
+            event: 'run.failed',
+            session_id: data.session_id,
+            error: err instanceof Error ? err.message : String(err),
+          })
+          return
+        }
         const source = resolveRunSource(data.source, data.session_id)
         const command = parseSessionCommand(data.input)
         if (command && isBridgeRunSource(source)) {
@@ -218,6 +245,7 @@ export class ChatRunSocket {
               instructions: data.instructions,
               queueId: data.queue_id,
               runQueuedItem: this.runQueuedItem.bind(this),
+              dequeueNextQueuedRun: this.dequeueNextQueuedRun.bind(this),
             })
           } catch (err) {
             this.emitToSession(socket, data.session_id, 'session.command', {
@@ -254,6 +282,7 @@ export class ChatRunSocket {
             api_mode: data.api_mode,
             originSocketId: socket.id,
           })
+          state.goalEvaluationAbortController?.abort()
           this.nsp.to(`session:${data.session_id}`).emit('run.queued', {
             event: 'run.queued',
             session_id: data.session_id,
@@ -310,9 +339,26 @@ export class ChatRunSocket {
       await this.resumeSession(socket, sid)
     })
 
+    socket.on('resume.events.ack', (data: { session_id?: string; event_ids?: string[] }) => {
+      const sessionId = String(data.session_id || '').trim()
+      const eventIds = new Set(Array.isArray(data.event_ids) ? data.event_ids.map(String) : [])
+      if (!sessionId || eventIds.size === 0) return
+      const state = this.sessionMap.get(sessionId)
+      if (!state) return
+      acknowledgePendingResumeEvents(state, socket.id, eventIds)
+    })
+
     socket.on('abort', (data: { session_id?: string }) => {
       if (data.session_id) {
-        void handleAbort(this.nsp, socket, data.session_id, this.sessionMap, this.bridge, this.runQueuedItem.bind(this))
+        void handleAbort(
+          this.nsp,
+          socket,
+          data.session_id,
+          this.sessionMap,
+          this.bridge,
+          this.runQueuedItem.bind(this),
+          this.dequeueNextQueuedRun.bind(this),
+        )
       }
     })
 
@@ -394,64 +440,87 @@ export class ChatRunSocket {
     if (data.session_id && isBridgeRunSource(source) && isSessionCommand(data.input)) return
 
     if (isBridgeRunSource(source)) {
-      const bridgeReady = await ensureBridgeReadyForChatRun()
-      if (!bridgeReady.ok) {
-        let shouldDequeueNext = false
-        let queueRemaining = 0
-        if (data.session_id) {
-          const state = this.sessionMap.get(data.session_id)
-          queueRemaining = state?.queue?.length ?? 0
-          const canReleaseCurrentRun = state && !state.runId && !state.abortController && !state.activeRunMarker
-          if (canReleaseCurrentRun) {
-            if (queueRemaining > 0) {
-              const nextQueuedRun = state.queue[0]
-              state.isWorking = true
-              state.profile = nextQueuedRun?.profile || profile
-              state.source = nextQueuedRun?.source
+      const bridgeAdmission = reserveBridgeRunAdmission(this.sessionMap, data, profile)
+      const ownsAdmission = () => !bridgeAdmission || ownsSessionRun(this.sessionMap, bridgeAdmission)
+      let admissionAbortFinalizer: ((synced: boolean) => Promise<boolean>) | null = null
+      if (bridgeAdmission) {
+        admissionAbortFinalizer = async (synced: boolean) => {
+          const finalized = await markAbortCompleted(
+            this.nsp,
+            socket,
+            bridgeAdmission.sessionId,
+            bridgeAdmission.state.runId || bridgeAdmission.runMarker,
+            this.sessionMap,
+            this.dequeueNextQueuedRun.bind(this),
+            synced,
+            bridgeAdmission,
+          )
+          if (finalized && admissionAbortFinalizer) {
+            unregisterBridgeAbortFinalizer(bridgeAdmission.state, admissionAbortFinalizer)
+          }
+          return finalized
+        }
+      }
+      if (bridgeAdmission && admissionAbortFinalizer) {
+        registerBridgeAbortFinalizer(bridgeAdmission.state, admissionAbortFinalizer)
+      }
+      try {
+        const bridgeReady = bridgeAdmission
+          ? await awaitWithAbortSignal(ensureBridgeReadyForChatRun(), bridgeAdmission.abortController.signal)
+          : await ensureBridgeReadyForChatRun()
+        if (!ownsAdmission()) return
+        if (!bridgeReady.ok) {
+          let shouldDequeueNext = false
+          let queueRemaining = 0
+          if (data.session_id && bridgeAdmission) {
+            const state = bridgeAdmission.state
+            queueRemaining = state.queue?.length ?? 0
+            if (releaseBridgeRunAdmission(this.sessionMap, bridgeAdmission) && queueRemaining > 0) {
               shouldDequeueNext = true
-            } else {
-              state.isWorking = false
-              state.profile = undefined
             }
           }
+          const payload: {
+            event: 'run.failed'
+            session_id?: string
+            error: string
+            queue_remaining?: number
+          } = {
+            event: 'run.failed',
+            session_id: data.session_id,
+            error: `Agent Bridge is not reachable: ${bridgeReady.error}`,
+          }
+          if (queueRemaining > 0) payload.queue_remaining = queueRemaining
+          socket.emit('run.failed', payload)
+          if (data.session_id && shouldDequeueNext) {
+            this.dequeueNextQueuedRun(socket, data.session_id, profile)
+          }
+          return
         }
-        const payload: {
-          event: 'run.failed'
-          session_id?: string
-          error: string
-          queue_remaining?: number
-        } = {
-          event: 'run.failed',
-          session_id: data.session_id,
-          error: `Agent Bridge is not reachable: ${bridgeReady.error}`,
-        }
-        if (queueRemaining > 0) payload.queue_remaining = queueRemaining
-        socket.emit('run.failed', payload)
-        if (data.session_id && shouldDequeueNext) {
-          this.dequeueNextQueuedRun(socket, data.session_id, profile)
-        }
-        return
-      }
 
-      let fullInstructions = data.instructions
-        ? `${getSystemPrompt()}\n${data.instructions}`
-        : getSystemPrompt()
-      if (data.session_id) {
-        const sessionRow = getSession(data.session_id)
-        const workspace = await ensureHermesRunWorkspace(profile, sessionRow?.workspace || data.workspace)
-        if (workspace) {
-          const workspaceCtx = `[Current working directory: ${workspace}]`
-          fullInstructions = `\n${workspaceCtx}\n${fullInstructions}`
+        await handleBridgeRun(
+          this.nsp, socket, data, profile,
+          this.sessionMap, this.bridge,
+          skipUserMessage,
+          loadSessionStateFromDb,
+          this.dequeueNextQueuedRun.bind(this),
+          bridgeAdmission || undefined,
+        )
+      } catch (err) {
+        if (bridgeAdmission?.abortController.signal.aborted && isAbortError(err)) return
+        if (bridgeAdmission && !ownsSessionGeneration(this.sessionMap, bridgeAdmission)) return
+        if (bridgeAdmission) {
+          const state = bridgeAdmission.state
+          releaseBridgeRunAdmission(this.sessionMap, bridgeAdmission)
+          if (data.session_id && state.queue.length > 0) {
+            this.dequeueNextQueuedRun(socket, data.session_id, profile)
+          }
+        }
+        throw err
+      } finally {
+        if (bridgeAdmission && admissionAbortFinalizer) {
+          unregisterBridgeAbortFinalizer(bridgeAdmission.state, admissionAbortFinalizer)
         }
       }
-
-      await handleBridgeRun(
-        this.nsp, socket, { ...data, instructions: fullInstructions }, profile,
-        this.sessionMap, this.bridge,
-        skipUserMessage,
-        loadSessionStateFromDb,
-        this.dequeueNextQueuedRun.bind(this),
-      )
       return
     }
 
@@ -477,15 +546,28 @@ export class ChatRunSocket {
   // --- Resume ---
 
   private async resumeSession(socket: Socket, sid: string) {
-    let state = this.sessionMap.get(sid)
-    if (!state) {
-      state = await loadSessionStateFromDb(sid, this.sessionMap)
-      this.sessionMap.set(sid, state)
-    }
+    const loadExactState = () => loadSessionStateWithGenerationFence({
+      sessionId: sid,
+      getState: () => this.sessionMap.get(sid),
+      setState: state => this.sessionMap.set(sid, state),
+      discardState: state => {
+        state.abortController?.abort()
+        state.goalEvaluationAbortController?.abort()
+        state.queue.length = 0
+        if (this.sessionMap.get(sid) === state) this.sessionMap.delete(sid)
+      },
+      loadState: () => loadSessionStateFromDb(sid, this.sessionMap),
+    })
+    let state = await loadExactState()
     await this.reattachBridgeRun(socket, sid, state)
-    const resumeEvents = state.isWorking
+    state = await loadExactState()
+    const liveEvents = state.isWorking
       ? state.events
       : (state.events || []).filter(evt => evt?.event === 'run.reattach_failed')
+    const resumeEvents = [
+      ...liveEvents,
+      ...pendingResumeEventsForSocket(state, socket.id),
+    ]
     socket.emit('resumed', {
       session_id: sid,
       messages: state.messages,
@@ -508,18 +590,46 @@ export class ChatRunSocket {
   }
 
   private async reattachBridgeRun(socket: Socket, sid: string, state: SessionState) {
-    if (state.runId && state.isWorking) return
+    const ownership = captureSessionRunOwnership(
+      sid,
+      state,
+      state.activeRunMarker || `bridge_reattach_${Date.now().toString(36)}`,
+    )
     const session = getSession(sid)
     const source = state.source || session?.source
-    if (!isHermesWorkerBackedSession({ source, agent: session?.agent, agent_session_id: session?.agent_session_id })) return
     const profile = session?.profile || currentProfileFromSocket(socket)
+    const observedEvents = state.events
+    const observedAbortController = state.abortController
+    const observedRunId = state.runId
+    const observedRunMarker = state.activeRunMarker
+    const observedIsAborting = state.isAborting
+    const ownsIdleObservation = () => {
+      if (!ownsSessionGeneration(this.sessionMap, ownership)
+        || state.isWorking
+        || state.runId !== observedRunId
+        || state.activeRunMarker !== observedRunMarker
+        || state.commandReservationMarker
+        || state.isAborting !== observedIsAborting
+        || state.abortController !== observedAbortController
+        || state.events !== observedEvents) return false
+      try {
+        const currentSession = getSession(sid)
+        return (state.source || currentSession?.source) === source
+          && (currentSession?.profile || currentProfileFromSocket(socket)) === profile
+      } catch {
+        return false
+      }
+    }
+    if (!ownsIdleObservation()) return
+    if (!isHermesWorkerBackedSession({ source, agent: session?.agent, agent_session_id: session?.agent_session_id })) return
     let pollKey: string | undefined
     try {
       const status = await this.bridge.statusIfLoaded(sid, profile, { timeoutMs: 1000 }) as Record<string, unknown>
+      if (!ownsIdleObservation()) return
       const running = status.running === true
       const runId = typeof status.current_run_id === 'string' ? status.current_run_id : ''
       if (!running || !runId) return
-      pollKey = `${sid}:${runId}`
+      pollKey = `${sid}:${ownership.generation.rowId}:${ownership.generation.incarnation}:${runId}`
       if (this.bridgeResumePolls.has(pollKey)) return
       this.bridgeResumePolls.add(pollKey)
       state.isWorking = true
@@ -551,6 +661,7 @@ export class ChatRunSocket {
       logger.info('[chat-run-socket] reattached running bridge run %s for session %s', runId, sid)
     } catch (err) {
       if (pollKey) this.bridgeResumePolls.delete(pollKey)
+      if (!ownsIdleObservation()) return
       if (isBridgeStatusLookupTimeout(err)) {
         logger.debug(err, '[chat-run-socket] bridge status lookup timed out while resuming session %s', sid)
         return
@@ -588,12 +699,23 @@ export class ChatRunSocket {
 
   private dequeueNextQueuedRun(socket: Socket, sessionId: string, fallbackProfile = 'default') {
     const state = this.sessionMap.get(sessionId)
-    if (!state?.queue.length) return false
+    if (!state?.queue.length || state.isWorking || state.activeRunMarker) return false
 
     const next = state.queue.shift()!
-    state.isWorking = true
-    state.profile = next.profile || fallbackProfile
-    state.source = next.source
+    if (next.sessionCommand) {
+      const reservation = reserveQueuedSessionCommand(sessionId, state, next)
+      if (!reservation) {
+        state.abortController?.abort()
+        state.goalEvaluationAbortController?.abort()
+        state.queue.length = 0
+        if (this.sessionMap.get(sessionId) === state) this.sessionMap.delete(sessionId)
+        return false
+      }
+    } else {
+      state.isWorking = true
+      state.profile = next.profile || fallbackProfile
+      state.source = next.source
+    }
     logger.info('[chat-run-socket] dequeuing queued run for session %s (remaining: %d)', sessionId, state.queue.length)
     this.nsp.to(`session:${sessionId}`).emit('run.queued', {
       event: 'run.queued',
@@ -607,6 +729,25 @@ export class ChatRunSocket {
   }
 
   private runQueuedItem(socket: Socket, sessionId: string, next: QueuedRun, fallbackProfile = 'default') {
+    if (next.sessionCommand) {
+      if (!next.commandReservation) return
+      void handleSessionCommand(sessionId, next.sessionCommand, {
+        nsp: this.nsp,
+        socket,
+        sessionMap: this.sessionMap,
+        bridge: this.bridge,
+        profile: next.profile || fallbackProfile,
+        model: next.model,
+        provider: next.provider,
+        model_groups: next.model_groups,
+        instructions: next.instructions,
+        queueId: next.queue_id,
+        runQueuedItem: this.runQueuedItem.bind(this),
+        dequeueNextQueuedRun: this.dequeueNextQueuedRun.bind(this),
+        commandReservation: next.commandReservation,
+      })
+      return
+    }
     const skipUserMessage = next.displayInput === null
     void this.handleRun(socket, {
       input: next.input,
@@ -637,7 +778,31 @@ export class ChatRunSocket {
 
   // --- Helpers ---
 
-  emitExternalEvent(sessionId: string, event: string, payload: any) {
+  private ownsExternalRun(sessionId: string, identity?: ExternalRunIdentity): boolean {
+    if (!identity) return false
+    const state = this.sessionMap.get(sessionId)
+    if (state !== identity.state) return false
+    if (state.sessionRowId !== identity.sessionRowId) return false
+    if (state.sessionIncarnation !== identity.sessionIncarnation) return false
+    if (state.runId !== identity.runId) return false
+    if ((state.activeRunMarker ?? null) !== identity.turnMarker) return false
+    try {
+      return sessionGenerationsEqual(readSessionGeneration(sessionId), {
+        rowId: identity.sessionRowId,
+        incarnation: identity.sessionIncarnation,
+      })
+    } catch {
+      return false
+    }
+  }
+
+  emitExternalEvent(
+    sessionId: string,
+    event: string,
+    payload: any,
+    identity?: ExternalRunIdentity,
+  ) {
+    if (!this.ownsExternalRun(sessionId, identity)) return
     const tagged = { ...payload, session_id: sessionId }
     const state = this.sessionMap.get(sessionId)
     if (state?.isWorking) {
@@ -647,9 +812,14 @@ export class ChatRunSocket {
     this.nsp.to(`session:${sessionId}`).emit(event, tagged)
   }
 
-  markExternalRunCompleted(sessionId: string, event: string) {
+  markExternalRunCompleted(
+    sessionId: string,
+    event: string,
+    identity?: ExternalRunIdentity,
+  ): boolean {
+    if (!this.ownsExternalRun(sessionId, identity)) return false
     const state = this.sessionMap.get(sessionId)
-    if (!state) return
+    if (!state) return false
     state.isWorking = false
     state.abortController = undefined
     state.runId = undefined
@@ -662,6 +832,7 @@ export class ChatRunSocket {
       const socket = this.socketForQueuedRun(sessionId, state.queue[0])
       if (socket) this.dequeueNextQueuedRun(socket, sessionId)
     }
+    return true
   }
 
   private socketForQueuedRun(sessionId: string, next?: QueuedRun): Socket | null {

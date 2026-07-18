@@ -18,12 +18,17 @@ import { convertHistoryFormat } from './message-format'
 import { readSseFrames } from './sse-utils'
 import { extractResponseText } from './response-utils'
 import { applyResponseStreamEvent, flushResponseRunToDb } from './response-stream'
-import { buildCompressedHistory, buildDbHistory, buildSnapshotAwareHistory, getOrCreateSession } from './compression'
+import { buildCompressedHistory, buildDbHistory, buildSnapshotAwareHistory } from './compression'
 import { calcAndUpdateUsage, estimateUsageTokensFromMessages } from './usage'
 import { handleMessage } from './message-format'
 import { countTokens, SUMMARY_PREFIX } from '../../../lib/context-compressor'
 import { getCompressionSnapshot } from '../../../db/hermes/compression-snapshot'
 import type { ContentBlock, SessionState, ChatRunSource } from './types'
+import {
+  captureSessionRunOwnership,
+  ownsSessionRun,
+  type SessionRunOwnership,
+} from './session-run-ownership'
 
 export function resolveRunSource(source?: string, sessionId?: string): ChatRunSource {
   if (source === 'api_server' || source === 'cli' || source === 'coding_agent' || source === 'global_agent') return source
@@ -121,6 +126,31 @@ export async function handleApiRun(
     ? `resp_run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
     : undefined
 
+  let runOwnership: SessionRunOwnership | undefined
+  let upstreamAbortController: AbortController | undefined
+  const ownsRun = () => !runOwnership || ownsSessionRun(sessionMap, runOwnership)
+  const guardRun = () => {
+    if (ownsRun()) return true
+    upstreamAbortController?.abort()
+    return false
+  }
+  const emitDirect = (event: string, payload: any) => {
+    const tagged = session_id ? { ...payload, session_id } : payload
+    if (session_id) {
+      nsp.to(`session:${session_id}`).emit(event, tagged)
+    } else if (socket.connected) {
+      socket.emit(event, tagged)
+    }
+  }
+  const emit = (event: string, payload: any) => {
+    if (guardRun()) emitDirect(event, payload)
+  }
+  const failAndRelease = (error: string, queueLen: number, extra: Record<string, any> = {}) => {
+    emitDirect('run.failed', { event: 'run.failed', ...extra, error, queue_remaining: queueLen })
+    if (runOwnership) releaseApiRun(runOwnership)
+    if (session_id && queueLen > 0) dequeueNextQueuedRun(socket, session_id)
+  }
+
   const now = Math.floor(Date.now() / 1000)
   if (session_id) {
     let state = sessionMap.get(session_id)
@@ -188,8 +218,10 @@ export async function handleApiRun(
       peerUserMessage = { id: data.queue_id ? undefined : messageId, role: 'user', content: inputStr, timestamp: now }
     }
 
+    runOwnership = captureSessionRunOwnership(session_id, state, runMarker!)
+
     socket.join(`session:${session_id}`)
-    if (peerUserMessage) {
+    if (peerUserMessage && guardRun()) {
       const target = data.peerExcludeSocketId
         ? nsp.to(`session:${session_id}`).except(data.peerExcludeSocketId)
         : socket.to(`session:${session_id}`)
@@ -203,15 +235,6 @@ export async function handleApiRun(
       })
     }
   }
-
-  const emit = (event: string, payload: any) => {
-    const tagged = session_id ? { ...payload, session_id } : payload
-    if (session_id) {
-      nsp.to(`session:${session_id}`).emit(event, tagged)
-    } else if (socket.connected) {
-      socket.emit(event, tagged)
-    }
-  }
   try {
     const body: Record<string, any> = { input }
     if (model) body.model = model
@@ -222,6 +245,7 @@ export async function handleApiRun(
         model: sessionRow?.model || model,
         provider: sessionRow?.provider || provider,
       })
+      if (!guardRun()) return
       if (compressed.length > 0) {
         body.conversation_history = compressed
       }
@@ -231,6 +255,7 @@ export async function handleApiRun(
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
     if (isContentBlockArray(input)) {
       const parts = await convertContentBlocks(input)
+      if (!guardRun()) return
       body.input = [{ role: 'user', content: parts }]
     }
 
@@ -241,8 +266,10 @@ export async function handleApiRun(
     body.store = false
 
     const abortController = new AbortController()
-    if (session_id) {
-      const state = getOrCreateSession(sessionMap, session_id)
+    upstreamAbortController = abortController
+    if (runOwnership) {
+      if (!guardRun()) return
+      const state = runOwnership.state
       state.isWorking = true
       state.runId = undefined
       state.abortController = abortController
@@ -254,24 +281,31 @@ export async function handleApiRun(
       body: JSON.stringify(body),
       signal: abortController.signal,
     })
+    if (!guardRun()) return
     if (!res.ok) {
       const text = await res.text().catch(() => '')
-      const queueLen = session_id ? sessionMap.get(session_id)?.queue?.length ?? 0 : 0
-      if (session_id) await markApiCompleted(nsp, socket, session_id, sessionMap, { event: 'run.failed' })
-      emit('run.failed', { event: 'run.failed', error: `Upstream ${res.status}: ${text}`, queue_remaining: queueLen })
-      if (session_id && queueLen > 0) dequeueNextQueuedRun(socket, session_id)
+      if (!guardRun()) return
+      const queueLen = runOwnership?.state.queue?.length ?? 0
+      const completion = runOwnership
+        ? await prepareApiCompletion(sessionMap, runOwnership, emit, upstreamAbortController)
+        : { completed: true }
+      if (!completion.completed || !guardRun()) return
+      failAndRelease(appendFinalizationError(`Upstream ${res.status}: ${text}`, completion.error), queueLen)
       return
     }
     if (!res.body) {
-      const queueLen = session_id ? sessionMap.get(session_id)?.queue?.length ?? 0 : 0
-      if (session_id) await markApiCompleted(nsp, socket, session_id, sessionMap, { event: 'run.failed' })
-      emit('run.failed', { event: 'run.failed', error: 'Upstream response stream missing', queue_remaining: queueLen })
-      if (session_id && queueLen > 0) dequeueNextQueuedRun(socket, session_id)
+      const queueLen = runOwnership?.state.queue?.length ?? 0
+      const completion = runOwnership
+        ? await prepareApiCompletion(sessionMap, runOwnership, emit, upstreamAbortController)
+        : { completed: true }
+      if (!completion.completed || !guardRun()) return
+      failAndRelease(appendFinalizationError('Upstream response stream missing', completion.error), queueLen)
       return
     }
 
     let responseId: string | undefined
     for await (const frame of readSseFrames(res.body)) {
+      if (!guardRun()) return
       let parsed: any
       try {
         parsed = JSON.parse(frame.data)
@@ -281,22 +315,20 @@ export async function handleApiRun(
       const upstreamEvent = parsed.type || frame.event || parsed.event
       logger.info('[chat-run-socket] upstream response event: %s', upstreamEvent)
 
-      if (session_id) {
-        const state = sessionMap.get(session_id)
-        if (state) {
-          const mapped = applyResponseStreamEvent(state, session_id, runMarker, upstreamEvent, parsed)
-          if (mapped) {
-            if (mapped.runId) {
-              responseId = mapped.runId
-              state.runId = responseId
-            }
-            emit(mapped.event, mapped.payload)
+      if (session_id && runOwnership) {
+        const state = runOwnership.state
+        const mapped = applyResponseStreamEvent(state, session_id, runMarker, upstreamEvent, parsed)
+        if (mapped) {
+          if (mapped.runId) {
+            responseId = mapped.runId
+            state.runId = responseId
           }
+          emitDirect(mapped.event, mapped.payload)
         }
       }
 
       if (upstreamEvent === 'response.completed' || upstreamEvent === 'response.failed') {
-        if (session_id && sessionMap.get(session_id)?.activeRunMarker !== runMarker) {
+        if (!guardRun()) {
           logger.info({
             sessionId: session_id,
             runId: responseId,
@@ -304,7 +336,7 @@ export async function handleApiRun(
           }, '[chat-run-socket] suppressing stale API terminal event')
           return
         }
-        if (session_id && sessionMap.get(session_id)?.isAborting) {
+        if (runOwnership?.state.isAborting) {
           logger.info({
             sessionId: session_id,
             runId: responseId,
@@ -312,32 +344,44 @@ export async function handleApiRun(
           }, '[chat-run-socket][abort] suppressing upstream terminal event during abort')
           return
         }
-        const queueLen = session_id ? sessionMap.get(session_id)?.queue?.length ?? 0 : 0
-        const nextQueuedRun = session_id && queueLen > 0
-          ? sessionMap.get(session_id)?.queue?.[0]
-          : undefined
-        if (session_id) await markApiCompleted(nsp, socket, session_id, sessionMap, {
-          event: upstreamEvent === 'response.completed' ? 'run.completed' : 'run.failed',
-          run_id: responseId,
-          keepWorking: Boolean(nextQueuedRun),
-          nextSource: nextQueuedRun?.source,
-        })
+        const queueLen = runOwnership?.state.queue?.length ?? 0
+        const completion = runOwnership
+          ? await prepareApiCompletion(sessionMap, runOwnership, emit, upstreamAbortController)
+          : { completed: true }
+        if (!completion.completed || !guardRun()) return
         const finalOutput = parsed.response || parsed
         const finalText = extractResponseText(finalOutput)
+        if (completion.error) {
+          failAndRelease(
+            `API run finalization failed: ${completion.error instanceof Error ? completion.error.message : String(completion.error)}`,
+            queueLen,
+            { run_id: responseId || finalOutput.id, response_id: responseId || finalOutput.id },
+          )
+          return
+        }
         if (upstreamEvent === 'response.completed' && session_id) {
           const usage = finalOutput.usage || {}
-          updateUsage(session_id, {
-            inputTokens: usage.input_tokens ?? usage.inputTokens ?? 0,
-            outputTokens: usage.output_tokens ?? usage.outputTokens ?? 0,
-            cacheReadTokens: usage.cache_read_tokens ?? usage.cacheReadTokens ?? 0,
-            cacheWriteTokens: usage.cache_write_tokens ?? usage.cacheWriteTokens ?? 0,
-            reasoningTokens: usage.reasoning_tokens ?? usage.reasoningTokens ?? 0,
-            model: finalOutput.model || '',
-            profile: sessionMap.get(session_id)?.profile,
-          })
+          try {
+            updateUsage(session_id, {
+              inputTokens: usage.input_tokens ?? usage.inputTokens ?? 0,
+              outputTokens: usage.output_tokens ?? usage.outputTokens ?? 0,
+              cacheReadTokens: usage.cache_read_tokens ?? usage.cacheReadTokens ?? 0,
+              cacheWriteTokens: usage.cache_write_tokens ?? usage.cacheWriteTokens ?? 0,
+              reasoningTokens: usage.reasoning_tokens ?? usage.reasoningTokens ?? 0,
+              model: finalOutput.model || '',
+              profile,
+            })
+          } catch (err) {
+            failAndRelease(
+              `API run usage persistence failed: ${err instanceof Error ? err.message : String(err)}`,
+              queueLen,
+              { run_id: responseId || finalOutput.id, response_id: responseId || finalOutput.id },
+            )
+            return
+          }
         }
         const eventName = upstreamEvent === 'response.completed' ? 'run.completed' : 'run.failed'
-        emit(eventName, {
+        emitDirect(eventName, {
           event: eventName,
           run_id: responseId || finalOutput.id,
           response_id: responseId || finalOutput.id,
@@ -346,32 +390,32 @@ export async function handleApiRun(
           error: finalOutput.error || parsed.error,
           queue_remaining: queueLen,
         })
+        if (runOwnership) releaseApiRun(runOwnership)
         if (session_id && queueLen > 0) dequeueNextQueuedRun(socket, session_id)
         return
       }
     }
-    const queueLen = session_id ? sessionMap.get(session_id)?.queue?.length ?? 0 : 0
-    if (session_id && sessionMap.get(session_id)?.activeRunMarker !== runMarker) {
+    const queueLen = runOwnership?.state.queue?.length ?? 0
+    if (!guardRun()) {
       logger.info({
         sessionId: session_id,
         runId: responseId,
       }, '[chat-run-socket] suppressing stale API stream end')
       return
     }
-    if (session_id) await markApiCompleted(nsp, socket, session_id, sessionMap, { event: 'run.failed', run_id: responseId })
-    emit('run.failed', {
-      event: 'run.failed',
-      run_id: responseId,
-      response_id: responseId,
-      error: 'Response stream ended without a terminal event',
-      queue_remaining: queueLen,
-    })
-    if (session_id && queueLen > 0) dequeueNextQueuedRun(socket, session_id)
+    const completion = runOwnership
+      ? await prepareApiCompletion(sessionMap, runOwnership, emit, upstreamAbortController)
+      : { completed: true }
+    if (!completion.completed || !guardRun()) return
+    failAndRelease(
+      appendFinalizationError('Response stream ended without a terminal event', completion.error),
+      queueLen,
+      { run_id: responseId, response_id: responseId },
+    )
   } catch (err: any) {
-    const queueLen = session_id ? sessionMap.get(session_id)?.queue?.length ?? 0 : 0
-    if (session_id) {
-      const state = sessionMap.get(session_id)
-      if (state?.activeRunMarker !== runMarker || err?.name === 'AbortError') {
+    const queueLen = runOwnership?.state.queue?.length ?? 0
+    if (runOwnership) {
+      if (!guardRun() || err?.name === 'AbortError') {
         logger.info({
           sessionId: session_id,
           runMarker,
@@ -379,48 +423,63 @@ export async function handleApiRun(
         }, '[chat-run-socket] suppressing stale/aborted API stream error')
         return
       }
-      void markApiCompleted(nsp, socket, session_id, sessionMap, { event: 'run.failed' }).then(() => {
-        emit('run.failed', { event: 'run.failed', error: err.message, queue_remaining: queueLen })
-        if (queueLen > 0) dequeueNextQueuedRun(socket, session_id)
-      })
+      const completion = await prepareApiCompletion(sessionMap, runOwnership, emit, upstreamAbortController)
+      if (!completion.completed || !guardRun()) return
+      failAndRelease(appendFinalizationError(err?.message || String(err), completion.error), queueLen)
     } else {
-      emit('run.failed', { event: 'run.failed', error: err.message })
+      emitDirect('run.failed', { event: 'run.failed', error: err?.message || String(err) })
     }
   }
 }
 
-async function markApiCompleted(
-  nsp: ReturnType<Server['of']>,
-  _socket: Socket,
-  sessionId: string,
+function appendFinalizationError(message: string, err?: unknown): string {
+  return err
+    ? `${message}; finalization failed: ${err instanceof Error ? err.message : String(err)}`
+    : message
+}
+
+async function prepareApiCompletion(
   sessionMap: Map<string, SessionState>,
-  info: { event: string; run_id?: string; keepWorking?: boolean; nextSource?: ChatRunSource },
-) {
-  const state = sessionMap.get(sessionId)
-  if (state) {
-    if (state.isAborting) {
-      logger.info({
-        sessionId,
-        runId: state.runId,
-      }, '[chat-run-socket][abort] terminal upstream event observed; abort handler will finish cleanup')
-      return
-    }
-    state.isWorking = Boolean(info.keepWorking)
-    state.abortController = undefined
-    state.runId = undefined
-    state.events = []
-    flushResponseRunToDb(state, sessionId)
-    state.responseRun = undefined
-    state.activeRunMarker = undefined
-    if (info.keepWorking) {
-      state.source = info.nextSource
-    } else {
-      state.profile = undefined
-    }
-    updateSessionStats(sessionId)
-    const emit = (event: string, payload: any) => {
-      nsp.to(`session:${sessionId}`).emit(event, { ...payload, session_id: sessionId })
-    }
-    await calcAndUpdateUsage(sessionId, state, emit)
+  ownership: SessionRunOwnership,
+  emit: (event: string, payload: any) => void,
+  upstreamAbortController?: AbortController,
+): Promise<{ completed: boolean; error?: unknown }> {
+  const state = ownership.state
+  if (!ownsSessionRun(sessionMap, ownership)) {
+    upstreamAbortController?.abort()
+    return { completed: false }
   }
+  if (state.isAborting) {
+    logger.info({
+      sessionId: ownership.sessionId,
+      runId: state.runId,
+    }, '[chat-run-socket][abort] terminal upstream event observed; abort handler will finish cleanup')
+    return { completed: false }
+  }
+
+  let error: unknown
+  try {
+    flushResponseRunToDb(state, ownership.sessionId)
+    updateSessionStats(ownership.sessionId)
+    await calcAndUpdateUsage(ownership.sessionId, state, emit)
+  } catch (err) {
+    error = err
+  }
+
+  if (!ownsSessionRun(sessionMap, ownership)) {
+    upstreamAbortController?.abort()
+    return { completed: false }
+  }
+  return { completed: true, error }
+}
+
+function releaseApiRun(ownership: SessionRunOwnership): void {
+  const state = ownership.state
+  state.isWorking = false
+  state.abortController = undefined
+  state.runId = undefined
+  state.events = []
+  state.responseRun = undefined
+  state.activeRunMarker = undefined
+  state.profile = undefined
 }

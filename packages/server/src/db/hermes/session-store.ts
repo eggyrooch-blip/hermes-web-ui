@@ -229,8 +229,8 @@ export function getSessionRowId(id: string): number | null {
   return row?.row_id == null ? null : Number(row.row_id)
 }
 
-export function getSessionIncarnation(id: string): number | null {
-  if (getSessionRowId(id) == null) return null
+export function getSessionIncarnation(id: string, knownRowId: number | null = getSessionRowId(id)): number | null {
+  if (knownRowId == null) return null
   return ensureSessionIncarnation(id)
 }
 

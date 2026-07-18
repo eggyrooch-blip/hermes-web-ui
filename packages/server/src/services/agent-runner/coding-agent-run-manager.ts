@@ -6,7 +6,8 @@ import { createSession, addMessage, getSession, getSessionIncarnation, getSessio
 import { logger } from '../logger'
 import { applyResponseStreamEvent, flushResponseRunToDb } from '../hermes/run-chat/response-stream'
 import { extractResponseText } from '../hermes/run-chat/response-utils'
-import type { SessionState } from '../hermes/run-chat/types'
+import type { ExternalRunIdentity, SessionState } from '../hermes/run-chat/types'
+import { bindSessionGeneration, readSessionGeneration, sessionGenerationsEqual } from '../hermes/run-chat/session-generation'
 import type { CanonicalResponsesEvent } from './adapters/responses-stream'
 import { mapCodingAgentResponseEvent } from './coding-agent-event-mapper'
 import { normalizeWindowsCommandPath, windowsCmdShimExecution, windowsCommandNeedsShell } from '../windows-command'
@@ -84,6 +85,8 @@ interface ManagedCodingAgentRun {
   launch: CodingAgentRunLaunch
   pty?: { pid: number; write: (data: string) => void; kill: (signal?: string) => void; onData: (cb: (data: string) => void) => void; onExit: (cb: (event: { exitCode: number }) => void) => void }
   state: SessionState
+  sessionRowId: number | null
+  sessionIncarnation: number | null
   runMarker?: string
   lastActiveAt: number
   idleTimer?: ReturnType<typeof setTimeout>
@@ -423,6 +426,8 @@ export class CodingAgentRunManager {
         id: runId,
         launch,
         state,
+        sessionRowId: null,
+        sessionIncarnation: null,
         lastActiveAt: Date.now(),
         startedAt: Date.now(),
         exited: false,
@@ -431,6 +436,7 @@ export class CodingAgentRunManager {
       this.runs.set(run.id, run)
       this.sessionIndex.set(launch.sessionId, run.id)
       this.ensureDbSession(run)
+      this.bindSessionIdentity(run)
       this.touch(run)
       this.emitTerminalStatus(run, `${launch.agentId === 'codex' ? 'Codex' : 'Claude Code'} chat runner ready.`)
       logger.info({
@@ -467,6 +473,8 @@ export class CodingAgentRunManager {
       launch,
       pty: proc,
       state,
+      sessionRowId: null,
+      sessionIncarnation: null,
       lastActiveAt: Date.now(),
       startedAt: Date.now(),
       exited: false,
@@ -475,6 +483,7 @@ export class CodingAgentRunManager {
     this.runs.set(run.id, run)
     this.sessionIndex.set(launch.sessionId, run.id)
     this.ensureDbSession(run)
+    this.bindSessionIdentity(run)
     this.touch(run)
     this.emitTerminalStatus(run, `${launch.agentId === 'codex' ? 'Codex' : 'Claude Code'} session started.`)
 
@@ -507,6 +516,10 @@ export class CodingAgentRunManager {
   async send(sessionId: string, input: string, options: CodingAgentRunSendOptions = {}): Promise<{ runId: string }> {
     const run = this.getBySession(sessionId)
     if (!run) throw new Error('Coding agent session not found')
+    if (!this.ownsSessionGeneration(run)) {
+      this.cleanupRun(run, { kill: true, reportClosed: false })
+      throw new Error('Coding agent session no longer exists')
+    }
     const text = String(input || '').trim()
     if (!text) throw new Error('Input is required')
     const systemPrompt = String(options.systemPrompt || '').trim()
@@ -557,6 +570,10 @@ export class CodingAgentRunManager {
     if (!agentSessionId) return
     const run = this.runs.get(agentSessionId)
     if (!run) return
+    if (!this.ownsSessionGeneration(run)) {
+      this.cleanupRun(run, { kill: true, reportClosed: false })
+      return
+    }
     if (run.launch.agentId === 'codex' && isCodexProxyExecToolEvent(event)) return
     const responseEvent = this.normalizeCodexChatTextEvent(run, event)
     if (!responseEvent) return
@@ -587,11 +604,12 @@ export class CodingAgentRunManager {
     run.state.profile = run.launch.profile
     run.state.source = 'coding_agent'
     run.state.runId = run.id
+    run.state.activeRunMarker = run.runMarker
     for (const mappedEvent of mapCodingAgentResponseEvent(storageSafeResponseEvent)) {
-      this.emitToChat(run.launch.sessionId, mappedEvent.event, mappedEvent.payload)
+      this.emitToChat(run.launch.sessionId, mappedEvent.event, mappedEvent.payload, this.externalRunIdentity(run))
     }
     const mapped = applyResponseStreamEvent(run.state, run.launch.sessionId, run.runMarker, storageSafeResponseEvent.type, storageSafeResponseEvent.data)
-    if (mapped) this.emitToChat(run.launch.sessionId, mapped.event, mapped.payload)
+    if (mapped) this.emitToChat(run.launch.sessionId, mapped.event, mapped.payload, this.externalRunIdentity(run))
     if (isTerminalEvent) {
       flushResponseRunToDb(run.state, run.launch.sessionId)
       run.state.responseRun = undefined
@@ -665,6 +683,43 @@ export class CodingAgentRunManager {
     })
   }
 
+  private bindSessionIdentity(run: ManagedCodingAgentRun) {
+    const generation = readSessionGeneration(run.launch.sessionId)
+    run.sessionRowId = generation.rowId
+    run.sessionIncarnation = generation.incarnation
+    bindSessionGeneration(run.state, generation)
+  }
+
+  private ownsSessionGeneration(run: ManagedCodingAgentRun): boolean {
+    try {
+      return sessionGenerationsEqual(readSessionGeneration(run.launch.sessionId), {
+        rowId: run.sessionRowId,
+        incarnation: run.sessionIncarnation,
+      })
+    } catch {
+      return false
+    }
+  }
+
+  private externalRunIdentity(run: ManagedCodingAgentRun): ExternalRunIdentity {
+    return {
+      state: run.state,
+      runId: run.id,
+      turnMarker: run.runMarker ?? null,
+      sessionRowId: run.sessionRowId,
+      sessionIncarnation: run.sessionIncarnation,
+    }
+  }
+
+  private ownsExternalRunIdentity(run: ManagedCodingAgentRun, identity: ExternalRunIdentity): boolean {
+    return run.state === identity.state
+      && run.id === identity.runId
+      && (run.runMarker ?? null) === identity.turnMarker
+      && (run.state.activeRunMarker ?? null) === identity.turnMarker
+      && run.state.sessionRowId === identity.sessionRowId
+      && run.state.sessionIncarnation === identity.sessionIncarnation
+  }
+
   private addUserMessage(run: ManagedCodingAgentRun, content: string, clientId?: string) {
     const timestamp = nowSeconds()
     run.state.messages.push({
@@ -703,6 +758,7 @@ export class CodingAgentRunManager {
 
   private cleanupRun(run: ManagedCodingAgentRun, options: { kill: boolean; reportClosed?: boolean }) {
     const shouldReportClosed = options.reportClosed !== false && (run.state.isWorking || Boolean(run.currentChild && !run.currentChild.killed))
+    const cleanupIdentity = this.externalRunIdentity(run)
     if (run.idleTimer) clearTimeout(run.idleTimer)
     if (run.currentChildKillTimer) clearTimeout(run.currentChildKillTimer)
     this.flushTerminalOutput(run)
@@ -719,15 +775,15 @@ export class CodingAgentRunManager {
     run.exited = true
     run.state.isWorking = false
     if (shouldReportClosed) {
-      void this.emitWorkspaceDiffCompleted(run).finally(() => {
+      void this.emitWorkspaceDiffCompleted(run, cleanupIdentity).finally(() => {
         this.emitToChat(run.launch.sessionId, 'run.failed', {
           event: 'run.failed',
           error: 'Coding agent session closed',
-        })
-        this.markChatRunCompleted(run.launch.sessionId, 'run.failed')
+        }, cleanupIdentity)
+        this.markChatRunCompleted(run.launch.sessionId, 'run.failed', cleanupIdentity)
       })
     } else {
-      void this.emitWorkspaceDiffCompleted(run)
+      void this.emitWorkspaceDiffCompleted(run, cleanupIdentity)
     }
   }
 
@@ -907,6 +963,7 @@ export class CodingAgentRunManager {
   private recordClaudeNativeSessionId(run: ManagedCodingAgentRun, nativeSessionId: string) {
     if (!nativeSessionId) return
     if (run.launch.agentNativeSessionId === nativeSessionId && run.nativeResumeReady) return
+    if (!this.ownsSessionGeneration(run)) return
     run.launch.agentNativeSessionId = nativeSessionId
     run.nativeResumeReady = true
     try {
@@ -1637,19 +1694,23 @@ export class CodingAgentRunManager {
   private async emitAndMarkPrintChatRunCompleted(run: ManagedCodingAgentRun, event: 'run.completed' | 'run.failed', payload?: Record<string, unknown>) {
     run.pendingChatCompletionEvent = undefined
     run.pendingChatCompletionPayload = undefined
+    const completionIdentity = this.externalRunIdentity(run)
+    const completedRunMarker = completionIdentity.turnMarker
     const queueRemaining = run.state.queue.length
-    await this.emitWorkspaceDiffCompleted(run)
+    await this.emitWorkspaceDiffCompleted(run, completionIdentity)
     this.emitToChat(run.launch.sessionId, event, {
       ...(payload || { event }),
       ...(queueRemaining > 0 ? { queue_remaining: queueRemaining } : {}),
-    })
-    run.state.isWorking = false
-    run.state.runId = undefined
-    run.state.abortController = undefined
-    run.state.activeRunMarker = undefined
-    run.state.events = []
-    this.markChatRunCompleted(run.launch.sessionId, event)
-    run.runMarker = undefined
+    }, completionIdentity)
+    const marked = this.markChatRunCompleted(run.launch.sessionId, event, completionIdentity)
+    if (!marked && this.ownsExternalRunIdentity(run, completionIdentity)) {
+      run.state.isWorking = false
+      run.state.runId = undefined
+      run.state.abortController = undefined
+      run.state.activeRunMarker = undefined
+      run.state.events = []
+    }
+    if ((run.runMarker ?? null) === completedRunMarker) run.runMarker = undefined
   }
 
   private codexNativeSessionIdFrom(value: any): string {
@@ -1664,6 +1725,7 @@ export class CodingAgentRunManager {
   private recordCodexNativeSessionId(run: ManagedCodingAgentRun, nativeSessionId: string) {
     if (!nativeSessionId) return
     if (run.launch.agentNativeSessionId === nativeSessionId && run.nativeResumeReady) return
+    if (!this.ownsSessionGeneration(run)) return
     run.launch.agentNativeSessionId = nativeSessionId
     run.nativeResumeReady = true
     try {
@@ -1674,12 +1736,17 @@ export class CodingAgentRunManager {
     }
   }
 
-  private emitToChat(sessionId: string, event: string, payload: any) {
+  private emitToChat(
+    sessionId: string,
+    event: string,
+    payload: any,
+    identity?: ExternalRunIdentity,
+  ) {
     try {
       // Lazy require avoids coupling the service to bootstrap order.
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { getChatRunServer } = require('../../routes/hermes/chat-run')
-      getChatRunServer()?.emitExternalEvent?.(sessionId, event, payload)
+      getChatRunServer()?.emitExternalEvent?.(sessionId, event, payload, identity)
     } catch {}
   }
 
@@ -1698,7 +1765,10 @@ export class CodingAgentRunManager {
     })
   }
 
-  private async emitWorkspaceDiffCompleted(run: ManagedCodingAgentRun): Promise<void> {
+  private async emitWorkspaceDiffCompleted(
+    run: ManagedCodingAgentRun,
+    identity: ExternalRunIdentity,
+  ): Promise<void> {
     if (run.launch.workspaceExplicit !== true) return
     const workspace = String(run.launch.workspaceDir || '').trim()
     if (!workspace) return
@@ -1708,7 +1778,14 @@ export class CodingAgentRunManager {
         runId: run.id,
         workspace,
       })
-      if (change) this.emitToChat(run.launch.sessionId, 'workspace.diff.completed', workspaceDiffCompletedPayload(change))
+      if (change) {
+        this.emitToChat(
+          run.launch.sessionId,
+          'workspace.diff.completed',
+          workspaceDiffCompletedPayload(change),
+          identity,
+        )
+      }
     } catch (err) {
       logger.warn({ err, runId: run.id, sessionId: run.launch.sessionId }, '[coding-agent-run] workspace diff failed')
     }
@@ -1746,12 +1823,18 @@ export class CodingAgentRunManager {
     run.terminalBuffer = ''
   }
 
-  private markChatRunCompleted(sessionId: string, event: string) {
+  private markChatRunCompleted(
+    sessionId: string,
+    event: string,
+    identity?: ExternalRunIdentity,
+  ): boolean {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { getChatRunServer } = require('../../routes/hermes/chat-run')
-      getChatRunServer()?.markExternalRunCompleted?.(sessionId, event)
-    } catch {}
+      return getChatRunServer()?.markExternalRunCompleted?.(sessionId, event, identity) === true
+    } catch {
+      return false
+    }
   }
 }
 

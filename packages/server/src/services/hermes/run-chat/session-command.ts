@@ -8,7 +8,19 @@ import { buildDbHistory, estimateSnapshotAwareHistoryUsage, forceCompressBridgeH
 import { handleAbort } from './abort'
 import { calcAndUpdateUsage, contextTokensWithCachedOverhead, updateMessageContextTokenUsage } from './usage'
 import { contentBlocksToString } from './content-blocks'
-import type { ContentBlock, QueuedRun, SessionState } from './types'
+import {
+  createSessionCommandFence,
+  enqueueSerializedSessionCommand,
+  reserveQueuedSessionCommand,
+} from './session-command-queue'
+import { captureSessionRunOwnership, ownsSessionGeneration } from './session-run-ownership'
+import { recordPendingResumeEvent } from './pending-resume-events'
+import type {
+  ContentBlock,
+  QueuedRun,
+  SessionCommandReservation,
+  SessionState,
+} from './types'
 
 type CommandName =
   | 'usage'
@@ -44,6 +56,8 @@ interface SessionCommandContext {
   instructions?: string
   queueId?: string
   runQueuedItem: (socket: Socket, sessionId: string, next: QueuedRun, fallbackProfile?: string) => void
+  dequeueNextQueuedRun?: (socket: Socket, sessionId: string, fallbackProfile?: string) => boolean
+  commandReservation?: SessionCommandReservation
 }
 
 const COMMAND_ALIASES: Record<string, CommandName> = {
@@ -79,20 +93,87 @@ export function isSessionCommand(input: string | ContentBlock[]): boolean {
   return parseSessionCommand(input) !== null
 }
 
+function isSerializedSessionCommand(
+  command: ParsedSessionCommand,
+): command is ParsedSessionCommand & { name: 'plan' | 'goal' | 'subgoal' } {
+  return command.name === 'plan' || command.name === 'goal' || command.name === 'subgoal'
+}
+
 export async function handleSessionCommand(
   sessionId: string,
   command: ParsedSessionCommand,
   ctx: SessionCommandContext,
 ): Promise<void> {
-  const state = getOrCreateSession(ctx.sessionMap, sessionId)
+  try {
+    await handleSessionCommandImpl(sessionId, command, ctx)
+  } catch (err) {
+    if (!ctx.commandReservation) throw err
+    failReservedSessionCommand(sessionId, command, ctx, err)
+  }
+}
+
+async function handleSessionCommandImpl(
+  sessionId: string,
+  command: ParsedSessionCommand,
+  ctx: SessionCommandContext,
+): Promise<void> {
+  let state = getOrCreateSession(ctx.sessionMap, sessionId)
   ctx.socket.join(`session:${sessionId}`)
   ensureCommandSession(sessionId, ctx)
+  if (isSerializedSessionCommand(command) && !ctx.commandReservation) {
+    const enqueued = enqueueSerializedSessionCommand({
+      sessionId,
+      command,
+      state,
+      sessionMap: ctx.sessionMap,
+      queueId: ctx.queueId,
+      model: ctx.model,
+      provider: ctx.provider,
+      modelGroups: ctx.model_groups,
+      instructions: ctx.instructions,
+      profile: ctx.profile,
+      originSocketId: ctx.socket.id,
+    })
+    state = enqueued.state
+    const queued = enqueued.queued
+    emitQueuedState(ctx, sessionId, state)
+    if (!enqueued.canStart) return
+
+    if (ctx.dequeueNextQueuedRun) {
+      ctx.dequeueNextQueuedRun(ctx.socket, sessionId, ctx.profile)
+      return
+    }
+
+    if (state.queue[0] !== queued) return
+    state.queue.shift()
+    const reservation = reserveQueuedSessionCommand(sessionId, state, queued)
+    if (!reservation) return
+    await handleSessionCommand(sessionId, command, { ...ctx, commandReservation: reservation })
+    return
+  }
+
+  const reservation = ctx.commandReservation
+  const commandFence = reservation
+    ? createSessionCommandFence(sessionId, state, ctx.sessionMap, reservation)
+    : null
+  const observationFence = reservation
+    ? null
+    : createSessionCommandObservationFence(sessionId, state, ctx.sessionMap)
+  const ownsCommandGeneration = () => commandFence?.owns() ?? observationFence?.ownsGeneration() ?? false
+  const ownsCommandExecution = () => commandFence?.owns() ?? observationFence?.owns() ?? false
+  const releaseCommandReservation = () => commandFence?.release() ?? false
+  const abandonCommandResult = () => commandFence?.abandon()
+  const dequeueAfterCommand = () => {
+    if (state.queue.length > 0) ctx.dequeueNextQueuedRun?.(ctx.socket, sessionId, ctx.profile)
+  }
   const isKnownCommand = Boolean(COMMAND_ALIASES[command.rawName])
+  if (!ownsCommandExecution()) return
   if (command.name !== 'plan' && command.name !== 'skill' && isKnownCommand) {
     persistCommandMessage(sessionId, state, `/${command.rawName}${command.args ? ` ${command.args}` : ''}`, ctx.queueId)
   }
 
-  const emitCommand = (payload: Record<string, unknown>) => {
+  const emitCommand = (payload: Record<string, unknown>, generationOnly = false) => {
+    if (!(generationOnly ? ownsCommandGeneration() : ownsCommandExecution())) return false
     const message = typeof payload.message === 'string' ? payload.message : ''
     if (message) persistCommandMessage(sessionId, state, message)
     emitToSession(ctx.nsp, ctx.socket, sessionId, 'session.command', {
@@ -102,6 +183,7 @@ export async function handleSessionCommand(
       ok: true,
       ...payload,
     })
+    return true
   }
 
   if (command.name === 'skill') {
@@ -123,6 +205,7 @@ export async function handleSessionCommand(
     try {
       result = await ctx.bridge.command(sessionId, bridgeCommand, ctx.profile)
     } catch (err) {
+      if (!ownsCommandExecution()) return
       if (state.isWorking) emitQueuedState(ctx, sessionId, state)
       emitCommand({
         ok: false,
@@ -132,6 +215,7 @@ export async function handleSessionCommand(
       })
       return
     }
+    if (!ownsCommandExecution()) return
 
     const expandedPrompt = typeof result.message === 'string' ? result.message.trim() : ''
     if (result.handled && expandedPrompt && (result.type === 'skill' || result.type === 'bundle')) {
@@ -171,11 +255,12 @@ export async function handleSessionCommand(
         return
       }
 
-      emitCommand({
+      if (!emitCommand({
         action: result.type === 'bundle' ? 'bundle' : 'skill',
         terminal: false,
         started: true,
-      })
+      })) return
+      if (!ownsCommandExecution()) return
       ctx.runQueuedItem(ctx.socket, sessionId, next, ctx.profile)
       return
     }
@@ -212,8 +297,9 @@ export async function handleSessionCommand(
   switch (command.name) {
     case 'usage': {
       const usage = await calcAndUpdateUsage(sessionId, state, (event, payload) => {
-        emitToSession(ctx.nsp, ctx.socket, sessionId, event, payload)
+        if (ownsCommandExecution()) emitToSession(ctx.nsp, ctx.socket, sessionId, event, payload)
       })
+      if (!ownsCommandExecution()) return
       emitCommand({
         action: 'usage',
         terminal: !state.isWorking,
@@ -227,6 +313,7 @@ export async function handleSessionCommand(
     case 'status': {
       const row = getSession(sessionId)
       const bridgeStatus = await getBridgeSessionStatus(ctx, sessionId)
+      if (!ownsCommandExecution()) return
       const bridgeRunning = bridgeStatus?.running === true
       const isWorking = state.isWorking || bridgeRunning
       const runId = state.runId || state.activeRunMarker || bridgeStatus?.currentRunId || null
@@ -255,7 +342,15 @@ export async function handleSessionCommand(
     }
 
     case 'abort':
-      await handleAbort(ctx.nsp, ctx.socket, sessionId, ctx.sessionMap, ctx.bridge, ctx.runQueuedItem)
+      await handleAbort(
+        ctx.nsp,
+        ctx.socket,
+        sessionId,
+        ctx.sessionMap,
+        ctx.bridge,
+        ctx.runQueuedItem,
+        ctx.dequeueNextQueuedRun,
+      )
       emitCommand({ action: 'abort', message: 'Abort requested.' })
       return
 
@@ -301,22 +396,34 @@ export async function handleSessionCommand(
       try {
         result = await ctx.bridge.command(sessionId, bridgeCommand, ctx.profile)
       } catch (err) {
+        if (!ownsCommandExecution()) {
+          abandonCommandResult()
+          return
+        }
         emitCommand({
           ok: false,
           action: 'plan',
-          terminal: !state.isWorking,
+          terminal: state.queue.length === 0,
           message: `Plan command failed: ${err instanceof Error ? err.message : String(err)}`,
         })
+        releaseCommandReservation()
+        dequeueAfterCommand()
         return
       }
 
+      if (!ownsCommandExecution()) {
+        abandonCommandResult()
+        return
+      }
       if (!result.handled || !result.message) {
         emitCommand({
           ok: false,
           action: 'plan',
-          terminal: !state.isWorking,
+          terminal: state.queue.length === 0,
           message: result.message || 'Plan command is not available.',
         })
+        releaseCommandReservation()
+        dequeueAfterCommand()
         return
       }
 
@@ -337,65 +444,62 @@ export async function handleSessionCommand(
         originSocketId: ctx.socket.id,
       }
 
-      if (state.isWorking) {
-        state.queue.push(next)
-        emitToSession(ctx.nsp, ctx.socket, sessionId, 'run.queued', {
-          event: 'run.queued',
-          session_id: sessionId,
-          queue_length: state.queue.length,
-          queued_messages: serializeVisibleQueuedMessages(state.queue),
-        })
-        return
-      }
-
-      emitCommand({
+      if (!emitCommand({
         action: 'plan',
         terminal: false,
         started: true,
-      })
+      })) {
+        abandonCommandResult()
+        return
+      }
+      if (!ownsCommandExecution()) {
+        abandonCommandResult()
+        return
+      }
+      releaseCommandReservation()
       ctx.runQueuedItem(ctx.socket, sessionId, next, ctx.profile)
       return
     }
 
     case 'goal':
     case 'subgoal': {
-      const isGoalSet = command.name === 'goal'
-        && Boolean(command.args)
-        && !['status', 'pause', 'resume', 'clear', 'stop', 'done'].includes(command.args.toLowerCase())
-      if (state.isWorking && isGoalSet) {
-        emitCommand({
-          ok: false,
-          action: 'goal',
-          terminal: false,
-          message: 'Agent is running. Use /goal status, /goal pause, or /goal clear mid-run, or /abort before setting a new goal.',
-        })
-        return
-      }
-
       const bridgeCommand = `${command.name}${command.args ? ` ${command.args}` : ''}`
       let result
       try {
         result = await ctx.bridge.command(sessionId, bridgeCommand, ctx.profile)
       } catch (err) {
+        if (!ownsCommandExecution()) {
+          abandonCommandResult()
+          return
+        }
         emitCommand({
           ok: false,
           action: command.name,
-          terminal: !state.isWorking,
+          terminal: state.queue.length === 0,
           message: `Goal command failed: ${err instanceof Error ? err.message : String(err)}`,
         })
+        releaseCommandReservation()
+        dequeueAfterCommand()
         return
       }
 
-      if (result.clear_goal_continuations) {
-        const removed = removeGoalContinuationRuns(state)
-        if (removed > 0) emitQueuedState(ctx, sessionId, state)
+      if (!ownsCommandExecution()) {
+        abandonCommandResult()
+        return
       }
-
       const kickoffPrompt = typeof result.kickoff_prompt === 'string' ? result.kickoff_prompt.trim() : ''
 
       const bridgeStatus = result.action === 'goal_status' || result.action === 'status'
         ? await getBridgeSessionStatus(ctx, sessionId)
         : null
+      if (!ownsCommandExecution()) {
+        abandonCommandResult()
+        return
+      }
+      if (result.clear_goal_continuations) {
+        const removed = removeGoalContinuationRuns(state)
+        if (removed > 0) emitQueuedState(ctx, sessionId, state)
+      }
       const message = formatGoalStatusMessage(String(result.message || ''), bridgeStatus)
 
       const resultAction = String(result.action || command.name)
@@ -403,17 +507,24 @@ export async function handleSessionCommand(
         ? `${command.name}_clear`
         : resultAction
 
-      emitCommand({
+      if (!emitCommand({
         action,
-        terminal: !state.isWorking && !kickoffPrompt,
+        terminal: !kickoffPrompt && state.queue.length === 0,
         started: Boolean(kickoffPrompt),
         message,
         type: result.type || 'goal',
         maxTurns: result.max_turns,
         bridgeStatus,
-      })
+      })) {
+        abandonCommandResult()
+        return
+      }
 
-      if (!kickoffPrompt) return
+      if (!kickoffPrompt) {
+        releaseCommandReservation()
+        dequeueAfterCommand()
+        return
+      }
 
       const next: QueuedRun = {
         queue_id: ctx.queueId || `queue_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
@@ -429,12 +540,11 @@ export async function handleSessionCommand(
         originSocketId: ctx.socket.id,
       }
 
-      if (state.isWorking) {
-        state.queue.push(next)
-        emitQueuedState(ctx, sessionId, state)
+      if (!ownsCommandExecution()) {
+        abandonCommandResult()
         return
       }
-
+      releaseCommandReservation()
       ctx.runQueuedItem(ctx.socket, sessionId, next, ctx.profile)
       return
     }
@@ -454,8 +564,9 @@ export async function handleSessionCommand(
         state.messages = []
         clearTransientRunState(state)
         await calcAndUpdateUsage(sessionId, state, (event, payload) => {
-          emitToSession(ctx.nsp, ctx.socket, sessionId, event, payload)
+          if (ownsCommandExecution()) emitToSession(ctx.nsp, ctx.socket, sessionId, event, payload)
         })
+        if (!ownsCommandExecution()) return
         emitCommand({
           action: 'clear',
           clearHistory: true,
@@ -495,9 +606,12 @@ export async function handleSessionCommand(
         return
       }
       clearTransientRunState(state)
-      const emit = (event: string, payload: any) => emitToSession(ctx.nsp, ctx.socket, sessionId, event, payload)
+      const emit = (event: string, payload: any) => {
+        if (ownsCommandExecution()) emitToSession(ctx.nsp, ctx.socket, sessionId, event, payload)
+      }
       try {
         const history = await buildDbHistory(sessionId, { excludeLastUser: true })
+        if (!ownsCommandExecution()) return
         const usageEstimate = estimateSnapshotAwareHistoryUsage(sessionId, history)
         const beforeContextTokens = contextTokensWithCachedOverhead(state, usageEstimate.tokenCount)
         emit('compression.started', {
@@ -511,8 +625,10 @@ export async function handleSessionCommand(
           ctx.profile,
           [],
         )
+        if (!ownsCommandExecution()) return
         state.bridgeCompressionResults = state.bridgeCompressionResults || {}
         const usage = await calcAndUpdateUsage(sessionId, state, emit)
+        if (!ownsCommandExecution()) return
         const afterContextTokens = contextTokensWithCachedOverhead(state, result.afterTokens)
         emit('compression.completed', {
           event: 'compression.completed',
@@ -541,6 +657,7 @@ export async function handleSessionCommand(
           compressed: result.compressed,
         })
       } catch (err) {
+        if (!ownsCommandExecution()) return
         logger.warn(err, '[chat-run-socket] /compress failed for session %s', sessionId)
         emit('compression.completed', {
           event: 'compression.completed',
@@ -571,6 +688,7 @@ export async function handleSessionCommand(
         return
       }
       await ctx.bridge.steer(sessionId, command.args)
+      if (!ownsCommandExecution()) return
       emitCommand({ action: 'steer', terminal: false, message: 'Steer instruction sent.' })
       return
     }
@@ -597,12 +715,14 @@ export async function handleSessionCommand(
       try {
         const server = command.args || undefined
         const result = await ctx.bridge.mcpReload(server, ctx.profile)
+        if (!ownsCommandExecution()) return
         emitCommand({
           action: 'reload-mcp',
           message: `MCP reloaded successfully.${server ? ` Server: ${server}` : ' All servers.'}`,
           result,
         })
       } catch (err) {
+        if (!ownsCommandExecution()) return
         emitCommand({
           ok: false,
           action: 'reload-mcp',
@@ -617,23 +737,30 @@ export async function handleSessionCommand(
       const wasWorking = state.isWorking
       let bridgeReachable = true
       let bridgeError: string | null = null
+      let commandStillCurrent = true
       try {
         if (wasWorking) {
           flushBridgePendingToDb(state, sessionId)
           await ctx.bridge.interrupt(sessionId, 'Destroyed by user', state.profile).catch((err) => {
             logger.warn(err, '[chat-run-socket] /destroy interrupt failed for session %s', sessionId)
           })
+          commandStillCurrent = ownsCommandExecution()
         }
-        await ctx.bridge.destroy(sessionId, state.profile).catch((err) => {
-          bridgeReachable = false
-          bridgeError = err instanceof Error ? err.message : String(err)
-          logger.warn(err, '[chat-run-socket] /destroy bridge unavailable for session %s', sessionId)
-        })
+        if (commandStillCurrent) {
+          await ctx.bridge.destroy(sessionId, state.profile).catch((err) => {
+            bridgeReachable = false
+            bridgeError = err instanceof Error ? err.message : String(err)
+            logger.warn(err, '[chat-run-socket] /destroy bridge unavailable for session %s', sessionId)
+          })
+          commandStillCurrent = ownsCommandExecution()
+        }
       } finally {
+        if (!commandStillCurrent || !ownsCommandExecution()) return
         updateSessionStats(sessionId)
         await calcAndUpdateUsage(sessionId, state, (event, payload) => {
-          emitToSession(ctx.nsp, ctx.socket, sessionId, event, payload)
+          if (ownsCommandExecution()) emitToSession(ctx.nsp, ctx.socket, sessionId, event, payload)
         })
+        if (!ownsCommandExecution()) return
         state.isWorking = false
         state.isAborting = false
         state.profile = undefined
@@ -654,6 +781,7 @@ export async function handleSessionCommand(
           action: 'destroy',
         })
       }
+      if (!ownsCommandGeneration()) return
       emitToSession(ctx.nsp, ctx.socket, sessionId, 'run.queued', {
         event: 'run.queued',
         session_id: sessionId,
@@ -666,8 +794,86 @@ export async function handleSessionCommand(
           : `Bridge agent was not reachable; cleared local session state.${bridgeError ? ` (${bridgeError})` : ''}`,
         destroyed: true,
         bridgeReachable,
-      })
+      }, true)
       return
+    }
+  }
+}
+
+function createSessionCommandObservationFence(
+  sessionId: string,
+  state: SessionState,
+  sessionMap: Map<string, SessionState>,
+) {
+  const ownership = captureSessionRunOwnership(
+    sessionId,
+    state,
+    state.activeRunMarker || state.runId || 'idle-command',
+  )
+  const observed = {
+    isWorking: state.isWorking,
+    isAborting: Boolean(state.isAborting),
+    runId: state.runId,
+    activeRunMarker: state.activeRunMarker,
+    commandReservationMarker: state.commandReservationMarker,
+    abortController: state.abortController,
+  }
+  const ownsGeneration = () => ownsSessionGeneration(sessionMap, ownership)
+  const owns = () => ownsGeneration()
+    && state.isWorking === observed.isWorking
+    && Boolean(state.isAborting) === observed.isAborting
+    && state.runId === observed.runId
+    && state.activeRunMarker === observed.activeRunMarker
+    && state.commandReservationMarker === observed.commandReservationMarker
+    && state.abortController === observed.abortController
+  return { owns, ownsGeneration }
+}
+
+function failReservedSessionCommand(
+  sessionId: string,
+  command: ParsedSessionCommand,
+  ctx: SessionCommandContext,
+  err: unknown,
+): void {
+  const reservation = ctx.commandReservation
+  const state = ctx.sessionMap.get(sessionId)
+  if (!reservation || !state) return
+  const fence = createSessionCommandFence(sessionId, state, ctx.sessionMap, reservation)
+  if (!fence.owns()) {
+    fence.abandon()
+    return
+  }
+
+  const label = command.name === 'plan' ? 'Plan' : command.name === 'subgoal' ? 'Subgoal' : 'Goal'
+  const payload: Record<string, unknown> = {
+    event: 'session.command',
+    session_id: sessionId,
+    command: command.rawName,
+    ok: false,
+    action: command.name,
+    terminal: state.queue.length === 0,
+    message: `${label} command failed: ${err instanceof Error ? err.message : String(err)}`,
+  }
+  if (!fence.release()) return
+  const resumeEventId = recordPendingResumeEvent(state, 'session.command', payload)
+  payload.resume_event_id = resumeEventId
+  payload.command_message_id = resumeEventId
+  try {
+    emitToSession(ctx.nsp, ctx.socket, sessionId, 'session.command', payload)
+  } catch (emitErr) {
+    logger.warn(emitErr, '[chat-run-socket] reserved command failure room emit failed for session %s', sessionId)
+    try {
+      if (ctx.socket.connected) ctx.socket.emit('session.command', payload)
+    } catch (socketErr) {
+      logger.warn(socketErr, '[chat-run-socket] reserved command failure socket emit failed for session %s', sessionId)
+    }
+  } finally {
+    if (state.queue.length > 0) {
+      try {
+        ctx.dequeueNextQueuedRun?.(ctx.socket, sessionId, ctx.profile)
+      } catch (dequeueErr) {
+        logger.warn(dequeueErr, '[chat-run-socket] failed to continue queue after command failure for session %s', sessionId)
+      }
     }
   }
 }

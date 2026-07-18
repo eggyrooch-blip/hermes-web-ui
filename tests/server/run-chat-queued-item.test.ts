@@ -4,11 +4,19 @@ const handleBridgeRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const resumeBridgeRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const handleApiRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const handleCodingAgentRunMock = vi.hoisted(() => vi.fn(async () => {}))
+const handleSessionCommandMock = vi.hoisted(() => vi.fn(async () => {}))
 const loadSessionStateFromDbMock = vi.hoisted(() => vi.fn())
 const ensureReadyMock = vi.hoisted(() => vi.fn())
+const ensureWorkspaceMock = vi.hoisted(() => vi.fn(async () => '/tmp/hermes-default/workspace'))
 const bridgeMock = vi.hoisted(() => ({
   status: vi.fn(),
   statusIfLoaded: vi.fn(),
+  interrupt: vi.fn(),
+  goalPause: vi.fn(),
+}))
+const sessionGenerationMock = vi.hoisted(() => ({
+  rowId: vi.fn(() => 1),
+  incarnation: vi.fn(() => 1),
 }))
 
 vi.mock('../../packages/server/src/services/hermes/run-chat/handle-bridge-run', () => ({
@@ -27,9 +35,13 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/handle-coding-agent-
 }))
 
 vi.mock('../../packages/server/src/services/hermes/run-chat/session-command', () => ({
-  handleSessionCommand: vi.fn(),
+  handleSessionCommand: handleSessionCommandMock,
   isSessionCommand: vi.fn(() => false),
   parseSessionCommand: vi.fn(() => null),
+}))
+
+vi.mock('../../packages/server/src/services/hermes/run-chat/workspace', () => ({
+  ensureHermesRunWorkspace: ensureWorkspaceMock,
 }))
 
 vi.mock('../../packages/server/src/services/hermes/agent-bridge', () => ({
@@ -52,6 +64,8 @@ vi.mock('../../packages/server/src/lib/llm-prompt', () => ({
 
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSession: vi.fn(() => ({ id: 'session-1', profile: 'default', source: 'cli' })),
+  getSessionRowId: sessionGenerationMock.rowId,
+  getSessionIncarnation: sessionGenerationMock.incarnation,
 }))
 
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
@@ -105,6 +119,10 @@ describe('ChatRunSocket queued bridge runs', () => {
       endpoint: 'ipc:///tmp/hermes-agent-bridge.sock',
     })
     bridgeMock.statusIfLoaded.mockResolvedValue({ ok: true, exists: false, running: false, loaded: false })
+    bridgeMock.interrupt.mockResolvedValue({ synced: true })
+    bridgeMock.goalPause.mockResolvedValue({ handled: true })
+    sessionGenerationMock.rowId.mockReturnValue(1)
+    sessionGenerationMock.incarnation.mockReturnValue(1)
     loadSessionStateFromDbMock.mockResolvedValue({
       messages: [],
       isWorking: false,
@@ -164,6 +182,243 @@ describe('ChatRunSocket queued bridge runs', () => {
     expect(call[6]).toBe(false)
   })
 
+  it('continues the latest queued bridge run when current bridge setup rejects', async () => {
+    handleBridgeRunMock
+      .mockRejectedValueOnce(new Error('workspace setup failed'))
+      .mockResolvedValueOnce(undefined)
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+    const state = {
+      messages: [],
+      isWorking: false,
+      events: [],
+      queue: [{
+        queue_id: 'queue-follow-up',
+        input: 'latest follow-up',
+        source: 'cli',
+        profile: 'default',
+      }],
+    }
+    ;(server as any).sessionMap.set('session-1', state)
+
+    await expect((server as any).handleRun(socket, {
+      input: 'failing request',
+      session_id: 'session-1',
+      source: 'cli',
+    }, 'default')).rejects.toThrow('workspace setup failed')
+
+    await vi.waitFor(() => expect(handleBridgeRunMock).toHaveBeenCalledTimes(2))
+    expect(handleBridgeRunMock.mock.calls[1]?.[2]).toEqual(expect.objectContaining({
+      input: 'latest follow-up',
+      queue_id: 'queue-follow-up',
+    }))
+    expect(state.queue).toEqual([])
+  })
+
+  it('continues queued work when the bridge handler releases admission before throwing', async () => {
+    const { releaseBridgeRunAdmission } = await import('../../packages/server/src/services/hermes/run-chat/bridge-run-admission')
+    handleBridgeRunMock.mockImplementationOnce(async (...args: any[]) => {
+      releaseBridgeRunAdmission(args[4], args[9])
+      throw new Error('internal bridge setup failed')
+    })
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+    const state = {
+      messages: [],
+      isWorking: false,
+      events: [],
+      queue: [{
+        queue_id: 'queue-after-internal-release',
+        input: 'continue after internal release',
+        source: 'cli',
+        profile: 'default',
+      }],
+    }
+    ;(server as any).sessionMap.set('session-1', state)
+
+    await expect((server as any).handleRun(socket, {
+      input: 'failing request',
+      session_id: 'session-1',
+      source: 'cli',
+    }, 'default')).rejects.toThrow('internal bridge setup failed')
+
+    await vi.waitFor(() => expect(handleBridgeRunMock).toHaveBeenCalledTimes(2))
+    expect(handleBridgeRunMock.mock.calls[1]?.[2]).toEqual(expect.objectContaining({
+      queue_id: 'queue-after-internal-release',
+    }))
+    expect(state.queue).toEqual([])
+  })
+
+  it('does not dequeue a replacement run when an older bridge setup rejection lost ownership', async () => {
+    let rejectOldSetup!: (error: Error) => void
+    handleBridgeRunMock.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+      rejectOldSetup = reject
+    }))
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+
+    const oldRun = (server as any).handleRun(socket, {
+      input: 'old setup',
+      session_id: 'session-1',
+      source: 'cli',
+    }, 'default')
+    await vi.waitFor(() => expect(handleBridgeRunMock).toHaveBeenCalledTimes(1))
+
+    const state = (server as any).sessionMap.get('session-1')
+    state.activeRunMarker = 'replacement-active-run'
+    state.isWorking = true
+    state.queue.push({
+      queue_id: 'replacement-follow-up',
+      input: 'must wait for replacement',
+      source: 'cli',
+      profile: 'default',
+    })
+
+    rejectOldSetup(new Error('old setup rejected late'))
+    await expect(oldRun).rejects.toThrow('old setup rejected late')
+
+    expect(handleBridgeRunMock).toHaveBeenCalledTimes(1)
+    expect(state).toMatchObject({
+      isWorking: true,
+      activeRunMarker: 'replacement-active-run',
+    })
+    expect(state.queue).toEqual([
+      expect.objectContaining({ queue_id: 'replacement-follow-up' }),
+    ])
+  })
+
+  it('does not shift a queue while the current state still owns an active run', async () => {
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+    const state = {
+      messages: [],
+      isWorking: true,
+      events: [],
+      activeRunMarker: 'active-run',
+      queue: [{
+        queue_id: 'queued-after-active',
+        input: 'wait your turn',
+        source: 'cli',
+        profile: 'default',
+      }],
+    }
+    ;(server as any).sessionMap.set('session-1', state)
+
+    expect((server as any).dequeueNextQueuedRun(socket, 'session-1', 'default')).toBe(false)
+    expect(handleBridgeRunMock).not.toHaveBeenCalled()
+    expect(state.queue).toEqual([
+      expect.objectContaining({ queue_id: 'queued-after-active' }),
+    ])
+  })
+
+  it('reserves a queued session command after bridge readiness rejects the current run', async () => {
+    ensureReadyMock.mockResolvedValueOnce({
+      reachable: false,
+      status: 'failed',
+      error: 'bridge unavailable',
+      endpoint: 'ipc:///tmp/hermes-agent-bridge.sock',
+    })
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+    const state = {
+      messages: [],
+      isWorking: false,
+      events: [],
+      queue: [{
+        queue_id: 'queue-plan',
+        input: '/plan next',
+        displayInput: '/plan next',
+        displayRole: 'command',
+        storageMessage: '/plan next',
+        source: 'cli',
+        profile: 'default',
+        sessionCommand: {
+          name: 'plan',
+          rawName: 'plan',
+          args: 'next',
+          sessionRowId: 1,
+          sessionIncarnation: 1,
+        },
+      }],
+    }
+    ;(server as any).sessionMap.set('session-1', state)
+
+    await (server as any).handleRun(socket, {
+      input: 'failing request',
+      session_id: 'session-1',
+      source: 'cli',
+    }, 'default')
+
+    await vi.waitFor(() => expect(handleSessionCommandMock).toHaveBeenCalledTimes(1))
+    expect(state.queue).toEqual([])
+    expect(state.commandReservationMarker).toBeTruthy()
+  })
+
+  it('releases an aborted bridge admission without waiting for readiness to return', async () => {
+    ensureReadyMock.mockImplementationOnce(() => new Promise(() => {}))
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { handleAbort } = await import('../../packages/server/src/services/hermes/run-chat/abort')
+    const { io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+
+    const running = (server as any).handleRun(socket, {
+      input: 'wait for bridge readiness',
+      session_id: 'session-1',
+      source: 'cli',
+    }, 'default')
+    await vi.waitFor(() => expect(ensureReadyMock).toHaveBeenCalledTimes(1))
+    const state = (server as any).sessionMap.get('session-1')
+    expect(state).toMatchObject({ isWorking: true, activeRunMarker: expect.any(String) })
+
+    await Promise.all([
+      running,
+      handleAbort(
+        (server as any).nsp,
+        socket as any,
+        'session-1',
+        (server as any).sessionMap,
+        bridgeMock,
+        vi.fn(),
+        (server as any).dequeueNextQueuedRun.bind(server),
+      ),
+    ])
+
+    expect(bridgeMock.interrupt).toHaveBeenCalledWith('session-1', 'Aborted by user', 'default')
+    expect(handleBridgeRunMock).not.toHaveBeenCalled()
+    expect(state).toMatchObject({
+      isWorking: false,
+      isAborting: false,
+      activeRunMarker: undefined,
+      abortController: undefined,
+    })
+  })
+
+  it('reports a generation lookup failure to the requesting socket', async () => {
+    sessionGenerationMock.rowId.mockImplementationOnce(() => { throw new Error('generation lookup failed') })
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { handlers, io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+    ;(server as any).onConnection(socket)
+
+    await handlers.get('run')?.({
+      input: 'request with unavailable identity',
+      session_id: 'session-1',
+      source: 'cli',
+    })
+
+    expect(socket.emit).toHaveBeenCalledWith('run.failed', {
+      event: 'run.failed',
+      session_id: 'session-1',
+      error: 'generation lookup failed',
+    })
+    expect(handleBridgeRunMock).not.toHaveBeenCalled()
+  })
+
   it('queues coding-agent messages while a coding-agent turn is active', async () => {
     const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
     const { handlers, io, namespace, socket } = makeServerHarness()
@@ -205,7 +460,7 @@ describe('ChatRunSocket queued bridge runs', () => {
     const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
     const { io, socket } = makeServerHarness()
     const server = new ChatRunSocket(io as any)
-    ;(server as any).sessionMap.set('session-1', {
+    const state = {
       messages: [],
       isWorking: true,
       isAborting: false,
@@ -221,9 +476,19 @@ describe('ChatRunSocket queued bridge runs', () => {
         originSocketId: socket.id,
       }],
       source: 'coding_agent',
-    })
+      runId: 'agent-run-1',
+      sessionRowId: 1,
+      sessionIncarnation: 1,
+    }
+    ;(server as any).sessionMap.set('session-1', state)
 
-    ;(server as any).markExternalRunCompleted('session-1', 'run.completed')
+    ;(server as any).markExternalRunCompleted('session-1', 'run.completed', {
+      state,
+      runId: 'agent-run-1',
+      turnMarker: null,
+      sessionRowId: 1,
+      sessionIncarnation: 1,
+    })
 
     await vi.waitFor(() => expect(handleCodingAgentRunMock).toHaveBeenCalled())
     const call = handleCodingAgentRunMock.mock.calls.at(-1)!
@@ -280,5 +545,50 @@ describe('ChatRunSocket queued bridge runs', () => {
       bridgeMock,
       expect.any(Function),
     )
+  })
+
+  it('replays stable terminal events until this socket acknowledges their exact ids', async () => {
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { handlers, io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+    ;(server as any).sessionMap.set('session-1', {
+      messages: [],
+      isWorking: false,
+      events: [],
+      queue: [],
+      sessionRowId: 1,
+      sessionIncarnation: 1,
+      pendingTerminalEvents: [
+        {
+          id: 'terminal-abort-1',
+          event: 'abort.completed',
+          data: { event: 'abort.completed', session_id: 'session-1', failure_pending: true },
+        },
+        {
+          id: 'terminal-failure-1',
+          event: 'run.failed',
+          data: { event: 'run.failed', session_id: 'session-1', error: 'stats failed' },
+        },
+      ],
+    })
+    ;(server as any).onConnection(socket)
+
+    await handlers.get('resume')?.({ session_id: 'session-1' })
+    const firstResume = socket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    expect(firstResume.events).toEqual([
+      expect.objectContaining({ id: 'terminal-abort-1', event: 'abort.completed' }),
+      expect.objectContaining({ id: 'terminal-failure-1', event: 'run.failed' }),
+    ])
+
+    handlers.get('resume.events.ack')?.({
+      session_id: 'session-1',
+      event_ids: ['terminal-abort-1'],
+    })
+    socket.emit.mockClear()
+    await handlers.get('resume')?.({ session_id: 'session-1' })
+    const secondResume = socket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    expect(secondResume.events).toEqual([
+      expect.objectContaining({ id: 'terminal-failure-1', event: 'run.failed' }),
+    ])
   })
 })

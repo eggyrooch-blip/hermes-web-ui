@@ -57,6 +57,8 @@ vi.mock('../../packages/server/src/lib/llm-prompt', () => ({
 
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSession: getSessionMock,
+  getSessionRowId: vi.fn(() => 1),
+  getSessionIncarnation: vi.fn(() => 1),
 }))
 
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
@@ -461,6 +463,56 @@ describe('ChatRunSocket bridge readiness gating', () => {
       ]),
     }))
     expect((server as any).bridgeResumePolls.size).toBe(0)
+  })
+
+  it('drops a bridge status result when the session route changes during resume', async () => {
+    let currentSession = {
+      id: 'session-1',
+      profile: 'default',
+      source: 'cli',
+      model: 'gpt-test',
+      provider: 'openai',
+    }
+    getSessionMock.mockImplementation((sessionId?: string) => sessionId ? currentSession : undefined)
+    let resolveStatus!: (value: Record<string, unknown>) => void
+    bridgeMock.statusIfLoaded.mockImplementationOnce(() => new Promise<Record<string, unknown>>((resolve) => {
+      resolveStatus = resolve
+    }))
+    loadSessionStateFromDbMock.mockResolvedValueOnce({
+      messages: [],
+      isWorking: false,
+      profile: 'default',
+      source: 'cli',
+      events: [],
+      queue: [],
+    })
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { emitted, handlers, io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+
+    ;(server as any).onConnection(socket)
+    const resuming = handlers.get('resume')?.({ session_id: 'session-1' })
+    await vi.waitFor(() => expect(bridgeMock.statusIfLoaded).toHaveBeenCalledTimes(1))
+
+    const state = (server as any).sessionMap.get('session-1')
+    state.profile = 'replacement'
+    state.source = 'global_agent'
+    currentSession = { ...currentSession, profile: 'replacement', source: 'global_agent' }
+    resolveStatus({ running: true, current_run_id: 'stale-runtime-run' })
+    await resuming
+
+    expect(resumeBridgeRunMock).not.toHaveBeenCalled()
+    expect(emitted.some(({ event }) => event === 'run.reattach_failed')).toBe(false)
+    expect(state).toEqual(expect.objectContaining({
+      isWorking: false,
+      profile: 'replacement',
+      source: 'global_agent',
+    }))
+    expect(state.runId).toBeUndefined()
+    expect(socket.emit).toHaveBeenCalledWith('resumed', expect.objectContaining({
+      session_id: 'session-1',
+      isWorking: false,
+    }))
   })
 
   it('suppresses transient bridge status timeout warnings while resuming', async () => {
