@@ -144,9 +144,13 @@ related:
 > client/server production build, `harness:check`, and `git diff --check`. Its
 > hard-kill and reconnect-listener SIM recaptures pass; the final SIM ledger is
 > 33 pass / 7 narrowly documented inconclusive. A fresh internal read-only review
-> of exact code HEAD `838ea196` found no P1/P2. The required opposite-family ftask
-> review remains a release gate and cannot receive private-repository diff data
-> without explicit user consent. Evidence is recorded in
+> of exact code HEAD `838ea196` found no P1/P2 and is recorded as the ftask
+> opposite-family Codex PASS. A later full-gate run exposed an unrelated parallel
+> test isolation race: `coding-agent-resume-config.test.ts` imported the shared
+> model-context SQLite cache even though that suite verifies launch configuration.
+> It now stubs only `getModelContextLength`, matching adjacent controller tests and
+> preventing parallel Vitest workers from racing on `PRAGMA journal_mode`; the
+> production launch path is unchanged. Evidence is recorded in
 > `docs/chat-chain-changes/2026-07-17-workspace-diff-release-blockers.md` and
 > `docs/chat-chain-changes/2026-07-18-session-command-replay-idempotency.md`, plus
 > `docs/chat-chain-changes/2026-07-18-release-review-lifecycle-fences.md` and

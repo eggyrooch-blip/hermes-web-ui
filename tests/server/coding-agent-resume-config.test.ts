@@ -26,6 +26,13 @@ vi.doMock('../../packages/server/src/services/hermes/hermes-profile', () => ({
   getProfileDir: (profile: string) => `/tmp/hermes-profile/${profile}`,
 }))
 
+// This suite verifies resumed launch configuration, not the shared model-context
+// cache. Avoid opening the process-wide test SQLite database from parallel
+// Vitest workers, which can otherwise race on PRAGMA journal_mode.
+vi.doMock('../../packages/server/src/services/hermes/model-context', () => ({
+  getModelContextLength: vi.fn(() => 200_000),
+}))
+
 vi.doMock('../../packages/server/src/services/agent-runner/coding-agent-run-manager', () => ({
   codingAgentRunManager: {
     start: startRunMock,
