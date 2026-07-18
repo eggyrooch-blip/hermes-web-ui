@@ -1,14 +1,14 @@
 ---
 date: 2026-07-18
 pr: pending
-commit: pending
+commit: 8401b9b7
 feature: Final release review concurrency fences
 impact: Diff overload is explicit and bounded, resume listeners and acknowledgements are reclaimed, and connector replay cleanup preserves exact ownership.
 ---
 
 # Final release review concurrency fences
 
-- PR/commit: `webui-release-blockers` candidate (final commit pending)
+- PR/commit: `webui-release-blockers@8401b9b7`
 - Touched feature: workspace diff checkpoints, resume-event acknowledgement, connector replay recovery, and Socket.IO session resume.
 - Behavior impact:
   - Workspace diff lease acquisition now has its own one-second budget; actual snapshot/diff work receives a fresh one-second deadline after acquisition. Late filesystem or Git work keeps its global lease until settlement, and test teardown waits for that settlement deterministically.

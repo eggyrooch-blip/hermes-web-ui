@@ -15,7 +15,7 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
-> [!info] 2026-07-18 local ftask candidate (final commit pending) — workspace diff / session lifecycle release blockers
+> [!info] 2026-07-18 local ftask candidate `8401b9b7` — workspace diff / session lifecycle release blockers
 > `webui-release-blockers` removes synchronous Git, directory scan, file read,
 > and no-index diff work from the single Node event loop. Checkpoint start is
 > now awaited asynchronously before broker, bridge, or coding-agent execution
