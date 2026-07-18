@@ -100,13 +100,14 @@ export interface WorkspaceRunChangeSummary {
   run_id: string
   source: 'run'
   workspace: string
-  workspace_kind: 'git' | 'filesystem'
+  workspace_kind: 'git' | 'filesystem' | 'unavailable'
   started_at: number
   finished_at: number
   files_changed: number
   additions: number
   deletions: number
   truncated: boolean
+  degraded_reason?: 'lease_acquisition_timeout'
   total_patch_bytes: number
   created_at: number
   files: WorkspaceRunChangeFileSummary[]

@@ -58,7 +58,9 @@ describe('workspace diff tracker', () => {
     git(repo, ['commit', '-m', 'initial'])
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    const { awaitWorkspaceDiffSettlement } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+    await awaitWorkspaceDiffSettlement()
     state.db?.close()
     state.db = null
     rmSync(root, { recursive: true, force: true })
@@ -182,7 +184,8 @@ describe('workspace diff tracker', () => {
 
         expect(elapsed).toBeLessThan(3_500)
         expect(change).toBeNull()
-        await new Promise(resolve => setTimeout(resolve, 5_500))
+        const { awaitWorkspaceDiffSettlement } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+        await awaitWorkspaceDiffSettlement()
         expect(['', 'start\nend\n']).toContain(readFileSync(logPath, 'utf8'))
         process.env.PATH = originalPath
       }
@@ -392,7 +395,7 @@ describe('workspace diff tracker', () => {
         const checkpoint = await startWorkspaceRunCheckpoint({ sessionId, runId, workspace: repo })
         return { sessionId, runId, checkpoint }
       }))
-      for (const handle of handles) discardWorkspaceRunCheckpoint(handle)
+      await Promise.all(handles.map(handle => discardWorkspaceRunCheckpoint(handle)))
 
       let active = 0
       let maximum = 0
@@ -450,7 +453,6 @@ describe('workspace diff tracker', () => {
         runId: `run-slow-root-${operationName}-2`,
         workspace: workspaces[2],
       })
-      await new Promise(resolve => setTimeout(resolve, 50))
       expect(delayedRootOperation).toHaveBeenCalledTimes(2)
 
       const settle = async (index: number): Promise<void> => {
@@ -480,7 +482,71 @@ describe('workspace diff tracker', () => {
     }
   }, 10_000)
 
-  it('times out a queued checkpoint while earlier leases remain unsettled', async () => {
+  it('starts a fresh work deadline after a queued checkpoint acquires a retained lease', async () => {
+    for (let index = 0; index < 3; index += 1) {
+      await createTrackedSession(`session-fresh-work-budget-${index}`)
+    }
+    const realFs = await vi.importActual<typeof import('fs/promises')>('fs/promises')
+    const pendingRealpaths: Array<{ path: string; resolve: (value: string) => void }> = []
+    const realpathMock = vi.fn((path: string) => new Promise<string>((resolvePath) => {
+      pendingRealpaths.push({ path, resolve: resolvePath })
+    }))
+    vi.doMock('fs/promises', () => ({ ...realFs, realpath: realpathMock }))
+
+    const now = Date.now()
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now)
+    try {
+      const {
+        discardWorkspaceRunCheckpoint,
+        startWorkspaceRunCheckpoint,
+      } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+      const firstTwo = [0, 1].map(index => startWorkspaceRunCheckpoint({
+        sessionId: `session-fresh-work-budget-${index}`,
+        runId: `run-fresh-work-budget-${index}`,
+        workspace: repo,
+      }))
+      await vi.waitFor(() => expect(realpathMock).toHaveBeenCalledTimes(2))
+
+      nowSpy.mockReturnValue(now + 1_001)
+      await expect(Promise.all(firstTwo)).resolves.toEqual([null, null])
+
+      nowSpy.mockReturnValue(now + 1_002)
+      const third = startWorkspaceRunCheckpoint({
+        sessionId: 'session-fresh-work-budget-2',
+        runId: 'run-fresh-work-budget-2',
+        workspace: repo,
+      })
+      nowSpy.mockReturnValue(now + 1_902)
+      pendingRealpaths[0].resolve(await realFs.realpath(pendingRealpaths[0].path))
+      await vi.waitFor(() => expect(realpathMock).toHaveBeenCalledTimes(3))
+
+      nowSpy.mockReturnValue(now + 2_102)
+      pendingRealpaths[2].resolve(await realFs.realpath(pendingRealpaths[2].path))
+      const nextStep = await Promise.race([
+        vi.waitFor(() => expect(realpathMock).toHaveBeenCalledTimes(4)).then(() => 'continued' as const),
+        third.then(() => 'settled' as const),
+      ])
+      expect(nextStep).toBe('continued')
+      pendingRealpaths[3].resolve(await realFs.realpath(pendingRealpaths[3].path))
+
+      const thirdHandle = await third
+      expect(thirdHandle).not.toBeNull()
+      pendingRealpaths[1].resolve(await realFs.realpath(pendingRealpaths[1].path))
+      await discardWorkspaceRunCheckpoint({
+        sessionId: 'session-fresh-work-budget-2',
+        runId: 'run-fresh-work-budget-2',
+        checkpoint: thirdHandle,
+      })
+    } finally {
+      for (const pending of pendingRealpaths) {
+        pending.resolve(await realFs.realpath(pending.path))
+      }
+      nowSpy.mockRestore()
+      vi.doUnmock('fs/promises')
+    }
+  }, 10_000)
+
+  it('reports a degraded checkpoint when two retained operations exhaust acquisition budget', async () => {
     for (let index = 0; index < 3; index += 1) {
       await createTrackedSession(`session-never-settles-${index}`)
     }
@@ -492,7 +558,13 @@ describe('workspace diff tracker', () => {
     vi.doMock('fs/promises', () => ({ ...realFs, realpath: realpathMock }))
 
     try {
-      const { startWorkspaceRunCheckpoint } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+      const {
+        awaitWorkspaceDiffSettlement,
+        completeWorkspaceRunCheckpoint,
+        startWorkspaceRunCheckpoint,
+      } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+      const { logger } = await import('../../packages/server/src/services/logger')
+      const warning = vi.spyOn(logger, 'warn')
       await expect(Promise.all([0, 1].map(index => startWorkspaceRunCheckpoint({
         sessionId: `session-never-settles-${index}`,
         runId: `run-never-settles-${index}`,
@@ -501,16 +573,38 @@ describe('workspace diff tracker', () => {
       expect(realpathMock).toHaveBeenCalledTimes(2)
 
       const startedAt = Date.now()
-      await expect(startWorkspaceRunCheckpoint({
+      const checkpoint = await startWorkspaceRunCheckpoint({
         sessionId: 'session-never-settles-2',
         runId: 'run-never-settles-2',
         workspace: repo,
-      })).resolves.toBeNull()
+      })
       expect(Date.now() - startedAt).toBeLessThan(2_500)
       expect(realpathMock).toHaveBeenCalledTimes(2)
+      expect(checkpoint).toMatchObject({ degradedReason: 'lease_acquisition_timeout' })
+      await expect(completeWorkspaceRunCheckpoint({
+        sessionId: 'session-never-settles-2',
+        runId: 'run-never-settles-2',
+        workspace: repo,
+        checkpoint,
+      })).resolves.toMatchObject({
+        workspace_kind: 'unavailable',
+        files_changed: 0,
+        truncated: true,
+        degraded_reason: 'lease_acquisition_timeout',
+        files: [],
+      })
+      expect(warning).toHaveBeenCalledWith(
+        expect.objectContaining({
+          phase: 'start',
+          reason: 'lease_acquisition_timeout',
+          sessionId: 'session-never-settles-2',
+        }),
+        '[workspace-diff] checkpoint degraded while waiting for an operation lease',
+      )
 
       for (const pending of pendingRealpaths) pending.resolve(await realFs.realpath(pending.path))
-      await new Promise(resolve => setTimeout(resolve, 0))
+      await awaitWorkspaceDiffSettlement()
+      warning.mockRestore()
     } finally {
       vi.doUnmock('fs/promises')
     }
@@ -546,13 +640,17 @@ describe('workspace diff tracker', () => {
       expect(Date.now() - startedAt).toBeLessThan(2_500)
       expect(checkpoint).not.toBeNull()
       expect(close).toHaveBeenCalledOnce()
-      discardWorkspaceRunCheckpoint({
+      let discarded = false
+      const settlement = discardWorkspaceRunCheckpoint({
         sessionId: 'session-slow-close',
         runId: 'run-slow-close',
         checkpoint,
-      })
+      }).then(() => { discarded = true })
+      await Promise.resolve()
+      expect(discarded).toBe(false)
       resolveClose()
-      await new Promise(resolve => setTimeout(resolve, 0))
+      await settlement
+      expect(discarded).toBe(true)
     } finally {
       vi.doUnmock('fs/promises')
     }
@@ -589,7 +687,6 @@ describe('workspace diff tracker', () => {
         runId: 'run-slow-open-2',
         workspace: workspaces[2],
       })
-      await new Promise(resolve => setTimeout(resolve, 50))
       expect(opendirMock).toHaveBeenCalledTimes(2)
 
       pendingOpens[0].resolve({ close: pendingOpens[0].close })
@@ -651,7 +748,6 @@ describe('workspace diff tracker', () => {
         runId: 'run-slow-snapshot-2',
         workspace: workspaces[2],
       })
-      await new Promise(resolve => setTimeout(resolve, 50))
       expect(lstatMock).toHaveBeenCalledTimes(2)
 
       pendingStats[0].resolve(await realFs.lstat(pendingStats[0].path))

@@ -46,7 +46,7 @@ import {
 } from './session-run-ownership'
 import { registerBridgeAbortFinalizer, unregisterBridgeAbortFinalizer } from './bridge-abort-finalizer'
 import { awaitWithAbortSignal, isAbortError } from './abortable-await'
-import { acknowledgePendingResumeEvents, pendingResumeEventsForSocket } from './pending-resume-events'
+import { acknowledgePendingResumeEvents, forgetResumeEventAcknowledgement, pendingResumeEventsForSocket } from './pending-resume-events'
 
 export type { ContentBlock } from './types'
 
@@ -148,6 +148,7 @@ export class ChatRunSocket {
   // --- Connection handler ---
 
   private onConnection(socket: Socket) {
+    const acknowledgedResumeStates = new Set<SessionState>()
     const socketUser = socket.data.user as AuthenticatedUser | undefined
     const socketProfile = (socket.handshake.query?.profile as string) || 'default'
     const currentProfile = () => socketProfile || getActiveProfileName() || 'default'
@@ -346,6 +347,14 @@ export class ChatRunSocket {
       const state = this.sessionMap.get(sessionId)
       if (!state) return
       acknowledgePendingResumeEvents(state, socket.id, eventIds)
+      acknowledgedResumeStates.add(state)
+    })
+
+    socket.on('disconnect', () => {
+      for (const state of acknowledgedResumeStates) {
+        forgetResumeEventAcknowledgement(state.pendingTerminalEvents || [], socket.id)
+      }
+      acknowledgedResumeStates.clear()
     })
 
     socket.on('abort', (data: { session_id?: string }) => {

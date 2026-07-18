@@ -685,6 +685,29 @@ describe('BrokerRunController run lifecycle', () => {
       ?.acknowledgedSocketIds).toEqual(new Set(['socket-1', 'socket-2']))
   })
 
+  it('does not forget an earlier socket acknowledgement after 100 later sockets', async () => {
+    const { controller, handlers, socket } = makeHarness()
+    const state = parkCredentialRun(controller)
+    const event = state.parkedCredentialRuns.get('parked-run').resumeEvent
+
+    handlers.get('resume.events.ack')!({ session_id: 's1', event_ids: [event.id] })
+    for (let i = 2; i <= 101; i += 1) {
+      socket.id = `socket-${i}`
+      handlers.get('resume.events.ack')!({ session_id: 's1', event_ids: [event.id] })
+    }
+    expect(event.acknowledgedSocketIds.size).toBe(101)
+
+    socket.id = 'socket-1'
+    socket.emit.mockClear()
+    await handlers.get('resume')!({ session_id: 's1' })
+    await vi.waitFor(() => expect(socket.emit).toHaveBeenCalledWith('resumed', expect.anything()))
+    const resumed = socket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    expect(resumed.events).not.toContainEqual(expect.objectContaining({ id: event.id }))
+
+    handlers.get('disconnect')!()
+    expect(event.acknowledgedSocketIds.has('socket-1')).toBe(false)
+  })
+
   it('replays a broker-unavailable failure with the same terminal id until this socket acknowledges it', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce({
       ok: true,

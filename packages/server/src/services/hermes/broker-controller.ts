@@ -61,6 +61,7 @@ import {
   stateMatchesSessionGeneration,
   type SessionGeneration,
 } from './run-chat/session-generation'
+import { acknowledgeResumeEvents, forgetResumeEventAcknowledgement } from './run-chat/pending-resume-events'
 
 /**
  * Content block types for Anthropic-compatible message format
@@ -785,6 +786,7 @@ export class BrokerRunController {
 
   private onConnection(socket: Socket) {
     const profile = (socket.data?.profile as string | undefined) || (socket.handshake.query?.profile as string) || 'default'
+    const acknowledgedResumeStates = new Set<SessionState>()
 
     socket.on('run', async (data: {
       input: string | ContentBlock[]
@@ -889,16 +891,18 @@ export class BrokerRunController {
         ...(state.pendingTerminalEvents || []),
         ...Array.from(state.parkedCredentialRuns?.values() || [], parked => parked.resumeEvent),
       ]
-      for (const event of pendingEvents) {
-        if (!eventIds.has(event.id)) continue
-        if (!event.acknowledgedSocketIds) event.acknowledgedSocketIds = new Set()
-        event.acknowledgedSocketIds.add(socket.id)
-        while (event.acknowledgedSocketIds.size > 100) {
-          const oldestSocketId = event.acknowledgedSocketIds.values().next().value
-          if (oldestSocketId === undefined) break
-          event.acknowledgedSocketIds.delete(oldestSocketId)
-        }
+      acknowledgeResumeEvents(pendingEvents, socket.id, eventIds)
+      acknowledgedResumeStates.add(state)
+    })
+
+    socket.on('disconnect', () => {
+      for (const state of acknowledgedResumeStates) {
+        forgetResumeEventAcknowledgement([
+          ...(state.pendingTerminalEvents || []),
+          ...Array.from(state.parkedCredentialRuns?.values() || [], parked => parked.resumeEvent),
+        ], socket.id)
       }
+      acknowledgedResumeStates.clear()
     })
 
     socket.on('abort', (data: { session_id?: string }) => {

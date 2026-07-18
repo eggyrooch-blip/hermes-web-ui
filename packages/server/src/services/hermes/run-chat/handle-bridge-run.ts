@@ -34,8 +34,7 @@ import { markAbortCompleted } from './abort'
 import { writeModelRunProfileToken } from './model-run-prompt'
 import type { AuthenticatedUser } from '../../../middleware/user-auth'
 import { ensureHermesRunWorkspace } from './workspace'
-import { completeWorkspaceRunCheckpoint, discardWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint, type WorkspaceRunCheckpointHandle } from './workspace-diff-tracker'
-import type { WorkspaceRunChangeSummary } from '../../../db/hermes/workspace-run-changes-store'
+import { completeWorkspaceRunCheckpoint, discardWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint, type WorkspaceRunCheckpointHandle, type WorkspaceRunDiffCompletion } from './workspace-diff-tracker'
 import { captureSessionRunOwnership, ownsSessionGeneration, ownsSessionRun, type SessionRunOwnership } from './session-run-ownership'
 import { finalizeBridgeAbort, registerBridgeAbortFinalizer, unregisterBridgeAbortFinalizer } from './bridge-abort-finalizer'
 import {
@@ -50,7 +49,7 @@ const BRIDGE_TITLE_EVENT_POLL_INTERVAL_MS = 500
 const BRIDGE_TITLE_EVENT_POLL_TIMEOUT_MS = 45_000
 const BRIDGE_GOAL_EVALUATE_TIMEOUT_MS = 120_000
 
-function workspaceDiffCompletedPayload(change: WorkspaceRunChangeSummary): Record<string, unknown> {
+function workspaceDiffCompletedPayload(change: WorkspaceRunDiffCompletion): Record<string, unknown> {
   return { event: 'workspace.diff.completed', ...change }
 }
 

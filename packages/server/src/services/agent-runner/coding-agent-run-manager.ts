@@ -11,8 +11,7 @@ import { bindSessionGeneration, readSessionGeneration, sessionGenerationsEqual }
 import type { CanonicalResponsesEvent } from './adapters/responses-stream'
 import { mapCodingAgentResponseEvent } from './coding-agent-event-mapper'
 import { normalizeWindowsCommandPath, windowsCmdShimExecution, windowsCommandNeedsShell } from '../windows-command'
-import { completeWorkspaceRunCheckpoint, discardWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint } from '../hermes/run-chat/workspace-diff-tracker'
-import type { WorkspaceRunChangeSummary } from '../../db/hermes/workspace-run-changes-store'
+import { completeWorkspaceRunCheckpoint, discardWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint, type WorkspaceRunDiffCompletion } from '../hermes/run-chat/workspace-diff-tracker'
 
 const DEFAULT_IDLE_MS = 30 * 60 * 1000
 const TERMINAL_OUTPUT_FLUSH_MS = 120
@@ -26,7 +25,7 @@ const HERMES_MCP_SERVER_NAME = 'hermes-studio'
 
 let pty: any = null
 
-function workspaceDiffCompletedPayload(change: WorkspaceRunChangeSummary): Record<string, unknown> {
+function workspaceDiffCompletedPayload(change: WorkspaceRunDiffCompletion): Record<string, unknown> {
   return { event: 'workspace.diff.completed', ...change }
 }
 

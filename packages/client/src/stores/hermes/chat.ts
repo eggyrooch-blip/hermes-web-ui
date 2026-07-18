@@ -1671,13 +1671,18 @@ export const useChatStore = defineStore('chat', () => {
       run_id: String(raw.run_id || ''),
       source: 'run',
       workspace: String(raw.workspace || ''),
-      workspace_kind: raw.workspace_kind === 'filesystem' ? 'filesystem' : 'git',
+      workspace_kind: raw.workspace_kind === 'filesystem' || raw.workspace_kind === 'unavailable'
+        ? raw.workspace_kind
+        : 'git',
       started_at: Number(raw.started_at || 0),
       finished_at: Number(raw.finished_at || 0),
       files_changed: Number(raw.files_changed ?? files.length),
       additions: Number(raw.additions || 0),
       deletions: Number(raw.deletions || 0),
       truncated: Boolean(raw.truncated),
+      ...(raw.degraded_reason === 'lease_acquisition_timeout'
+        ? { degraded_reason: raw.degraded_reason }
+        : {}),
       total_patch_bytes: Number(raw.total_patch_bytes || 0),
       created_at: Number(raw.created_at || raw.finished_at || 0),
       files,
@@ -2272,9 +2277,9 @@ export const useChatStore = defineStore('chat', () => {
   ) {
     const current = pendingReauths.value.get(sessionId)
     if (!current) return
-    if (runId && (current.runId !== runId
-      || current.sessionRowId !== sessionRowId
-      || current.sessionIncarnation !== sessionIncarnation)) return
+    if (runId && current.runId !== runId) return
+    if (runId && current.sessionRowId !== undefined && current.sessionRowId !== sessionRowId) return
+    if (runId && current.sessionIncarnation !== undefined && current.sessionIncarnation !== sessionIncarnation) return
     pendingReauths.value.delete(sessionId)
     pendingReauths.value = new Map(pendingReauths.value)
   }
@@ -2316,6 +2321,9 @@ export const useChatStore = defineStore('chat', () => {
     if (!socket) {
       pendingReauths.value.set(sessionId, { ...current, retrying: false })
       pendingReauths.value = new Map(pendingReauths.value)
+      streamStates.value.delete(sessionId)
+      serverWorking.value.delete(sessionId)
+      unregisterSessionHandlers(sessionId)
       return
     }
     socket.emit('credential.replay', {

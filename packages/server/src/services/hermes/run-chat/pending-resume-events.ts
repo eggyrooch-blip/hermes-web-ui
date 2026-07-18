@@ -1,7 +1,6 @@
 import type { PendingResumeEvent, SessionState } from './types'
 
 const MAX_PENDING_EVENTS = 20
-const MAX_ACKNOWLEDGED_SOCKETS = 100
 
 export function recordPendingResumeEvent(state: SessionState, event: string, data: any): string {
   const id = `terminal_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
@@ -16,15 +15,28 @@ export function acknowledgePendingResumeEvents(
   socketId: string,
   eventIds: Set<string>,
 ): void {
-  for (const event of state.pendingTerminalEvents || []) {
+  acknowledgeResumeEvents(state.pendingTerminalEvents || [], socketId, eventIds)
+}
+
+export function acknowledgeResumeEvents(
+  events: Iterable<PendingResumeEvent>,
+  socketId: string,
+  eventIds: Set<string>,
+): void {
+  for (const event of events) {
     if (!eventIds.has(event.id)) continue
     event.acknowledgedSocketIds ||= new Set()
     event.acknowledgedSocketIds.add(socketId)
-    while (event.acknowledgedSocketIds.size > MAX_ACKNOWLEDGED_SOCKETS) {
-      const oldest = event.acknowledgedSocketIds.values().next().value
-      if (oldest === undefined) break
-      event.acknowledgedSocketIds.delete(oldest)
-    }
+  }
+}
+
+export function forgetResumeEventAcknowledgement(
+  events: Iterable<PendingResumeEvent>,
+  socketId: string,
+): void {
+  for (const event of events) {
+    event.acknowledgedSocketIds?.delete(socketId)
+    if (event.acknowledgedSocketIds?.size === 0) delete event.acknowledgedSocketIds
   }
 }
 

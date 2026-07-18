@@ -15,19 +15,26 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
-> [!info] 2026-07-18 local ftask candidate `98eaa876` — workspace diff / session lifecycle release blockers
+> [!info] 2026-07-18 local ftask candidate (final commit pending) — workspace diff / session lifecycle release blockers
 > `webui-release-blockers` removes synchronous Git, directory scan, file read,
 > and no-index diff work from the single Node event loop. Checkpoint start is
 > now awaited asynchronously before broker, bridge, or coding-agent execution
 > begins, so the baseline cannot race the run; completion is also awaited before
-> the terminal chat event. Git child processes have a 5-second timeout and the
-> workspace root Git probing/`realpath`/`stat`, filesystem walk, snapshot, Git HEAD,
-> and patch phase share a 1-second deadline, use streamed
+> the terminal chat event. Git child processes have a 5-second timeout, while
+> lease acquisition has its own 1-second budget; after acquisition, workspace
+> root Git probing/`realpath`/`stat`, filesystem walk, snapshot, Git HEAD,
+> and patch work receive a fresh shared 1-second deadline and use streamed
 > `opendir` iteration without a new directory-entry cap, and process-wide
 > expensive diff work is limited to two concurrent operations. Timed-out
 > directory I/O is eventually closed; timed-out `lstat/realpath/stat/readFile`
 > promises and late Git/patch children are allowed to settle. All retain their
 > limiter lease until cleanup, so late work cannot exceed the concurrency cap.
+> If both leases remain occupied through the acquisition budget, the live event
+> reports `workspace_kind=unavailable`, `truncated=true`, and
+> `degraded_reason=lease_acquisition_timeout`, while the server logs a structured
+> warning. This degraded event is not stored as a synthetic SQLite patch.
+> Checkpoint discard and test teardown can await deterministic settlement, so
+> delayed mocked I/O cannot leak into the next test or request lifecycle.
 > Patch truncation uses a valid UTF-8 byte prefix, preserving CJK/emoji code
 > points without exceeding the configured byte budget.
 > A Git-root deadline is propagated as a distinct result, preventing the
@@ -120,17 +127,25 @@ related:
 > evaluation without any upstream response. Added lifecycle/auth coverage includes
 > inactive socket fatal cleanup, historical abort-completion fencing, exact-generation
 > HTTP deletion ordering, server-authoritative replay, pre-dispatch card restoration,
-> multi-tab `auth.resolved` replay/ACK, and Global Agent forwarding. Server/client
-> typechecks and `git diff --check` pass. Final command replay focused coverage is
+> multi-tab `auth.resolved` replay/ACK, and Global Agent forwarding. Final review
+> also keeps a legacy auth card compatible when its stored generation
+> fields are absent but the run ID matches, rolls back temporary replay ownership
+> if no current socket exists, removes unanswered resume listeners after 15 seconds,
+> and preserves every connected socket's stable-event ACK until disconnect instead
+> of evicting the oldest ACK at 100. Same-content events with distinct IDs remain
+> distinct; delayed idle resume cannot retire a newer `/plan` or `/goal` owner.
+> Typechecks and `git diff --check` pass. Final command replay focused coverage is
 > 2 files / 110 passed; final broker/bridge/coding-agent lifecycle SIM coverage is
 > 192/192, and client reconnect/replay SIM coverage is 161/161. Final candidate
-> `98eaa876` passed 322 test files / 2646 tests with 2 skipped, plus client/server
-> build, `harness:check`, and `git diff --check`. Its final-hash SIM recapture and
+> passed twice independently at 322 test files / 2653 tests with 2 skipped, plus
+> client/server production build, `harness:check`, and `git diff --check`. Its
+> final-hash SIM recapture and
 > fresh independent review remain release gates. Evidence is recorded in
 > `docs/chat-chain-changes/2026-07-17-workspace-diff-release-blockers.md` and
 > `docs/chat-chain-changes/2026-07-18-session-command-replay-idempotency.md`, plus
 > `docs/chat-chain-changes/2026-07-18-release-review-lifecycle-fences.md` and
-> `docs/chat-chain-changes/2026-07-18-release-review-exact-run-ownership.md`.
+> `docs/chat-chain-changes/2026-07-18-release-review-exact-run-ownership.md`, plus
+> `docs/chat-chain-changes/2026-07-18-final-release-review-concurrency.md`.
 > This candidate is not merged, pushed, or published to production.
 
 > [!info] 2026-07-11 local worktree — chat 右侧产物 workspace 两阶段，尚未 main/生产

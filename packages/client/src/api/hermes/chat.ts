@@ -108,7 +108,8 @@ export interface RunEvent {
   /** Workspace diff summary from explicit-workspace agent runs. */
   change_id?: string
   workspace?: string
-  workspace_kind?: 'git' | 'filesystem'
+  workspace_kind?: 'git' | 'filesystem' | 'unavailable'
+  degraded_reason?: 'lease_acquisition_timeout'
   files_changed?: number
   additions?: number
   deletions?: number
@@ -148,6 +149,7 @@ let chatRunSocketTransport: ChatRunTransport = 'chat-run'
 const consumedResumeEventIds = new Set<string>()
 const processingResumeEventIds = new Set<string>()
 const MAX_CONSUMED_RESUME_EVENT_IDS = 500
+const RESUME_RESPONSE_TIMEOUT_MS = 15_000
 
 const TRANSIENT_DISCONNECT_REASONS = new Set<string>([
   'transport close',
@@ -1022,6 +1024,7 @@ export function resumeSession(
 
   const handleResumed = (data: ResumeSessionPayload) => {
     if (data?.session_id !== sessionId) return
+    clearTimeout(resumeTimeout)
     removeSocketListener(socket, 'resumed', handleResumed)
     const prepared = prepareResumeEvents(socket, sessionId, data)
     void Promise.resolve(onResumed(prepared.data))
@@ -1033,6 +1036,9 @@ export function resumeSession(
         console.error('Failed to apply resumed session:', err)
       })
   }
+  const resumeTimeout = setTimeout(() => {
+    removeSocketListener(socket, 'resumed', handleResumed)
+  }, RESUME_RESPONSE_TIMEOUT_MS)
   socket.on('resumed', handleResumed)
   socket.emit('resume', { session_id: sessionId, ...(profile ? { profile } : {}) })
 

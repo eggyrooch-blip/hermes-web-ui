@@ -833,6 +833,38 @@ describe('chat store user-mode model selection', () => {
     expect(store.pendingReauths.has(session.id)).toBe(false)
   })
 
+  it('clears a legacy auth card without generation when its run is resolved', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    await store.sendMessage('needs connector')
+    const [, onEvent, onDone] = startRunViaSocketMock.mock.calls[0]
+    const applyResolved = onAuthResolvedMock.mock.calls.at(-1)?.[0] as (event: any) => void
+
+    onEvent({
+      event: 'auth.required',
+      session_id: session.id,
+      run_id: 'legacy-parked-run',
+      connector_id: 'connector-1',
+      provider: 'feishu',
+    })
+    onDone()
+    expect(store.pendingReauths.get(session.id)).toEqual(expect.objectContaining({
+      runId: 'legacy-parked-run',
+      sessionRowId: undefined,
+      sessionIncarnation: undefined,
+    }))
+
+    applyResolved({
+      event: 'auth.resolved',
+      session_id: session.id,
+      run_id: 'legacy-parked-run',
+      session_row_id: 1,
+      session_incarnation: 10,
+    })
+
+    expect(store.pendingReauths.has(session.id)).toBe(false)
+  })
+
   it('consumes a resumed auth resolution and clears its exact parked card', async () => {
     const store = useChatStore()
     const session = store.newChat({ profile: 'tester' })
@@ -957,6 +989,36 @@ describe('chat store user-mode model selection', () => {
         content: 'Error: failed while the tab was reconnecting',
       }),
     ]))
+  })
+
+  it.each(['/plan update release', '/goal ship safely'])('keeps a new %s owner when an older idle resume arrives', async (command) => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    await store.switchSession(session.id)
+
+    let onResumed!: (data: any) => Promise<string[]> | string[]
+    resumeSessionMock.mockImplementation((_sessionId: string, callback: typeof onResumed) => {
+      onResumed = callback
+      return { disconnect: vi.fn() }
+    })
+    unregisterSessionHandlersMock.mockClear()
+
+    const switching = store.switchSession(session.id)
+    for (let i = 0; i < 10 && !onResumed; i += 1) await Promise.resolve()
+    await store.sendMessage(command)
+    expect(store.isSessionLive(session.id)).toBe(true)
+
+    await onResumed({
+      session_id: session.id,
+      messages: [],
+      isWorking: false,
+      queueLength: 0,
+      events: [],
+    })
+    await switching
+
+    expect(store.isSessionLive(session.id)).toBe(true)
+    expect(unregisterSessionHandlersMock).not.toHaveBeenCalledWith(session.id)
   })
 
   it('keeps the current queued run live while replaying the previous run failure', async () => {
@@ -1371,6 +1433,37 @@ describe('chat store user-mode model selection', () => {
     ]))
     expect(unregisterSessionHandlersMock).toHaveBeenCalledWith(session.id)
     expect(store.isSessionLive(session.id)).toBe(false)
+  })
+
+  it('rolls back a credential replay attachment when no current socket exists', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    await store.sendMessage('needs connector')
+    const [, onEvent, onDone] = startRunViaSocketMock.mock.calls[0]
+    onEvent({
+      event: 'auth.required',
+      session_id: session.id,
+      run_id: 'parked-run',
+      connector_id: 'connector-1',
+      provider: 'feishu',
+    })
+    onDone()
+    unregisterSessionHandlersMock.mockClear()
+
+    getChatRunSocketMock.mockReturnValue(null)
+    store.triggerReauthReplay(session.id)
+
+    expect(store.pendingReauths.get(session.id)?.retrying).toBe(false)
+    expect(store.isSessionLive(session.id)).toBe(false)
+    expect(unregisterSessionHandlersMock).toHaveBeenCalledWith(session.id)
+
+    const replacementSocket = { emit: vi.fn() }
+    getChatRunSocketMock.mockReturnValue(replacementSocket)
+    store.triggerReauthReplay(session.id)
+    expect(replacementSocket.emit).toHaveBeenCalledWith('credential.replay', expect.objectContaining({
+      session_id: session.id,
+      run_id: 'parked-run',
+    }))
   })
 
   it('settles a resumed command reservation only when its session command is terminal', async () => {

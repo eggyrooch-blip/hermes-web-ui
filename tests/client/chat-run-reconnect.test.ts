@@ -525,6 +525,22 @@ describe('chat-run socket reconnect handling', () => {
     expect(socket.__listenerCount('resumed')).toBe(0)
   })
 
+  it('removes an unanswered resume listener after its response timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const { resumeSession } = await import('../../packages/client/src/api/hermes/chat')
+      resumeSession('missing-session', vi.fn(), 'default')
+
+      const socket = socketState.sockets[0]
+      expect(socket.__listenerCount('resumed')).toBe(1)
+
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(socket.__listenerCount('resumed')).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('resumes an attached run after each transient reconnect and retires it when idle', async () => {
     const { registerSessionHandlers } = await import('../../packages/client/src/api/hermes/chat')
     const onReconnectResume = vi.fn((data: any) => data.events.map((event: any) => event.id))

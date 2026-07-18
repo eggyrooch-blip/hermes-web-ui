@@ -17,6 +17,7 @@ const MAX_PATCH_BYTES_PER_FILE = 256 * 1024
 const MAX_TOTAL_PATCH_BYTES = 1024 * 1024
 const MAX_SCAN_DIRS = 5_000
 const MAX_SCAN_DEPTH = 16
+const MAX_ACQUIRE_MS = 1_000
 const MAX_SCAN_MS = 1_000
 const MAX_GIT_MS = 5_000
 const MAX_CONCURRENT_DIFF_OPERATIONS = 2
@@ -25,9 +26,19 @@ const DEADLINE_EXCEEDED = Symbol('deadline-exceeded')
 const execFileAsync = promisify(execFile)
 let activeDiffOperations = 0
 const diffOperationWaiters: Array<() => void> = []
+const diffOperationSettlements = new Set<Promise<void>>()
 
 interface WorkspaceDiffOperationLease {
   retainUntil(operation: Promise<unknown>): void
+}
+
+type WorkspaceDiffOperationOutcome<T> =
+  | { acquired: true; value: T }
+  | { acquired: false }
+
+interface WorkspaceDiffOperation<T> {
+  result: Promise<WorkspaceDiffOperationOutcome<T>>
+  settlement: Promise<void>
 }
 
 function releaseWorkspaceDiffOperation(): void {
@@ -58,21 +69,51 @@ async function acquireWorkspaceDiffOperation(deadline: number): Promise<boolean>
   return true
 }
 
-async function withWorkspaceDiffOperation<T>(
-  deadline: number,
+function startWorkspaceDiffOperation<T>(
+  acquisitionDeadline: number,
   operation: (lease: WorkspaceDiffOperationLease) => Promise<T>,
-): Promise<T | null> {
-  if (!(await acquireWorkspaceDiffOperation(deadline))) return null
-  const retained: Promise<unknown>[] = []
-  try {
-    return await operation({
-      retainUntil(pending) {
-        retained.push(pending.catch(() => undefined))
-      },
-    })
-  } finally {
-    if (retained.length === 0) releaseWorkspaceDiffOperation()
-    else void Promise.allSettled(retained).then(releaseWorkspaceDiffOperation)
+): WorkspaceDiffOperation<T> {
+  let resolveSettlement: () => void = () => {}
+  const settlement = new Promise<void>((resolve) => {
+    resolveSettlement = resolve
+  })
+  diffOperationSettlements.add(settlement)
+  void settlement.then(() => diffOperationSettlements.delete(settlement))
+
+  const result = (async (): Promise<WorkspaceDiffOperationOutcome<T>> => {
+    let acquired = false
+    try {
+      acquired = await acquireWorkspaceDiffOperation(acquisitionDeadline)
+      if (!acquired) return { acquired: false }
+      const retained: Promise<unknown>[] = []
+      try {
+        return {
+          acquired: true,
+          value: await operation({
+            retainUntil(pending) {
+              retained.push(pending.catch(() => undefined))
+            },
+          }),
+        }
+      } finally {
+        const release = () => {
+          releaseWorkspaceDiffOperation()
+          resolveSettlement()
+        }
+        if (retained.length === 0) release()
+        else void Promise.allSettled(retained).then(release)
+      }
+    } finally {
+      if (!acquired) resolveSettlement()
+    }
+  })()
+
+  return { result, settlement }
+}
+
+export async function awaitWorkspaceDiffSettlement(): Promise<void> {
+  while (diffOperationSettlements.size > 0) {
+    await Promise.all([...diffOperationSettlements])
   }
 }
 
@@ -105,6 +146,8 @@ async function waitForSnapshotOperation<T>(
 }
 
 export const WORKSPACE_DIFF_LIMITS = {
+  maxAcquireMs: MAX_ACQUIRE_MS,
+  maxScanMs: MAX_SCAN_MS,
   maxChangedFiles: MAX_CHANGED_FILES,
   maxPatchBytesPerFile: MAX_PATCH_BYTES_PER_FILE,
   maxTotalPatchBytes: MAX_TOTAL_PATCH_BYTES,
@@ -292,10 +335,33 @@ interface WorkspaceRunCheckpoint {
   truncated: boolean
 }
 
+export type WorkspaceDiffDegradedReason = 'lease_acquisition_timeout'
+
+interface DegradedWorkspaceRunCheckpoint {
+  sessionId: string
+  sessionRowId: number
+  sessionIncarnation: number
+  runId: string
+  changeId: string
+  workspace: string
+  startedAt: number
+  degradedReason: WorkspaceDiffDegradedReason
+}
+
+type WorkspaceRunCheckpointState = WorkspaceRunCheckpoint | DegradedWorkspaceRunCheckpoint
+
+export type WorkspaceRunDiffCompletion = WorkspaceRunChangeSummary | (
+  Omit<WorkspaceRunChangeSummary, 'workspace_kind'> & {
+    workspace_kind: 'unavailable'
+    degraded_reason: WorkspaceDiffDegradedReason
+  }
+)
+
 export interface WorkspaceRunCheckpointHandle {
   key: string
   sessionRowId: number
   sessionIncarnation: number
+  degradedReason?: WorkspaceDiffDegradedReason
 }
 
 interface WorkspacePathScan {
@@ -316,7 +382,12 @@ interface SnapshotComparison {
   patchBytes: number
 }
 
-const checkpoints = new Map<string, Promise<WorkspaceRunCheckpoint | null>>()
+interface WorkspaceRunCheckpointEntry {
+  checkpoint: Promise<WorkspaceRunCheckpointState | null>
+  settlement: Promise<void>
+}
+
+const checkpoints = new Map<string, WorkspaceRunCheckpointEntry>()
 
 function createRunChangeId(runId: string): string {
   return `run:${runId || 'unknown'}:${Date.now().toString(36)}:${randomUUID()}`
@@ -328,6 +399,73 @@ function checkpointKey(sessionId: string, runId: string): string {
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000)
+}
+
+function warnLeaseAcquisitionTimeout(args: {
+  phase: 'start' | 'complete'
+  sessionId: string
+  runId: string
+  workspace: string
+}): void {
+  logger.warn({
+    ...args,
+    reason: 'lease_acquisition_timeout' satisfies WorkspaceDiffDegradedReason,
+    acquireTimeoutMs: MAX_ACQUIRE_MS,
+  }, '[workspace-diff] checkpoint degraded while waiting for an operation lease')
+}
+
+function createDegradedCheckpoint(args: {
+  sessionId: string
+  runId: string
+  workspace: string
+}): DegradedWorkspaceRunCheckpoint | null {
+  const sessionRowId = getSessionRowId(args.sessionId)
+  const sessionIncarnation = getSessionIncarnation(args.sessionId)
+  if (sessionRowId == null || sessionIncarnation == null) return null
+  return {
+    ...args,
+    sessionRowId,
+    sessionIncarnation,
+    changeId: args.runId ? createRunChangeId(args.runId) : '',
+    startedAt: nowSeconds(),
+    degradedReason: 'lease_acquisition_timeout',
+  }
+}
+
+function isDegradedCheckpoint(
+  checkpoint: WorkspaceRunCheckpointState,
+): checkpoint is DegradedWorkspaceRunCheckpoint {
+  return 'degradedReason' in checkpoint
+}
+
+function degradedCompletion(
+  checkpoint: WorkspaceRunCheckpointState,
+  runId: string,
+  reason: WorkspaceDiffDegradedReason,
+): WorkspaceRunDiffCompletion | null {
+  if (
+    getSessionRowId(checkpoint.sessionId) !== checkpoint.sessionRowId ||
+    getSessionIncarnation(checkpoint.sessionId) !== checkpoint.sessionIncarnation
+  ) return null
+  const finishedAt = nowSeconds()
+  return {
+    change_id: checkpoint.changeId || createRunChangeId(runId || checkpoint.runId),
+    session_id: checkpoint.sessionId,
+    run_id: runId || checkpoint.runId,
+    source: 'run',
+    workspace: basename(checkpoint.workspace),
+    workspace_kind: 'unavailable',
+    started_at: checkpoint.startedAt,
+    finished_at: finishedAt,
+    files_changed: 0,
+    additions: 0,
+    deletions: 0,
+    truncated: true,
+    total_patch_bytes: 0,
+    created_at: finishedAt,
+    files: [],
+    degraded_reason: reason,
+  }
 }
 
 function isPathInside(parent: string, candidate: string): boolean {
@@ -964,28 +1102,42 @@ export async function startWorkspaceRunCheckpoint(args: {
   const runId = args.runId || ''
   if (!workspace) return null
   const key = checkpointKey(args.sessionId, runId || `pending:${randomUUID()}`)
-  let checkpointPromise = checkpoints.get(key)
-  if (!checkpointPromise) {
-    const deadline = Date.now() + MAX_SCAN_MS
-    checkpointPromise = withWorkspaceDiffOperation(deadline, lease => buildWorkspaceRunCheckpoint({
-      sessionId: args.sessionId,
-      runId,
-      workspace,
-    }, lease, deadline)).catch((err) => {
-      logger.warn({ err, workspace }, '[workspace-diff] failed to start checkpoint')
+  let entry = checkpoints.get(key)
+  if (!entry) {
+    const operation = startWorkspaceDiffOperation(
+      Date.now() + MAX_ACQUIRE_MS,
+      (lease) => buildWorkspaceRunCheckpoint({
+        sessionId: args.sessionId,
+        runId,
+        workspace,
+      }, lease, Date.now() + MAX_SCAN_MS),
+    )
+    const checkpoint = operation.result.then((outcome) => {
+      if (outcome.acquired) return outcome.value
+      warnLeaseAcquisitionTimeout({
+        phase: 'start',
+        sessionId: args.sessionId,
+        runId,
+        workspace,
+      })
+      return createDegradedCheckpoint({ sessionId: args.sessionId, runId, workspace })
+    }).catch((err) => {
+      logger.warn({ err, sessionId: args.sessionId, runId, workspace }, '[workspace-diff] failed to start checkpoint')
       return null
     })
-    checkpoints.set(key, checkpointPromise)
+    entry = { checkpoint, settlement: operation.settlement }
+    checkpoints.set(key, entry)
   }
-  const checkpoint = await checkpointPromise
+  const checkpoint = await entry.checkpoint
   if (!checkpoint) {
-    checkpoints.delete(key)
+    if (checkpoints.get(key) === entry) checkpoints.delete(key)
     return null
   }
   return {
     key,
     sessionRowId: checkpoint.sessionRowId,
     sessionIncarnation: checkpoint.sessionIncarnation,
+    ...(isDegradedCheckpoint(checkpoint) ? { degradedReason: checkpoint.degradedReason } : {}),
   }
 }
 
@@ -993,12 +1145,13 @@ export function discardWorkspaceRunCheckpoint(args: {
   sessionId: string
   runId?: string | null
   checkpoint?: WorkspaceRunCheckpointHandle | null
-}): void {
+}): Promise<void> {
   const runId = args.runId || ''
   const key = args.checkpoint?.key || checkpointKey(args.sessionId, runId)
-  const checkpointPromise = checkpoints.get(key)
+  const entry = checkpoints.get(key)
   checkpoints.delete(key)
-  void checkpointPromise?.catch(() => null)
+  if (!entry) return Promise.resolve()
+  return Promise.allSettled([entry.checkpoint, entry.settlement]).then(() => undefined)
 }
 
 export async function completeWorkspaceRunCheckpoint(args: {
@@ -1006,19 +1159,21 @@ export async function completeWorkspaceRunCheckpoint(args: {
   runId?: string | null
   workspace?: string | null
   checkpoint?: WorkspaceRunCheckpointHandle | null
-}): Promise<WorkspaceRunChangeSummary | null> {
+}): Promise<WorkspaceRunDiffCompletion | null> {
   const runId = args.runId || ''
   if (!runId && !args.checkpoint) return null
   const key = args.checkpoint?.key || checkpointKey(args.sessionId, runId)
-  const checkpointPromise = checkpoints.get(key)
+  const entry = checkpoints.get(key)
   checkpoints.delete(key)
-  const checkpoint = await checkpointPromise
+  const checkpoint = await entry?.checkpoint
   if (!checkpoint) return null
   if (!runId) return null
+  if (isDegradedCheckpoint(checkpoint)) {
+    return degradedCompletion(checkpoint, runId, checkpoint.degradedReason)
+  }
 
-  const acquisitionDeadline = Date.now() + MAX_SCAN_MS
-  return withWorkspaceDiffOperation(acquisitionDeadline, async (lease) => {
-  const filesystemDeadline = acquisitionDeadline
+  const operation = startWorkspaceDiffOperation(Date.now() + MAX_ACQUIRE_MS, async (lease) => {
+  const filesystemDeadline = Date.now() + MAX_SCAN_MS
   const status = checkpoint.kind === 'git'
     ? await getGitStatusPaths(checkpoint.root, filesystemDeadline, lease)
     : await scanFilesystemPaths(checkpoint.root, lease, filesystemDeadline)
@@ -1106,4 +1261,13 @@ export async function completeWorkspaceRunCheckpoint(args: {
     files,
   })
   })
+  const outcome = await operation.result
+  if (outcome.acquired) return outcome.value
+  warnLeaseAcquisitionTimeout({
+    phase: 'complete',
+    sessionId: checkpoint.sessionId,
+    runId,
+    workspace: checkpoint.workspace,
+  })
+  return degradedCompletion(checkpoint, runId, 'lease_acquisition_timeout')
 }
