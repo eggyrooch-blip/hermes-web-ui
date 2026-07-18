@@ -1,4 +1,4 @@
-import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondToolApproval, onPeerUserMessage, onSessionCommand, onSessionTitleUpdated, respondClarify, type ChatRunTransport, type RunEvent, type ResumeSessionPayload, type StartRunRequest, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
+import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondToolApproval, onPeerUserMessage, onSessionCommand, onSessionTitleUpdated, onAuthResolved, respondClarify, type ChatRunTransport, type RunEvent, type ResumeSessionPayload, type StartRunRequest, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
 import {
   deleteSession as deleteSessionApi,
   fetchSessionMessagesPage,
@@ -92,6 +92,8 @@ export interface PendingReauth {
   runId: string
   connectorId: string
   provider: string
+  sessionRowId?: number
+  sessionIncarnation?: number
   requestedAt: number
   /** true once the user authorized and the broker replay was kicked off */
   retrying: boolean
@@ -831,6 +833,11 @@ export const useChatStore = defineStore('chat', () => {
     abortState.value = state
   }
 
+  function applyResumedAbortCompleted(data: ResumeSessionPayload, event: RunEvent) {
+    if (data.isAborting) return
+    setAbortState({ aborting: false, synced: (event as any).synced ?? false })
+  }
+
   const activeSession = ref<Session | null>(null)
   const messages = computed<Message[]>(() => activeSession.value?.messages || [])
 
@@ -1230,7 +1237,10 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     isLoadingMessages.value = true
+    const sessionAtResumeStart = activeSession.value
+    const streamOwnerAtResumeStart = streamStates.value.get(sessionId)
     const messagesAtResumeStart = new Map(activeSession.value.messages.map(message => [message.id, JSON.stringify(message)]))
+    let resumeConfirmedIdle = false
 
     try {
       // Load messages via Socket.IO resume (server loads from DB if not in memory)
@@ -1240,18 +1250,19 @@ export const useChatStore = defineStore('chat', () => {
           clearTimeout(timeout)
           if (data.session_id !== sessionId || activeSessionId.value !== sessionId) {
             resolve()
-            return
+            return []
           }
           const target = sessions.value.find(s => s.id === sessionId)
-          if (!target) {
+          if (!target || target !== sessionAtResumeStart) {
             resolve()
-            return
+            return []
           }
           if (data.isWorking) {
             serverWorking.value.add(sessionId)
           } else {
             serverWorking.value.delete(sessionId)
           }
+          resumeConfirmedIdle = !data.isWorking && !(data.queueLength && data.queueLength > 0)
           if (data.queueLength && data.queueLength > 0) {
             queueLengths.value.set(sessionId, data.queueLength)
           } else {
@@ -1289,7 +1300,7 @@ export const useChatStore = defineStore('chat', () => {
             await hydrateSessionMessagesFromPage(target, limit, target.profile)
             if (activeSessionId.value !== sessionId) {
               resolve()
-              return
+              return []
             }
           }
           if (!target.title) {
@@ -1303,12 +1314,14 @@ export const useChatStore = defineStore('chat', () => {
           await restoreWorkspaceDiffs(target)
           if (activeSessionId.value !== sessionId) {
             resolve()
-            return
+            return []
           }
           // Process replayed events (compression state etc.)
+          const consumedEventIds: string[] = []
           if (data.events?.length) {
             for (const evt of data.events) {
               const e = evt.data as any
+              let consumed = true
               if (e.event === 'compression.started') {
                 setCompressionState(sessionId, {
                   compressing: true,
@@ -1333,7 +1346,7 @@ export const useChatStore = defineStore('chat', () => {
               } else if (e.event === 'abort.timeout') {
                 setAbortState({ aborting: true, synced: false, timedOut: true, message: (e as any).message })
               } else if (e.event === 'abort.completed') {
-                setAbortState({ aborting: false, synced: e.synced ?? false })
+                applyResumedAbortCompleted(data, e)
               } else if (e.event === 'approval.requested') {
                 setPendingApproval({ ...e, session_id: sessionId } as RunEvent)
               } else if (e.event === 'approval.resolved') {
@@ -1344,10 +1357,28 @@ export const useChatStore = defineStore('chat', () => {
                 clearPendingClarify({ ...e, session_id: sessionId } as RunEvent)
               } else if (e.event === 'auth.required') {
                 setPendingReauth({ ...e, session_id: sessionId } as RunEvent)
+              } else if (e.event === 'auth.resolved') {
+                applyAuthResolved({ ...e, session_id: sessionId } as RunEvent)
               } else if (e.event === 'run.failed') {
-                addAgentErrorMessage(sessionId, e.error)
-                serverWorking.value.delete(sessionId)
-                queueLengths.value.delete(sessionId)
+                if (data.isWorking) addHistoricalAgentErrorMessage(sessionId, e.error)
+                else addAgentErrorMessage(sessionId, e.error)
+                if (!data.isWorking) {
+                  serverWorking.value.delete(sessionId)
+                  queueLengths.value.delete(sessionId)
+                }
+              } else if (e.event === 'session.command') {
+                const currentAssistant = data.isWorking ? selectResumedInFlightAssistant(getSessionMsgs(sessionId)) : null
+                handleSessionCommandEvent(
+                  { ...e, session_id: e.session_id || sessionId } as RunEvent,
+                  currentAssistant?.id,
+                )
+              } else if (e.event === 'run.reattach_failed' && e.terminal === true) {
+                if (data.isWorking) addHistoricalAgentErrorMessage(sessionId, e.error || e.message)
+                else addAgentErrorMessage(sessionId, e.error || e.message)
+                if (!data.isWorking) {
+                  serverWorking.value.delete(sessionId)
+                  queueLengths.value.delete(sessionId)
+                }
               } else if (e.event === 'agent.event' || e.event === 'run.reattach_failed') {
                 handleAgentEvent(e)
               } else if (e.event === 'tool.started') {
@@ -1392,16 +1423,20 @@ export const useChatStore = defineStore('chat', () => {
                 }
               } else if (String(e.event || '').startsWith('subagent.')) {
                 handleSubagentEvent(sessionId, e as RunEvent)
+              } else {
+                consumed = false
               }
+              if (consumed && evt.id) consumedEventIds.push(evt.id)
             }
           }
           resolve()
+          return consumedEventIds
         }, activeSession.value?.profile, runtimeTransport())
       })
     } catch (err) {
       console.error('Failed to load session messages via resume:', err)
       const target = sessions.value.find(session => session.id === sessionId)
-      if (target && activeSessionId.value === sessionId) {
+      if (target && target === sessionAtResumeStart && activeSessionId.value === sessionId) {
         const limit = Math.min(
           Math.max(target.loadedMessageCount || LIVE_CHAT_MESSAGE_PAGE_SIZE, LIVE_CHAT_MESSAGE_PAGE_SIZE),
           LIVE_CHAT_MAX_LOADED_MESSAGES,
@@ -1416,8 +1451,24 @@ export const useChatStore = defineStore('chat', () => {
       if (loadEpoch === switchSessionLoadEpoch) isLoadingMessages.value = false
     }
 
-    // Resume in-flight run event listeners if needed
-    if (activeSessionId.value === sessionId) {
+    // An authoritative idle resume retires any older owner even if the user
+    // switched away while the response was in flight.
+    const currentStreamOwner = streamStates.value.get(sessionId)
+    const canRetireStreamOwner = !currentStreamOwner || currentStreamOwner === streamOwnerAtResumeStart
+    if (
+      resumeConfirmedIdle &&
+      sessions.value.find(session => session.id === sessionId) === sessionAtResumeStart &&
+      canRetireStreamOwner
+    ) {
+      for (const message of getSessionMsgs(sessionId)) {
+        if (message.role === 'assistant' && message.isStreaming) {
+          updateMessage(sessionId, message.id, { isStreaming: false })
+        }
+      }
+      streamStates.value.delete(sessionId)
+      unregisterSessionHandlers(sessionId)
+      updateSessionTitle(sessionId)
+    } else if (activeSessionId.value === sessionId) {
       resumeServerWorkingRun(sessionId)
     }
   }
@@ -1529,6 +1580,24 @@ export const useChatStore = defineStore('chat', () => {
     const target = sessions.value.find(s => s.id === sessionId)
     const ok = await deleteSessionApi(sessionId, target?.profile)
     if (!ok) return false
+    const stream = streamStates.value.get(sessionId)
+    try {
+      stream?.abort()
+    } catch {
+      // The server already accepted deletion; stale client cleanup must still finish.
+    }
+    unregisterSessionHandlers(sessionId)
+    streamStates.value.delete(sessionId)
+    serverWorking.value.delete(sessionId)
+    clearSessionCompletedUnread(sessionId)
+    queueLengths.value.delete(sessionId)
+    replaceQueuedUserMessages(sessionId, [])
+    dequeuedQueueIds.value.delete(sessionId)
+    clearPendingInteractions(sessionId)
+    clearPendingReauth(sessionId)
+    setCompressionState(sessionId, null)
+    latestSuccessfulHydrationBySession.delete(sessionId)
+    if (activeSessionId.value === sessionId) setAbortState(null)
     sessions.value = sessions.value.filter(s => s.id !== sessionId)
     dropWorkspaceDiffs(sessionId)
     if (activeSessionId.value === sessionId) {
@@ -1782,7 +1851,6 @@ export const useChatStore = defineStore('chat', () => {
         return
       }
     }
-    if (last?.role === 'assistant' && last.systemType === 'error' && last.content === content) return
     addMessage(sessionId, {
       id: uid(),
       role: 'assistant',
@@ -1792,7 +1860,24 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
-  function handleSessionCommandEvent(evt: RunEvent) {
+  function addHistoricalAgentErrorMessage(sessionId: string, error?: unknown, beforeMessageId?: string | null) {
+    const message = errorMessageText(error)
+    const content = message ? `Error: ${message}` : 'Run failed'
+    const msgs = getSessionMsgs(sessionId)
+    const fallbackCandidate = selectResumedInFlightAssistant(msgs)
+    const insertionIndex = msgs.findIndex(item => item.id === (beforeMessageId || fallbackCandidate?.id))
+    const historicalError: Message = {
+      id: uid(),
+      role: 'assistant',
+      content,
+      timestamp: Date.now(),
+      systemType: 'error',
+    }
+    if (insertionIndex >= 0) msgs.splice(insertionIndex, 0, historicalError)
+    else msgs.push(historicalError)
+  }
+
+  function handleSessionCommandEvent(evt: RunEvent, beforeMessageId?: string | null) {
     if (seenSessionCommandEvents.has(evt)) return
     seenSessionCommandEvents.add(evt)
 
@@ -1801,6 +1886,12 @@ export const useChatStore = defineStore('chat', () => {
     const target = sessions.value.find(s => s.id === sid)
     const action = (evt as any).action as string | undefined
     const command = String((evt as any).command || '').toLowerCase()
+    const placeCommandMessage = (message: Message) => {
+      const msgs = getSessionMsgs(sid)
+      const insertionIndex = beforeMessageId ? msgs.findIndex(item => item.id === beforeMessageId) : -1
+      if (insertionIndex >= 0) msgs.splice(insertionIndex, 0, message)
+      else addMessage(sid, message)
+    }
     if ((evt as any).started === true && (evt as any).terminal === false) {
       serverWorking.value.add(sid)
     }
@@ -1812,7 +1903,7 @@ export const useChatStore = defineStore('chat', () => {
       if ((evt as any).clearHistory) {
         const message = String((evt as any).message || '')
         if (message) {
-          addMessage(sid, {
+          placeCommandMessage({
             id: uid(),
             role: 'command',
             content: message,
@@ -1852,7 +1943,7 @@ export const useChatStore = defineStore('chat', () => {
 
     const message = String((evt as any).message || '')
     if (message) {
-      addMessage(sid, {
+      placeCommandMessage({
         id: uid(),
         role: 'command',
         content: message,
@@ -2067,8 +2158,6 @@ export const useChatStore = defineStore('chat', () => {
     if (queueId) dropQueuedUserMessage(sessionId, queueId)
     const message = errorMessageText(evt.error)
     const content = message ? `Error: ${message}` : 'Request rejected'
-    const messages = getSessionMsgs(sessionId)
-    if (messages.some(item => item.role === 'assistant' && item.systemType === 'error' && item.content === content)) return
     addMessage(sessionId, {
       id: uid(),
       role: 'assistant',
@@ -2153,16 +2242,36 @@ export const useChatStore = defineStore('chat', () => {
       runId,
       connectorId,
       provider: String((evt as any).provider || ''),
+      sessionRowId: Number.isSafeInteger(evt.session_row_id) ? evt.session_row_id : undefined,
+      sessionIncarnation: Number.isSafeInteger(evt.session_incarnation) ? evt.session_incarnation : undefined,
       requestedAt: Date.now(),
       retrying: false,
     })
     pendingReauths.value = new Map(pendingReauths.value)
   }
 
-  function clearPendingReauth(sessionId: string) {
-    if (!sessionId || !pendingReauths.value.has(sessionId)) return
+  function clearPendingReauth(
+    sessionId: string,
+    runId?: string,
+    sessionRowId?: number,
+    sessionIncarnation?: number,
+  ) {
+    const current = pendingReauths.value.get(sessionId)
+    if (!current) return
+    if (runId && (current.runId !== runId
+      || current.sessionRowId !== sessionRowId
+      || current.sessionIncarnation !== sessionIncarnation)) return
     pendingReauths.value.delete(sessionId)
     pendingReauths.value = new Map(pendingReauths.value)
+  }
+
+  function applyAuthResolved(evt: RunEvent) {
+    const sessionId = evt.session_id
+    const runId = String(evt.run_id || '')
+    if (!sessionId || !runId
+      || !Number.isSafeInteger(evt.session_row_id)
+      || !Number.isSafeInteger(evt.session_incarnation)) return
+    clearPendingReauth(sessionId, runId, evt.session_row_id, evt.session_incarnation)
   }
 
   /**
@@ -2175,8 +2284,6 @@ export const useChatStore = defineStore('chat', () => {
   function triggerReauthReplay(sessionId: string): void {
     const current = pendingReauths.value.get(sessionId)
     if (!current || current.retrying) return
-    const socket = getChatRunSocket(runtimeTransport())
-    if (!socket) return
     // Defer if a run is still streaming client-side on this session: the forced
     // re-attach below (resumeServerWorkingRun) no-ops while streamStates.has(sid)
     // is true, so firing now would race that sibling run's cleanup (~1 RTT) and
@@ -2191,13 +2298,24 @@ export const useChatStore = defineStore('chat', () => {
     // actually received; otherwise the card vanishes with nothing on screen.
     serverWorking.value.add(sessionId)
     resumeServerWorkingRun(sessionId, true)
+    const socket = getChatRunSocket(runtimeTransport())
+    if (!socket) {
+      pendingReauths.value.set(sessionId, { ...current, retrying: false })
+      pendingReauths.value = new Map(pendingReauths.value)
+      return
+    }
     socket.emit('credential.replay', {
       session_id: sessionId,
       run_id: current.runId,
       connector_id: current.connectorId,
       provider: current.provider,
     })
-    clearPendingReauth(sessionId)
+    clearPendingReauth(
+      current.sessionId,
+      current.runId,
+      current.sessionRowId,
+      current.sessionIncarnation,
+    )
   }
 
   function clearPendingInteractions(sessionId: string) {
@@ -2506,9 +2624,9 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       const applyReconnectResume = (data: ResumeSessionPayload) => {
-        if (data.session_id !== sid) return
+        if (data.session_id !== sid) return []
         const target = sessions.value.find(s => s.id === sid)
-        if (!target) return
+        if (!target) return []
 
         if (data.isWorking) serverWorking.value.add(sid)
         else serverWorking.value.delete(sid)
@@ -2601,9 +2719,11 @@ export const useChatStore = defineStore('chat', () => {
           }
         }
 
+        const consumedEventIds: string[] = []
         if (data.events?.length) {
           for (const evt of data.events) {
             const e = evt.data as RunEvent
+            let consumed = true
             switch (e.event) {
               case 'compression.started':
                 setCompressionState(sid, {
@@ -2634,7 +2754,7 @@ export const useChatStore = defineStore('chat', () => {
                 setAbortState({ aborting: true, synced: false, timedOut: true, message: (e as any).message })
                 break
               case 'abort.completed':
-                setAbortState({ aborting: false, synced: (e as any).synced ?? false })
+                applyResumedAbortCompleted(data, e)
                 break
               case 'approval.requested':
                 setPendingApproval({ ...e, session_id: sid })
@@ -2648,19 +2768,40 @@ export const useChatStore = defineStore('chat', () => {
               case 'auth.required':
                 setPendingReauth({ ...e, session_id: sid })
                 break
+              case 'auth.resolved':
+                applyAuthResolved({ ...e, session_id: sid })
+                break
               case 'clarify.resolved':
                 clearPendingClarify({ ...e, session_id: sid })
                 break
               case 'run.failed':
-                addAgentErrorMessage(sid, e.error)
+                if (data.isWorking) addHistoricalAgentErrorMessage(sid, e.error, activeAssistantMessageId)
+                else addAgentErrorMessage(sid, e.error)
+                break
+              case 'session.command':
+                handleSessionCommandEvent(
+                  { ...e, session_id: e.session_id || sid },
+                  data.isWorking ? activeAssistantMessageId : null,
+                )
                 break
               case 'agent.event':
                 handleAgentEvent(e)
                 break
+              case 'run.reattach_failed':
+                if ((e as any).terminal === true) {
+                  if (data.isWorking) addHistoricalAgentErrorMessage(sid, (e as any).error || (e as any).message, activeAssistantMessageId)
+                  else addAgentErrorMessage(sid, (e as any).error || (e as any).message)
+                } else {
+                  handleAgentEvent(e)
+                }
+                break
               case 'workspace.diff.completed':
                 upsertWorkspaceDiff(sid, e as RunEvent)
                 break
+              default:
+                consumed = false
             }
+            if (consumed && evt.id) consumedEventIds.push(evt.id)
           }
         }
 
@@ -2671,6 +2812,7 @@ export const useChatStore = defineStore('chat', () => {
           activeAssistantMessageId = null
           updateSessionTitle(sid)
         }
+        return consumedEventIds
       }
 
       // Send run via Socket.IO and listen to streamed events — all closures capture `sid`
@@ -2725,7 +2867,15 @@ export const useChatStore = defineStore('chat', () => {
             }
 
             case 'run.reattach_failed': {
-              handleAgentEvent(evt)
+              if ((evt as any).terminal === true) {
+                addAgentErrorMessage(sid, (evt as any).error || (evt as any).message)
+                closeStreamingAssistant()
+                settleRunningTools(sid, 'error')
+                cleanup()
+                activeRunId = null
+              } else {
+                handleAgentEvent(evt)
+              }
               break
             }
 
@@ -3376,7 +3526,15 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         case 'run.reattach_failed': {
-          handleAgentEvent(evt)
+          if ((evt as any).terminal === true) {
+            addAgentErrorMessage(sid, (evt as any).error || (evt as any).message)
+            closeStreamingAssistant()
+            settleRunningTools(sid, 'error')
+            cleanup()
+            activeRunId = null
+          } else {
+            handleAgentEvent(evt)
+          }
           break
         }
 
@@ -3871,6 +4029,90 @@ export const useChatStore = defineStore('chat', () => {
       }
     }
 
+    const applyAttachedReconnectResume = (data: ResumeSessionPayload): string[] => {
+      if (closed || data.session_id !== sid) return []
+      const target = sessions.value.find(session => session.id === sid)
+      if (!target) return []
+
+      if (data.isWorking) serverWorking.value.add(sid)
+      else serverWorking.value.delete(sid)
+      if (data.queueLength && data.queueLength > 0) queueLengths.value.set(sid, data.queueLength)
+      else queueLengths.value.delete(sid)
+      if (Array.isArray(data.queueMessages)) {
+        replaceQueuedUserMessages(sid, normalizeQueuedUserMessages(data.queueMessages))
+      } else if (!data.queueLength) {
+        replaceQueuedUserMessages(sid, [])
+      }
+      if (data.isAborting) setAbortState({ aborting: true, synced: null })
+      else if (!data.isWorking) setAbortState(null)
+      if (!data.isWorking) setCompressionState(sid, null)
+      if (data.inputTokens != null) target.inputTokens = data.inputTokens
+      if (data.outputTokens != null) target.outputTokens = data.outputTokens
+      if (data.contextTokens != null) target.contextTokens = data.contextTokens
+
+      if (data.messages?.length) {
+        const mappedMessages = mapHermesMessages(data.messages as any[])
+        const reconnectCandidateId = selectResumedInFlightAssistant(mappedMessages)?.id || null
+        target.messages = mergeServerMessagesPreservingLocalChanges(
+          target.messages,
+          mappedMessages,
+          undefined,
+          data.isWorking,
+        )
+        target.loadedMessageCount = data.messageLoadedCount ?? data.messages.length
+        target.messageTotal = data.messageTotal ?? target.messageCount ?? target.loadedMessageCount
+        target.messageCount = target.messageTotal
+        target.hasMoreBefore = data.hasMoreBefore ?? target.loadedMessageCount < target.messageTotal
+        activeAssistantMessageId = null
+        reasoningAssistantMessageId = null
+        if (data.isWorking) {
+          const reconnectCandidate = reconnectCandidateId
+            ? target.messages.find(message => message.id === reconnectCandidateId) || null
+            : null
+          if (reconnectCandidate) {
+            reconnectCandidate.isStreaming = true
+            activeAssistantMessageId = reconnectCandidate.id
+            if (reconnectCandidate.reasoning) reasoningAssistantMessageId = reconnectCandidate.id
+          } else {
+            initializeResumedAssistantState()
+          }
+        } else closeStreamingAssistant()
+      }
+
+      const currentAssistant = data.isWorking && activeAssistantMessageId
+        ? target.messages.find(message => message.id === activeAssistantMessageId) || null
+        : null
+      const consumedEventIds: string[] = []
+      for (const pendingEvent of data.events || []) {
+        const event = { ...pendingEvent.data, session_id: pendingEvent.data.session_id || sid } as RunEvent
+        let consumed = true
+        if (event.event === 'abort.completed') {
+          applyResumedAbortCompleted(data, event)
+        } else if (event.event === 'run.failed') {
+          if (data.isWorking) addHistoricalAgentErrorMessage(sid, event.error, currentAssistant?.id)
+          else {
+            clearAgentEventMessages(sid)
+            addAgentErrorMessage(sid, event.error)
+            settleRunningTools(sid, 'error')
+          }
+        } else if (event.event === 'session.command') {
+          handleSessionCommandEvent(event, data.isWorking ? currentAssistant?.id : null)
+        } else if (event.event === 'auth.required') {
+          setPendingReauth({ ...event, session_id: event.session_id || sid })
+        } else if (event.event === 'auth.resolved') {
+          applyAuthResolved({ ...event, session_id: event.session_id || sid })
+        } else if (event.event === 'run.reattach_failed' && (event as any).terminal === true) {
+          if (data.isWorking) addHistoricalAgentErrorMessage(sid, (event as any).error || (event as any).message, currentAssistant?.id)
+          else addAgentErrorMessage(sid, (event as any).error || (event as any).message)
+        } else {
+          consumed = false
+        }
+        if (consumed && pendingEvent.id) consumedEventIds.push(pendingEvent.id)
+      }
+      if (activeSessionId.value === sid) activeSession.value = target
+      return consumedEventIds
+    }
+
     // Register handlers in global session map
     registerSessionHandlers(sid, {
       onMessageDelta: (evt) => handleEvent(evt),
@@ -3897,6 +4139,21 @@ export const useChatStore = defineStore('chat', () => {
       onClarifyResolved: (evt) => handleEvent(evt),
       onAuthRequired: (evt) => handleEvent(evt),
       onWorkspaceDiffCompleted: (evt) => handleEvent(evt),
+    }, {
+      profile: sessions.value.find(session => session.id === sid)?.profile,
+      transport: runtimeTransport(),
+      onReconnectResume: applyAttachedReconnectResume,
+      onDone: () => {
+        closeStreamingAssistant()
+        cleanup()
+        updateSessionTitle(sid)
+      },
+      onError: (error) => {
+        addAgentErrorMessage(sid, error.message)
+        closeStreamingAssistant()
+        settleRunningTools(sid, 'error')
+        cleanup()
+      },
     })
 
     // No need to emit resume here — switchSession already did it.
@@ -3972,6 +4229,8 @@ export const useChatStore = defineStore('chat', () => {
 
   onSessionTitleUpdated(applyGeneratedSessionTitle)
 
+  onAuthResolved(applyAuthResolved)
+
   function stopStreaming() {
     const sid = activeSessionId.value
     if (!sid) return
@@ -4016,9 +4275,9 @@ export const useChatStore = defineStore('chat', () => {
           )
           // Re-load messages via resume (server loads from DB)
           resumeSession(sid, async (data) => {
-            if (activeSessionId.value !== sid) return
+            if (activeSessionId.value !== sid) return []
             const target = sessions.value.find(s => s.id === sid)
-            if (!target || !activeSession.value) return
+            if (!target || !activeSession.value) return []
             if (data.isWorking) {
               serverWorking.value.add(sid)
             } else {
@@ -4047,10 +4306,38 @@ export const useChatStore = defineStore('chat', () => {
                 LIVE_CHAT_MAX_LOADED_MESSAGES,
               )
               await hydrateSessionMessagesFromPage(target, limit, target.profile)
-              if (activeSessionId.value !== sid) return
+              if (activeSessionId.value !== sid) return []
               activeSession.value = target
             }
+            const currentAssistant = data.isWorking ? selectResumedInFlightAssistant(getSessionMsgs(sid)) : null
+            const consumedEventIds: string[] = []
+            for (const pendingEvent of data.events || []) {
+              const event = pendingEvent.data as RunEvent
+              let consumed = true
+              if (event.event === 'abort.completed') {
+                applyResumedAbortCompleted(data, event)
+              } else if (event.event === 'run.failed') {
+                if (data.isWorking) addHistoricalAgentErrorMessage(sid, event.error, currentAssistant?.id)
+                else addAgentErrorMessage(sid, event.error)
+              } else if (event.event === 'session.command') {
+                handleSessionCommandEvent(
+                  { ...event, session_id: event.session_id || sid },
+                  data.isWorking ? currentAssistant?.id : null,
+                )
+              } else if (event.event === 'auth.required') {
+                setPendingReauth({ ...event, session_id: event.session_id || sid })
+              } else if (event.event === 'auth.resolved') {
+                applyAuthResolved({ ...event, session_id: event.session_id || sid })
+              } else if (event.event === 'run.reattach_failed' && (event as any).terminal === true) {
+                if (data.isWorking) addHistoricalAgentErrorMessage(sid, (event as any).error || (event as any).message, currentAssistant?.id)
+                else addAgentErrorMessage(sid, (event as any).error || (event as any).message)
+              } else {
+                consumed = false
+              }
+              if (consumed && pendingEvent.id) consumedEventIds.push(pendingEvent.id)
+            }
             resumeServerWorkingRun(sid)
+            return consumedEventIds
           }, activeSession.value?.profile, runtimeTransport())
         }
       }

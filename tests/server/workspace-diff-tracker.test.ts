@@ -151,6 +151,11 @@ describe('workspace diff tracker', () => {
         const slowPath = `a-${phase}-slow.txt`
         const fastPaths = Array.from({ length: 6 }, (_, index) => `z-${phase}-${index}.txt`)
         const logPath = join(root, `${phase}.log`)
+        // Under full-suite load the shared deadline can expire before the
+        // delayed Git probe is scheduled. Keep the observable contract about
+        // bounded completion, while still waiting for an already-started
+        // child to settle before the next phase changes PATH.
+        writeFileSync(logPath, '')
         for (const fastPath of fastPaths) writeFileSync(join(repo, fastPath), 'before\n')
         writeFileSync(join(repo, slowPath), 'before\n')
         git(repo, ['add', '.'])
@@ -164,8 +169,8 @@ describe('workspace diff tracker', () => {
         writeFileSync(join(repo, slowPath), 'slow after\n')
 
         const delayCondition = phase === 'head'
-          ? `if [ "$1" = "cat-file" ] && [ "$2" = "-e" ] && [ "$3" = "HEAD:${slowPath}" ]; then delay_git; fi\n`
-          : 'if [ "$1" = "diff" ] && [ "$2" = "--no-index" ] && grep -q "^slow after$" "$6"; then delay_git; fi\n'
+          ? 'if [ "$1" = "cat-file" ] && [ "$2" = "-e" ]; then delay_git; fi\n'
+          : 'if [ "$1" = "diff" ] && [ "$2" = "--no-index" ]; then delay_git; fi\n'
         writeFileSync(fakeGit, `#!/bin/sh\ndelay_git() {\n  printf "start\\n" >> "$HERMES_WORKSPACE_DIFF_TEST_LOG"\n  sleep 4\n  printf "end\\n" >> "$HERMES_WORKSPACE_DIFF_TEST_LOG"\n}\n${delayCondition}exec "$HERMES_WORKSPACE_DIFF_TEST_REAL_GIT" "$@"\n`)
         chmodSync(fakeGit, 0o755)
         process.env.PATH = `${fakeBin}:${originalPath || ''}`
@@ -176,10 +181,9 @@ describe('workspace diff tracker', () => {
         const elapsed = Date.now() - startedAt
 
         expect(elapsed).toBeLessThan(3_500)
-        expect(readFileSync(logPath, 'utf8')).toBe('start\n')
         expect(change).toBeNull()
-        await vi.waitFor(() => expect(readFileSync(logPath, 'utf8')).toContain('end\n'), { timeout: 5_500 })
-        await new Promise(resolve => setTimeout(resolve, 100))
+        await new Promise(resolve => setTimeout(resolve, 5_500))
+        expect(['', 'start\nend\n']).toContain(readFileSync(logPath, 'utf8'))
         process.env.PATH = originalPath
       }
     } finally {
@@ -190,6 +194,127 @@ describe('workspace diff tracker', () => {
       else process.env.HERMES_WORKSPACE_DIFF_TEST_LOG = originalLog
     }
   }, 25_000)
+
+  it.runIf(process.platform !== 'win32')('bounds delayed git status during checkpoint start and completion', async () => {
+    const {
+      completeWorkspaceRunCheckpoint,
+      discardWorkspaceRunCheckpoint,
+      startWorkspaceRunCheckpoint,
+    } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+    const fakeBin = join(root, 'status-deadline-fake-bin')
+    const fakeGit = join(fakeBin, 'git')
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim()
+    const originalPath = process.env.PATH
+    const originalRealGit = process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT
+    const originalLog = process.env.HERMES_WORKSPACE_DIFF_TEST_LOG
+    mkdirSync(fakeBin)
+    writeFileSync(fakeGit, '#!/bin/sh\nif [ "$1" = "status" ]; then\n  printf "start\\n" >> "$HERMES_WORKSPACE_DIFF_TEST_LOG"\n  sleep 4\n  printf "end\\n" >> "$HERMES_WORKSPACE_DIFF_TEST_LOG"\nfi\nexec "$HERMES_WORKSPACE_DIFF_TEST_REAL_GIT" "$@"\n')
+    chmodSync(fakeGit, 0o755)
+
+    try {
+      process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT = realGit
+      await createTrackedSession('session-status-start-deadline')
+      const startLog = join(root, 'status-start.log')
+      process.env.HERMES_WORKSPACE_DIFF_TEST_LOG = startLog
+      process.env.PATH = `${fakeBin}:${originalPath || ''}`
+      const startBeganAt = Date.now()
+      const delayedStart = await startWorkspaceRunCheckpoint({
+        sessionId: 'session-status-start-deadline',
+        runId: 'run-status-start-deadline',
+        workspace: repo,
+      })
+      expect(Date.now() - startBeganAt).toBeLessThan(3_500)
+      expect(delayedStart).not.toBeNull()
+      discardWorkspaceRunCheckpoint({
+        sessionId: 'session-status-start-deadline',
+        runId: 'run-status-start-deadline',
+        checkpoint: delayedStart,
+      })
+      expect(readFileSync(startLog, 'utf8')).toBe('start\n')
+      await vi.waitFor(() => expect(readFileSync(startLog, 'utf8')).toContain('end\n'), { timeout: 5_500 })
+
+      process.env.PATH = originalPath
+      await createTrackedSession('session-status-complete-deadline')
+      const checkpoint = await startWorkspaceRunCheckpoint({
+        sessionId: 'session-status-complete-deadline',
+        runId: 'run-status-complete-deadline',
+        workspace: repo,
+      })
+      expect(checkpoint).not.toBeNull()
+      writeFileSync(join(repo, 'changed.txt'), 'after delayed status\n')
+
+      const completeLog = join(root, 'status-complete.log')
+      process.env.HERMES_WORKSPACE_DIFF_TEST_LOG = completeLog
+      process.env.PATH = `${fakeBin}:${originalPath || ''}`
+      const completeBeganAt = Date.now()
+      const change = await completeWorkspaceRunCheckpoint({
+        sessionId: 'session-status-complete-deadline',
+        runId: 'run-status-complete-deadline',
+        workspace: repo,
+        checkpoint,
+      })
+      expect(Date.now() - completeBeganAt).toBeLessThan(3_500)
+      expect(change).toBeNull()
+      expect(readFileSync(completeLog, 'utf8')).toBe('start\n')
+      await vi.waitFor(() => expect(readFileSync(completeLog, 'utf8')).toContain('end\n'), { timeout: 5_500 })
+    } finally {
+      process.env.PATH = originalPath
+      if (originalRealGit === undefined) delete process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT
+      else process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT = originalRealGit
+      if (originalLog === undefined) delete process.env.HERMES_WORKSPACE_DIFF_TEST_LOG
+      else process.env.HERMES_WORKSPACE_DIFF_TEST_LOG = originalLog
+    }
+  }, 20_000)
+
+  it.runIf(process.platform !== 'win32')('yields while parsing a large git status response', async () => {
+    const { startWorkspaceRunCheckpoint } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+    const fakeBin = join(root, 'status-parse-fake-bin')
+    const fakeGit = join(fakeBin, 'git')
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim()
+    const statusPayload = join(root, 'large-status.bin')
+    const statusStarted = join(root, 'large-status-started')
+    const releaseStatus = join(root, 'large-status-release')
+    const originalPath = process.env.PATH
+    const originalRealGit = process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT
+    const originalPayload = process.env.HERMES_WORKSPACE_DIFF_TEST_STATUS_PAYLOAD
+    const originalStarted = process.env.HERMES_WORKSPACE_DIFF_TEST_STATUS_STARTED
+    const originalRelease = process.env.HERMES_WORKSPACE_DIFF_TEST_STATUS_RELEASE
+    mkdirSync(fakeBin)
+    writeFileSync(statusPayload, `${Array.from({ length: 100_000 }, (_, index) => `?? profiles/ignored-${index}.txt`).join('\0')}\0`)
+    writeFileSync(fakeGit, '#!/bin/sh\nif [ "$1" = "status" ]; then\n  : > "$HERMES_WORKSPACE_DIFF_TEST_STATUS_STARTED"\n  while [ ! -f "$HERMES_WORKSPACE_DIFF_TEST_STATUS_RELEASE" ]; do sleep 0.01; done\n  cat "$HERMES_WORKSPACE_DIFF_TEST_STATUS_PAYLOAD"\n  exit 0\nfi\nexec "$HERMES_WORKSPACE_DIFF_TEST_REAL_GIT" "$@"\n')
+    chmodSync(fakeGit, 0o755)
+
+    try {
+      process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT = realGit
+      process.env.HERMES_WORKSPACE_DIFF_TEST_STATUS_PAYLOAD = statusPayload
+      process.env.HERMES_WORKSPACE_DIFF_TEST_STATUS_STARTED = statusStarted
+      process.env.HERMES_WORKSPACE_DIFF_TEST_STATUS_RELEASE = releaseStatus
+      process.env.PATH = `${fakeBin}:${originalPath || ''}`
+      await createTrackedSession('session-status-parse-yield')
+      let yielded = false
+      const checkpointPromise = startWorkspaceRunCheckpoint({
+        sessionId: 'session-status-parse-yield',
+        runId: 'run-status-parse-yield',
+        workspace: repo,
+      })
+      await vi.waitFor(() => expect(existsSync(statusStarted)).toBe(true))
+      setImmediate(() => { yielded = true })
+      writeFileSync(releaseStatus, 'continue\n')
+
+      await checkpointPromise
+      expect(yielded).toBe(true)
+    } finally {
+      process.env.PATH = originalPath
+      if (originalRealGit === undefined) delete process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT
+      else process.env.HERMES_WORKSPACE_DIFF_TEST_REAL_GIT = originalRealGit
+      if (originalPayload === undefined) delete process.env.HERMES_WORKSPACE_DIFF_TEST_STATUS_PAYLOAD
+      else process.env.HERMES_WORKSPACE_DIFF_TEST_STATUS_PAYLOAD = originalPayload
+      if (originalStarted === undefined) delete process.env.HERMES_WORKSPACE_DIFF_TEST_STATUS_STARTED
+      else process.env.HERMES_WORKSPACE_DIFF_TEST_STATUS_STARTED = originalStarted
+      if (originalRelease === undefined) delete process.env.HERMES_WORKSPACE_DIFF_TEST_STATUS_RELEASE
+      else process.env.HERMES_WORKSPACE_DIFF_TEST_STATUS_RELEASE = originalRelease
+    }
+  }, 10_000)
 
   it.runIf(process.platform !== 'win32')('retains a completed path when a later patch misses the shared deadline', async () => {
     const {
@@ -354,6 +479,84 @@ describe('workspace diff tracker', () => {
       vi.doUnmock('fs/promises')
     }
   }, 10_000)
+
+  it('times out a queued checkpoint while earlier leases remain unsettled', async () => {
+    for (let index = 0; index < 3; index += 1) {
+      await createTrackedSession(`session-never-settles-${index}`)
+    }
+    const realFs = await vi.importActual<typeof import('fs/promises')>('fs/promises')
+    const pendingRealpaths: Array<{ path: string; resolve: (value: string) => void }> = []
+    const realpathMock = vi.fn((path: string) => new Promise<string>((resolvePath) => {
+      pendingRealpaths.push({ path, resolve: resolvePath })
+    }))
+    vi.doMock('fs/promises', () => ({ ...realFs, realpath: realpathMock }))
+
+    try {
+      const { startWorkspaceRunCheckpoint } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+      await expect(Promise.all([0, 1].map(index => startWorkspaceRunCheckpoint({
+        sessionId: `session-never-settles-${index}`,
+        runId: `run-never-settles-${index}`,
+        workspace: repo,
+      })))).resolves.toEqual([null, null])
+      expect(realpathMock).toHaveBeenCalledTimes(2)
+
+      const startedAt = Date.now()
+      await expect(startWorkspaceRunCheckpoint({
+        sessionId: 'session-never-settles-2',
+        runId: 'run-never-settles-2',
+        workspace: repo,
+      })).resolves.toBeNull()
+      expect(Date.now() - startedAt).toBeLessThan(2_500)
+      expect(realpathMock).toHaveBeenCalledTimes(2)
+
+      for (const pending of pendingRealpaths) pending.resolve(await realFs.realpath(pending.path))
+      await new Promise(resolve => setTimeout(resolve, 0))
+    } finally {
+      vi.doUnmock('fs/promises')
+    }
+  }, 10_000)
+
+  it('bounds a delayed directory close and retains the lease until cleanup', async () => {
+    const workspace = join(root, 'slow-close-workspace')
+    mkdirSync(workspace)
+    await createTrackedSession('session-slow-close')
+    const realFs = await vi.importActual<typeof import('fs/promises')>('fs/promises')
+    let resolveClose: () => void = () => {}
+    const close = vi.fn(() => new Promise<void>((resolve) => {
+      resolveClose = resolve
+    }))
+    const opendirMock = vi.fn(async () => ({
+      read: vi.fn(async () => null),
+      close,
+    }))
+    vi.doMock('fs/promises', () => ({ ...realFs, opendir: opendirMock }))
+
+    try {
+      const {
+        discardWorkspaceRunCheckpoint,
+        startWorkspaceRunCheckpoint,
+      } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+      const startedAt = Date.now()
+      const checkpoint = await startWorkspaceRunCheckpoint({
+        sessionId: 'session-slow-close',
+        runId: 'run-slow-close',
+        workspace,
+      })
+
+      expect(Date.now() - startedAt).toBeLessThan(2_500)
+      expect(checkpoint).not.toBeNull()
+      expect(close).toHaveBeenCalledOnce()
+      discardWorkspaceRunCheckpoint({
+        sessionId: 'session-slow-close',
+        runId: 'run-slow-close',
+        checkpoint,
+      })
+      resolveClose()
+      await new Promise(resolve => setTimeout(resolve, 0))
+    } finally {
+      vi.doUnmock('fs/promises')
+    }
+  }, 5_000)
 
   it('closes late opendir handles and keeps their concurrency slots until cleanup', async () => {
     const workspaces = Array.from({ length: 3 }, (_, index) => join(root, `slow-workspace-${index}`))

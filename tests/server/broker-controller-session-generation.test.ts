@@ -71,6 +71,8 @@ import { initAllHermesTables } from '../../packages/server/src/db/hermes/schemas
 import {
   createSession,
   deleteSession,
+  getSession,
+  getSessionDetail,
   getSessionIncarnation,
   getSessionRowId,
 } from '../../packages/server/src/db/hermes/session-store'
@@ -92,8 +94,35 @@ function sseDone(runId: string): ReadableStream<Uint8Array> {
   })
 }
 
+function sseFrames(frames: Array<{ event: string; data: Record<string, unknown> }>): ReadableStream<Uint8Array> {
+  const bytes = new TextEncoder().encode(frames
+    .map(frame => `event: ${frame.event}\ndata: ${JSON.stringify(frame.data)}\n\n`)
+    .join(''))
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes)
+      controller.close()
+    },
+  })
+}
+
+function controlledSse() {
+  let controller!: ReadableStreamDefaultController<Uint8Array>
+  const stream = new ReadableStream<Uint8Array>({ start: value => { controller = value } })
+  return {
+    stream,
+    send(event: string, data: Record<string, unknown>) {
+      controller.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+    },
+    close() {
+      controller.close()
+    },
+  }
+}
+
 function harness() {
   const handlers = new Map<string, (...args: any[]) => any>()
+  const emitted: Array<{ event: string; payload: any }> = []
   const socket = {
     id: 'socket-generation',
     connected: true,
@@ -106,10 +135,25 @@ function harness() {
   const controller = new BrokerRunController()
   ;(controller as any).nsp = {
     adapter: { rooms: new Map() },
-    to: vi.fn(() => ({ emit: vi.fn() })),
+    to: vi.fn(() => ({ emit: (event: string, payload: any) => emitted.push({ event, payload }) })),
   }
   ;(controller as any).onConnection(socket)
-  return { controller, handlers }
+  return { controller, emitted, handlers, socket }
+}
+
+function parkCredentialRun(controller: BrokerRunController, runId = 'parked-run') {
+  const state = (controller as any).getOrCreateSession('same-id', 'research')
+  state.parkedCredentialRuns ||= new Map()
+  state.parkedCredentialRuns.set(runId, {
+    rowId: getSessionRowId('same-id'),
+    incarnation: getSessionIncarnation('same-id'),
+    resumeEvent: {
+      id: `credential-${runId}`,
+      event: 'auth.required',
+      data: { event: 'auth.required', session_id: 'same-id', run_id: runId },
+    },
+  })
+  return state
 }
 
 describe('BrokerRunController session generation integration', () => {
@@ -171,5 +215,131 @@ describe('BrokerRunController session generation integration', () => {
     newResponse.resolve({ ok: true, status: 200, body: sseDone('new-run') })
     await newRun
     expect(newState.isWorking).toBe(false)
+  })
+
+  it('rejects public credential replay after a real session deletion without recreating it', async () => {
+    expect(deleteSession('same-id')).toBe(true)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, handlers, socket } = harness()
+
+    await handlers.get('credential.replay')!({ session_id: 'same-id', run_id: 'parked-run' })
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(getSession('same-id')).toBeNull()
+    expect((controller as any).getSessionState('same-id', 'research')).toBeUndefined()
+    expect(socket.emit).toHaveBeenCalledWith('run.reattach_failed', expect.objectContaining({
+      session_id: 'same-id',
+      run_id: 'parked-run',
+      terminal: true,
+    }))
+  })
+
+  it('rejects an old auth card after same-id delete and recreate without attaching it to the replacement generation', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      body: sseFrames([
+        {
+          event: 'auth_required',
+          data: { kind: 'auth_required', run_id: 'parked-run', connector_id: 'connector-1', provider: 'feishu' },
+        },
+        { event: 'done', data: { kind: 'done', run_id: 'original-run' } },
+      ]),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, handlers, socket } = harness()
+
+    await handlers.get('run')!({ input: 'old generation', session_id: 'same-id', queue_id: 'old' })
+    const oldState = (controller as any).getSessionState('same-id', 'research')
+    expect(oldState.parkedCredentialRuns.get('parked-run')).toMatchObject({
+      rowId: getSessionRowId('same-id'),
+      incarnation: getSessionIncarnation('same-id'),
+    })
+
+    expect(deleteSession('same-id')).toBe(true)
+    createSession({ id: 'same-id', profile: 'research', workspace: '/tmp/workspace', title: 'replacement' })
+    socket.emit.mockClear()
+    await handlers.get('credential.replay')!({ session_id: 'same-id', run_id: 'parked-run' })
+
+    const replacementState = (controller as any).getSessionState('same-id', 'research')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(replacementState).not.toBe(oldState)
+    expect(oldState.parkedCredentialRuns.size).toBe(0)
+    expect(replacementState.parkedCredentialRuns?.has('parked-run')).not.toBe(true)
+    expect(replacementState.pendingTerminalEvents).toBeUndefined()
+    const failure = socket.emit.mock.calls.find(call => call[0] === 'run.reattach_failed')?.[1]
+    expect(failure).toMatchObject({
+      session_id: 'same-id',
+      run_id: 'parked-run',
+      error: 'Credential replay is no longer available',
+    })
+    expect(failure.resume_event_id).toBeUndefined()
+    expect(getSession('same-id')?.title).toBe('replacement')
+  })
+
+  it('does not resume an accepted replay resolution into a same-id replacement generation', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: sseDone('replayed-run'),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, handlers, socket } = harness()
+    const oldState = parkCredentialRun(controller)
+    const oldRowId = getSessionRowId('same-id')
+    const oldIncarnation = getSessionIncarnation('same-id')
+
+    await handlers.get('credential.replay')!({ session_id: 'same-id', run_id: 'parked-run' })
+
+    expect(oldState.pendingTerminalEvents).toContainEqual(expect.objectContaining({
+      event: 'auth.resolved',
+      data: expect.objectContaining({
+        run_id: 'parked-run',
+        session_row_id: oldRowId,
+        session_incarnation: oldIncarnation,
+      }),
+    }))
+    expect(deleteSession('same-id')).toBe(true)
+    createSession({ id: 'same-id', profile: 'research', workspace: '/tmp/workspace', title: 'replacement' })
+    expect(getSessionIncarnation('same-id')).not.toBe(oldIncarnation)
+
+    socket.emit.mockClear()
+    handlers.get('resume')!({ session_id: 'same-id' })
+    await vi.waitFor(() => expect(socket.emit).toHaveBeenCalledWith('resumed', expect.anything()))
+
+    const replacementState = (controller as any).getSessionState('same-id', 'research')
+    const resumed = socket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    expect(replacementState).not.toBe(oldState)
+    expect(replacementState).toMatchObject({
+      sessionRowId: getSessionRowId('same-id'),
+      sessionIncarnation: getSessionIncarnation('same-id'),
+    })
+    expect(resumed.events).not.toContainEqual(expect.objectContaining({ event: 'auth.resolved' }))
+  })
+
+  it('abandons dispatched replay after real delete and same-id recreation', async () => {
+    const upstream = controlledSse()
+    let replaySignal: AbortSignal | undefined
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      replaySignal = init?.signal || undefined
+      return Promise.resolve({ ok: true, status: 200, body: upstream.stream })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, emitted, handlers } = harness()
+    parkCredentialRun(controller)
+
+    const replay = handlers.get('credential.replay')!({ session_id: 'same-id', run_id: 'parked-run' })
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(deleteSession('same-id')).toBe(true)
+    createSession({ id: 'same-id', profile: 'research', workspace: '/tmp/workspace', title: 'replacement' })
+    upstream.send('content', { kind: 'content', run_id: 'stale-replay', text: 'must not leak' })
+    await replay
+
+    expect(replaySignal?.aborted).toBe(true)
+    expect((controller as any).getSessionState('same-id', 'research')).toBeUndefined()
+    expect(emitted.filter(item => item.event === 'message.delta')).toHaveLength(0)
+    expect(getSession('same-id')?.title).toBe('replacement')
+    expect(getSessionDetail('same-id')?.messages).toEqual([])
   })
 })

@@ -77,6 +77,45 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
   queued runs remain on the new row. A pre-admission identity failure is
   requester-scoped as `run.rejected` with `queue_id`; the client settles only the
   rejected owner (or removes only that follow-up), without closing a live sibling.
+- Socket reconnect now keeps one Socket.IO object for the same profile, transport,
+  and active agent while its manager is still reconnecting. An attached owner added
+  after the disconnect observes the next connect and resumes its exact session;
+  an actual profile/transport/agent replacement retires the old owner and its store
+  runtime instead of leaving a permanently live spinner. Reconnect callbacks recheck
+  their exact owner after asynchronous replay handling, and an authoritative idle
+  switch response retires the matching old stream owner without touching a newer one.
+  A `connect_error` remains retryable only while Socket.IO reports `socket.active`;
+  an inactive initial connection or exhausted reconnect now fails the exact owner and
+  removes its listeners instead of leaving an orphaned live state.
+- Durable terminal events carry one stable `resume_event_id` in both the live payload
+  and pending replay. The browser reserves an ID while applying it, acknowledges only
+  after the owning store handler succeeds, and acknowledges only the exact IDs that
+  handler returned. This covers `run.failed`, `abort.completed`, `session.command`,
+  terminal `run.reattach_failed`, and `auth.resolved`; identical error text from
+  distinct event IDs is intentionally preserved. If current resume state says an
+  abort is still in progress, an older replayed `abort.completed` is acknowledged but
+  cannot clear that authoritative abort state.
+- Credential replay is tied to the session generation that emitted `auth.required`
+  and is consumed only by a valid one-shot replay. A stale card cannot inject an old
+  parked request after the same session ID is deleted and recreated. Replay uses the
+  server's parked connector/provider metadata rather than client-supplied values. If a
+  sibling run is busy, the server rotates and re-surfaces the card; if identity/session
+  loading fails before dispatch, it restores a fresh card before emitting the terminal
+  replay failure, so the user can retry without reloading. Accepted replay broadcasts
+  a stable, row/incarnation/run-bound `auth.resolved` to every session tab and retains
+  it until each socket acknowledges it. The Global Agent relay forwards both
+  `auth.resolved` and `resume.events.ack`, preserving the same behavior on that
+  transport. The client reattaches first and then emits through the resulting current
+  socket; broker-down and other valid-generation reattach failures remain pending
+  until the browser applies and acknowledges them.
+- HTTP session deletion reads the exact row/incarnation generation and abandons that
+  in-memory run before either remote Hermes deletion or the local SQLite transaction.
+  The broker matches row/incarnation before aborting, while the corresponding generic
+  chat runtime is synchronously detached before deletion awaits; queues, parked
+  credential cards, and runtime maps are cleared server-side, so correctness no longer
+  depends on a follow-up browser socket abort. Client deletion still unregisters only
+  after the server request returns, then clears queue, interaction, reauth, diff, and
+  stream state before a same-ID client object can be created.
 
 ## Regression coverage
 
@@ -119,12 +158,20 @@ impact: Prevents workspace checkpoint work from blocking other WebUI users and r
   request rejection, and immediate cancellation of a hanging old generation cover
   production entry points. An explicit-abort regression also proves a hanging goal
   evaluation exits from its linked signal without any upstream response. The final
-  lifecycle/auth/expert set is 11 files / 161 passed. Server/client TypeScript
-  and `git diff --check` pass. The delayed Git fixture uses a pending callback instead
+  lifecycle/auth/expert set additionally covers same-identity offline socket reuse,
+  attached-owner registration during reconnect, actual socket replacement cleanup,
+  inactive initial/exhausted reconnect failure cleanup, exact owner retirement after
+  awaited callbacks, multiple idle terminal replay rows, authoritative in-progress
+  abort state over an older completion, HTTP delete abandonment before remote/local
+  deletion, post-attach credential replay socket selection, server-authoritative busy
+  replay, pre-dispatch card restoration, handler-before-ACK failure retry, same-ID
+  stale auth-card rejection, per-socket multi-tab `auth.resolved` replay/ACK, Global
+  Agent forwarding, and stable reattach-failure replay. Server/client TypeScript and
+  `git diff --check` pass. The delayed Git fixture uses a pending callback instead
   of a fixed timer delay, so full-suite load cannot expire the shared deadline before
   the test action starts.
 - Focused workspace, bridge, broker, and coding-agent suites: 4 files / 76 passed.
-- Current full Vitest: 320 files / 2542 passed / 2 skipped.
+- Final full Vitest: 320 files / 2591 passed / 2 skipped (2593 total).
 - Client/server TypeScript, production build, `harness:check`, and
   `git diff --check` pass. Independent review of the new frozen hash remains
   required before release consideration.

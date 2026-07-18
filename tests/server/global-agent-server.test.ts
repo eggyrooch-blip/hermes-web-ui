@@ -235,5 +235,45 @@ describe('GlobalAgentServer', () => {
       change_id: 'change-1',
       files_changed: 1,
     })
+
+    const authResolved = {
+      event: 'auth.resolved',
+      session_id: 's1',
+      run_id: 'parked-run',
+      session_row_id: 1,
+      session_incarnation: 2,
+      resume_event_id: 'resolved-id',
+    }
+    agentSocket.__handlers.get('socket.event')?.({
+      id: bridgeId,
+      namespace: '/chat-run',
+      event: 'auth.resolved',
+      payload: authResolved,
+    })
+    expect(frontendSocket.emit).toHaveBeenCalledWith('auth.resolved', authResolved)
+
+    frontendSocket.__handlers.get('resume.events.ack')?.({
+      session_id: 's1',
+      event_ids: ['resolved-id'],
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(agentSocket.emit).toHaveBeenCalledWith('socket.event', {
+      id: bridgeId,
+      event: 'resume.events.ack',
+      payload: {
+        session_id: 's1',
+        event_ids: ['resolved-id'],
+        profile: 'research',
+      },
+    }, expect.any(Function))
+
+    agentSocket.emit.mockImplementationOnce((_event: string, payload: unknown, ack?: (response: unknown) => void) => {
+      ack?.({ id: (payload as any)?.id, error: { code: 'relay_closed', message: 'relay closed' } })
+      return agentSocket
+    })
+    frontendSocket.emit.mockClear()
+    frontendSocket.__handlers.get('resume.events.ack')?.({ session_id: 's1', event_ids: ['resolved-id'] })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(frontendSocket.emit).not.toHaveBeenCalledWith('run.failed', expect.anything())
   })
 })

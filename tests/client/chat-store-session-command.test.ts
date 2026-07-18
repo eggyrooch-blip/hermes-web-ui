@@ -31,6 +31,7 @@ vi.mock('@/api/hermes/chat', () => ({
     chatApi.sessionTitleUpdatedHandlers.push(handler)
     return vi.fn()
   }),
+  onAuthResolved: vi.fn(() => vi.fn()),
 }))
 
 vi.mock('@/api/client', () => ({
@@ -99,6 +100,11 @@ describe('chat store session.command fanout', () => {
     expect(chatApi.registerSessionHandlers).toHaveBeenCalledWith('session-1', expect.objectContaining({
       onRunStarted: expect.any(Function),
       onSessionCommand: expect.any(Function),
+    }), expect.objectContaining({
+      onReconnectResume: expect.any(Function),
+      onDone: expect.any(Function),
+      onError: expect.any(Function),
+      transport: 'chat-run',
     }))
     expect(store.messages).toEqual([
       expect.objectContaining({

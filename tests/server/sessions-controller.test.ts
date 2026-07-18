@@ -28,6 +28,8 @@ const localCreateSessionMock = vi.fn()
 const localUpdateSessionMock = vi.fn()
 const localAddMessagesMock = vi.fn()
 const localUpdateSessionStatsMock = vi.fn()
+const getSessionRowIdMock = vi.fn()
+const getSessionIncarnationMock = vi.fn()
 const listWorkspaceRunChangesForSessionMock = vi.fn()
 const getWorkspaceRunChangeMock = vi.fn()
 const getWorkspaceRunChangeFileMock = vi.fn()
@@ -42,6 +44,8 @@ const getRequestProfileMock = vi.fn()
 const isChatPlaneRequestMock = vi.fn()
 const bridgeSwitchSessionModelMock = vi.fn()
 const bridgeGetRuntimeStateMock = vi.fn()
+const abandonSessionRunMock = vi.fn()
+const getChatRunServerMock = vi.fn()
 const codingAgentRunManagerMock = vi.hoisted(() => ({
   stop: vi.fn(),
 }))
@@ -94,6 +98,8 @@ vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   createSession: localCreateSessionMock,
   addMessages: localAddMessagesMock,
   getSession: getSessionMock,
+  getSessionRowId: getSessionRowIdMock,
+  getSessionIncarnation: getSessionIncarnationMock,
   updateSession: localUpdateSessionMock,
   updateSessionStats: localUpdateSessionStatsMock,
 }))
@@ -117,6 +123,10 @@ vi.mock('../../packages/server/src/db/hermes/usage-store', () => ({
 
 vi.mock('../../packages/server/src/routes/hermes/group-chat', () => ({
   getGroupChatServer: getGroupChatServerMock,
+}))
+
+vi.mock('../../packages/server/src/routes/hermes/chat-run', () => ({
+  getChatRunServer: getChatRunServerMock,
 }))
 
 vi.mock('../../packages/server/src/services/hermes/model-context', () => ({
@@ -194,6 +204,10 @@ describe('session conversations controller', () => {
     localUpdateSessionMock.mockReset()
     localAddMessagesMock.mockReset()
     localUpdateSessionStatsMock.mockReset()
+    getSessionRowIdMock.mockReset()
+    getSessionRowIdMock.mockReturnValue(41)
+    getSessionIncarnationMock.mockReset()
+    getSessionIncarnationMock.mockReturnValue(7)
     listWorkspaceRunChangesForSessionMock.mockReset()
     getWorkspaceRunChangeMock.mockReset()
     getWorkspaceRunChangeFileMock.mockReset()
@@ -215,6 +229,10 @@ describe('session conversations controller', () => {
     bridgeSwitchSessionModelMock.mockReset()
     bridgeGetRuntimeStateMock.mockReset()
     bridgeGetRuntimeStateMock.mockReturnValue({ ready: false, running: false, endpoint: 'ipc:///tmp/hermes-agent-bridge.sock' })
+    abandonSessionRunMock.mockReset()
+    abandonSessionRunMock.mockReturnValue(true)
+    getChatRunServerMock.mockReset()
+    getChatRunServerMock.mockReturnValue(null)
     codingAgentRunManagerMock.stop.mockReset()
     delete process.env.HERMES_RUN_BROKER_URL
     delete process.env.HERMES_RUN_BROKER_KEY
@@ -1787,6 +1805,33 @@ describe('session conversations controller', () => {
     expect(codingAgentRunManagerMock.stop).not.toHaveBeenCalled()
     expect(bridgeSwitchSessionModelMock).not.toHaveBeenCalled()
     expect(ctx.body).toEqual({ ok: true })
+  })
+
+  it('abandons the exact active run before deleting a local session without a socket abort', async () => {
+    getSessionMock.mockReturnValue({
+      id: 'active-session',
+      profile: 'travel',
+      source: 'api_server',
+    })
+    getExactSessionDetailFromDbWithProfileMock.mockResolvedValue(null)
+    localDeleteSessionMock.mockReturnValue(true)
+    getChatRunServerMock.mockReturnValue({ abandonSessionRun: abandonSessionRunMock })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { params: { id: 'active-session' }, body: null }
+    await mod.remove(ctx)
+
+    expect(abandonSessionRunMock).toHaveBeenCalledWith('active-session', 'travel', {
+      rowId: 41,
+      incarnation: 7,
+    })
+    expect(abandonSessionRunMock.mock.invocationCallOrder[0]).toBeLessThan(
+      getExactSessionDetailFromDbWithProfileMock.mock.invocationCallOrder[0],
+    )
+    expect(abandonSessionRunMock.mock.invocationCallOrder[0]).toBeLessThan(
+      localDeleteSessionMock.mock.invocationCallOrder[0],
+    )
+    expect(ctx.body).toMatchObject({ ok: true, deleted: true })
   })
 
   it('deletes a current-profile Hermes history session even when no local Web UI session exists', async () => {

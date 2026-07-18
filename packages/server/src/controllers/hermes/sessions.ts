@@ -36,6 +36,8 @@ import { readConfigYamlForProfile } from '../../services/config-helpers'
 import { codingAgentRunManager } from '../../services/agent-runner/coding-agent-run-manager'
 import { AgentBridgeClient, getAgentBridgeManager } from '../../services/hermes/agent-bridge'
 import { ensureHermesRunWorkspace } from '../../services/hermes/run-chat/workspace'
+import { readSessionGeneration } from '../../services/hermes/run-chat/session-generation'
+import { getChatRunServer } from '../../routes/hermes/chat-run'
 
 function getPendingDeletedSessionIds(): Set<string> {
   return getGroupChatServer()?.getStorage().getPendingDeletedSessionIds() || new Set<string>()
@@ -318,6 +320,11 @@ async function deleteHermesSessionIfPresent(sessionId: string, profile?: string 
     logger.warn({ err, sessionId, profile: targetProfile }, 'Hermes Session: profile delete skipped')
     return { attempted: true, deleted: false, profile: targetProfile, error: message }
   }
+}
+
+function abandonActiveSessionRun(sessionId: string, profile?: string | null): void {
+  const generation = readSessionGeneration(sessionId)
+  getChatRunServer()?.abandonSessionRun(sessionId, profile || 'default', generation)
 }
 
 async function getProfileDefaultModel(profile: string): Promise<ProfileDefaultModel> {
@@ -898,6 +905,7 @@ export async function remove(ctx: any) {
   const hermesProfile = requestedProfile(ctx) || existing?.profile || getActiveProfileName()
   const codingAgentSession = isCodingAgentSession(existing)
   if (codingAgentSession) codingAgentRunManager.stop(sessionId, { reportClosed: false })
+  if (existing) abandonActiveSessionRun(sessionId, existing.profile || hermesProfile)
   const hermes = codingAgentSession
     ? { attempted: false, deleted: false, profile: hermesProfile }
     : await deleteHermesSessionIfPresent(sessionId, hermesProfile)
@@ -969,6 +977,8 @@ export async function batchRemove(ctx: any) {
 
     const codingAgentSession = isCodingAgentSession(existing)
     if (codingAgentSession) codingAgentRunManager.stop(id, { reportClosed: false })
+    const shouldDeleteLocal = Boolean(existing && (!targetProfile || existing.profile === targetProfile))
+    if (shouldDeleteLocal) abandonActiveSessionRun(id, existing?.profile || targetProfile)
     const hermes = codingAgentSession
       ? { attempted: false, deleted: false, profile: targetProfile || 'default' }
       : await deleteHermesSessionIfPresent(id, targetProfile)
@@ -979,7 +989,6 @@ export async function batchRemove(ctx: any) {
       results.hermesErrors.push({ id, profile: hermes.profile, error: hermes.error })
     }
 
-    const shouldDeleteLocal = Boolean(existing && (!targetProfile || existing.profile === targetProfile))
     if (shouldDeleteLocal) {
       const ok = localDeleteSession(id)
       if (ok) {

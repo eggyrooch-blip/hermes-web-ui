@@ -12,7 +12,7 @@ const workspaceDiffTracker = vi.hoisted(() => ({
   })),
 }))
 const sessionStore = vi.hoisted(() => ({
-  getSession: vi.fn(() => null),
+  getSession: vi.fn(() => ({ id: 's1', profile: 'default', workspace: null })),
   getSessionRowId: vi.fn(() => 1),
   getSessionIncarnation: vi.fn(() => 1),
   updateSession: vi.fn(),
@@ -67,7 +67,7 @@ const socket = { data: { user: { openid: 'ou_alice' } }, join: vi.fn(), connecte
 afterEach(() => {
   vi.restoreAllMocks()
   sessionStore.getSession.mockReset()
-  sessionStore.getSession.mockReturnValue(null)
+  sessionStore.getSession.mockReturnValue({ id: 's1', profile: 'default', workspace: null })
   sessionStore.getSessionRowId.mockReset()
   sessionStore.getSessionRowId.mockReturnValue(1)
   sessionStore.getSessionIncarnation.mockReset()

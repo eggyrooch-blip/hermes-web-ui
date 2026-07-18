@@ -8,12 +8,15 @@ const setSessionModelMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)))
 const startRunViaSocketMock = vi.hoisted(() => vi.fn(() => ({ abort: vi.fn() })))
 const registerSessionHandlersMock = vi.hoisted(() => vi.fn())
 const unregisterSessionHandlersMock = vi.hoisted(() => vi.fn())
+const getChatRunSocketMock = vi.hoisted(() => vi.fn(() => null as any))
 const respondClarifyMock = vi.hoisted(() => vi.fn())
+const onAuthResolvedMock = vi.hoisted(() => vi.fn(() => vi.fn()))
 const fetchSessionMock = vi.hoisted(() => vi.fn())
 const fetchSessionMessagesPageMock = vi.hoisted(() => vi.fn())
 const fetchWorkspaceRunChangesMock = vi.hoisted(() => vi.fn(() => Promise.resolve([])))
 const fetchSessionsMock = vi.hoisted(() => vi.fn(() => Promise.resolve([])))
 const setSessionArchivedMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)))
+const deleteSessionApiMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)))
 const resumeSessionMock = vi.hoisted(() => vi.fn((_sessionId: string, onResumed: (data: any) => void) => {
   onResumed({ messages: [], isWorking: false, events: [] })
   return { disconnect: vi.fn() }
@@ -49,7 +52,7 @@ vi.mock('@/api/hermes/chat', () => ({
   resumeSession: resumeSessionMock,
   registerSessionHandlers: registerSessionHandlersMock,
   unregisterSessionHandlers: unregisterSessionHandlersMock,
-  getChatRunSocket: vi.fn(() => null),
+  getChatRunSocket: getChatRunSocketMock,
   respondToolApproval: vi.fn(),
   respondClarify: respondClarifyMock,
   // Upstream rebaseline added module-level handler registrations the store
@@ -57,10 +60,11 @@ vi.mock('@/api/hermes/chat', () => ({
   onPeerUserMessage: vi.fn(() => vi.fn()),
   onSessionCommand: vi.fn(() => vi.fn()),
   onSessionTitleUpdated: vi.fn(() => vi.fn()),
+  onAuthResolved: onAuthResolvedMock,
 }))
 
 vi.mock('@/api/hermes/sessions', () => ({
-  deleteSession: vi.fn(),
+  deleteSession: deleteSessionApiMock,
   fetchSession: fetchSessionMock,
   fetchWorkspaceRunChanges: fetchWorkspaceRunChangesMock,
   // Upstream rebaseline: refreshActiveSession now pulls via the paginated
@@ -94,7 +98,9 @@ describe('chat store user-mode model selection', () => {
     fetchSessionsMock.mockResolvedValue([])
     fetchSessionMock.mockResolvedValue(null)
     fetchWorkspaceRunChangesMock.mockResolvedValue([])
+    getChatRunSocketMock.mockReturnValue(null)
     setSessionArchivedMock.mockResolvedValue(true)
+    deleteSessionApiMock.mockResolvedValue(true)
     resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
       onResumed({ messages: [], isWorking: false, events: [] })
       return { disconnect: vi.fn() }
@@ -698,6 +704,178 @@ describe('chat store user-mode model selection', () => {
     expect(store.isSessionLive(sid)).toBe(false)
   })
 
+  it('retires all active runtime state before recreating a deleted session id', async () => {
+    const abort = vi.fn()
+    startRunViaSocketMock.mockReturnValueOnce({ abort })
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    await store.sendMessage('active request')
+    const [, onEvent] = startRunViaSocketMock.mock.calls[0]
+
+    onEvent({
+      event: 'run.queued',
+      session_id: session.id,
+      queue_length: 1,
+      queued_messages: [{ id: 'queued-1', role: 'user', content: 'queued', timestamp: Date.now() / 1000 }],
+    })
+    onEvent({ event: 'approval.requested', session_id: session.id, approval_id: 'approval-1' })
+    onEvent({ event: 'clarify.requested', session_id: session.id, clarify_id: 'clarify-1', question: 'Continue?' })
+    onEvent({
+      event: 'auth.required',
+      session_id: session.id,
+      run_id: 'run-1',
+      connector_id: 'connector-1',
+    })
+    onEvent({ event: 'compression.started', session_id: session.id, message_count: 2, token_count: 20 })
+
+    expect(store.isSessionLive(session.id)).toBe(true)
+    expect(store.queueLengths.get(session.id)).toBe(1)
+    expect(store.queuedUserMessages.has(session.id)).toBe(true)
+    expect(store.pendingApprovals.has(session.id)).toBe(true)
+    expect(store.activePendingClarify?.sessionId).toBe(session.id)
+    expect(store.pendingReauths.has(session.id)).toBe(true)
+    expect(store.compressionState?.compressing).toBe(true)
+
+    const unregisterCallsBeforeDelete = unregisterSessionHandlersMock.mock.calls.length
+    expect(await store.deleteSession(session.id)).toBe(true)
+    expect(deleteSessionApiMock).toHaveBeenCalledWith(session.id, 'tester')
+    expect(unregisterSessionHandlersMock).toHaveBeenCalledWith(session.id)
+    expect(abort).toHaveBeenCalledOnce()
+    expect(abort.mock.invocationCallOrder[0]).toBeLessThan(
+      unregisterSessionHandlersMock.mock.invocationCallOrder[unregisterCallsBeforeDelete],
+    )
+    expect(store.isSessionLive(session.id)).toBe(false)
+    expect(store.queueLengths.has(session.id)).toBe(false)
+    expect(store.queuedUserMessages.has(session.id)).toBe(false)
+    expect(store.pendingApprovals.has(session.id)).toBe(false)
+    expect(store.pendingReauths.has(session.id)).toBe(false)
+    expect(store.activePendingClarify).toBeNull()
+    expect(store.compressionState).toBeNull()
+
+    await Promise.resolve()
+    const recreated = {
+      id: session.id,
+      title: '',
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      profile: 'tester',
+    }
+    store.sessions = [recreated as any]
+    store.activeSessionId = session.id
+    store.activeSession = recreated as any
+    await store.sendMessage('same id, new owner')
+
+    expect(startRunViaSocketMock).toHaveBeenCalledTimes(2)
+    expect(startRunViaSocketMock.mock.calls[1][0]).toEqual(expect.objectContaining({
+      session_id: session.id,
+      input: 'same id, new owner',
+    }))
+  })
+
+  it('clears only the exact generation auth card when replay is resolved in another tab', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    await store.sendMessage('needs connector')
+    const [, onEvent, onDone] = startRunViaSocketMock.mock.calls[0]
+    const applyResolved = onAuthResolvedMock.mock.calls.at(-1)?.[0] as (event: any) => void
+    const oldResolution = {
+      event: 'auth.resolved',
+      session_id: session.id,
+      run_id: 'parked-run',
+      session_row_id: 1,
+      session_incarnation: 10,
+    }
+
+    onEvent({
+      event: 'auth.required',
+      session_id: session.id,
+      run_id: 'parked-run',
+      connector_id: 'connector-1',
+      provider: 'feishu',
+      session_row_id: 1,
+      session_incarnation: 10,
+    })
+    onDone()
+    expect(store.pendingReauths.get(session.id)).toEqual(expect.objectContaining({
+      runId: 'parked-run',
+      sessionRowId: 1,
+      sessionIncarnation: 10,
+    }))
+
+    applyResolved(oldResolution)
+    expect(store.pendingReauths.has(session.id)).toBe(false)
+
+    onEvent({
+      event: 'auth.required',
+      session_id: session.id,
+      run_id: 'parked-run',
+      connector_id: 'connector-2',
+      provider: 'feishu',
+      session_row_id: 1,
+      session_incarnation: 11,
+    })
+    applyResolved(oldResolution)
+    expect(store.pendingReauths.get(session.id)).toEqual(expect.objectContaining({
+      connectorId: 'connector-2',
+      sessionIncarnation: 11,
+    }))
+
+    applyResolved({ ...oldResolution, run_id: 'other-run', session_incarnation: 11 })
+    applyResolved({ ...oldResolution, session_row_id: 2, session_incarnation: 11 })
+    expect(store.pendingReauths.get(session.id)).toEqual(expect.objectContaining({
+      runId: 'parked-run',
+      sessionRowId: 1,
+      sessionIncarnation: 11,
+    }))
+
+    applyResolved({ ...oldResolution, session_incarnation: 11 })
+    expect(store.pendingReauths.has(session.id)).toBe(false)
+  })
+
+  it('consumes a resumed auth resolution and clears its exact parked card', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    await store.sendMessage('needs connector')
+    const [, onEvent, onDone] = startRunViaSocketMock.mock.calls[0]
+    onEvent({
+      event: 'auth.required',
+      session_id: session.id,
+      run_id: 'parked-run',
+      connector_id: 'connector-1',
+      provider: 'feishu',
+      session_row_id: 1,
+      session_incarnation: 10,
+    })
+    onDone()
+
+    let resumeConsumption: Promise<unknown> | undefined
+    resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => unknown) => {
+      resumeConsumption = Promise.resolve(onResumed({
+        session_id: session.id,
+        messages: [],
+        isWorking: false,
+        events: [{
+          id: 'resolved-id',
+          event: 'auth.resolved',
+          data: {
+            event: 'auth.resolved',
+            session_id: session.id,
+            run_id: 'parked-run',
+            session_row_id: 1,
+            session_incarnation: 10,
+          },
+        }],
+      }))
+      return { disconnect: vi.fn() }
+    })
+
+    await store.switchSession(session.id)
+
+    expect(await resumeConsumption).toEqual(['resolved-id'])
+    expect(store.pendingReauths.has(session.id)).toBe(false)
+  })
+
   it('keeps resumed handlers until a failure pending after abort completion is visible', async () => {
     const store = useChatStore()
     const session = store.newChat({ profile: 'tester' })
@@ -734,6 +912,416 @@ describe('chat store user-mode model selection', () => {
         role: 'assistant',
         systemType: 'error',
         content: 'Error: Run finalization failed: stats failed',
+      }),
+    ]))
+    expect(unregisterSessionHandlersMock).toHaveBeenCalledWith(session.id)
+    expect(store.isSessionLive(session.id)).toBe(false)
+  })
+
+  it('retires an existing stream owner after switch resume confirms the session is idle', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    await store.switchSession(session.id)
+    await store.sendMessage('request still shown as live')
+    expect(store.isSessionLive(session.id)).toBe(true)
+
+    let onResumed!: (data: any) => Promise<string[]> | string[]
+    resumeSessionMock.mockImplementation((_sessionId: string, callback: typeof onResumed) => {
+      onResumed = callback
+      return { disconnect: vi.fn() }
+    })
+    unregisterSessionHandlersMock.mockClear()
+
+    const switching = store.switchSession(session.id)
+    for (let i = 0; i < 10 && !onResumed; i += 1) await Promise.resolve()
+    const consumed = await onResumed({
+      session_id: session.id,
+      messages: [],
+      isWorking: false,
+      queueLength: 0,
+      events: [{
+        id: 'idle-terminal',
+        event: 'run.failed',
+        data: { event: 'run.failed', error: 'failed while the tab was reconnecting' },
+      }],
+    })
+    await switching
+
+    expect(consumed).toEqual(['idle-terminal'])
+    expect(store.isSessionLive(session.id)).toBe(false)
+    expect(unregisterSessionHandlersMock).toHaveBeenCalledWith(session.id)
+    expect(session.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: 'assistant',
+        systemType: 'error',
+        content: 'Error: failed while the tab was reconnecting',
+      }),
+    ]))
+  })
+
+  it('keeps the current queued run live while replaying the previous run failure', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({
+        session_id: session.id,
+        messages: [{
+          id: 2,
+          session_id: session.id,
+          role: 'assistant',
+          content: 'new run partial',
+          finish_reason: null,
+          timestamp: Date.now() / 1000,
+        }],
+        isWorking: true,
+        queueLength: 0,
+        events: [
+          {
+            id: 'terminal-abort',
+            event: 'abort.completed',
+            data: { event: 'abort.completed', failure_pending: true, synced: true },
+          },
+          {
+            id: 'terminal-failure',
+            event: 'run.failed',
+            data: { event: 'run.failed', error: 'previous finalization failed' },
+          },
+          {
+            id: 'terminal-command',
+            event: 'session.command',
+            data: {
+              event: 'session.command',
+              command: 'plan',
+              action: 'error',
+              ok: false,
+              terminal: true,
+              message: 'Command failed: previous identity failure',
+            },
+          },
+        ],
+      })
+      return { disconnect: vi.fn() }
+    })
+
+    await store.switchSession(session.id)
+
+    expect(store.activeSession!.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: 'assistant',
+        systemType: 'error',
+        content: 'Error: previous finalization failed',
+      }),
+      expect.objectContaining({
+        role: 'assistant',
+        content: 'new run partial',
+        isStreaming: true,
+      }),
+      expect.objectContaining({
+        role: 'command',
+        systemType: 'error',
+        content: 'Command failed: previous identity failure',
+      }),
+    ]))
+    expect(registerSessionHandlersMock).toHaveBeenCalledWith(
+      session.id,
+      expect.any(Object),
+      expect.objectContaining({ onReconnectResume: expect.any(Function) }),
+    )
+    expect(store.isSessionLive(session.id)).toBe(true)
+    expect(session.messages.at(-1)?.content).toBe('new run partial')
+  })
+
+  it('keeps an authoritative in-progress abort while switch resume consumes an older completion', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    let consumed!: Promise<string[]> | string[]
+    resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => Promise<string[]> | string[]) => {
+      consumed = onResumed({
+        session_id: session.id,
+        messages: [],
+        isWorking: true,
+        isAborting: true,
+        events: [{
+          id: 'previous-abort-completed',
+          event: 'abort.completed',
+          data: { event: 'abort.completed', synced: true },
+        }],
+      })
+      return { disconnect: vi.fn() }
+    })
+
+    await store.switchSession(session.id)
+
+    expect(await consumed).toEqual(['previous-abort-completed'])
+    expect(store.abortState).toEqual({ aborting: true, synced: null })
+  })
+
+  it('keeps reconnect partial output separate from a previous pending failure', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    await store.sendMessage('current queued run')
+    const optimistic = session.messages.find(message => message.role === 'user')!
+    const reconnectOptions = startRunViaSocketMock.mock.calls[0][5] as {
+      onReconnectResume: (data: any) => string[] | Promise<string[]>
+    }
+
+    const consumed = await reconnectOptions.onReconnectResume({
+      session_id: session.id,
+      isWorking: true,
+      queueLength: 0,
+      messages: [
+        {
+          id: 1,
+          client_id: optimistic.id,
+          session_id: session.id,
+          role: 'user',
+          content: 'current queued run',
+          timestamp: optimistic.timestamp / 1000,
+        },
+        {
+          id: 2,
+          session_id: session.id,
+          role: 'assistant',
+          content: 'short current answer',
+          finish_reason: null,
+          timestamp: Date.now() / 1000,
+        },
+      ],
+      events: [{
+        id: 'previous-failure',
+        event: 'run.failed',
+        data: { event: 'run.failed', error: 'previous finalization failed' },
+      }],
+    })
+
+    expect(consumed).toEqual(['previous-failure'])
+    expect(session.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: 'assistant',
+        systemType: 'error',
+        content: 'Error: previous finalization failed',
+      }),
+      expect.objectContaining({
+        role: 'assistant',
+        content: 'short current answer',
+        isStreaming: true,
+      }),
+    ]))
+    expect(store.isSessionLive(session.id)).toBe(true)
+    expect(session.messages.at(-1)?.content).toBe('short current answer')
+  })
+
+  it('re-attaches a refreshed run and consumes distinct same-text failures by stable id', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({
+        session_id: session.id,
+        messages: [{
+          id: 'attached-user',
+          session_id: session.id,
+          role: 'user',
+          content: 'current request',
+          timestamp: Date.now() / 1000,
+        }],
+        isWorking: true,
+        events: [],
+      })
+      return { disconnect: vi.fn() }
+    })
+    await store.switchSession(session.id)
+
+    const options = registerSessionHandlersMock.mock.calls.find(call => call[0] === session.id)?.[2] as {
+      onReconnectResume: (data: any) => Promise<string[]> | string[]
+      onDone: () => void
+    }
+    expect(options).toBeDefined()
+    const consumed = await options.onReconnectResume({
+      session_id: session.id,
+      isWorking: true,
+      queueLength: 0,
+      messages: [{
+        id: 'attached-assistant',
+        session_id: session.id,
+        role: 'assistant',
+        content: 'current output',
+        finish_reason: null,
+        timestamp: Date.now() / 1000,
+      }],
+      events: [
+        {
+          id: 'failure-a',
+          event: 'run.failed',
+          data: { event: 'run.failed', error: 'same failure text' },
+        },
+        {
+          id: 'failure-b',
+          event: 'run.failed',
+          data: { event: 'run.failed', error: 'same failure text' },
+        },
+        {
+          id: 'future-event',
+          event: 'future.event',
+          data: { event: 'future.event' },
+        },
+      ],
+    })
+
+    expect(consumed).toEqual(['failure-a', 'failure-b'])
+    expect(session.messages.filter(message => message.systemType === 'error' && message.content === 'Error: same failure text')).toHaveLength(2)
+    expect(session.messages.find(message => message.content === 'current output')).toEqual(expect.objectContaining({
+      content: 'current output',
+      isStreaming: true,
+    }))
+    expect(store.isSessionLive(session.id)).toBe(true)
+
+    options.onDone()
+    expect(unregisterSessionHandlersMock).toHaveBeenCalledWith(session.id)
+    expect(store.isSessionLive(session.id)).toBe(false)
+  })
+
+  it('keeps an authoritative in-progress abort while attached resume consumes an older completion', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({ session_id: session.id, messages: [], isWorking: true, events: [] })
+      return { disconnect: vi.fn() }
+    })
+    await store.switchSession(session.id)
+
+    const options = registerSessionHandlersMock.mock.calls.find(call => call[0] === session.id)?.[2] as {
+      onReconnectResume: (data: any) => Promise<string[]> | string[]
+    }
+    const consumed = await options.onReconnectResume({
+      session_id: session.id,
+      isWorking: true,
+      isAborting: true,
+      messages: [],
+      events: [{
+        id: 'previous-abort-completed',
+        event: 'abort.completed',
+        data: { event: 'abort.completed', synced: true },
+      }],
+    })
+
+    expect(consumed).toEqual(['previous-abort-completed'])
+    expect(store.abortState).toEqual({ aborting: true, synced: null })
+  })
+
+  it('applies every idle attached terminal event before owner cleanup', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    resumeSessionMock.mockImplementation((_sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({ session_id: session.id, messages: [], isWorking: true, events: [] })
+      return { disconnect: vi.fn() }
+    })
+    await store.switchSession(session.id)
+
+    const options = registerSessionHandlersMock.mock.calls.find(call => call[0] === session.id)?.[2] as {
+      onReconnectResume: (data: any) => Promise<string[]> | string[]
+      onDone: () => void
+    }
+    const consumed = await options.onReconnectResume({
+      session_id: session.id,
+      isWorking: false,
+      queueLength: 0,
+      messages: [],
+      events: [
+        {
+          id: 'idle-failure',
+          event: 'run.failed',
+          data: { event: 'run.failed', error: 'offline finalization failed' },
+        },
+        {
+          id: 'idle-command',
+          event: 'session.command',
+          data: {
+            event: 'session.command',
+            command: 'goal',
+            ok: false,
+            action: 'error',
+            terminal: true,
+            message: 'Goal command failed offline',
+          },
+        },
+        {
+          id: 'idle-auth-card',
+          event: 'auth.required',
+          data: {
+            event: 'auth.required',
+            run_id: 'parked-run',
+            connector_id: 'connector-1',
+            provider: 'feishu',
+          },
+        },
+      ],
+    })
+
+    expect(consumed).toEqual(['idle-failure', 'idle-command', 'idle-auth-card'])
+    expect(session.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: 'assistant',
+        systemType: 'error',
+        content: 'Error: offline finalization failed',
+      }),
+      expect.objectContaining({
+        role: 'command',
+        content: 'Goal command failed offline',
+      }),
+    ]))
+    expect(store.pendingReauths.get(session.id)).toEqual(expect.objectContaining({
+      runId: 'parked-run',
+      connectorId: 'connector-1',
+    }))
+    expect(store.isSessionLive(session.id)).toBe(true)
+
+    options.onDone()
+    expect(store.isSessionLive(session.id)).toBe(false)
+  })
+
+  it('settles a forced credential replay when the server rejects its deleted session', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    await store.sendMessage('needs connector')
+    const [, onEvent, onDone] = startRunViaSocketMock.mock.calls[0]
+    onEvent({
+      event: 'auth.required',
+      session_id: session.id,
+      run_id: 'parked-run',
+      connector_id: 'connector-1',
+      provider: 'feishu',
+    })
+    onDone()
+
+    const staleSocket = { emit: vi.fn() }
+    const replacementSocket = { emit: vi.fn() }
+    getChatRunSocketMock.mockReturnValue(staleSocket)
+    registerSessionHandlersMock.mockImplementationOnce(() => {
+      getChatRunSocketMock.mockReturnValue(replacementSocket)
+    })
+    store.triggerReauthReplay(session.id)
+
+    expect(staleSocket.emit).not.toHaveBeenCalled()
+    expect(replacementSocket.emit).toHaveBeenCalledWith('credential.replay', expect.objectContaining({
+      session_id: session.id,
+      run_id: 'parked-run',
+    }))
+    expect(store.pendingReauths.has(session.id)).toBe(false)
+    expect(store.isSessionLive(session.id)).toBe(true)
+    const registered = registerSessionHandlersMock.mock.calls.findLast(call => call[0] === session.id)?.[1]
+    registered.onAgentEvent({
+      event: 'run.reattach_failed',
+      session_id: session.id,
+      run_id: 'parked-run',
+      terminal: true,
+      error: 'Session no longer exists',
+    })
+
+    expect(store.activeSession!.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: 'assistant',
+        systemType: 'error',
+        content: 'Error: Session no longer exists',
       }),
     ]))
     expect(unregisterSessionHandlersMock).toHaveBeenCalledWith(session.id)
@@ -1901,6 +2489,75 @@ describe('chat store user-mode model selection', () => {
       runId: 'run-final',
     })
     expect(store.activeSession?.messages[0]?.isStreaming).not.toBe(true)
+  })
+
+  it('shows and consumes a pending terminal failure when the tab becomes visible', async () => {
+    let onResumed: ((data: any) => boolean | string[] | void | Promise<boolean | string[] | void>) | undefined
+    resumeSessionMock.mockImplementation((_sessionId: string, callback: typeof onResumed) => {
+      onResumed = callback
+      return { disconnect: vi.fn() }
+    })
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+    const session = {
+      id: 'session-1',
+      title: 'first',
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messageCount: 1,
+      messageTotal: 1,
+      profile: 'tester',
+    }
+    const store = useChatStore()
+    store.sessions = [session as any]
+    store.activeSessionId = session.id
+    store.activeSession = session as any
+
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.waitFor(() => expect(resumeSessionMock).toHaveBeenCalledWith(
+      session.id,
+      expect.any(Function),
+      'tester',
+      'chat-run',
+    ))
+
+    const consumed = await onResumed?.({
+      session_id: session.id,
+      isWorking: false,
+      events: [{
+        id: 'terminal-visible-failure',
+        event: 'run.failed',
+        data: {
+          event: 'run.failed',
+          session_id: session.id,
+          error: 'failed while the tab was hidden',
+        },
+      }],
+      messages: [{
+        id: 1,
+        session_id: session.id,
+        role: 'assistant',
+        content: 'last completed answer',
+        timestamp: Date.now() / 1000,
+        finish_reason: 'stop',
+      }],
+      messageTotal: 1,
+      messageLoadedCount: 1,
+      hasMoreBefore: false,
+    })
+
+    expect(consumed).toEqual(['terminal-visible-failure'])
+    expect(store.activeSession?.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: 'last completed answer' }),
+      expect.objectContaining({
+        role: 'assistant',
+        systemType: 'error',
+        content: 'Error: failed while the tab was hidden',
+      }),
+    ]))
   })
 
   it('archives a session and removes it from the normal session list', async () => {

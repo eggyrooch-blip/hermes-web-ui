@@ -218,6 +218,9 @@ export class GlobalAgentServer {
     socket.on('credential.replay', (payload: unknown) => {
       void this.emitFrontendChatEvent(socket, 'credential.replay', payload)
     })
+    socket.on('resume.events.ack', (payload: unknown) => {
+      void this.emitFrontendChatEvent(socket, 'resume.events.ack', payload)
+    })
     socket.on('disconnect', () => {
       this.frontendClients.delete(socket.id)
       for (const [bridgeId, ownerSocketId] of this.bridgeOwners.entries()) {
@@ -314,7 +317,7 @@ export class GlobalAgentServer {
       event,
       payload,
     }))
-    if (response.error) {
+    if (response.error && event !== 'resume.events.ack') {
       const sessionId = payload && typeof payload === 'object' && !Array.isArray(payload)
         ? String((payload as Record<string, unknown>).session_id || '')
         : ''

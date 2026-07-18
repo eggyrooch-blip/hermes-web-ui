@@ -79,6 +79,11 @@ export interface RunEvent {
   failure_pending?: boolean
   /** Request-scoped queue item rejected before admission. */
   queue_id?: string
+  /** Stable identity shared by a live terminal event and its resume replay. */
+  resume_event_id?: string
+  /** Exact server-side session generation for credential lifecycle events. */
+  session_row_id?: number
+  session_incarnation?: number
   /** Queue item that was just removed because it is starting now. */
   dequeued_queue_id?: string
   /** Queued user messages from run.queued/resume payloads. */
@@ -118,7 +123,7 @@ export interface ResumeSessionPayload {
   hasMoreBefore?: boolean
   isWorking: boolean
   isAborting?: boolean
-  events: Array<{ event: string; data: RunEvent }>
+  events: Array<{ id?: string; event: string; data: RunEvent }>
   inputTokens?: number
   outputTokens?: number
   contextTokens?: number
@@ -135,7 +140,11 @@ let globalListenersRegistered = false
 let chatRunSocketProfile: string | null = null
 let chatRunSocketAgentId: string | null = null
 export type ChatRunTransport = 'chat-run' | 'global-agent'
+export type ResumeEventConsumption = boolean | string[] | void
 let chatRunSocketTransport: ChatRunTransport = 'chat-run'
+const consumedResumeEventIds = new Set<string>()
+const processingResumeEventIds = new Set<string>()
+const MAX_CONSUMED_RESUME_EVENT_IDS = 500
 
 const TRANSIENT_DISCONNECT_REASONS = new Set<string>([
   'transport close',
@@ -177,10 +186,30 @@ const sessionEventHandlers = new Map<string, {
   onAuthRequired?: (event: RunEvent) => void
   onWorkspaceDiffCompleted?: (event: RunEvent) => void
 }>()
+interface SessionHandlerOwner {
+  dispose: () => void
+  retire: () => void
+}
+
+const sessionHandlerOwners = new Map<string, SessionHandlerOwner>()
+
+function retireAllSessionHandlerOwners(): void {
+  for (const owner of [...sessionHandlerOwners.values()]) {
+    try {
+      owner.retire()
+    } catch (error) {
+      console.error('Failed to retire chat session owner:', error)
+    }
+  }
+  sessionHandlerOwners.clear()
+  sessionEventHandlers.clear()
+  processingResumeEventIds.clear()
+}
 
 const peerUserMessageHandlers = new Set<(event: RunEvent) => void>()
 const sessionCommandHandlers = new Set<(event: RunEvent) => void>()
 const sessionTitleUpdatedHandlers = new Set<(event: RunEvent) => void>()
+const authResolvedHandlers = new Set<(event: RunEvent) => void>()
 
 /**
  * Global message.delta event handler
@@ -298,7 +327,7 @@ function globalRunCompletedHandler(event: RunEvent): void {
 
   // Auto-cleanup session handlers on completion (skip if more runs queued)
   if ((event as any).queue_remaining > 0) return
-  sessionEventHandlers.delete(sid)
+  if (sessionEventHandlers.get(sid) === handlers) unregisterSessionHandlers(sid)
 }
 
 /**
@@ -310,12 +339,12 @@ function globalRunFailedHandler(event: RunEvent): void {
 
   const handlers = sessionEventHandlers.get(sid)
   if (handlers?.onRunFailed) {
-    handlers.onRunFailed(event)
+    if (!consumeLiveResumeEvent(event, () => handlers.onRunFailed(event))) return
   }
 
   // Auto-cleanup session handlers on failure (skip if more runs queued)
   if ((event as any).queue_remaining > 0) return
-  sessionEventHandlers.delete(sid)
+  if (sessionEventHandlers.get(sid) === handlers) unregisterSessionHandlers(sid)
 }
 
 /**
@@ -398,14 +427,14 @@ function globalAbortCompletedHandler(event: RunEvent): void {
 
   const handlers = sessionEventHandlers.get(sid)
   if (handlers?.onAbortCompleted) {
-    handlers.onAbortCompleted(event)
+    if (!consumeLiveResumeEvent(event, () => handlers.onAbortCompleted(event))) return
   }
 
   // If abort completion is followed by queued runs, keep the handler alive so
   // the next run.started/message.delta/run.completed events are still received.
   if (event.failure_pending) return
   if ((event as any).queue_length > 0) return
-  sessionEventHandlers.delete(sid)
+  if (sessionEventHandlers.get(sid) === handlers) unregisterSessionHandlers(sid)
 }
 
 /**
@@ -426,13 +455,11 @@ function globalSessionCommandHandler(event: RunEvent): void {
   if (!sid) return
 
   const handlers = sessionEventHandlers.get(sid)
-  if (handlers?.onSessionCommand) {
-    handlers.onSessionCommand(event)
-  }
-
-  for (const handler of sessionCommandHandlers) {
-    handler(event)
-  }
+  if (!handlers?.onSessionCommand && sessionCommandHandlers.size === 0) return
+  consumeLiveResumeEvent(event, () => {
+    handlers?.onSessionCommand?.(event)
+    for (const handler of sessionCommandHandlers) handler(event)
+  })
 }
 
 function globalSessionTitleUpdatedHandler(event: RunEvent): void {
@@ -465,7 +492,7 @@ function globalRunReattachFailedHandler(event: RunEvent): void {
 
   const handlers = sessionEventHandlers.get(sid)
   if (handlers?.onAgentEvent) {
-    handlers.onAgentEvent(event)
+    consumeLiveResumeEvent(event, () => handlers.onAgentEvent?.(event))
   }
 }
 
@@ -519,8 +546,15 @@ function globalAuthRequiredHandler(event: RunEvent): void {
 
   const handlers = sessionEventHandlers.get(sid)
   if (handlers?.onAuthRequired) {
-    handlers.onAuthRequired(event)
+    consumeLiveResumeEvent(event, () => handlers.onAuthRequired?.(event))
   }
+}
+
+function globalAuthResolvedHandler(event: RunEvent): void {
+  if (!event.session_id || authResolvedHandlers.size === 0) return
+  consumeLiveResumeEvent(event, () => {
+    for (const handler of authResolvedHandlers) handler(event)
+  })
 }
 
 function globalClarifyResolvedHandler(event: RunEvent): void {
@@ -580,13 +614,99 @@ export function registerSessionHandlers(
     onClarifyResolved?: (event: RunEvent) => void
     onAuthRequired?: (event: RunEvent) => void
     onWorkspaceDiffCompleted?: (event: RunEvent) => void
-  }
+  },
+  options?: {
+    profile?: string | null
+    transport?: ChatRunTransport
+    onReconnectResume?: (data: ResumeSessionPayload) => ResumeEventConsumption | Promise<ResumeEventConsumption>
+    onDone?: () => void
+    onError?: (error: Error) => void
+  },
 ): () => void {
+  const ownerSocket = options ? connectChatRun(options.profile, options.transport) : null
+  sessionHandlerOwners.get(sessionId)?.dispose()
+  sessionHandlerOwners.delete(sessionId)
   sessionEventHandlers.set(sessionId, handlers)
+
+  if (options && ownerSocket) {
+    const socket = ownerSocket
+    let disposed = false
+    let sawTransientDisconnect = !socket.connected
+    let resumedHandler: ((data: ResumeSessionPayload) => void) | null = null
+
+    const clearResumedHandler = () => {
+      if (!resumedHandler) return
+      removeSocketListener(socket, 'resumed', resumedHandler)
+      resumedHandler = null
+    }
+    const disposeOwner = () => {
+      if (disposed) return
+      disposed = true
+      clearResumedHandler()
+      removeSocketListener(socket, 'connect_error', handleConnectError)
+      removeSocketListener(socket, 'disconnect', handleDisconnect)
+      removeSocketListener(socket, 'connect', handleConnect)
+    }
+    const failOwner = (error: Error) => {
+      if (disposed || sessionEventHandlers.get(sessionId) !== handlers) return
+      unregisterSessionHandlers(sessionId)
+      options.onError?.(error)
+    }
+    const handleConnectError = (error: Error) => {
+      if (disposed || socket.active) return
+      failOwner(error)
+    }
+    const handleDisconnect = (reason: string) => {
+      if (disposed || reason === 'io client disconnect') return
+      if (TRANSIENT_DISCONNECT_REASONS.has(reason)) {
+        sawTransientDisconnect = true
+        return
+      }
+      failOwner(new Error(`Socket disconnected: ${reason}`))
+    }
+    const handleConnect = () => {
+      if (disposed || !sawTransientDisconnect || sessionEventHandlers.get(sessionId) !== handlers) return
+      sawTransientDisconnect = false
+      clearResumedHandler()
+      resumedHandler = async (data: ResumeSessionPayload) => {
+        if (disposed || data.session_id !== sessionId || sessionEventHandlers.get(sessionId) !== handlers) return
+        clearResumedHandler()
+        const prepared = options.onReconnectResume
+          ? prepareResumeEvents(socket, sessionId, data)
+          : { data, reservedIds: [] }
+        let consumed: ResumeEventConsumption
+        try {
+          consumed = await options.onReconnectResume?.(prepared.data)
+        } catch (error) {
+          settlePreparedResumeEvents(socket, sessionId, prepared, false)
+          failOwner(error instanceof Error ? error : new Error(String(error)))
+          return
+        }
+        const stillOwner = !disposed && sessionEventHandlers.get(sessionId) === handlers
+        settlePreparedResumeEvents(socket, sessionId, prepared, consumed)
+        if (!stillOwner || prepared.data.isWorking || (prepared.data.queueLength && prepared.data.queueLength > 0)) return
+        unregisterSessionHandlers(sessionId)
+        options.onDone?.()
+      }
+      socket.on('resumed', resumedHandler)
+      socket.emit('resume', {
+        session_id: sessionId,
+        ...(options.profile ? { profile: options.profile } : {}),
+      })
+    }
+
+    socket.on('connect_error', handleConnectError)
+    socket.on('disconnect', handleDisconnect)
+    socket.on('connect', handleConnect)
+    sessionHandlerOwners.set(sessionId, {
+      dispose: disposeOwner,
+      retire: () => failOwner(new Error('Chat connection changed before the run finished')),
+    })
+  }
 
   // Return cleanup function
   return () => {
-    sessionEventHandlers.delete(sessionId)
+    if (sessionEventHandlers.get(sessionId) === handlers) unregisterSessionHandlers(sessionId)
   }
 }
 
@@ -595,6 +715,9 @@ export function registerSessionHandlers(
  * @param sessionId - Session ID
  */
 export function unregisterSessionHandlers(sessionId: string): void {
+  const owner = sessionHandlerOwners.get(sessionId)
+  sessionHandlerOwners.delete(sessionId)
+  owner?.dispose()
   sessionEventHandlers.delete(sessionId)
 }
 
@@ -616,6 +739,13 @@ export function onSessionTitleUpdated(handler: (event: RunEvent) => void): () =>
   sessionTitleUpdatedHandlers.add(handler)
   return () => {
     sessionTitleUpdatedHandlers.delete(handler)
+  }
+}
+
+export function onAuthResolved(handler: (event: RunEvent) => void): () => void {
+  authResolvedHandlers.add(handler)
+  return () => {
+    authResolvedHandlers.delete(handler)
   }
 }
 
@@ -666,7 +796,8 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
   const normalizedRequestedProfile = requestedProfile?.trim() || null
   const activeAgentId = readLocalStorageItem('hermes_active_agent_id')?.trim() || null
   if (
-    chatRunSocket?.connected &&
+    chatRunSocket &&
+    (chatRunSocket.connected || chatRunSocket.active) &&
     chatRunSocketTransport === transport &&
     (!normalizedRequestedProfile || chatRunSocketProfile === normalizedRequestedProfile) &&
     chatRunSocketAgentId === activeAgentId
@@ -676,6 +807,7 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
 
   // Clean up old socket to prevent duplicate event listeners
   if (chatRunSocket) {
+    retireAllSessionHandlerOwners()
     chatRunSocket.removeAllListeners()
     chatRunSocket.disconnect()
     globalListenersRegistered = false
@@ -744,6 +876,7 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
     chatRunSocket.on('run.peer_user_message', globalPeerUserMessageHandler)
     chatRunSocket.on('clarify.requested', globalClarifyRequestedHandler)
     chatRunSocket.on('auth.required', globalAuthRequiredHandler)
+    chatRunSocket.on('auth.resolved', globalAuthResolvedHandler)
     chatRunSocket.on('clarify.resolved', globalClarifyResolvedHandler)
 
     // Compression events
@@ -768,6 +901,7 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
 }
 
 export function disconnectChatRun(): void {
+  retireAllSessionHandlerOwners()
   if (chatRunSocket) {
     chatRunSocket.disconnect()
     chatRunSocket = null
@@ -775,7 +909,6 @@ export function disconnectChatRun(): void {
     chatRunSocketAgentId = null
     chatRunSocketTransport = 'chat-run'
     globalListenersRegistered = false
-    sessionEventHandlers.clear()
   }
 }
 
@@ -791,6 +924,84 @@ function removeSocketListener(socket: Socket, event: string, handler: (...args: 
   candidate.removeListener?.(event, handler)
 }
 
+function rememberConsumedResumeEventIds(eventIds: string[]): void {
+  for (const eventId of eventIds) consumedResumeEventIds.add(eventId)
+  while (consumedResumeEventIds.size > MAX_CONSUMED_RESUME_EVENT_IDS) {
+    const oldest = consumedResumeEventIds.values().next().value
+    if (oldest === undefined) break
+    consumedResumeEventIds.delete(oldest)
+  }
+}
+
+function consumeLiveResumeEvent(event: RunEvent, consume: () => void): boolean {
+  const eventId = String(event.resume_event_id || '').trim()
+  const sessionId = String(event.session_id || '').trim()
+  if (!eventId || !sessionId) {
+    consume()
+    return true
+  }
+  if (consumedResumeEventIds.has(eventId) || processingResumeEventIds.has(eventId)) return false
+  const socket = chatRunSocket
+  processingResumeEventIds.add(eventId)
+  try {
+    consume()
+  } catch (error) {
+    processingResumeEventIds.delete(eventId)
+    throw error
+  }
+  processingResumeEventIds.delete(eventId)
+  rememberConsumedResumeEventIds([eventId])
+  socket?.emit('resume.events.ack', { session_id: sessionId, event_ids: [eventId] })
+  return true
+}
+
+interface PreparedResumeEvents {
+  data: ResumeSessionPayload
+  reservedIds: string[]
+}
+
+function prepareResumeEvents(socket: Socket, sessionId: string, data: ResumeSessionPayload): PreparedResumeEvents {
+  const alreadyConsumed: string[] = []
+  const reservedIds: string[] = []
+  const events = (data.events || []).filter((event) => {
+    if (!event.id) return true
+    if (consumedResumeEventIds.has(event.id)) {
+      alreadyConsumed.push(event.id)
+      return false
+    }
+    if (processingResumeEventIds.has(event.id)) return false
+    processingResumeEventIds.add(event.id)
+    reservedIds.push(event.id)
+    return true
+  })
+  if (alreadyConsumed.length > 0) {
+    socket.emit('resume.events.ack', { session_id: sessionId, event_ids: [...new Set(alreadyConsumed)] })
+  }
+  return {
+    data: events.length === data.events?.length ? data : { ...data, events },
+    reservedIds,
+  }
+}
+
+function settlePreparedResumeEvents(
+  socket: Socket,
+  sessionId: string,
+  prepared: PreparedResumeEvents,
+  consumed: ResumeEventConsumption,
+): void {
+  const requestedIds = consumed === true
+    ? prepared.reservedIds
+    : Array.isArray(consumed)
+      ? consumed
+      : []
+  const reservedIds = new Set(prepared.reservedIds)
+  const acknowledgedIds = [...new Set(requestedIds.filter(eventId => reservedIds.has(eventId)))]
+  for (const eventId of prepared.reservedIds) processingResumeEventIds.delete(eventId)
+  if (acknowledgedIds.length === 0) return
+  rememberConsumedResumeEventIds(acknowledgedIds)
+  socket.emit('resume.events.ack', { session_id: sessionId, event_ids: acknowledgedIds })
+}
+
 /**
  * Start a chat run via Socket.IO and stream events back.
  * Returns an AbortController-compatible handle for cancellation.
@@ -800,7 +1011,7 @@ function removeSocketListener(socket: Socket, event: string, handler: (...args: 
  */
 export function resumeSession(
   sessionId: string,
-  onResumed: (data: ResumeSessionPayload) => void,
+  onResumed: (data: ResumeSessionPayload) => ResumeEventConsumption | Promise<ResumeEventConsumption>,
   profile?: string | null,
   transport: ChatRunTransport = 'chat-run',
 ): Socket {
@@ -809,7 +1020,15 @@ export function resumeSession(
   const handleResumed = (data: ResumeSessionPayload) => {
     if (data?.session_id !== sessionId) return
     removeSocketListener(socket, 'resumed', handleResumed)
-    onResumed(data)
+    const prepared = prepareResumeEvents(socket, sessionId, data)
+    void Promise.resolve(onResumed(prepared.data))
+      .then((consumed) => {
+        settlePreparedResumeEvents(socket, sessionId, prepared, consumed)
+      })
+      .catch((err) => {
+        settlePreparedResumeEvents(socket, sessionId, prepared, false)
+        console.error('Failed to apply resumed session:', err)
+      })
   }
   socket.on('resumed', handleResumed)
   socket.emit('resume', { session_id: sessionId, ...(profile ? { profile } : {}) })
@@ -824,7 +1043,7 @@ export function startRunViaSocket(
   onError: (err: Error) => void,
   onStarted?: (runId: string) => void,
   options?: {
-    onReconnectResume?: (data: ResumeSessionPayload) => void
+    onReconnectResume?: (data: ResumeSessionPayload) => ResumeEventConsumption | Promise<ResumeEventConsumption>
     transport?: ChatRunTransport
   },
 ): { abort: () => void } {
@@ -858,14 +1077,33 @@ export function startRunViaSocket(
 
   const emitReconnectResume = () => {
     clearReconnectResumeHandler()
-    if (options?.onReconnectResume) {
-      reconnectResumeHandler = (data: ResumeSessionPayload) => {
-        clearReconnectResumeHandler()
-        if (closed || data.session_id !== sid) return
-        options.onReconnectResume?.(data)
+    reconnectResumeHandler = async (data: ResumeSessionPayload) => {
+      if (closed || data.session_id !== sid) return
+      clearReconnectResumeHandler()
+      const onReconnectResume = options?.onReconnectResume
+      const prepared = onReconnectResume
+        ? prepareResumeEvents(socket, sid, data)
+        : { data, reservedIds: [] }
+      if (onReconnectResume) {
+        let consumed: ResumeEventConsumption
+        try {
+          consumed = await onReconnectResume(prepared.data)
+        } catch (err) {
+          settlePreparedResumeEvents(socket, sid, prepared, false)
+          handleSocketError(err instanceof Error ? err : new Error(String(err)))
+          return
+        }
+        const stillOwner = !closed && sessionEventHandlers.get(sid) === handlers
+        settlePreparedResumeEvents(socket, sid, prepared, consumed)
+        if (!stillOwner) return
       }
-      socket.on('resumed', reconnectResumeHandler)
+      if (prepared.data.isWorking || (prepared.data.queueLength && prepared.data.queueLength > 0)) return
+      closed = true
+      removeTerminalSocketListeners()
+      if (sessionEventHandlers.get(sid) === handlers) unregisterSessionHandlers(sid)
+      onDone()
     }
+    socket.on('resumed', reconnectResumeHandler)
     socket.emit('resume', { session_id: sid, ...(body.profile ? { profile: body.profile } : {}) })
   }
 
@@ -873,12 +1111,11 @@ export function startRunViaSocket(
     if (closed) return
     closed = true
     removeTerminalSocketListeners()
-    sessionEventHandlers.delete(sid)
+    if (sessionEventHandlers.get(sid) === handlers) unregisterSessionHandlers(sid)
     onError(err)
   }
   const handleSocketConnectError = (err: Error) => {
-    if (closed) return
-    if (sawTransientDisconnect) return
+    if (closed || socket.active) return
     handleSocketError(err)
   }
   socket.on('connect_error', handleSocketConnectError)
@@ -996,7 +1233,7 @@ export function startRunViaSocket(
       if ((evt as any).terminal === false) return
       closed = true
       removeTerminalSocketListeners()
-      sessionEventHandlers.delete(sid)
+      if (sessionEventHandlers.get(sid) === handlers) unregisterSessionHandlers(sid)
       onDone()
     },
     onSessionTitleUpdated: (evt: RunEvent) => {
@@ -1012,7 +1249,7 @@ export function startRunViaSocket(
       if (evt.queue_id !== body.queue_id) return
       closed = true
       removeTerminalSocketListeners()
-      sessionEventHandlers.delete(sid)
+      if (sessionEventHandlers.get(sid) === handlers) unregisterSessionHandlers(sid)
       onDone()
     },
     onApprovalRequested: (evt: RunEvent) => {
@@ -1043,6 +1280,13 @@ export function startRunViaSocket(
 
   // Register handlers in the global session map
   sessionEventHandlers.set(sid, handlers)
+  sessionHandlerOwners.set(sid, {
+    dispose: () => {
+      closed = true
+      removeTerminalSocketListeners()
+    },
+    retire: () => handleSocketError(new Error('Chat connection changed before the run finished')),
+  })
 
   // Emit run request
   socket.emit('run', body)

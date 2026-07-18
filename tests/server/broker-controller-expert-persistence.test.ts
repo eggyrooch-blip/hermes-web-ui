@@ -172,6 +172,8 @@ describe('BrokerRunController expert metadata persistence', () => {
 
   it('persists the broker response run id when flushing messages', async () => {
     await initTestDb()
+    const { createSession } = await import('../../packages/server/src/db/hermes/session-store')
+    createSession({ id: 'run-id-session', profile: 'research' })
     const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
     const controller = new BrokerRunController()
     const state = {

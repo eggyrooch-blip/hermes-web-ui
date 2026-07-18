@@ -257,6 +257,22 @@ describe('outbound relay client', () => {
       },
     })
 
+    const authResolved = {
+      event: 'auth.resolved',
+      session_id: 's1',
+      run_id: 'parked-run',
+      session_row_id: 1,
+      session_incarnation: 2,
+      resume_event_id: 'resolved-id',
+    }
+    localSocket.__handlers.get('auth.resolved')?.(authResolved)
+    expect(mockSocket.emit).toHaveBeenCalledWith('socket.event', {
+      id: 'chat-1',
+      namespace: '/chat-run',
+      event: 'auth.resolved',
+      payload: authResolved,
+    })
+
     const eventAck = vi.fn()
     socketHandlers.get('socket.event')?.({
       id: 'chat-1',
@@ -265,6 +281,16 @@ describe('outbound relay client', () => {
     }, eventAck)
     expect(localSocket.emit).toHaveBeenCalledWith('run', { session_id: 's1', input: 'hi' })
     expect(eventAck).toHaveBeenCalledWith({ id: 'chat-1', ok: true, namespace: '/chat-run', event: 'run', stream: true })
+
+    socketHandlers.get('socket.event')?.({
+      id: 'chat-1',
+      event: 'resume.events.ack',
+      payload: { session_id: 's1', event_ids: ['resolved-id'] },
+    }, eventAck)
+    expect(localSocket.emit).toHaveBeenCalledWith('resume.events.ack', {
+      session_id: 's1',
+      event_ids: ['resolved-id'],
+    })
   })
 
   it('supports non-streaming chat-run mode by suppressing deltas and returning final output', async () => {

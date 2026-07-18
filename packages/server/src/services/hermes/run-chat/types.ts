@@ -59,6 +59,19 @@ export interface QueuedRun {
   expert_avatar?: string
 }
 
+export interface PendingResumeEvent {
+  id: string
+  event: string
+  data: any
+  acknowledgedSocketIds?: Set<string>
+}
+
+export interface ParkedCredentialRun {
+  rowId: number
+  incarnation: number
+  resumeEvent: PendingResumeEvent
+}
+
 export interface SessionState {
   messages: SessionMessage[]
   messageTotal?: number
@@ -67,6 +80,8 @@ export interface SessionState {
   hasMoreBefore?: boolean
   isWorking: boolean
   events: Array<{ event: string; data: any }>
+  pendingTerminalEvents?: PendingResumeEvent[]
+  parkedCredentialRuns?: Map<string, ParkedCredentialRun>
   abortController?: AbortController
   goalEvaluationAbortController?: AbortController
   runId?: string

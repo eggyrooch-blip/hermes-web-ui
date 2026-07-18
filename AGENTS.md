@@ -70,3 +70,5 @@ constraint directly.
 
 - 2026-07-17: Workspace diff checkpointing runs on the shared Node server; synchronous Git/filesystem work blocks every tenant, so Git, scanning, and file reads must remain asynchronous and bounded.
 - 2026-07-17: Session deletion owns messages and both workspace-change tables as one SQLite unit; independent cleanup can leave permanent patches or partial deletion after a later statement fails.
+- 2026-07-18: A Socket.IO `connect_error` is retryable only while `socket.active`; replayed terminal events must not override newer authoritative resume state.
+- 2026-07-18: HTTP session deletion must abandon the exact in-memory session generation before deleting its row; a follow-up browser socket abort is not a server lifecycle guarantee.

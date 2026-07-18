@@ -50,7 +50,7 @@ import {
 } from './run-chat/handle-broker-run'
 import { extractResponseText, responseFunctionCallToToolCall, summarizeToolArguments } from './run-chat/response-utils'
 import { readSseFrames } from './run-chat/sse-utils'
-import type { ChatRunSource } from './run-chat/types'
+import type { ChatRunSource, ParkedCredentialRun, PendingResumeEvent } from './run-chat/types'
 import { rewriteAssistantMediaDirectives } from './media-directives'
 import {
   bindSessionGeneration,
@@ -59,6 +59,7 @@ import {
   readSessionGeneration,
   sessionGenerationsEqual,
   stateMatchesSessionGeneration,
+  type SessionGeneration,
 } from './run-chat/session-generation'
 
 /**
@@ -413,6 +414,8 @@ interface SessionState {
   messages: SessionMessage[]
   isWorking: boolean
   events: Array<{ event: string; data: any }>
+  pendingTerminalEvents?: PendingResumeEvent[]
+  parkedCredentialRuns?: Map<string, ParkedCredentialRun>
   abortController?: AbortController
   goalEvaluationAbortController?: AbortController
   runId?: string
@@ -876,6 +879,28 @@ export class BrokerRunController {
       this.resumeSession(socket, sid, profile)
     })
 
+    socket.on('resume.events.ack', (data: { session_id?: string; event_ids?: string[] }) => {
+      const sessionId = String(data.session_id || '').trim()
+      const eventIds = new Set(Array.isArray(data.event_ids) ? data.event_ids.map(String) : [])
+      if (!sessionId || eventIds.size === 0) return
+      const state = this.getSessionState(sessionId, profile)
+      if (!state) return
+      const pendingEvents = [
+        ...(state.pendingTerminalEvents || []),
+        ...Array.from(state.parkedCredentialRuns?.values() || [], parked => parked.resumeEvent),
+      ]
+      for (const event of pendingEvents) {
+        if (!eventIds.has(event.id)) continue
+        if (!event.acknowledgedSocketIds) event.acknowledgedSocketIds = new Set()
+        event.acknowledgedSocketIds.add(socket.id)
+        while (event.acknowledgedSocketIds.size > 100) {
+          const oldestSocketId = event.acknowledgedSocketIds.values().next().value
+          if (oldestSocketId === undefined) break
+          event.acknowledgedSocketIds.delete(oldestSocketId)
+        }
+      }
+    })
+
     socket.on('abort', (data: { session_id?: string }) => {
       if (data.session_id) {
         void this.handleAbort(socket, data.session_id, profile)
@@ -915,14 +940,30 @@ export class BrokerRunController {
     // parked request through the SAME socket-run relay so the answer streams back
     // into this chat session (the broker holds the original request; we do not
     // resend it from the client).
-    socket.on('credential.replay', async (data: { session_id?: string; run_id?: string; connector_id?: string; provider?: string }) => {
+    socket.on('credential.replay', async (data: { session_id?: string; run_id?: string }) => {
       const sessionId = String(data.session_id || '').trim()
       const runId = String(data.run_id || '').trim()
       if (!sessionId || !runId) return
-      await this.handleReplay(socket, sessionId, runId, profile, {
-        connectorId: String(data.connector_id || ''),
-        provider: String(data.provider || ''),
-      })
+      try {
+        await this.handleReplay(socket, sessionId, runId, profile)
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err)
+        logger.warn({ err, sessionId, runId }, '[chat-run-socket] credential replay failed before dispatch')
+        const state = this.getSessionState(sessionId, profile)
+        const parkedGeneration = state?.parkedCredentialRuns?.get(runId)
+        if (state && parkedGeneration
+          && parkedGeneration.rowId === state.sessionRowId
+          && parkedGeneration.incarnation === state.sessionIncarnation) {
+          const payload = this.recordParkedCredentialRun(
+            state,
+            sessionId,
+            parkedGeneration.resumeEvent.data,
+            true,
+          )
+          this.emitToSession(socket, sessionId, profile, 'auth.required', payload)
+        }
+        this.emitReplayFailure(socket, sessionId, runId, profile, detail, `Replay failed: ${detail}`)
+      }
     })
   }
   private handleMessage(messages: SessionMessage[], sid: string): any[] {
@@ -1076,12 +1117,21 @@ export class BrokerRunController {
       },
       loadState: () => this.loadSessionStateFromDb(sid, profile),
     })
+    const replayEvents = [
+      ...(state.isWorking ? state.events : []),
+      ...[
+        ...(state.pendingTerminalEvents || []),
+        ...Array.from(state.parkedCredentialRuns?.values() || [], parked => parked.resumeEvent),
+      ]
+        .filter(event => !event.acknowledgedSocketIds?.has(socket.id))
+        .map(({ id, event, data }) => ({ id, event, data })),
+    ]
     socket.emit('resumed', {
       session_id: sid,
       messages: state.messages,
       isWorking: state.isWorking,
       isAborting: state.isAborting || false,
-      events: state.isWorking ? state.events : [],
+      events: replayEvents,
       inputTokens: state.inputTokens,
       outputTokens: state.outputTokens,
       queueLength: state.queue?.length || 0,
@@ -1285,14 +1335,7 @@ export class BrokerRunController {
     const run = state.responseRun
     if (!run?.runMarker) return
     const firstUser = state.messages.find(msg => msg.role === 'user')?.content || ''
-    if (!getSession(sessionId)) {
-      createSessionAndBind(state, {
-        id: sessionId,
-        profile: state.profile || 'default',
-        agent: '',
-        title: firstUser.replace(/[\r\n]/g, ' ').slice(0, 100),
-      })
-    }
+    if (!getSession(sessionId)) throw new Error('Session no longer exists')
     const detail = getSessionDetail(sessionId)
     const hasUserMessage = detail?.messages?.some(message => message.role === 'user')
     if (firstUser && !hasUserMessage) {
@@ -1600,12 +1643,20 @@ export class BrokerRunController {
       const detail = detailSource instanceof Error ? detailSource.message : String(detailSource)
       releaseCommand()
       if (aborted) {
-        this.emitToSession(socket, sessionId, profile, 'abort.completed', {
+        const abortCompleted = {
           event: 'abort.completed',
+          session_id: sessionId,
           run_id: commandMarker,
           synced: true,
           queue_length: state.queue.length,
           failure_pending: Boolean(generationError),
+        }
+        const resumeEventId = generationError
+          ? this.recordPendingTerminalEvent(state, 'abort.completed', abortCompleted)
+          : undefined
+        this.emitToSession(socket, sessionId, profile, 'abort.completed', {
+          ...abortCompleted,
+          ...(resumeEventId ? { resume_event_id: resumeEventId } : {}),
         })
       }
       if (!aborted || generationError) {
@@ -1617,12 +1668,21 @@ export class BrokerRunController {
             logger.warn({ err: persistErr, sessionId }, '[chat-run-socket] failed to persist command error')
           }
         }
-        this.emitSessionCommand(socket, sessionId, profile, {
+        const commandFailed = {
+          event: 'session.command',
+          session_id: sessionId,
           command: parsed.name,
           ok: false,
           action: 'error',
           terminal: serialized ? state.queue.length === 0 : !state.isWorking,
           message,
+        }
+        const resumeEventId = generationError
+          ? this.recordPendingTerminalEvent(state, 'session.command', commandFailed)
+          : undefined
+        this.emitSessionCommand(socket, sessionId, profile, {
+          ...commandFailed,
+          ...(resumeEventId ? { resume_event_id: resumeEventId } : {}),
         })
       }
       if (serialized) this.dequeueNextQueuedRun(socket, sessionId, profile, state)
@@ -1714,7 +1774,7 @@ export class BrokerRunController {
 
     const runId = state.runId
     state.isAborting = true
-    this.replaceState(sessionId, profile, 'abort.started', {
+    this.replaceState(state, 'abort.started', {
       event: 'abort.started',
       run_id: runId,
       graceMs: 5000,
@@ -1741,8 +1801,8 @@ export class BrokerRunController {
     info: { event: string; run_id?: string; final_response?: string },
     isCurrentGeneration: () => boolean,
     persist: boolean,
-    failurePending = false,
-  ): Promise<{ finalized: boolean; error?: string; aborted?: boolean }> {
+    pendingFailure?: string,
+  ): Promise<{ finalized: boolean; error?: string; aborted?: boolean; pendingEventId?: string }> {
     const ownsRun = () => (
       this.getSessionState(sessionId, profileKey) === state
       && state.activeRunMarker === runMarker
@@ -1792,26 +1852,34 @@ export class BrokerRunController {
     state.responseRun = undefined
     state.profile = undefined
     state.events = []
+    const terminalError = finalizationError || pendingFailure
     if (wasAborting) {
-      this.replaceState(sessionId, profileKey, 'abort.completed', {
+      const abortCompleted = {
         event: 'abort.completed',
         run_id: completedRunId,
         synced: true,
         queue_length: state.queue.length,
-        failure_pending: Boolean(finalizationError || failurePending),
-      })
+        failure_pending: Boolean(terminalError),
+      }
+      const resumeEventId = this.recordPendingTerminalEvent(state, 'abort.completed', abortCompleted)
       this.emitToSession(socket, sessionId, profileKey, 'abort.completed', {
-        event: 'abort.completed',
-        run_id: completedRunId,
-        synced: true,
-        queue_length: state.queue.length,
-        failure_pending: Boolean(finalizationError || failurePending),
+        ...abortCompleted,
+        resume_event_id: resumeEventId,
+      })
+    }
+    let pendingEventId: string | undefined
+    if (terminalError) {
+      pendingEventId = this.recordPendingTerminalEvent(state, 'run.failed', {
+        event: 'run.failed',
+        error: terminalError,
+        queue_remaining: state.queue.length,
       })
     }
     return {
       finalized: true,
       ...(wasAborting ? { aborted: true } : {}),
-      ...(finalizationError ? { error: finalizationError } : {}),
+      ...(terminalError ? { error: terminalError } : {}),
+      ...(pendingEventId ? { pendingEventId } : {}),
     }
   }
 
@@ -1828,10 +1896,25 @@ export class BrokerRunController {
     state.responseRun = undefined
     state.profile = undefined
     state.events = []
+    state.parkedCredentialRuns?.clear()
     state.queue.length = 0
     const key = this.sessionStateKey(sessionId, profileKey)
     if (this.sessionMap.get(key) === state) this.sessionMap.delete(key)
     return true
+  }
+
+  /** Stop only the in-memory run bound to the DB row being deleted. */
+  abandonSessionRun(sessionId: string, profile: string | undefined, generation: SessionGeneration): boolean {
+    const profileKey = this.profileKey(profile)
+    const state = this.getSessionState(sessionId, profileKey)
+    if (!state
+      || generation.rowId == null
+      || generation.incarnation == null
+      || state.sessionRowId !== generation.rowId
+      || state.sessionIncarnation !== generation.incarnation) {
+      return false
+    }
+    return this.abandonRun(sessionId, profileKey, state, state.activeRunMarker)
   }
 
   private dequeueNextQueuedRun(
@@ -1933,6 +2016,9 @@ export class BrokerRunController {
     return handleRunChatBrokerRun(socket, data, profile, runMarker, emit, {
       sessionMap: this.scopedSessionMap(profile),
       getResponseRunState: this.getResponseRunState.bind(this),
+      recordParkedCredentialRun: (state, sessionId, payload) => (
+        this.recordParkedCredentialRun(state, sessionId, payload)
+      ),
       markCompleted: (socket, sessionId, state, marker, info, isCurrent, persist, failurePending) => (
         this.markCompleted(socket, sessionId, profile, state, marker, info, isCurrent, persist, failurePending)
       ),
@@ -1955,7 +2041,6 @@ export class BrokerRunController {
     sessionId: string,
     runId: string,
     profile: string,
-    card?: { connectorId: string; provider: string },
   ) {
     const runMarker = `resp_run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
     const state = await loadSessionStateWithGenerationFence({
@@ -1969,6 +2054,36 @@ export class BrokerRunController {
         ? await this.loadSessionStateFromDb(sessionId, profile)
         : { messages: [], isWorking: false, events: [], queue: [] },
     })
+    const replayGeneration = readSessionGeneration(sessionId)
+    if (replayGeneration.rowId == null || replayGeneration.incarnation == null
+      || !stateMatchesSessionGeneration(state, replayGeneration)) {
+      this.abandonRun(sessionId, profile, state, state.activeRunMarker)
+      this.emitReplayFailure(
+        socket,
+        sessionId,
+        runId,
+        profile,
+        'Session no longer exists',
+        'Replay failed because this session was deleted or replaced.',
+      )
+      logger.info({ sessionId, runId }, '[chat-run-socket] ignored credential replay for missing or replaced session')
+      return
+    }
+    const parkedGeneration = state.parkedCredentialRuns?.get(runId)
+    if (!parkedGeneration
+      || parkedGeneration.rowId !== replayGeneration.rowId
+      || parkedGeneration.incarnation !== replayGeneration.incarnation) {
+      state.parkedCredentialRuns?.delete(runId)
+      this.emitReplayFailure(
+        socket,
+        sessionId,
+        runId,
+        profile,
+        'Credential replay is no longer available',
+        'Replay failed because this authorization card belongs to an expired session run.',
+      )
+      return
+    }
     // Concurrency guard: the failed run that produced the re-auth card has
     // already completed (it emitted done), so isWorking is normally false here.
     // If another run is genuinely in-flight (e.g. the user sent a follow-up
@@ -1977,28 +2092,50 @@ export class BrokerRunController {
     // sibling run's tools/messages). Instead re-surface the re-auth card so the
     // user can retry once the session is idle — non-destructive.
     if (state.isWorking) {
-      if (card?.connectorId) {
-        this.nsp.to(this.sessionRoom(sessionId, profile)).emit('auth.required', {
-          event: 'auth.required',
-          session_id: sessionId,
-          run_id: runId,
-          connector_id: card.connectorId,
-          provider: card.provider,
-        })
-      }
+      const payload = this.recordParkedCredentialRun(
+        state,
+        sessionId,
+        parkedGeneration.resumeEvent.data,
+        true,
+      )
+      this.nsp.to(this.sessionRoom(sessionId, profile)).emit('auth.required', payload)
       return
     }
+    if (!config.webuiRunBroker) {
+      state.parkedCredentialRuns?.delete(runId)
+      this.emitReplayFailure(
+        socket,
+        sessionId,
+        runId,
+        profile,
+        'Run broker is unavailable',
+        'Replay failed because the run broker is unavailable.',
+        state,
+      )
+      return
+    }
+    socket.join(this.sessionRoom(sessionId, profile))
+    const resolved = {
+      event: 'auth.resolved',
+      session_id: sessionId,
+      run_id: runId,
+      session_row_id: parkedGeneration.rowId,
+      session_incarnation: parkedGeneration.incarnation,
+    }
+    const resolvedId = this.recordPendingTerminalEvent(state, 'auth.resolved', resolved)
+    this.emitToSession(socket, sessionId, profile, 'auth.resolved', {
+      ...resolved,
+      resume_event_id: resolvedId,
+    })
+    state.parkedCredentialRuns?.delete(runId)
     state.isWorking = true
     state.events = []
     state.profile = profile
-    socket.join(this.sessionRoom(sessionId, profile))
 
     const emit = (event: string, payload: any) => {
       this.nsp.to(this.sessionRoom(sessionId, profile)).emit(event, { ...payload, session_id: sessionId })
     }
-    if (config.webuiRunBroker) {
-      await this.handleBrokerRun(socket, { input: '', session_id: sessionId, replay_run_id: runId }, profile, runMarker, emit)
-    }
+    await this.handleBrokerRun(socket, { input: '', session_id: sessionId, replay_run_id: runId }, profile, runMarker, emit)
   }
 
 
@@ -2018,23 +2155,108 @@ export class BrokerRunController {
     return state
   }
 
-  /** Append a state event for a session (used for replay on reconnect) */
-  private pushState(sessionId: string, profile: string | undefined, event: string, data: any) {
-    const state = this.getOrCreateSession(sessionId, profile)
+  /** Replace the last state with the same event name, or append if different */
+  private replaceState(state: SessionState, event: string, data: any) {
+    const idx = state.events.findIndex(s => s.event === event)
+    if (idx >= 0) {
+      state.events[idx] = { event, data }
+      return
+    }
     state.events.push({ event, data })
   }
 
-  /** Replace the last state with the same event name, or append if different */
-  private replaceState(sessionId: string, profile: string | undefined, event: string, data: any) {
-    const state = this.getSessionState(sessionId, profile)
-    if (state) {
-      const idx = state.events.findIndex(s => s.event === event)
-      if (idx >= 0) {
-        state.events[idx] = { event, data }
-        return
+  private recordPendingTerminalEvent(state: SessionState, event: string, data: any): string {
+    const pending = state.pendingTerminalEvents || []
+    const id = `terminal_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+    pending.push({
+      id,
+      event,
+      data,
+    })
+    state.pendingTerminalEvents = pending.slice(-20)
+    return id
+  }
+
+  private recordParkedCredentialRun(
+    state: SessionState,
+    sessionId: string,
+    data: any,
+    renew = false,
+  ): any {
+    const runId = String(data.run_id || '').trim()
+    if (!runId || state.sessionRowId == null || state.sessionIncarnation == null) return data
+    const parkedRuns = state.parkedCredentialRuns || new Map<string, ParkedCredentialRun>()
+    const existing = parkedRuns.get(runId)
+    const reuseExisting = !renew
+      && existing?.rowId === state.sessionRowId
+      && existing.incarnation === state.sessionIncarnation
+    const id = reuseExisting
+      ? existing.resumeEvent.id
+      : `credential_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+    const payload = {
+      ...data,
+      event: 'auth.required',
+      session_id: sessionId,
+      session_row_id: state.sessionRowId,
+      session_incarnation: state.sessionIncarnation,
+      resume_event_id: id,
+    }
+    parkedRuns.delete(runId)
+    parkedRuns.set(runId, {
+      rowId: state.sessionRowId,
+      incarnation: state.sessionIncarnation,
+      resumeEvent: {
+        id,
+        event: 'auth.required',
+        data: payload,
+        ...(reuseExisting && existing.resumeEvent.acknowledgedSocketIds
+          ? { acknowledgedSocketIds: existing.resumeEvent.acknowledgedSocketIds }
+          : {}),
+      },
+    })
+    while (parkedRuns.size > 20) {
+      const oldestRunId = parkedRuns.keys().next().value
+      if (oldestRunId === undefined) break
+      parkedRuns.delete(oldestRunId)
+    }
+    state.parkedCredentialRuns = parkedRuns
+    return payload
+  }
+
+  private emitReplayFailure(
+    socket: Socket,
+    sessionId: string,
+    runId: string,
+    profile: string,
+    error: string,
+    message: string,
+    state?: SessionState,
+  ): void {
+    const payload = {
+      event: 'run.reattach_failed',
+      session_id: sessionId,
+      run_id: runId,
+      terminal: true,
+      error,
+      message,
+    }
+    let resumeEventId: string | undefined
+    if (state && this.getSessionState(sessionId, profile) === state) {
+      try {
+        const generation = readSessionGeneration(sessionId)
+        if (generation.rowId != null && generation.incarnation != null
+          && state.sessionRowId === generation.rowId
+          && state.sessionIncarnation === generation.incarnation) {
+          resumeEventId = this.recordPendingTerminalEvent(state, 'run.reattach_failed', payload)
+        }
+      } catch (err) {
+        logger.warn({ err, sessionId, runId }, '[chat-run-socket] could not persist replay failure')
       }
     }
-    this.pushState(sessionId, profile, event, data)
+    socket.emit('run.reattach_failed', {
+      ...payload,
+      ...(resumeEventId ? { resume_event_id: resumeEventId } : {}),
+    })
   }
 
   private emitToSession(socket: Socket, sessionId: string, profile: string | undefined, event: string, payload: any) {

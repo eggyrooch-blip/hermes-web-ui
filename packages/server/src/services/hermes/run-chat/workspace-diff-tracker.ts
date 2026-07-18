@@ -36,12 +36,33 @@ function releaseWorkspaceDiffOperation(): void {
   else activeDiffOperations -= 1
 }
 
-async function withWorkspaceDiffOperation<T>(operation: (lease: WorkspaceDiffOperationLease) => Promise<T>): Promise<T> {
-  if (activeDiffOperations >= MAX_CONCURRENT_DIFF_OPERATIONS) {
-    await new Promise<void>(resolveWaiter => diffOperationWaiters.push(resolveWaiter))
-  } else {
+async function acquireWorkspaceDiffOperation(deadline: number): Promise<boolean> {
+  if (Date.now() >= deadline) return false
+  if (activeDiffOperations < MAX_CONCURRENT_DIFF_OPERATIONS) {
     activeDiffOperations += 1
+    return true
   }
+
+  let resolveWaiter: () => void = () => {}
+  const acquired = new Promise<void>((resolveAcquire) => {
+    resolveWaiter = resolveAcquire
+  })
+  diffOperationWaiters.push(resolveWaiter)
+  const result = await waitUntilDeadline(acquired, deadline)
+  if (result === DEADLINE_EXCEEDED || Date.now() >= deadline) {
+    const waiterIndex = diffOperationWaiters.indexOf(resolveWaiter)
+    if (waiterIndex >= 0) diffOperationWaiters.splice(waiterIndex, 1)
+    else releaseWorkspaceDiffOperation()
+    return false
+  }
+  return true
+}
+
+async function withWorkspaceDiffOperation<T>(
+  deadline: number,
+  operation: (lease: WorkspaceDiffOperationLease) => Promise<T>,
+): Promise<T | null> {
+  if (!(await acquireWorkspaceDiffOperation(deadline))) return null
   const retained: Promise<unknown>[] = []
   try {
     return await operation({
@@ -407,37 +428,75 @@ function shouldSkipRelativePath(relPath: string): boolean {
   })
 }
 
-function parseGitStatusPaths(output: string): string[] {
-  const parts = output.split('\0').filter(Boolean)
+async function parseGitStatusPaths(output: string, deadline: number): Promise<WorkspacePathScan> {
   const paths = new Set<string>()
-  for (let i = 0; i < parts.length; i += 1) {
-    const entry = parts[i]
+  let cursor = 0
+  let entriesRead = 0
+  let truncated = false
+
+  const nextPart = (): string | null => {
+    if (cursor >= output.length) return null
+    const separator = output.indexOf('\0', cursor)
+    const end = separator >= 0 ? separator : output.length
+    const part = output.slice(cursor, end)
+    cursor = separator >= 0 ? separator + 1 : output.length
+    return part
+  }
+
+  while (cursor < output.length) {
+    if (Date.now() >= deadline) {
+      truncated = true
+      break
+    }
+    const entry = nextPart()
+    if (!entry) continue
+    entriesRead += 1
+    if (entriesRead % 256 === 0) await new Promise<void>(resolveYield => setImmediate(resolveYield))
     if (entry.length < 4) continue
     const status = entry.slice(0, 2)
     if (status.includes('R') || status.includes('C')) {
       const path = normalizeRelPath(entry.slice(3))
-      const pairedPath = normalizeRelPath(parts[i + 1] || '')
-      i += 1
+      const pairedPath = normalizeRelPath(nextPart() || '')
+      entriesRead += 1
       if (!path || !pairedPath || shouldSkipRelativePath(path) || shouldSkipRelativePath(pairedPath)) continue
-      paths.add(path)
-      paths.add(pairedPath)
+      for (const candidate of [path, pairedPath]) {
+        if (paths.size >= MAX_TRACKED_STATUS_PATHS) {
+          truncated = true
+          break
+        }
+        paths.add(candidate)
+      }
+      if (truncated) break
       continue
     }
     const path = normalizeRelPath(entry.slice(3))
     if (!path || shouldSkipRelativePath(path)) continue
+    if (paths.size >= MAX_TRACKED_STATUS_PATHS) {
+      truncated = true
+      break
+    }
     paths.add(path)
+    if (paths.size >= MAX_TRACKED_STATUS_PATHS && cursor < output.length) {
+      truncated = true
+      break
+    }
   }
-  return [...paths]
+  return { paths: [...paths], truncated }
 }
 
-async function getGitStatusPaths(gitRoot: string): Promise<WorkspacePathScan> {
+async function getGitStatusPaths(
+  gitRoot: string,
+  deadline: number,
+  lease: WorkspaceDiffOperationLease,
+): Promise<WorkspacePathScan> {
   try {
-    const output = await runGit(gitRoot, ['status', '--porcelain=v1', '-z', '--untracked-files=normal'], 4 * 1024 * 1024)
-    const paths = parseGitStatusPaths(output)
-    return {
-      paths: paths.slice(0, MAX_TRACKED_STATUS_PATHS),
-      truncated: paths.length > MAX_TRACKED_STATUS_PATHS,
-    }
+    const output = await waitForSnapshotOperation(
+      () => runGit(gitRoot, ['status', '--porcelain=v1', '-z', '--untracked-files=normal'], 4 * 1024 * 1024),
+      deadline,
+      lease,
+    )
+    if (output === DEADLINE_EXCEEDED) return { paths: [], truncated: true }
+    return parseGitStatusPaths(output, deadline)
   } catch (err) {
     logger.warn({ err, gitRoot }, '[workspace-diff] failed to inspect git status')
     return { paths: [], truncated: true }
@@ -548,11 +607,22 @@ async function scanFilesystemPaths(
     } catch {
       truncated = true
     } finally {
-      if (!deferredClose) await dir.close().catch(() => {})
+      if (!deferredClose) {
+        const closePromise = dir.close().catch(() => undefined)
+        const closeResult = await waitUntilDeadline(closePromise, deadline)
+        if (closeResult === DEADLINE_EXCEEDED) {
+          lease.retainUntil(closePromise)
+          truncated = true
+        }
+      }
     }
   }
 
-  paths.sort((left, right) => left.localeCompare(right))
+  if (paths.length > 1) {
+    await new Promise<void>(resolveYield => setImmediate(resolveYield))
+    paths.sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
+    await new Promise<void>(resolveYield => setImmediate(resolveYield))
+  }
   return { paths, truncated }
 }
 
@@ -836,15 +906,14 @@ async function buildWorkspaceRunCheckpoint(args: {
   sessionId: string
   runId: string
   workspace: string
-}, lease: WorkspaceDiffOperationLease): Promise<WorkspaceRunCheckpoint | null> {
+}, lease: WorkspaceDiffOperationLease, deadline: number): Promise<WorkspaceRunCheckpoint | null> {
   const sessionRowId = getSessionRowId(args.sessionId)
   const sessionIncarnation = getSessionIncarnation(args.sessionId)
   if (sessionRowId == null || sessionIncarnation == null) return null
-  const deadline = Date.now() + MAX_SCAN_MS
   const gitRoot = await resolveGitRoot(args.workspace, deadline, lease)
   if (gitRoot === DEADLINE_EXCEEDED) return null
   if (gitRoot) {
-    const status = await getGitStatusPaths(gitRoot)
+    const status = await getGitStatusPaths(gitRoot, deadline, lease)
     const snapshot = await snapshotPaths(
       gitRoot,
       status.paths,
@@ -897,11 +966,12 @@ export async function startWorkspaceRunCheckpoint(args: {
   const key = checkpointKey(args.sessionId, runId || `pending:${randomUUID()}`)
   let checkpointPromise = checkpoints.get(key)
   if (!checkpointPromise) {
-    checkpointPromise = withWorkspaceDiffOperation(lease => buildWorkspaceRunCheckpoint({
+    const deadline = Date.now() + MAX_SCAN_MS
+    checkpointPromise = withWorkspaceDiffOperation(deadline, lease => buildWorkspaceRunCheckpoint({
       sessionId: args.sessionId,
       runId,
       workspace,
-    }, lease)).catch((err) => {
+    }, lease, deadline)).catch((err) => {
       logger.warn({ err, workspace }, '[workspace-diff] failed to start checkpoint')
       return null
     })
@@ -946,12 +1016,13 @@ export async function completeWorkspaceRunCheckpoint(args: {
   if (!checkpoint) return null
   if (!runId) return null
 
-  return withWorkspaceDiffOperation(async (lease) => {
-  const filesystemDeadline = Date.now() + MAX_SCAN_MS
+  const acquisitionDeadline = Date.now() + MAX_SCAN_MS
+  return withWorkspaceDiffOperation(acquisitionDeadline, async (lease) => {
+  const filesystemDeadline = acquisitionDeadline
   const status = checkpoint.kind === 'git'
-    ? await getGitStatusPaths(checkpoint.root)
+    ? await getGitStatusPaths(checkpoint.root, filesystemDeadline, lease)
     : await scanFilesystemPaths(checkpoint.root, lease, filesystemDeadline)
-  const snapshotDeadline = checkpoint.kind === 'git' ? Date.now() + MAX_SCAN_MS : filesystemDeadline
+  const snapshotDeadline = filesystemDeadline
   const relPaths = [...new Set([...checkpoint.files.keys(), ...status.paths].filter(path => !shouldSkipRelativePath(path)))]
   const files = []
   let totalPatchBytes = 0

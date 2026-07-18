@@ -75,6 +75,23 @@ related:
 > remains attached to the correct generation.
 > Pre-admission identity failures use requester-scoped `run.rejected(queue_id)`;
 > the client settles only a rejected owning request and leaves an active sibling live.
+> Reconnecting runs reuse the same Socket.IO instance for an unchanged profile,
+> transport, and agent. `connect_error` is retryable only while `socket.active`;
+> inactive initial or exhausted reconnect failures dispose the exact owner and its
+> listeners. Resume processing also treats current `isAborting` as authoritative, so
+> an older replayed `abort.completed` is acknowledged without clearing a live abort.
+> Stable resume IDs are applied before exact per-socket ACK and include accepted
+> `auth.resolved` events.
+> Credential replay is row/incarnation/run-bound and uses only the server's parked
+> connector/provider metadata. Busy replay rotates and re-surfaces the card, while a
+> pre-dispatch identity/load failure restores a fresh card before its terminal error.
+> Accepted replay broadcasts a stable `auth.resolved` to all session tabs until each
+> socket acknowledges it; the Global Agent transport relays both that event and
+> `resume.events.ack`.
+> HTTP single and batch deletion abandon the exact row/incarnation generation before
+> remote Hermes or local SQLite deletion. The broker matches that generation, and the
+> corresponding generic chat runtime is synchronously detached server-side before the
+> deletion awaits, so correctness does not depend on a later browser socket abort.
 > Regressions cover rollback, same-id delete/recreate races, a valid file after
 > 5,200 skipped entries, late-opendir/lstat cleanup, six concurrent checkpoints,
 > setup rejection, diff-await enqueue, abort-with-queued-run, replacement-room SSE,
@@ -82,10 +99,13 @@ related:
 > setup/handoff/write exceptions, resume/replay load CAS, command reservation/recreate/
 > abort, requester-scoped rejection, hanging-old-upstream abort, guarded usage, and
 > finalization exception races. A dedicated regression also aborts a hanging goal
-> evaluation without any upstream response. The latest lifecycle/auth/expert
-> verification is 11 files / 161 passed; server/client
+> evaluation without any upstream response. Added lifecycle/auth coverage includes
+> inactive socket fatal cleanup, historical abort-completion fencing, exact-generation
+> HTTP deletion ordering, server-authoritative replay, pre-dispatch card restoration,
+> multi-tab `auth.resolved` replay/ACK, and Global Agent forwarding. Server/client
 > typechecks and `git diff --check` pass. The broad workspace verification was
-> 4 files / 76 passed; the current full suite is 320 files / 2542 passed / 2 skipped.
+> 4 files / 76 passed; the final full suite is 320 files / 2591 passed / 2 skipped
+> (2593 total).
 > Production build and `harness:check` pass; independent review must still approve
 > the new frozen hash. Evidence
 > is recorded in `docs/chat-chain-changes/2026-07-17-workspace-diff-release-blockers.md`.
@@ -1415,7 +1435,7 @@ CLAUDE.md 写过：dev 模式下"`hermes` CLI 必须在 `$PATH`"——确实，s
 
 ## Changelog
 
-- 2026-07-17：`webui-release-blockers` 将 workspace diff 的 Git、目录、文件与 patch 子进程改为异步 I/O；broker、bridge、coding-agent 均在 baseline 完成后才启动 run，并在 terminal event 前等待 diff，broker terminal 还会先完成 diff 再调用 `markCompleted`，避免 goal continuation 抢先污染旧 run 的 diff。Git 单子进程 5 秒保护与 workspace root Git 探测/`realpath`/`stat`、扫描/snapshot/HEAD/patch 共用的 1 秒绝对截止同时生效；Git 根超时作为独立结果传播，不能在最后一个 timer tick 再启动 filesystem fallback。扫描改用 `opendir` 流式读取且不新增目录项硬上限，昂贵 diff 全局并发为 2；超时目录 I/O eventual close，迟到 `realpath/stat/lstat/readFile`、Git HEAD/no-index patch 等待 settlement/临时目录清理，清理前都保留 lease。patch 按有效 UTF-8 字节前缀截断，CJK/emoji 不超预算且不产生坏码点。patch 写入与三条 await 后启动检查同时匹配 session rowid + 进程内 incarnation，避免同 ID 删除重建后复活旧 patch/run。`deleteSession()` 同事务清理 message、session、workspace summary/file rows；显式 abort 可单靠 linked signal 结束永久挂起的 goal evaluate。Focused lifecycle/auth/expert 11 files / 161 passed，full 320 files / 2542 passed / 2 skipped，typecheck/build/harness/diff-check 通过；当前仅 ftask worktree，待新 hash 独立复审，未 push、未合入 main、未发布生产。
+- 2026-07-17：`webui-release-blockers` 将 workspace diff 的 Git、目录、文件与 patch 子进程改为异步 I/O；broker、bridge、coding-agent 均在 baseline 完成后才启动 run，并在 terminal event 前等待 diff，broker terminal 还会先完成 diff 再调用 `markCompleted`，避免 goal continuation 抢先污染旧 run 的 diff。Git 单子进程 5 秒保护与 workspace root Git 探测/`realpath`/`stat`、扫描/snapshot/HEAD/patch 共用的 1 秒绝对截止同时生效；Git 根超时作为独立结果传播，不能在最后一个 timer tick 再启动 filesystem fallback。扫描改用 `opendir` 流式读取且不新增目录项硬上限，昂贵 diff 全局并发为 2；超时目录 I/O eventual close，迟到 `realpath/stat/lstat/readFile`、Git HEAD/no-index patch 等待 settlement/临时目录清理，清理前都保留 lease。patch 按有效 UTF-8 字节前缀截断，CJK/emoji 不超预算且不产生坏码点。patch 写入与三条 await 后启动检查同时匹配 session rowid + 进程内 incarnation，避免同 ID 删除重建后复活旧 patch/run。`deleteSession()` 同事务清理 message、session、workspace summary/file rows；HTTP 删除在远端 Hermes 和本地 SQLite 前先同步 abandon 精确 row/incarnation；显式 abort 可单靠 linked signal 结束永久挂起的 goal evaluate。Socket 仅在 `socket.active` 时把 `connect_error` 视为可重试，resume 的当前 `isAborting` 不会被历史 `abort.completed` 覆盖。凭证重放只信服务端 parked metadata，predispatch 失败会恢复 auth card，接受后用稳定 `auth.resolved` 跨 tab/Global Agent relay 并按 socket ACK。最终 full Vitest 320 files / 2591 passed / 2 skipped（2593 total），client/server typecheck、build、harness、diff-check 通过；当前仅 ftask worktree，待新 hash 独立复审，未 push、未合入 main、未发布生产。
 - 2026-07-10：`webui-message-list-hotfix` 修复 upstream chat hydration 回归。Socket resume 为空、stale-zero 或 15 秒超时时，client 查询 paginated history；迟到页与 foreground visibility resume 通过 per-session epoch/request-start serialized snapshot merge 保留新消息和 partial-page omissions，同时让未变的 same-ID 本地行接受服务端最终内容；current/server 顺序按稳定相邻 ID 合并，空 reconnect 不清 transcript。user/command `queue_id` 以 `messages.client_id` 贯通本地存储、普通/abort 后队列出队、DB-to-socket、broker sync、coding-agent、resume 与 paginated；恢复候选只认稳定 client identity 后的 server order 或明确 run marker。`messages.run_id` 贯通 Responses、Run Broker、coding-agent、bridge flush/resume 与 paginated contract。回归为 focused client 95 passed、server 186 passed、full 313 files / 2395 passed / 2 skipped，`harness:check` 与 build passed；隔离 worktree `:8750` 用真实 DB snapshot 在 resume timeout 后得到 paginated `200`、7 条可见消息、空态 0。历史页 10 条均有 `run_id` 字段但非空值为 0，因此浏览器只证明 hydration/shape，新写 identity 由测试证明。完整加固已合入本机 main `1931e4a1`，main build 通过并已重启 `com.hermes.ekko-webui`，`:8648/health` OK、等待用户浏览器验收；生产未部署/未验证。
 - 2026-06-24：修复 WebUI `HERMES_WEBUI_RUN_BROKER=1` 下历史会话打开/Socket.IO resume 读成 0 条消息的问题。根因是 legacy `BrokerRunController.loadSessionStateFromDb()` 仍优先读取 Hermes profile `state.db`，而 WebUI chat-plane 的 `api_server` 会话权威数据在 `HERMES_WEB_UI_HOME/hermes-web-ui.db`；因此像 `mqqp3wbly94h7d` 这种本地 WebUI 历史会话在列表和分页详情里存在，但 socket resume 会变成空上下文。修复为 broker resume 在当前 socket profile 匹配且 local row `source=api_server` 时先读取 WebUI local session store，否则按当前 profile fallback 到 profile `state.db`，保持 CLI/imported Hermes history 兼容；运行期 `sessionMap` 与 Socket.IO room 都按 profile scoped key 分桶，避免同名 session id 跨 profile hydrate/replay/live event 串流；broker follow-up 完成后的 usage 计算复用同一 profile-aware detail loader，避免本地会话缺 profile `state.db` 时把 usage 覆写成 0/0。回归：新增 `tests/server/broker-controller-resume-local-store.test.ts`，并通过 focused `broker-controller-resume-local-store/run-chat-load-state/run-chat-broker/sessions-controller/session-detail-db` 5 files / 51 passed；`npm run build` passed；补丁分支 built server 在本机临时 `:18935` 上 `/health` 返回 ok，带本地短期 admin JWT 调 `/api/hermes/sessions/conversations/mqqp3wbly94h7d/messages/paginated?profile=feishu_g41a5b5g&limit=5` 返回 `total=39/count=5/hasMore=true`。当前仅本机待合入 main，生产未发布。
 - 2026-06-29：本地分支 `kep-cli-pre-auth` 将 WebUI 连接器里的 `kep-cli` 拆成 `kep-cli online` / `kep-cli pre` 两个可独立授权的凭证页。前端保留 broker row 的 `action.env` 并 POST 到 `/api/auth/skill-credentials/:id/start`；BFF 也能从 `kep-cli-online` / `kep-cli-pre` id 推导 env，分别启动 profile-scoped `kep-auth --env online|pre login`。本地 fallback status 同时返回两个 row，skill 声明 `--env pre` 时只把 `required_by` 挂到 pre，不把 online 登录态误报成 pre 可用；legacy `kep-cli` / `keep-cli` 行仍归 Internal systems 并兼容 online。回归：`tests/server/connector-registry-client.test.ts tests/client/api.test.ts tests/client/credentials-view.test.ts tests/server/skill-credentials.test.ts` 为 91 passed；client/server typecheck 通过；full `bun run test` 为 298 files / 2193 passed / 2 skipped。TEST gate 里发现 worktree+symlinked `node_modules` 会把裸 `stream` 误解析为 `<worktree>/stream`，已把 runtime/type imports 规范化为 `node:stream`。生产未发布。

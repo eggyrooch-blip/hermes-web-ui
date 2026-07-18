@@ -29,6 +29,7 @@ import { userCanAccessProfile } from '../../../db/hermes/users-store'
 import { config } from '../../../config'
 import { BrokerRunController } from '../broker-controller'
 import { ensureHermesRunWorkspace } from './workspace'
+import type { SessionGeneration } from './session-generation'
 
 export type { ContentBlock } from './types'
 
@@ -711,6 +712,18 @@ export class ChatRunSocket {
 
   private canAccessProfile(user: AuthenticatedUser, profile: string): boolean {
     return user.role === 'super_admin' || userCanAccessProfile(user.id, profile)
+  }
+
+  /** Synchronously detach an HTTP-deleted session from every chat runtime. */
+  abandonSessionRun(sessionId: string, profile: string | undefined, generation: SessionGeneration): boolean {
+    const brokerAbandoned = this.brokerController.abandonSessionRun(sessionId, profile, generation)
+    const state = this.sessionMap.get(sessionId)
+    if (!state) return brokerAbandoned
+    state.abortController?.abort()
+    state.goalEvaluationAbortController?.abort()
+    state.queue.length = 0
+    this.sessionMap.delete(sessionId)
+    return true
   }
 
   /** Close all active upstream response streams */

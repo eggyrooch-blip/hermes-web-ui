@@ -693,6 +693,7 @@ export async function runBrokerGoalEvaluate(options: {
 export type HandleBrokerRunContext = {
   sessionMap: Map<string, SessionState>
   getResponseRunState: (state: SessionState, runMarker?: string) => ResponseRunState
+  recordParkedCredentialRun: (state: SessionState, sessionId: string, payload: any) => any
   markCompleted: (
     socket: Socket,
     sessionId: string,
@@ -701,8 +702,8 @@ export type HandleBrokerRunContext = {
     info: { event: string; run_id?: string; final_response?: string },
     isCurrent: () => boolean,
     persist: boolean,
-    failurePending?: boolean,
-  ) => Promise<{ finalized: boolean; error?: string; aborted?: boolean }>
+    pendingFailure?: string,
+  ) => Promise<{ finalized: boolean; error?: string; aborted?: boolean; pendingEventId?: string }>
   abandonRun: (sessionId: string, state: SessionState, runMarker: string | undefined) => boolean
   dequeueNextQueuedRun: (socket: Socket, sessionId: string, state: SessionState) => boolean
   buildInput: (input: string | ContentBlock[], profile: string) => Promise<any>
@@ -780,6 +781,9 @@ export async function handleBrokerRun(
   const finishRun = async (info: { event: string; run_id?: string; final_response?: string }) => {
     if (!identityError && abandonStaleRunSafely()) return false
     if (!session_id || !state) return true
+    const identityFailure = () => identityError instanceof Error
+      ? identityError.message
+      : identityError == null ? undefined : String(identityError)
     let result = await context.markCompleted(
       socket,
       session_id,
@@ -791,21 +795,23 @@ export async function handleBrokerRun(
         return !identityError && !generationChanged
       },
       !identityError,
-      Boolean(identityError),
+      identityFailure(),
     )
     if (!result.finalized && identityError && isCurrentRun()) {
-      result = await context.markCompleted(socket, session_id, state, runMarker, info, () => true, false, true)
+      result = await context.markCompleted(socket, session_id, state, runMarker, info, () => true, false, identityFailure())
     }
     if (!result.finalized) {
       if (!identityError) abandonStaleRunSafely()
       return false
     }
-    if (identityError && !result.error) {
-      result.error = identityError instanceof Error ? identityError.message : String(identityError)
-    }
     if (result.error) {
       const queueLen = queueLength()
-      emit('run.failed', { event: 'run.failed', error: result.error, queue_remaining: queueLen })
+      emit('run.failed', {
+        event: 'run.failed',
+        error: result.error,
+        queue_remaining: queueLen,
+        ...(result.pendingEventId ? { resume_event_id: result.pendingEventId } : {}),
+      })
       dequeueNext()
       return false
     }
@@ -836,6 +842,19 @@ export async function handleBrokerRun(
   // replayed answer streams into the same chat session.
   const replayRunId = typeof data.replay_run_id === 'string' ? data.replay_run_id.trim() : ''
   const isReplay = replayRunId.length > 0
+  let replayRejected = false
+  const rejectReplay = () => {
+    if (!isReplay || replayRejected || !session_id) return
+    replayRejected = true
+    socket.emit('run.reattach_failed', {
+      event: 'run.reattach_failed',
+      session_id,
+      run_id: replayRunId,
+      terminal: true,
+      error: 'Session no longer exists',
+      message: 'Replay failed because this session was deleted or replaced.',
+    })
+  }
   const brokerUrl = config.runBrokerUrl
   const ownerOpenId = (socket.data?.user?.openid as string | undefined)?.trim()
   const agentId = (socket.data?.agentId as string | undefined)?.trim()
@@ -848,10 +867,9 @@ export async function handleBrokerRun(
   let workspaceDiffSessionIncarnation: number | null = null
   let identityCaptured = false
   const sessionGenerationChanged = () => {
-    if (!identityCaptured || identityError || !session_id || !sessionRow) return false
+    if (!identityCaptured || identityError || !session_id) return false
     try {
-      return workspaceDiffSessionRowId == null || getSessionRowId(session_id) !== workspaceDiffSessionRowId
-        || workspaceDiffSessionIncarnation == null
+      return getSessionRowId(session_id) !== workspaceDiffSessionRowId
         || getSessionIncarnation(session_id) !== workspaceDiffSessionIncarnation
     } catch (err) {
       identityError = err
@@ -867,6 +885,7 @@ export async function handleBrokerRun(
     }
     discardWorkspaceRunCheckpoint({ sessionId: session_id, checkpoint: workspaceDiffCheckpoint })
     context.abandonRun(session_id, state, runMarker)
+    rejectReplay()
     return true
   }
   const emitWorkspaceDiffCompleted = async () => {
@@ -896,6 +915,11 @@ export async function handleBrokerRun(
     } catch (err) {
       identityError = err
       throw err
+    }
+    if (isReplay && (!sessionRow || workspaceDiffSessionRowId == null || workspaceDiffSessionIncarnation == null)) {
+      if (session_id && state) context.abandonRun(session_id, state, runMarker)
+      rejectReplay()
+      return
     }
     workspace = (!isReplay && session_id)
       ? await ensureHermesRunWorkspace(profile, sessionRow?.workspace || data.workspace)
@@ -996,6 +1020,10 @@ export async function handleBrokerRun(
               }
             }
             const now = Math.floor(Date.now() / 1000)
+
+            if (mapped.event === 'auth.required') {
+              mapped.payload = context.recordParkedCredentialRun(currentState, session_id, mapped.payload)
+            }
 
             if (mapped.event === 'message.delta' && mapped.persistAssistantContent) {
               const deltaText = mapped.payload.delta || ''

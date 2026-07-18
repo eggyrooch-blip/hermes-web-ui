@@ -78,10 +78,23 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/workspace-diff-track
 }))
 
 import { BrokerRunController } from '../../packages/server/src/services/hermes/broker-controller'
+import { config } from '../../packages/server/src/config'
 
 function sseDone(runId = 'run-1', output = ''): ReadableStream<Uint8Array> {
   const data = JSON.stringify({ kind: 'done', run_id: runId, ...(output ? { text: output } : {}) })
   const bytes = new TextEncoder().encode(`event: done\ndata: ${data}\n\n`)
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes)
+      controller.close()
+    },
+  })
+}
+
+function sseFrames(frames: Array<{ event: string; data: Record<string, unknown> }>): ReadableStream<Uint8Array> {
+  const bytes = new TextEncoder().encode(frames
+    .map(frame => `event: ${frame.event}\ndata: ${JSON.stringify(frame.data)}\n\n`)
+    .join(''))
   return new ReadableStream({
     start(controller) {
       controller.enqueue(bytes)
@@ -97,6 +110,9 @@ function controlledSse() {
     stream,
     send(event: string, data: Record<string, unknown>) {
       controller.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+    },
+    close() {
+      controller.close()
     },
   }
 }
@@ -135,6 +151,27 @@ function makeHarness() {
   return { controller, emitted, handlers, socket }
 }
 
+function parkCredentialRun(controller: BrokerRunController, runId = 'parked-run') {
+  const state = (controller as any).getOrCreateSession('s1', 'research')
+  state.parkedCredentialRuns ||= new Map()
+  state.parkedCredentialRuns.set(runId, {
+    rowId: 1,
+    incarnation: 1,
+    resumeEvent: {
+      id: `credential-${runId}`,
+      event: 'auth.required',
+      data: {
+        event: 'auth.required',
+        session_id: 's1',
+        run_id: runId,
+        connector_id: 'connector-1',
+        provider: 'feishu',
+      },
+    },
+  })
+  return state
+}
+
 async function waitForSecondFetch(fetchMock: ReturnType<typeof vi.fn>) {
   await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
 }
@@ -142,12 +179,43 @@ async function waitForSecondFetch(fetchMock: ReturnType<typeof vi.fn>) {
 describe('BrokerRunController run lifecycle', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    config.webuiRunBroker = true
     store.getSession.mockReturnValue({ id: 's1', profile: 'research', workspace: '/tmp/workspace' })
     store.getSessionDetail.mockReturnValue({ id: 's1', profile: 'research', source: 'api_server', messages: [] })
     store.getSessionRowId.mockReturnValue(1)
     store.getSessionIncarnation.mockReturnValue(1)
     tracker.start.mockResolvedValue({ key: 'checkpoint' })
     tracker.complete.mockResolvedValue(null)
+  })
+
+  it('abandons only the exact HTTP-deleted generation without waiting for a socket abort', async () => {
+    let upstreamSignal: AbortSignal | undefined
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      upstreamSignal = init?.signal || undefined
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, handlers } = makeHarness()
+
+    const running = handlers.get('run')!({ input: 'keep working', session_id: 's1', queue_id: 'run-1' })
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    const activeState = (controller as any).getSessionState('s1', 'research')
+
+    expect(controller.abandonSessionRun('s1', 'research', { rowId: 1, incarnation: 2 })).toBe(false)
+    expect(upstreamSignal?.aborted).toBe(false)
+    expect((controller as any).getSessionState('s1', 'research')).toBe(activeState)
+
+    expect(controller.abandonSessionRun('s1', 'research', { rowId: 1, incarnation: 1 })).toBe(true)
+    expect(upstreamSignal?.aborted).toBe(true)
+    await running
+
+    expect((controller as any).getSessionState('s1', 'research')).toBeUndefined()
+    expect(activeState).toMatchObject({
+      isWorking: false,
+      activeRunMarker: undefined,
+      abortController: undefined,
+      queue: [],
+    })
   })
 
   it('starts a recreated generation through the public socket instead of queueing it on the old state', async () => {
@@ -193,7 +261,7 @@ describe('BrokerRunController run lifecycle', () => {
       }))
       .mockReturnValueOnce(replacementRun.promise)
     vi.stubGlobal('fetch', fetchMock)
-    const { controller, handlers } = makeHarness()
+    const { controller, handlers, socket } = makeHarness()
 
     const oldRun = handlers.get('run')!({ input: 'old generation', session_id: 's1', queue_id: 'old' })
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
@@ -233,7 +301,7 @@ describe('BrokerRunController run lifecycle', () => {
     store.getSessionIncarnation.mockImplementation(() => exists ? 1 : null)
     const fetchMock = vi.fn().mockReturnValue(response.promise)
     vi.stubGlobal('fetch', fetchMock)
-    const { controller, handlers } = makeHarness()
+    const { controller, handlers, socket } = makeHarness()
     store.createSession.mockImplementation(() => {
       exists = true
       stateAtCreate = (controller as any).getSessionState('new-session', 'research')
@@ -297,6 +365,15 @@ describe('BrokerRunController run lifecycle', () => {
     const running = handlers.get('run')!({ input: 'live', session_id: 's1', queue_id: 'live' })
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
     const liveState = (controller as any).getSessionState('s1', 'research')
+    liveState.parkedCredentialRuns = new Map([['parked-run', {
+      rowId: 1,
+      incarnation: 1,
+      resumeEvent: {
+        id: 'credential-parked-run',
+        event: 'auth.required',
+        data: { event: 'auth.required', session_id: 's1', run_id: 'parked-run' },
+      },
+    }]])
 
     loaded.resolve({ messages: [{ role: 'user', content: 'stale' }], isWorking: false, events: [], queue: [] })
     await replay
@@ -306,6 +383,378 @@ describe('BrokerRunController run lifecycle', () => {
     expect(urls.filter(url => url.includes('/credentials/replay/'))).toHaveLength(0)
     activeRun.resolve({ ok: true, status: 200, body: sseDone('run-live') })
     await running
+  })
+
+  it('ignores public credential replay after the session was deleted', async () => {
+    store.getSession.mockReturnValue(null)
+    store.getSessionDetail.mockReturnValue(null)
+    store.getSessionRowId.mockReturnValue(null)
+    store.getSessionIncarnation.mockReturnValue(null)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, handlers, socket } = makeHarness()
+
+    await handlers.get('credential.replay')!({
+      session_id: 's1',
+      run_id: 'parked-run',
+      connector_id: 'connector-1',
+      provider: 'feishu',
+    })
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(store.createSession).not.toHaveBeenCalled()
+    expect(store.addMessage).not.toHaveBeenCalled()
+    expect((controller as any).getSessionState('s1', 'research')).toBeUndefined()
+    expect(socket.emit).toHaveBeenCalledWith('run.reattach_failed', expect.objectContaining({
+      session_id: 's1',
+      run_id: 'parked-run',
+      terminal: true,
+    }))
+  })
+
+  it('restores the authoritative auth card before a pre-dispatch failure and allows retry', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: sseDone('replayed-run'),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, emitted, handlers, socket } = makeHarness()
+    const state = parkCredentialRun(controller)
+    const originalId = state.parkedCredentialRuns.get('parked-run').resumeEvent.id
+    handlers.get('resume.events.ack')!({ session_id: 's1', event_ids: [originalId] })
+    store.getSessionRowId.mockImplementation(() => { throw new Error('identity database unavailable') })
+    socket.emit.mockClear()
+
+    await handlers.get('credential.replay')!({ session_id: 's1', run_id: 'parked-run' })
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    const renewed = state.parkedCredentialRuns.get('parked-run').resumeEvent
+    expect(renewed.id).not.toBe(originalId)
+    expect(renewed).toMatchObject({
+      id: expect.any(String),
+      event: 'auth.required',
+      data: {
+        event: 'auth.required',
+        session_id: 's1',
+        run_id: 'parked-run',
+        connector_id: 'connector-1',
+        provider: 'feishu',
+        resume_event_id: expect.any(String),
+      },
+    })
+    expect(renewed.acknowledgedSocketIds).toBeUndefined()
+    expect(emitted.at(-1)).toMatchObject({
+      event: 'auth.required',
+      payload: { resume_event_id: renewed.id },
+    })
+    expect(socket.emit.mock.calls.map(call => call[0])).toEqual([
+      'auth.required',
+      'run.reattach_failed',
+    ])
+    expect(socket.emit).toHaveBeenCalledWith('run.reattach_failed', expect.objectContaining({
+      session_id: 's1',
+      run_id: 'parked-run',
+      terminal: true,
+      error: 'identity database unavailable',
+    }))
+
+    store.getSessionRowId.mockReturnValue(1)
+    socket.emit.mockClear()
+    await handlers.get('credential.replay')!({ session_id: 's1', run_id: 'parked-run' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/credentials/replay/parked-run')
+    expect(state.parkedCredentialRuns.has('parked-run')).toBe(false)
+  })
+
+  it('bounds generation-bound credential cards and consumes only the replayed run id', async () => {
+    const parkedRunIds = Array.from({ length: 22 }, (_, index) => `parked-${index}`)
+    const initialFrames = parkedRunIds.map(runId => ({
+      event: 'auth_required',
+      data: { kind: 'auth_required', run_id: runId, connector_id: 'connector-1', provider: 'feishu' },
+    }))
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        body: sseFrames([
+          ...initialFrames,
+          { event: 'done', data: { kind: 'done', run_id: 'original-run' } },
+        ]),
+      })
+      .mockResolvedValueOnce({ ok: true, status: 200, body: sseDone('replayed-run') })
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, handlers, socket } = makeHarness()
+
+    await handlers.get('run')!({ input: 'needs auth', session_id: 's1', queue_id: 'initial' })
+
+    const state = (controller as any).getSessionState('s1', 'research')
+    expect([...state.parkedCredentialRuns.keys()]).toEqual(parkedRunIds.slice(-20))
+
+    await handlers.get('credential.replay')!({ session_id: 's1', run_id: parkedRunIds.at(-1) })
+
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain(`/credentials/replay/${parkedRunIds.at(-1)}`)
+    expect(state.parkedCredentialRuns.has(parkedRunIds.at(-1))).toBe(false)
+    expect(state.parkedCredentialRuns.size).toBe(19)
+
+    await handlers.get('resume')!({ session_id: 's1' })
+    const resumedAfterReplay = socket.emit.mock.calls.filter(call => call[0] === 'resumed').at(-1)?.[1]
+    expect(resumedAfterReplay.events).not.toContainEqual(expect.objectContaining({
+      event: 'auth.required',
+      data: expect.objectContaining({ run_id: parkedRunIds.at(-1) }),
+    }))
+
+    socket.emit.mockClear()
+    await handlers.get('credential.replay')!({ session_id: 's1', run_id: parkedRunIds.at(-1) })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(socket.emit).toHaveBeenCalledWith('run.reattach_failed', expect.objectContaining({
+      run_id: parkedRunIds.at(-1),
+      error: 'Credential replay is no longer available',
+    }))
+  })
+
+  it('keeps auth.required resumable after done and hides it from the acknowledging socket', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      body: sseFrames([
+        {
+          event: 'auth_required',
+          data: { kind: 'auth_required', run_id: 'parked-run', connector_id: 'connector-1', provider: 'feishu' },
+        },
+        { event: 'done', data: { kind: 'done', run_id: 'original-run' } },
+      ]),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { emitted, handlers, socket } = makeHarness()
+
+    await handlers.get('run')!({ input: 'needs auth', session_id: 's1', queue_id: 'initial' })
+
+    const liveAuth = emitted.find(item => item.event === 'auth.required')?.payload
+    expect(liveAuth).toMatchObject({
+      session_id: 's1',
+      run_id: 'parked-run',
+      session_row_id: 1,
+      session_incarnation: 1,
+      resume_event_id: expect.any(String),
+    })
+
+    socket.emit.mockClear()
+    await handlers.get('resume')!({ session_id: 's1' })
+    const firstResume = socket.emit.mock.calls.filter(call => call[0] === 'resumed').at(-1)?.[1]
+    const replayedAuth = firstResume.events.find((event: any) => event.event === 'auth.required')
+    expect(replayedAuth).toMatchObject({
+      id: liveAuth.resume_event_id,
+      data: expect.objectContaining({
+        event: 'auth.required',
+        session_id: 's1',
+        run_id: 'parked-run',
+        session_row_id: 1,
+        session_incarnation: 1,
+        resume_event_id: liveAuth.resume_event_id,
+      }),
+    })
+
+    handlers.get('resume.events.ack')!({ session_id: 's1', event_ids: [replayedAuth.id] })
+    await handlers.get('resume')!({ session_id: 's1' })
+    const acknowledgedResume = socket.emit.mock.calls.filter(call => call[0] === 'resumed').at(-1)?.[1]
+    expect(acknowledgedResume.events).not.toContainEqual(expect.objectContaining({ id: replayedAuth.id }))
+  })
+
+  it('rotates the stable auth card id when replay is deferred behind a working sibling', async () => {
+    const activeRun = deferred<any>()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        body: sseFrames([
+          {
+            event: 'auth_required',
+            data: { kind: 'auth_required', run_id: 'parked-run', connector_id: 'connector-1', provider: 'feishu' },
+          },
+          { event: 'done', data: { kind: 'done', run_id: 'original-run' } },
+        ]),
+      })
+      .mockReturnValueOnce(activeRun.promise)
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, emitted, handlers, socket } = makeHarness()
+    await handlers.get('run')!({ input: 'needs auth', session_id: 's1', queue_id: 'initial' })
+    const state = (controller as any).getSessionState('s1', 'research')
+    const originalId = state.parkedCredentialRuns.get('parked-run').resumeEvent.id
+    handlers.get('resume.events.ack')!({ session_id: 's1', event_ids: [originalId] })
+
+    const sibling = handlers.get('run')!({ input: 'active sibling', session_id: 's1', queue_id: 'sibling' })
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    await handlers.get('credential.replay')!({
+      session_id: 's1',
+      run_id: 'parked-run',
+      connector_id: 'tampered-connector',
+      provider: 'tampered-provider',
+    })
+
+    const renewed = state.parkedCredentialRuns.get('parked-run').resumeEvent
+    expect(renewed.id).not.toBe(originalId)
+    expect(renewed.acknowledgedSocketIds).toBeUndefined()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(emitted.filter(item => item.event === 'auth.required').at(-1)?.payload).toMatchObject({
+      run_id: 'parked-run',
+      connector_id: 'connector-1',
+      provider: 'feishu',
+      resume_event_id: renewed.id,
+    })
+
+    socket.emit.mockClear()
+    await handlers.get('resume')!({ session_id: 's1' })
+    const resumed = socket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    expect(resumed.events).toContainEqual(expect.objectContaining({ id: renewed.id, event: 'auth.required' }))
+
+    activeRun.resolve({ ok: true, status: 200, body: sseDone('sibling-run') })
+    await sibling
+  })
+
+  it('broadcasts an accepted replay resolution and resumes it until each socket acknowledges', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: sseDone('replayed-run'),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, emitted, handlers, socket } = makeHarness()
+    const state = parkCredentialRun(controller)
+    const secondHandlers = new Map<string, (...args: any[]) => any>()
+    const secondSocket = {
+      id: 'socket-2',
+      connected: true,
+      data: { profile: 'research', user: { openid: 'ou_test' } },
+      handshake: { query: { profile: 'research' }, auth: {}, headers: {} },
+      join: vi.fn(),
+      emit: vi.fn(),
+      on: vi.fn((event: string, handler: (...args: any[]) => any) => secondHandlers.set(event, handler)),
+    }
+    ;(controller as any).onConnection(secondSocket)
+
+    await handlers.get('credential.replay')!({ session_id: 's1', run_id: 'parked-run' })
+
+    const liveResolved = emitted.find(item => item.event === 'auth.resolved')?.payload
+    expect(liveResolved).toMatchObject({
+      event: 'auth.resolved',
+      session_id: 's1',
+      run_id: 'parked-run',
+      session_row_id: 1,
+      session_incarnation: 1,
+      resume_event_id: expect.any(String),
+    })
+    expect(state.parkedCredentialRuns.has('parked-run')).toBe(false)
+
+    socket.emit.mockClear()
+    secondSocket.emit.mockClear()
+    handlers.get('resume')!({ session_id: 's1' })
+    secondHandlers.get('resume')!({ session_id: 's1' })
+    await vi.waitFor(() => {
+      expect(socket.emit).toHaveBeenCalledWith('resumed', expect.anything())
+      expect(secondSocket.emit).toHaveBeenCalledWith('resumed', expect.anything())
+    })
+    const firstResume = socket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    const secondResume = secondSocket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    expect(firstResume.events).toContainEqual(expect.objectContaining({
+      id: liveResolved.resume_event_id,
+      event: 'auth.resolved',
+    }))
+    expect(secondResume.events).toContainEqual(expect.objectContaining({
+      id: liveResolved.resume_event_id,
+      event: 'auth.resolved',
+    }))
+
+    handlers.get('resume.events.ack')!({ session_id: 's1', event_ids: [liveResolved.resume_event_id] })
+    socket.emit.mockClear()
+    secondSocket.emit.mockClear()
+    handlers.get('resume')!({ session_id: 's1' })
+    secondHandlers.get('resume')!({ session_id: 's1' })
+    await vi.waitFor(() => {
+      expect(socket.emit).toHaveBeenCalledWith('resumed', expect.anything())
+      expect(secondSocket.emit).toHaveBeenCalledWith('resumed', expect.anything())
+    })
+    const acknowledgedResume = socket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    const unacknowledgedResume = secondSocket.emit.mock.calls.find(call => call[0] === 'resumed')?.[1]
+    expect(acknowledgedResume.events).not.toContainEqual(expect.objectContaining({ id: liveResolved.resume_event_id }))
+    expect(unacknowledgedResume.events).toContainEqual(expect.objectContaining({ id: liveResolved.resume_event_id }))
+
+    secondHandlers.get('resume.events.ack')!({ session_id: 's1', event_ids: [liveResolved.resume_event_id] })
+    expect(state.pendingTerminalEvents.find((event: any) => event.id === liveResolved.resume_event_id)
+      ?.acknowledgedSocketIds).toEqual(new Set(['socket-1', 'socket-2']))
+  })
+
+  it('replays a broker-unavailable failure with the same terminal id until this socket acknowledges it', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      body: sseFrames([
+        {
+          event: 'auth_required',
+          data: { kind: 'auth_required', run_id: 'parked-run', connector_id: 'connector-1', provider: 'feishu' },
+        },
+        { event: 'done', data: { kind: 'done', run_id: 'original-run' } },
+      ]),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { handlers, socket } = makeHarness()
+    await handlers.get('run')!({ input: 'needs auth', session_id: 's1', queue_id: 'initial' })
+
+    config.webuiRunBroker = false
+    socket.emit.mockClear()
+    await handlers.get('credential.replay')!({ session_id: 's1', run_id: 'parked-run' })
+
+    const liveFailure = socket.emit.mock.calls.find(call => call[0] === 'run.reattach_failed')?.[1]
+    expect(liveFailure).toMatchObject({
+      session_id: 's1',
+      run_id: 'parked-run',
+      terminal: true,
+      error: 'Run broker is unavailable',
+      resume_event_id: expect.any(String),
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    await handlers.get('resume')!({ session_id: 's1' })
+    const firstResume = socket.emit.mock.calls.filter(call => call[0] === 'resumed').at(-1)?.[1]
+    expect(firstResume.events).toContainEqual(expect.objectContaining({
+      id: liveFailure.resume_event_id,
+      event: 'run.reattach_failed',
+      data: expect.objectContaining({ error: 'Run broker is unavailable' }),
+    }))
+
+    handlers.get('resume.events.ack')!({ session_id: 's1', event_ids: [liveFailure.resume_event_id] })
+    await handlers.get('resume')!({ session_id: 's1' })
+    const acknowledgedResume = socket.emit.mock.calls.filter(call => call[0] === 'resumed').at(-1)?.[1]
+    expect(acknowledgedResume.events).not.toContainEqual(expect.objectContaining({ id: liveFailure.resume_event_id }))
+  })
+
+  it('aborts replay without emitting or persisting after same-id recreation', async () => {
+    const upstream = controlledSse()
+    let replaySignal: AbortSignal | undefined
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      replaySignal = init?.signal || undefined
+      return Promise.resolve({ ok: true, status: 200, body: upstream.stream })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, emitted, handlers } = makeHarness()
+    parkCredentialRun(controller)
+
+    const replay = handlers.get('credential.replay')!({ session_id: 's1', run_id: 'parked-run' })
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    const staleState = (controller as any).getSessionState('s1', 'research')
+    store.getSession.mockReturnValue({ id: 's1', profile: 'research', workspace: '/tmp/new-workspace' })
+    store.getSessionRowId.mockReturnValue(2)
+    store.getSessionIncarnation.mockReturnValue(2)
+    upstream.send('content', { kind: 'content', run_id: 'old-replay', text: 'must not leak' })
+    await replay
+
+    expect(replaySignal?.aborted).toBe(true)
+    expect(staleState).toMatchObject({ isWorking: false, activeRunMarker: undefined, events: [] })
+    expect((controller as any).getSessionState('s1', 'research')).toBeUndefined()
+    expect(emitted.filter(item => item.event === 'message.delta')).toHaveLength(0)
+    expect(store.createSession).not.toHaveBeenCalled()
+    expect(store.addMessage).not.toHaveBeenCalled()
   })
 
   it('keeps a brand-new plan command on the same generation-bound state', async () => {
@@ -532,14 +981,19 @@ describe('BrokerRunController run lifecycle', () => {
 
     const command = handlers.get('run')!({ input: '/plan abort identity', session_id: 's1', queue_id: 'plan' })
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    store.getSessionRowId.mockImplementation(() => { throw new Error('command identity failed') })
     await (controller as any).handleAbort(socket, 's1', 'research')
-    store.getSessionRowId.mockImplementationOnce(() => { throw new Error('command identity failed') })
     commandResult.resolve({
       ok: true,
       json: async () => ({ handled: true, command: 'plan', kickoff_prompt: 'must not run' }),
     })
     await command
 
+    const liveAbort = emitted.find(item => item.event === 'abort.completed')
+    const liveCommandFailure = emitted.find(item => item.event === 'session.command')
+    expect(liveAbort?.payload.resume_event_id).toMatch(/^terminal_/)
+    expect(liveCommandFailure?.payload.resume_event_id).toMatch(/^terminal_/)
+    expect(liveCommandFailure?.payload.resume_event_id).not.toBe(liveAbort?.payload.resume_event_id)
     expect(emitted.filter(item => item.event === 'abort.completed')).toEqual([
       expect.objectContaining({ payload: expect.objectContaining({ failure_pending: true }) }),
     ])
@@ -555,6 +1009,22 @@ describe('BrokerRunController run lifecycle', () => {
       activeRunMarker: undefined,
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    store.getSessionRowId.mockReturnValue(1)
+    store.getSessionIncarnation.mockReturnValue(1)
+    await (controller as any).resumeSession(socket, 's1', 'research')
+    const resumed = socket.emit.mock.calls.filter(call => call[0] === 'resumed').at(-1)?.[1]
+    expect(resumed.events).toEqual([
+      expect.objectContaining({
+        id: liveAbort?.payload.resume_event_id,
+        event: 'abort.completed',
+        data: expect.objectContaining({ failure_pending: true }),
+      }),
+      expect.objectContaining({
+        id: liveCommandFailure?.payload.resume_event_id,
+        event: 'session.command',
+        data: expect.objectContaining({ ok: false, message: 'Command failed: command identity failed' }),
+      }),
+    ])
   })
 
   it('reads the latest queue after delayed diff completion and dequeues once', async () => {
@@ -827,6 +1297,70 @@ describe('BrokerRunController run lifecycle', () => {
     })
   })
 
+  it('finishes abort and replays its failure once when generation lookup keeps throwing', async () => {
+    let runSignal: AbortSignal | undefined
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      runSignal = init?.signal || undefined
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, emitted, handlers, socket } = makeHarness()
+
+    const pending = handlers.get('run')!({ input: 'first', session_id: 's1', queue_id: 'first' })
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    store.getSessionRowId.mockImplementation(() => { throw new Error('persistent identity failure') })
+    await expect((controller as any).handleAbort(socket, 's1', 'research')).resolves.toBeUndefined()
+    await pending
+
+    const liveAbort = emitted.find(item => item.event === 'abort.completed')
+    const liveRunFailure = emitted.find(item => item.event === 'run.failed')
+    expect(liveAbort?.payload.resume_event_id).toMatch(/^terminal_/)
+    expect(liveRunFailure?.payload.resume_event_id).toMatch(/^terminal_/)
+    expect(liveRunFailure?.payload.resume_event_id).not.toBe(liveAbort?.payload.resume_event_id)
+    expect(runSignal?.aborted).toBe(true)
+    expect(emitted.filter(item => item.event === 'abort.started')).toHaveLength(1)
+    expect(emitted.filter(item => item.event === 'abort.completed')).toEqual([
+      expect.objectContaining({ payload: expect.objectContaining({ failure_pending: true }) }),
+    ])
+    expect(emitted).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event: 'run.failed',
+        payload: expect.objectContaining({ error: 'persistent identity failure' }),
+      }),
+    ]))
+
+    store.getSessionRowId.mockReturnValue(1)
+    store.getSessionIncarnation.mockReturnValue(1)
+    await (controller as any).resumeSession(socket, 's1', 'research')
+    const firstResume = socket.emit.mock.calls.filter(call => call[0] === 'resumed').at(-1)?.[1]
+    expect(firstResume?.events).toEqual([
+      expect.objectContaining({
+        id: liveAbort?.payload.resume_event_id,
+        event: 'abort.completed',
+        data: expect.objectContaining({ failure_pending: true }),
+      }),
+      expect.objectContaining({
+        id: liveRunFailure?.payload.resume_event_id,
+        event: 'run.failed',
+        data: expect.objectContaining({ error: 'persistent identity failure' }),
+      }),
+    ])
+    await (controller as any).resumeSession(socket, 's1', 'research')
+    const concurrentResume = socket.emit.mock.calls.filter(call => call[0] === 'resumed').at(-1)?.[1]
+    expect(concurrentResume.events).toEqual(firstResume.events)
+    handlers.get('resume.events.ack')!({
+      session_id: 's1',
+      event_ids: firstResume.events.map((event: any) => event.id),
+    })
+    const otherSocket = { ...socket, id: 'socket-2', emit: vi.fn() }
+    await (controller as any).resumeSession(otherSocket, 's1', 'research')
+    const otherResume = otherSocket.emit.mock.calls.filter(call => call[0] === 'resumed').at(-1)?.[1]
+    expect(otherResume.events).toEqual(firstResume.events)
+    await (controller as any).resumeSession(socket, 's1', 'research')
+    const secondResume = socket.emit.mock.calls.filter(call => call[0] === 'resumed').at(-1)?.[1]
+    expect(secondResume?.events).toEqual([])
+  })
+
   it('fails closed when the catch precheck passes but the finish recheck identity lookup throws', async () => {
     const response = deferred<any>()
     tracker.start.mockResolvedValueOnce(null)
@@ -951,6 +1485,13 @@ describe('BrokerRunController run lifecycle', () => {
       }),
     ]))
     expect(emitted.filter(item => item.event === 'run.completed')).toHaveLength(0)
+    await (controller as any).resumeSession(socket, 's1', 'research')
+    const resumed = socket.emit.mock.calls.filter(call => call[0] === 'resumed').at(-1)?.[1]
+    expect(resumed).toMatchObject({ isWorking: true })
+    expect(resumed.events).toEqual([
+      expect.objectContaining({ event: 'abort.completed', data: expect.objectContaining({ failure_pending: true }) }),
+      expect.objectContaining({ event: 'run.failed', data: expect.objectContaining({ error: 'Run finalization failed: abort stats failed' }) }),
+    ])
     nextRun.resolve({ ok: true, status: 200, body: sseDone('run-2') })
     await vi.waitFor(() => expect(state.isWorking).toBe(false))
   })

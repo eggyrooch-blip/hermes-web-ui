@@ -34,6 +34,7 @@ const ALLOWED_CHAT_RUN_CLIENT_EVENTS = new Set([
   'approval.respond',
   'clarify.respond',
   'credential.replay',
+  'resume.events.ack',
 ])
 const CHAT_RUN_SERVER_EVENTS = [
   'run.started',
@@ -62,6 +63,7 @@ const CHAT_RUN_SERVER_EVENTS = [
   'clarify.requested',
   'clarify.resolved',
   'auth.required',
+  'auth.resolved',
   'peer.user.message',
   'resumed',
 ]
