@@ -2347,6 +2347,74 @@ describe('chat store user-mode model selection', () => {
     ])
   })
 
+  it('reconciles an assistant row that arrives while refresh is in flight', async () => {
+    let resolveMessages!: (value: any) => void
+    fetchSessionMessagesPageMock.mockReturnValue(new Promise(resolve => {
+      resolveMessages = resolve
+    }))
+    const session = {
+      id: 'session-1',
+      title: 'first',
+      messages: [{
+        id: 'user-1',
+        role: 'user',
+        content: 'hello',
+        timestamp: 99_000,
+      }],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      profile: 'tester',
+    }
+    const store = useChatStore()
+    store.sessions = [session as any]
+    store.activeSessionId = session.id
+    store.activeSession = session as any
+
+    const refresh = store.refreshActiveSession()
+    session.messages.push({
+      id: 'live-assistant-id',
+      role: 'assistant',
+      content: 'one answer',
+      timestamp: 100_000,
+      runId: 'run-one',
+    } as any)
+    resolveMessages({
+      session: { id: session.id, title: 'first' },
+      messages: [
+        {
+          id: 1,
+          session_id: session.id,
+          role: 'user',
+          content: 'hello',
+          timestamp: 99,
+        },
+        {
+          id: 42,
+          session_id: session.id,
+          role: 'assistant',
+          content: 'one answer',
+          timestamp: 100,
+          finish_reason: 'stop',
+          run_id: 'run-one',
+        },
+      ],
+      total: 2,
+      offset: 0,
+      limit: 150,
+      hasMore: false,
+    })
+
+    expect(await refresh).toBe(true)
+    expect(session.messages.filter(message => message.role === 'assistant')).toEqual([
+      expect.objectContaining({
+        id: '42',
+        content: 'one answer',
+        runId: 'run-one',
+        finishReason: 'stop',
+      }),
+    ])
+  })
+
   it('does not clear the current transcript when reconnect resume returns an empty message array', async () => {
     const store = useChatStore()
     const session = store.newChat({ profile: 'tester' })

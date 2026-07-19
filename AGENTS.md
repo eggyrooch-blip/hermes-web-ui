@@ -68,7 +68,7 @@ constraint directly.
 
 ## Local known gotchas
 
-- 2026-07-19: Live assistant rows use temporary client IDs while hydrated rows use persisted IDs; merge the last unmatched assistant occurrence by stable `run_id`, or refresh/reconnect appends the same answer twice.
+- 2026-07-19: Live assistant rows use temporary client IDs while hydrated rows use persisted IDs; merge the last unmatched assistant occurrence by stable `run_id` across the complete current transcript, including rows added while a refresh request is in flight, or refresh/reconnect can append the same answer twice.
 - 2026-07-17: Workspace diff checkpointing runs on the shared Node server; synchronous Git/filesystem work blocks every tenant, so Git, scanning, and file reads must remain asynchronous and bounded.
 - 2026-07-17: Session deletion owns messages and both workspace-change tables as one SQLite unit; independent cleanup can leave permanent patches or partial deletion after a later statement fails.
 - 2026-07-18: A Socket.IO `connect_error` is retryable only while `socket.active`; replayed terminal events must not override newer authoritative resume state.

@@ -9,4 +9,6 @@ impact: Hydration and reconnect reconcile a live temporary assistant row with it
 Assistant rows that do not match by message ID are paired one-to-one by stable
 `run_id`, from the end of the run. This replaces the final live answer with the
 canonical persisted row while preserving earlier reasoning/tool-boundary
-assistant fragments from the same run.
+assistant fragments from the same run. Matching scans the complete current
+transcript, including an answer that lands while paginated refresh is in flight,
+so the late local row is reconciled instead of re-appended after the response.

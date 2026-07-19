@@ -528,7 +528,7 @@ function mergeServerMessagesPreservingLocalChanges(
     ? current.filter(message => messagesAtRequestStart.has(message.id))
     : current
   const exactServerIds = new Set(
-    baseCurrent
+    current
       .filter(message => serverById.has(message.id))
       .map(message => message.id),
   )
@@ -540,8 +540,8 @@ function mergeServerMessagesPreservingLocalChanges(
     unmatchedServerAssistantsByRun.set(message.runId, candidates)
   }
   const serverMatchByLocalId = new Map<string, Message>()
-  for (let index = baseCurrent.length - 1; index >= 0; index -= 1) {
-    const message = baseCurrent[index]
+  for (let index = current.length - 1; index >= 0; index -= 1) {
+    const message = current[index]
     if (message.role !== 'assistant' || !message.runId || serverById.has(message.id)) continue
     const candidates = unmatchedServerAssistantsByRun.get(message.runId)
     const serverMessage = candidates?.pop()
@@ -554,7 +554,7 @@ function mergeServerMessagesPreservingLocalChanges(
     matchedServerIds.add(serverMessage.id)
     const unchangedSinceRequest = messagesAtRequestStart?.get(message.id) === JSON.stringify(message)
     if (!localWinsOnConflict || unchangedSinceRequest) return serverMessage
-    return { ...serverMessage, ...message }
+    return { ...serverMessage, ...message, id: serverMessage.id }
   })
   const mergedIds = new Set(merged.map(message => message.id))
 
@@ -576,11 +576,18 @@ function mergeServerMessagesPreservingLocalChanges(
   }
 
   for (const localMessage of localMessagesAddedAfterRequest) {
-    const existingIndex = merged.findIndex(message => message.id === localMessage.id)
+    const serverMessage = serverById.get(localMessage.id) || serverMatchByLocalId.get(localMessage.id)
+    const canonicalId = serverMessage?.id || localMessage.id
+    const existingIndex = merged.findIndex(message => message.id === canonicalId)
     if (existingIndex >= 0) {
       merged[existingIndex] = localWinsOnConflict
         ? { ...merged[existingIndex], ...localMessage }
         : merged[existingIndex]
+      merged[existingIndex].id = canonicalId
+    } else if (serverMessage) {
+      merged.push(localWinsOnConflict
+        ? { ...serverMessage, ...localMessage, id: canonicalId }
+        : serverMessage)
     } else {
       merged.push(localMessage)
     }

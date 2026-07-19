@@ -16,7 +16,7 @@ related:
 # hermes-web-ui 架构速查 — EKKO fork
 
 > [!warning] 2026-07-19 本机 hotfix 候选，生产尚未发布 — reconnect/resume 助手消息去重
-> 生产库确认每个非空 `run_id` 只有一条持久化助手消息；重复来自前端把实时临时 ID 与恢复后的持久化 ID 当成两条。候选修复在既有 merge 边界按助手 `run_id` 从末尾一对一配对，保留同一工具轮次更早的思考片段，并阻止规范服务端行再次追加。Full 322 files / 2657 passed / 2 skipped，typecheck 与 build 通过，chat-chain harness fragment 已补；生产未 pull/build/restart，真实页面仍未验证。
+> 生产库确认每个非空 `run_id` 只有一条持久化助手消息；重复来自前端把实时临时 ID 与恢复后的持久化 ID 当成两条。候选修复在既有 merge 边界按助手 `run_id` 从末尾一对一配对，覆盖刷新请求期间刚落地的本地行，保留同一工具轮次更早的思考片段，并阻止规范服务端行再次追加。Full 322 files / 2658 passed / 2 skipped，typecheck、build 与 harness 通过；生产未 pull/build/restart，真实页面仍未验证。
 >
 > [!success] 2026-07-19 production `b38e8a39` — workspace diff / session lifecycle release blockers
 > `webui-release-blockers` removes synchronous Git, directory scan, file read,
