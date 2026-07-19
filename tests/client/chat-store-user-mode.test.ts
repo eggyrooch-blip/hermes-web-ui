@@ -2286,6 +2286,67 @@ describe('chat store user-mode model selection', () => {
     expect(session.messages.map(message => message.content)).toEqual(['keep visible answer'])
   })
 
+  it('reconciles a live assistant row with its persisted run after refresh', async () => {
+    const session = {
+      id: 'session-1',
+      title: 'first',
+      messages: [
+        {
+          id: 'live-reasoning-id',
+          role: 'assistant',
+          content: '',
+          reasoning: 'tool-boundary thought',
+          timestamp: 99_000,
+          runId: 'run-one',
+        },
+        {
+          id: 'live-assistant-id',
+          role: 'assistant',
+          content: 'one answer',
+          timestamp: 100_000,
+          runId: 'run-one',
+        },
+      ],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      profile: 'tester',
+    }
+    fetchSessionMessagesPageMock.mockResolvedValue({
+      session: { id: session.id, title: 'first' },
+      messages: [{
+        id: 42,
+        session_id: session.id,
+        role: 'assistant',
+        content: 'one answer',
+        timestamp: 100,
+        finish_reason: 'stop',
+        run_id: 'run-one',
+      }],
+      total: 1,
+      offset: 0,
+      limit: 150,
+      hasMore: false,
+    })
+    const store = useChatStore()
+    store.sessions = [session as any]
+    store.activeSessionId = session.id
+    store.activeSession = session as any
+
+    expect(await store.refreshActiveSession()).toBe(true)
+    expect(session.messages.filter(message => message.role === 'assistant')).toEqual([
+      expect.objectContaining({
+        id: 'live-reasoning-id',
+        reasoning: 'tool-boundary thought',
+      }),
+      expect.objectContaining({
+        id: '42',
+        content: 'one answer',
+        runId: 'run-one',
+        finishReason: 'stop',
+      }),
+    ])
+  })
+
   it('does not clear the current transcript when reconnect resume returns an empty message array', async () => {
     const store = useChatStore()
     const session = store.newChat({ profile: 'tester' })

@@ -527,9 +527,31 @@ function mergeServerMessagesPreservingLocalChanges(
   const baseCurrent = messagesAtRequestStart
     ? current.filter(message => messagesAtRequestStart.has(message.id))
     : current
+  const exactServerIds = new Set(
+    baseCurrent
+      .filter(message => serverById.has(message.id))
+      .map(message => message.id),
+  )
+  const unmatchedServerAssistantsByRun = new Map<string, Message[]>()
+  for (const message of serverMessages) {
+    if (message.role !== 'assistant' || !message.runId || exactServerIds.has(message.id)) continue
+    const candidates = unmatchedServerAssistantsByRun.get(message.runId) || []
+    candidates.push(message)
+    unmatchedServerAssistantsByRun.set(message.runId, candidates)
+  }
+  const serverMatchByLocalId = new Map<string, Message>()
+  for (let index = baseCurrent.length - 1; index >= 0; index -= 1) {
+    const message = baseCurrent[index]
+    if (message.role !== 'assistant' || !message.runId || serverById.has(message.id)) continue
+    const candidates = unmatchedServerAssistantsByRun.get(message.runId)
+    const serverMessage = candidates?.pop()
+    if (serverMessage) serverMatchByLocalId.set(message.id, serverMessage)
+  }
+  const matchedServerIds = new Set<string>()
   const merged = baseCurrent.map((message) => {
-    const serverMessage = serverById.get(message.id)
+    const serverMessage = serverById.get(message.id) || serverMatchByLocalId.get(message.id)
     if (!serverMessage) return message
+    matchedServerIds.add(serverMessage.id)
     const unchangedSinceRequest = messagesAtRequestStart?.get(message.id) === JSON.stringify(message)
     if (!localWinsOnConflict || unchangedSinceRequest) return serverMessage
     return { ...serverMessage, ...message }
@@ -538,7 +560,7 @@ function mergeServerMessagesPreservingLocalChanges(
 
   for (let index = 0; index < serverMessages.length; index += 1) {
     const serverMessage = serverMessages[index]
-    if (mergedIds.has(serverMessage.id)) continue
+    if (mergedIds.has(serverMessage.id) || matchedServerIds.has(serverMessage.id)) continue
 
     const nextExisting = serverMessages.slice(index + 1).find(message => mergedIds.has(message.id))
     if (nextExisting) {
