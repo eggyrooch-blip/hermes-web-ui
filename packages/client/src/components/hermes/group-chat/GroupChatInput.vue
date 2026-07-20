@@ -133,8 +133,11 @@ function updateMentionState() {
         return
     }
 
-    // Make sure the @ is not part of a word (preceded by space or start of line)
-    if (atPos > 0 && text[atPos - 1] !== ' ' && text[atPos - 1] !== '\n') {
+    // Make sure the @ is not part of a word (e.g. an email address like a@b).
+    // Test for a word character rather than for whitespace: CJK text, fullwidth
+    // punctuation and emoji are all legitimate mention prefixes, and Chinese
+    // input never types a space before @ (你好@ / 问题，@).
+    if (atPos > 0 && /\w/.test(text[atPos - 1])) {
         mentionActive.value = false
         return
     }

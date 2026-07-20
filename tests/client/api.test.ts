@@ -297,6 +297,32 @@ describe('API Client', () => {
       expect(url.searchParams.get('path')).toBe('/tmp/100% ready.txt')
       expect(url.searchParams.get('name')).toBe('100% ready.txt')
     })
+
+    // Markdown file cards pass the link *text* as the name, so `[分析报告](x.md)`
+    // used to download an extensionless "分析报告" that the OS could not open.
+    it('falls back to the path basename when the caller name carries no extension', () => {
+      const url = new URL(getDownloadUrl('/tmp/report-2026.md', '分析报告'), 'http://localhost')
+
+      expect(url.searchParams.get('name')).toBe('report-2026.md')
+    })
+
+    it('keeps the caller name when it already looks like a filename', () => {
+      const url = new URL(getDownloadUrl('/tmp/a1b2c3.md', '季度分析.md'), 'http://localhost')
+
+      expect(url.searchParams.get('name')).toBe('季度分析.md')
+    })
+
+    it('infers the name through an already-wrapped download URL', () => {
+      const url = new URL(getDownloadUrl('/api/hermes/download?path=%2Ftmp%2Fnotes.md', '会议纪要'), 'http://localhost')
+
+      expect(url.searchParams.get('name')).toBe('notes.md')
+    })
+
+    it('leaves the name alone when neither side has an extension', () => {
+      const url = new URL(getDownloadUrl('/tmp/scratch', '草稿'), 'http://localhost')
+
+      expect(url.searchParams.get('name')).toBe('草稿')
+    })
   })
 
   describe('file upload', () => {

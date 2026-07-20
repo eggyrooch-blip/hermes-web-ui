@@ -8,6 +8,44 @@ function safeDecodeURIComponent(value: string): string {
   }
 }
 
+function hasConventionalExtension(value: string): boolean {
+  return /\.[A-Za-z0-9]{1,12}$/.test(value.trim())
+}
+
+function extractDownloadPath(filePath: string): string {
+  if (filePath.startsWith('/api/hermes/download?')) {
+    try {
+      const parsed = new URL(filePath, 'http://localhost')
+      return parsed.searchParams.get('path') || filePath
+    } catch {
+      return filePath
+    }
+  }
+
+  return filePath.split('?')[0].split('#')[0]
+}
+
+function getPathBasename(filePath: string): string {
+  const decodedPath = safeDecodeURIComponent(extractDownloadPath(filePath))
+  return decodedPath.split(/[\\/]/).pop()?.trim() || ''
+}
+
+/**
+ * Pick the filename to save as. Markdown file cards pass the link *text* as the
+ * name (`[分析报告](x.md)` → "分析报告"), which carries no extension, so the file
+ * lands on disk unopenable. Prefer the caller's name when it already looks like a
+ * filename, otherwise fall back to the basename of the path.
+ */
+export function inferDownloadFileName(filePath: string, fileName?: string): string {
+  const decodedName = fileName ? safeDecodeURIComponent(fileName).trim() : ''
+  if (decodedName && hasConventionalExtension(decodedName)) return decodedName
+
+  const basename = getPathBasename(filePath)
+  if (basename && hasConventionalExtension(basename)) return basename
+
+  return decodedName || basename || 'download'
+}
+
 /**
  * Construct a download URL with auth token as query parameter.
  * Token is passed via query param because <a> tags cannot set headers.
@@ -41,8 +79,7 @@ export function getDownloadUrl(filePath: string, fileName?: string): string {
   const decodedPath = safeDecodeURIComponent(filePath)
   const params = new URLSearchParams({ path: decodedPath })
   if (fileName) {
-    const decodedName = safeDecodeURIComponent(fileName)
-    params.set('name', decodedName)
+    params.set('name', inferDownloadFileName(decodedPath, fileName))
   }
   const profileName = getActiveProfileName()
   if (profileName) params.set('profile', profileName)
@@ -66,7 +103,7 @@ export async function downloadFile(filePath: string, fileName?: string): Promise
   const blobUrl = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = blobUrl
-  a.download = fileName || filePath.split('/').pop() || 'download'
+  a.download = inferDownloadFileName(filePath, fileName)
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)

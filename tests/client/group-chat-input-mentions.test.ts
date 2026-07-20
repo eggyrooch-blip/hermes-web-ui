@@ -83,6 +83,49 @@ describe('GroupChatInput mentions', () => {
     expect(wrapper.find('.mention-dropdown').text()).toContain('@Worker')
   })
 
+  // Regression guard for the CJK mention bug: the prefix check used to test for
+  // whitespace, so any Chinese character before @ suppressed the dropdown. Chinese
+  // input never types a space before @, which made mentions unusable. This block
+  // exists because the buggy line was byte-identical to upstream's pre-fix code —
+  // a future upstream absorption must not silently reintroduce it.
+  describe('mention prefix boundary', () => {
+    async function mountWithAgent() {
+      const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
+      const store = useGroupChatStore()
+      store.agents = [{ id: 'agent-1', agentId: 'agent-1', profile: 'worker', name: 'Worker', roomId: 'room-1', description: '', invited: 1 }]
+      store.emitTyping = vi.fn()
+      return mount(GroupChatInput, {
+        attachTo: document.body,
+        global: { plugins: [pinia], stubs: { Transition: false } },
+      })
+    }
+
+    async function typeAndPlaceCursorAtEnd(wrapper: Awaited<ReturnType<typeof mountWithAgent>>, text: string) {
+      const textarea = wrapper.get('textarea')
+      await textarea.setValue(text)
+      const el = textarea.element as HTMLTextAreaElement
+      el.selectionStart = text.length
+      await textarea.trigger('input')
+      await nextTick()
+    }
+
+    it.each([
+      ['CJK character', '你好@'],
+      ['fullwidth punctuation', '问题，@'],
+      ['halfwidth punctuation', 'ping:@'],
+    ])('opens the dropdown when @ follows a %s', async (_label, text) => {
+      const wrapper = await mountWithAgent()
+      await typeAndPlaceCursorAtEnd(wrapper, text)
+      expect(wrapper.find('.mention-dropdown').exists()).toBe(true)
+    })
+
+    it('still suppresses the dropdown mid-word so email addresses are not hijacked', async () => {
+      const wrapper = await mountWithAgent()
+      await typeAndPlaceCursorAtEnd(wrapper, 'user@')
+      expect(wrapper.find('.mention-dropdown').exists()).toBe(false)
+    })
+  })
+
   it('uses configured desktop input height and lets drag override it until settings change', async () => {
     const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
     const settingsStore = useSettingsStore()
