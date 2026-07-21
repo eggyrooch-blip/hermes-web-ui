@@ -881,8 +881,24 @@ def _resolve_runtime(model: str, provider: str | None = None) -> dict[str, Any]:
     effective_provider = requested or _effective_provider_from_model(model, cfg)
     if effective_provider.lower() == "custom" or effective_provider.lower().startswith("custom:"):
         explicit_api_key, explicit_base_url = _resolve_custom_provider_runtime(cfg, effective_provider)
+        # When we resolved the provider from the (merged shared+profile) bridge
+        # config, ask core for its BARE-"custom" direct-alias path instead of the
+        # "custom:<name>" slug. core's named lookup (_resolve_named_custom_runtime
+        # -> _get_named_custom_provider) reads core's OWN HERMES_HOME config, which
+        # in the bridge is the per-profile config that does NOT carry
+        # custom_providers (those live only in the shared config we merged above).
+        # Passing the named slug there raises "Unknown provider 'custom:<name>'"
+        # even though we already hold its base_url + api_key; bare "custom" +
+        # explicit creds resolves via the direct-alias branch. Only downgrade when
+        # we actually have a base_url, so setups where core CAN resolve the named
+        # provider from its own config keep their existing (richer) behavior.
+        # ponytail: api_mode is auto-detected from base_url and per-entry
+        # extra_headers/request_overrides are not carried on this path — correct
+        # for OpenAI-compatible endpoints (e.g. litellm-sre); revisit only if a
+        # bridge custom provider needs a forced api_mode or auth headers.
+        requested_for_core = "custom" if explicit_base_url else requested
         return resolve_runtime_provider(
-            requested=requested,
+            requested=requested_for_core,
             target_model=model or None,
             explicit_api_key=explicit_api_key,
             explicit_base_url=explicit_base_url,
