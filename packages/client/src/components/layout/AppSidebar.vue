@@ -693,6 +693,7 @@ onMounted(() => {
     z-index: 1000;
     transform: translateX(-100%);
     transition: transform $transition-normal;
+    padding-top: env(safe-area-inset-top, 0px);
 
     &.open {
       transform: translateX(0);
