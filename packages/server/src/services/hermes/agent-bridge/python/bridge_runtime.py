@@ -545,9 +545,9 @@ def _merge_bridge_config(base: dict[str, Any], override: dict[str, Any]) -> dict
 
 def _load_profile_layer_cfg() -> dict[str, Any]:
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import read_raw_config
 
-        cfg = load_config()
+        cfg = read_raw_config()
         return cfg if isinstance(cfg, dict) else {}
     except Exception:
         try:
