@@ -2198,6 +2198,56 @@ describe('chat store user-mode model selection', () => {
     expect(session.messages.map(message => message.content)).toEqual(['older successful page'])
   })
 
+  it('keeps the latest successful workspace diff when refreshes finish out of order', async () => {
+    const session = {
+      id: 'session-1',
+      title: 'workspace race',
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      profile: 'tester',
+    }
+    fetchSessionMessagesPageMock.mockResolvedValue({
+      session: { id: session.id, title: session.title },
+      messages: [{ id: 1, session_id: session.id, role: 'user', content: 'hello', timestamp: 1 }],
+      total: 1,
+      offset: 0,
+      limit: 150,
+      hasMore: false,
+    })
+    const resolvers: Array<(value: any[]) => void> = []
+    fetchWorkspaceRunChangesMock.mockImplementation(() => new Promise(resolve => {
+      resolvers.push(resolve)
+    }))
+    const store = useChatStore()
+    store.sessions = [session as any]
+    store.activeSessionId = session.id
+    store.activeSession = session as any
+
+    const firstRefresh = store.refreshActiveSession()
+    const secondRefresh = store.refreshActiveSession()
+    for (let i = 0; i < 10 && resolvers.length < 2; i += 1) await Promise.resolve()
+
+    resolvers[1]([{
+      change_id: 'fresh',
+      session_id: session.id,
+      run_id: 'run-1',
+      files: [{ id: 2, path: 'fresh.ts' }],
+    }])
+    await secondRefresh
+    resolvers[0]([{
+      change_id: 'stale',
+      session_id: session.id,
+      run_id: 'run-1',
+      files: [{ id: 1, path: 'stale.ts' }],
+    }])
+    await firstRefresh
+
+    expect(store.workspaceDiffFilesForRun(session.id, 'run-1')).toEqual([
+      expect.objectContaining({ change_id: 'fresh', path: 'fresh.ts' }),
+    ])
+  })
+
   it('preserves an in-place streaming update that occurs during hydration', async () => {
     const session = {
       id: 'session-1',

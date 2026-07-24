@@ -192,6 +192,43 @@ describe('chat store compression state', () => {
     expect(store.isAborting).toBe(false)
   })
 
+  it('does not reuse abort state for the same session id in another profile', async () => {
+    chatApi.resumeSession.mockImplementation((sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({
+        session_id: sessionId,
+        messages: [],
+        isWorking: true,
+        events: [],
+      })
+      return {} as any
+    })
+    const store = useChatStore()
+    const profileOneSession = { ...makeSession('shared-session'), profile: 'profile-one' }
+    const profileTwoSession = { ...makeSession('shared-session'), profile: 'profile-two' }
+    store.sessions = [profileOneSession]
+
+    await store.switchSession(profileOneSession.id)
+    const profileOneHandlers = chatApi.registerSessionHandlers.mock.calls.find(
+      call => call[0] === profileOneSession.id,
+    )?.[1]
+    profileOneHandlers.onAbortStarted({
+      event: 'abort.started',
+      session_id: profileOneSession.id,
+    })
+    expect(store.abortState).toEqual(expect.objectContaining({ aborting: true }))
+
+    store.sessions = [profileTwoSession]
+    await store.switchSession(profileTwoSession.id)
+    profileOneHandlers.onAbortStarted({
+      event: 'abort.started',
+      session_id: profileOneSession.id,
+    })
+
+    expect(store.activeSession?.profile).toBe('profile-two')
+    expect(store.abortState).toBeNull()
+    expect(store.isAborting).toBe(false)
+  })
+
   it('ignores an obsolete response after switching away and back to the same session', async () => {
     const callbacks: Array<{ sessionId: string; callback: (data: any) => void }> = []
     chatApi.resumeSession.mockImplementation((sessionId: string, callback: (data: any) => void) => {
