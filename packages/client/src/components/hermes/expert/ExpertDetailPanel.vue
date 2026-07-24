@@ -50,7 +50,7 @@ watch(() => props.expert.id, () => {
           <span v-if="formatExpertReleaseVersion(expert)" class="detail-version">
             {{ formatExpertReleaseVersion(expert) }}
           </span>
-          <span v-if="isExpertRecentlyUpdated(expert)" class="detail-new">New</span>
+          <span v-if="isExpertRecentlyUpdated(expert)" class="detail-new">{{ t('expert.catalog.newBadge') }}</span>
         </div>
         <p v-if="expert.tagline" class="detail-tagline">{{ expert.tagline }}</p>
       </div>

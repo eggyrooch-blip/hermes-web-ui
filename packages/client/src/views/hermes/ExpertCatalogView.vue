@@ -156,7 +156,7 @@ watch(activeProfileName, () => {
                 <span v-if="formatExpertReleaseVersion(expert)" class="card-version">
                   {{ formatExpertReleaseVersion(expert) }}
                 </span>
-                <span v-if="isExpertRecentlyUpdated(expert)" class="card-new-badge">New</span>
+                <span v-if="isExpertRecentlyUpdated(expert)" class="card-new-badge">{{ t('expert.catalog.newBadge') }}</span>
               </div>
             </div>
           </div>

@@ -417,6 +417,7 @@ export default {
       noResults: 'No matching experts.',
       activeBadge: 'Active',
       aihubBadge: 'From AiHub',
+      newBadge: 'New',
     },
     detail: {
       close: 'Close',
