@@ -407,9 +407,11 @@ function makeSocket(url, options) {
       if (event === 'resume') {
         const sessionId = payload && payload.session_id
         const resumes = window.__PW_CHAT_SOCKET_RESUMES__ || {}
-        const response = sessionId ? resumes[sessionId] : null
-        if (response) {
-          setTimeout(() => this.__trigger('resumed', response), 0)
+        const configured = sessionId ? resumes[sessionId] : null
+        const response = Array.isArray(configured) ? configured.shift() : configured
+        const resumed = response && response.payload ? response.payload : response
+        if (resumed) {
+          setTimeout(() => this.__trigger('resumed', resumed), Number(response.delay_ms) || 0)
         }
       }
       return this

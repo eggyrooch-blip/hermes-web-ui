@@ -68,12 +68,12 @@ const resumes = {
   'session-b': resumePayload('session-b', 'Beta route content'),
 }
 
-async function setupChatPage(page: Page) {
+async function setupChatPage(page: Page, resumeFixtures: Record<string, unknown> = resumes) {
   await authenticate(page, TEST_ACCESS_KEY, 'research')
   await page.addInitScript((payload) => {
     ;(window as any).__PW_CHAT_SOCKET_RESUMES__ = payload
     window.localStorage.setItem('hermes_active_session_research', 'session-b')
-  }, resumes)
+  }, resumeFixtures)
   const api = await mockHermesApi(page, { sessions })
   await mockChatSocket(page)
   return api
@@ -166,4 +166,104 @@ test('parallel tabs send runs and render progress only for their own session', a
   await expect(pageB.getByText('Alpha progress')).toHaveCount(0)
   expect(apiA.unexpectedRequests).toEqual([])
   expect(apiB.unexpectedRequests).toEqual([])
+})
+
+test('rapid same-page A to B to A keeps only the newest A resume', async ({ page }) => {
+  const api = await setupChatPage(page, {
+    'session-a': [
+      { delay_ms: 120, payload: resumePayload('session-a', 'Stale Alpha response') },
+      { delay_ms: 10, payload: resumePayload('session-a', 'Fresh Alpha response') },
+    ],
+    'session-b': [
+      { delay_ms: 60, payload: resumePayload('session-b', 'Stale Beta response') },
+    ],
+  })
+
+  await page.goto('/#/hermes/session/session-a')
+  const alphaItem = page.locator('.session-item').filter({ hasText: 'Alpha chat' })
+  const betaItem = page.locator('.session-item').filter({ hasText: 'Beta chat' })
+  await expect(alphaItem).toBeVisible()
+  await expect(betaItem).toBeVisible()
+
+  await betaItem.click()
+  await alphaItem.click()
+
+  await expect(page.getByText('Fresh Alpha response')).toBeVisible()
+  await page.waitForTimeout(180)
+  await expect(page.getByText('Stale Alpha response')).toHaveCount(0)
+  await expect(page.getByText('Stale Beta response')).toHaveCount(0)
+  await expect(page).toHaveURL(/#\/hermes\/session\/session-a(?:\?profile=research)?$/)
+  expect(api.unexpectedRequests).toEqual([])
+})
+
+test('delayed message growth follows bottom until the user scrolls up', async ({ page }) => {
+  const seededMessages = Array.from({ length: 40 }, (_, index) => ({
+    id: index + 1,
+    session_id: 'session-a',
+    role: index % 2 === 0 ? 'user' : 'assistant',
+    content: `Seed message ${index + 1}: ${'content '.repeat(12)}`,
+    timestamp: (Date.now() + index) / 1000,
+    tool_call_id: null,
+    tool_calls: null,
+    tool_name: null,
+    token_count: null,
+    finish_reason: 'stop',
+    reasoning: null,
+  }))
+  const api = await setupChatPage(page, {
+    ...resumes,
+    'session-a': {
+      ...resumePayload('session-a', ''),
+      messages: seededMessages,
+    },
+  })
+
+  await page.goto('/#/hermes/session/session-a')
+  await expect(page.getByText('Seed message 40:', { exact: false })).toBeVisible()
+  const scroller = page.locator('.virtual-message-list')
+  await scroller.evaluate(element => element.scrollTo({ top: element.scrollHeight }))
+
+  await sendChatMessage(page, 'Grow the answer')
+  const run = await waitForRun(page)
+  await page.evaluate(({ sid, text }) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('run.started', { event: 'run.started', session_id: sid, run_id: 'run-growth' })
+    socket.__trigger('message.delta', {
+      event: 'message.delta',
+      session_id: sid,
+      run_id: 'run-growth',
+      delta: text,
+    })
+  }, {
+    sid: run.session_id,
+    text: Array.from({ length: 80 }, (_, index) => `Growing line ${index + 1}`).join('\n\n'),
+  })
+
+  await expect.poll(() => scroller.evaluate(
+    element => element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThanOrEqual(4)
+
+  await scroller.evaluate((element) => {
+    element.scrollTop = Math.max(0, element.scrollTop - 320)
+    element.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -120 }))
+    element.dispatchEvent(new Event('scroll', { bubbles: true }))
+  })
+  await page.evaluate(({ sid, text }) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('message.delta', {
+      event: 'message.delta',
+      session_id: sid,
+      run_id: 'run-growth',
+      delta: text,
+    })
+  }, {
+    sid: run.session_id,
+    text: Array.from({ length: 80 }, (_, index) => `Detached line ${index + 1}`).join('\n\n'),
+  })
+  await page.waitForTimeout(250)
+
+  expect(await scroller.evaluate(
+    element => element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeGreaterThan(64)
+  expect(api.unexpectedRequests).toEqual([])
 })

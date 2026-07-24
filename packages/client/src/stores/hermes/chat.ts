@@ -4395,15 +4395,22 @@ export const useChatStore = defineStore('chat', () => {
       if (document.visibilityState === 'visible' && activeSessionId.value && !isStreaming.value) {
         const sid = activeSessionId.value
         if (sid && !streamStates.value.has(sid)) {
+          const sessionAtResumeStart = sessions.value.find(session => session.id === sid)
+          if (!sessionAtResumeStart || activeSession.value !== sessionAtResumeStart) return
+          const sessionLoadEpoch = latestSwitchLoadEpochBySession.get(sid)
+          const isCurrentVisibilityResume = () =>
+            activeSessionId.value === sid
+            && activeSession.value === sessionAtResumeStart
+            && sessions.value.includes(sessionAtResumeStart)
+            && latestSwitchLoadEpochBySession.get(sid) === sessionLoadEpoch
           const messagesAtResumeStart = new Map(
-            (sessions.value.find(session => session.id === sid)?.messages || [])
+            sessionAtResumeStart.messages
               .map(message => [message.id, JSON.stringify(message)]),
           )
           // Re-load messages via resume (server loads from DB)
           resumeSession(sid, async (data) => {
-            if (activeSessionId.value !== sid) return []
-            const target = sessions.value.find(s => s.id === sid)
-            if (!target || !activeSession.value) return []
+            if (!isCurrentVisibilityResume()) return []
+            const target = sessionAtResumeStart
             if (data.isWorking) {
               serverWorking.value.add(sid)
             } else {
@@ -4432,7 +4439,7 @@ export const useChatStore = defineStore('chat', () => {
                 LIVE_CHAT_MAX_LOADED_MESSAGES,
               )
               await hydrateSessionMessagesFromPage(target, limit, target.profile)
-              if (activeSessionId.value !== sid) return []
+              if (!isCurrentVisibilityResume()) return []
               activeSession.value = target
             }
             const currentAssistant = data.isWorking ? selectResumedInFlightAssistant(getSessionMsgs(sid)) : null
@@ -4464,7 +4471,7 @@ export const useChatStore = defineStore('chat', () => {
             }
             resumeServerWorkingRun(sid)
             return consumedEventIds
-          }, activeSession.value?.profile, runtimeTransport())
+          }, sessionAtResumeStart.profile, runtimeTransport())
         }
       }
     }

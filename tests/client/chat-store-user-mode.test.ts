@@ -2630,6 +2630,76 @@ describe('chat store user-mode model selection', () => {
     ])
   })
 
+  it('ignores a foreground resume that returns after switching A to B to A', async () => {
+    const sessionA = {
+      id: 'session-a',
+      title: 'A',
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      profile: 'tester',
+    }
+    const sessionB = {
+      id: 'session-b',
+      title: 'B',
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      profile: 'tester',
+    }
+    let foregroundResume!: (data: any) => Promise<unknown>
+    let firstResume = true
+    resumeSessionMock.mockImplementation((sessionId: string, callback: (data: any) => Promise<unknown>) => {
+      if (firstResume) {
+        firstResume = false
+        foregroundResume = callback
+      } else {
+        void callback({
+          session_id: sessionId,
+          isWorking: false,
+          events: [],
+          messages: [{
+            id: `fresh-${sessionId}`,
+            session_id: sessionId,
+            role: 'user',
+            content: `fresh ${sessionId}`,
+            timestamp: 2,
+          }],
+        })
+      }
+      return { disconnect: vi.fn() }
+    })
+    fetchSessionsMock.mockImplementation(() => new Promise(() => {}))
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+    const store = useChatStore()
+    store.sessions = [sessionA as any, sessionB as any]
+    store.activeSessionId = sessionA.id
+    store.activeSession = sessionA as any
+
+    document.dispatchEvent(new Event('visibilitychange'))
+    await store.switchSession(sessionB.id)
+    await store.switchSession(sessionA.id)
+    expect(sessionA.messages.map(message => message.content)).toEqual(['fresh session-a'])
+
+    await foregroundResume({
+      session_id: sessionA.id,
+      isWorking: false,
+      events: [],
+      messages: [{
+        id: 'stale-a',
+        session_id: sessionA.id,
+        role: 'user',
+        content: 'stale foreground A',
+        timestamp: 1,
+      }],
+    })
+
+    expect(sessionA.messages.map(message => message.content)).toEqual(['fresh session-a'])
+  })
+
   it('falls back to paginated messages when foreground resume returns empty for a non-empty active session', async () => {
     const session = {
       id: 'session-1',

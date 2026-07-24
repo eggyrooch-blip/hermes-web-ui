@@ -26,6 +26,9 @@ transport, or alter Feishu/profile authorization.
   per-session latest-request fence. This rejects A1 after A→B→A while preserving
   the existing exact stream-owner cleanup for a response that has not been
   superseded by another request for A.
+- Foreground visibility resume uses the same per-session epoch and exact
+  `Session` fence, including after paginated fallback, so a hidden-tab A
+  response cannot return after A→B→A and mutate the newer A.
 - Paginated hydration and workspace-diff restoration verify both the captured
   session epoch and the exact `Session` object before writing after an await.
   Workspace-diff refreshes also keep the latest successful same-session result,
@@ -45,6 +48,6 @@ transport, or alter Feishu/profile authorization.
 - `npm run harness:check`
 - `tests/e2e/chat-session-multitab.spec.ts` (isolated mocked browser)
 
-The focused run passed 96 tests. The full run passed 322 files / 2676 tests
-with 2 skipped; Chromium browser QA passed 3/3. Production was not contacted
+The focused run passed 97 tests. The full run passed 322 files / 2677 tests
+with 2 skipped; Chromium browser QA passed 5/5. Production was not contacted
 or changed.
