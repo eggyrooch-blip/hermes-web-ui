@@ -399,10 +399,14 @@ function hasUsefulToolArguments(args: string): boolean {
   }
 }
 
-export function mapRunBrokerFrameForChat(parsed: any, frameEvent?: string): RunBrokerChatFrameMapping {
+export function mapRunBrokerFrameForChat(
+  parsed: any,
+  frameEvent?: string,
+  fallbackRunId?: string,
+): RunBrokerChatFrameMapping {
   const payload = parsed?.payload || {}
   const brokerKind = parsed?.kind || parsed?.event || frameEvent
-  const runId = parsed?.run_id || parsed?.runId || payload.run_id
+  const runId = parsed?.run_id || parsed?.runId || payload.run_id || fallbackRunId
   const responseId = runId
 
   if (brokerKind === 'content' || brokerKind === 'message.delta') {
@@ -999,7 +1003,7 @@ export async function handleBrokerRun(
       } catch {
         continue
       }
-      const mapped = mapRunBrokerFrameForChat(parsed, frame.event)
+      const mapped = mapRunBrokerFrameForChat(parsed, frame.event, runMarker)
       if (mapped.type === 'ignore') continue
 
       if (mapped.type === 'emit') {

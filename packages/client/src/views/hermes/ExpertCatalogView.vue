@@ -2,7 +2,13 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { NInput, NDrawer, NDrawerContent } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { fetchExperts, isAiHubExpert, type ExpertInfo } from '@/api/hermes/experts'
+import {
+  fetchExperts,
+  formatExpertReleaseVersion,
+  isAiHubExpert,
+  isExpertRecentlyUpdated,
+  type ExpertInfo,
+} from '@/api/hermes/experts'
 import { useChatStore } from '@/stores/hermes/chat'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import ExpertDetailPanel from '@/components/hermes/expert/ExpertDetailPanel.vue'
@@ -147,6 +153,10 @@ watch(activeProfileName, () => {
               <div class="card-meta-row">
                 <span v-if="expert.category" class="card-category">{{ expert.category }}</span>
                 <span v-if="isAiHubExpert(expert)" class="card-source-badge">{{ t('expert.catalog.aihubBadge') }}</span>
+                <span v-if="formatExpertReleaseVersion(expert)" class="card-version">
+                  {{ formatExpertReleaseVersion(expert) }}
+                </span>
+                <span v-if="isExpertRecentlyUpdated(expert)" class="card-new-badge">New</span>
               </div>
             </div>
           </div>
@@ -314,6 +324,25 @@ watch(activeProfileName, () => {
   border-radius: 999px;
   background: rgba(74, 144, 217, 0.14);
   color: #4a90d9;
+}
+
+.card-version,
+.card-new-badge {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+
+.card-version {
+  border: 1px solid $border-color;
+  color: $text-secondary;
+}
+
+.card-new-badge {
+  background: rgba(var(--accent-primary-rgb), 0.14);
+  color: $accent-primary;
+  font-weight: 600;
 }
 
 .card-category {

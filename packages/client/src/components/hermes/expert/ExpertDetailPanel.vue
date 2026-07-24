@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { ExpertInfo } from '@/api/hermes/experts'
+import {
+  formatExpertReleaseVersion,
+  isExpertRecentlyUpdated,
+  type ExpertInfo,
+} from '@/api/hermes/experts'
 
 const { t } = useI18n()
 const props = defineProps<{
@@ -43,6 +47,10 @@ watch(() => props.expert.id, () => {
         <div class="detail-meta">
           <span v-if="expert.category" class="detail-category">{{ expert.category }}</span>
           <span v-if="active" class="detail-active">{{ t('expert.catalog.activeBadge') }}</span>
+          <span v-if="formatExpertReleaseVersion(expert)" class="detail-version">
+            {{ formatExpertReleaseVersion(expert) }}
+          </span>
+          <span v-if="isExpertRecentlyUpdated(expert)" class="detail-new">New</span>
         </div>
         <p v-if="expert.tagline" class="detail-tagline">{{ expert.tagline }}</p>
       </div>
@@ -168,7 +176,9 @@ watch(() => props.expert.id, () => {
 }
 
 .detail-category,
-.detail-active {
+.detail-active,
+.detail-version,
+.detail-new {
   line-height: 18px;
   padding: 2px 8px;
   border-radius: 6px;
@@ -183,6 +193,17 @@ watch(() => props.expert.id, () => {
 .detail-active {
   background: $accent-primary;
   color: var(--text-on-accent);
+}
+
+.detail-version {
+  border: 1px solid $border-color;
+  color: $text-secondary;
+}
+
+.detail-new {
+  background: rgba(var(--accent-primary-rgb), 0.14);
+  color: $accent-primary;
+  font-weight: 600;
 }
 
 .detail-close {

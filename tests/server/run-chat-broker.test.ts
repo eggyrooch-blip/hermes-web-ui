@@ -300,6 +300,24 @@ describe('run-chat broker compatibility module', () => {
     expect((mapped as any).event).not.toBe('auth.required')
   })
 
+  it('uses the trusted WebUI run marker when a broker content frame omits run_id', () => {
+    const mapped = mapRunBrokerFrameForChat(
+      { kind: 'content', text: 'one answer' },
+      undefined,
+      'resp_run_webui_1',
+    )
+
+    expect(mapped).toMatchObject({
+      type: 'emit',
+      event: 'message.delta',
+      payload: {
+        run_id: 'resp_run_webui_1',
+        response_id: 'resp_run_webui_1',
+        delta: 'one answer',
+      },
+    })
+  })
+
   it('parses multi-line SSE data frames', async () => {
     const encoder = new TextEncoder()
     const stream = new ReadableStream<Uint8Array>({

@@ -50,6 +50,27 @@ export interface ExpertInfo {
   source?: 'aihub' | 'local' | string
   /** Convenience flag some broker payloads set instead of `source`. */
   from_aihub?: boolean
+  /** Upstream SkillHub release, not the package's self-declared inner version. */
+  release_version?: string
+  /** Unix seconds when this release was successfully installed. */
+  release_installed_at?: number
+}
+
+const EXPERT_NEW_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
+
+export function formatExpertReleaseVersion(expert: Pick<ExpertInfo, 'release_version'>): string {
+  const version = expert.release_version?.trim()
+  if (!version) return ''
+  return version.startsWith('v') ? version : `v${version}`
+}
+
+export function isExpertRecentlyUpdated(
+  expert: Pick<ExpertInfo, 'release_installed_at'>,
+  now = Date.now(),
+): boolean {
+  const installedAt = Number(expert.release_installed_at) * 1000
+  const age = now - installedAt
+  return Number.isFinite(installedAt) && installedAt > 0 && age >= 0 && age <= EXPERT_NEW_WINDOW_MS
 }
 
 /** True when an expert was distributed through the AiHub managed-plugin pipeline. */
