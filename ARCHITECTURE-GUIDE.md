@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-07-19
+updated: 2026-07-24
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
@@ -15,6 +15,11 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
+> [!info] 2026-07-24 本机已切换 Hermes Agent v0.19.0，生产未发布
+> v0.19 的 `load_config()` 会补齐默认值，不能直接作为 profile override 覆盖 shared config；Agent Bridge 现在用公开 `read_raw_config()` 读取 profile 原始层，再复用既有 merge 路径，避免默认值清空共享 custom provider、model 和 agent 设置。修复只改 WebUI 2 行，不改 Hermes Agent、认证、路由或页面行为。
+>
+> Python 回归 `10/10`，focused Agent Bridge/Run Chat Vitest、full Vitest、harness、typecheck 和 production build 通过。本机 `/health` 为 200，报告 Agent `v0.19.0`、bridge ready/running；Gateway `8643` 与 Run Broker `8876` 健康。没有浏览器视觉验收、模型调用、Feishu 员工消息或 cron 执行；生产 `hermes-prod` 未连接、未修改、未探测。
+>
 > [!info] 2026-07-24 本机候选 — 专家版本标签与 broker run identity 补齐
 > 专家目录消费 multitenancy 可选的 `release_version` / `release_installed_at`：卡片与详情显示真实 SkillHub `vX.Y.Z`，成功安装 7 天内显示 `New`，旧 manifest 不猜版本。Run Broker 上游 frame 缺 `run_id` 时，服务端在 emit 前使用本轮可信 `runMarker` 补齐，使 live 临时消息与 persisted resume/refresh 行可按同一 run 合并；不按文本去重，因此不同 run 的同文回复仍保留。生产尚未发布。
 >
