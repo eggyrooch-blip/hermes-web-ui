@@ -147,6 +147,14 @@ interface CompressionState {
   error?: string
 }
 
+interface AbortState {
+  aborting: boolean
+  synced: boolean | null
+  timedOut?: boolean
+  message?: string
+  error?: string
+}
+
 type WorkspaceRunChangeLike = WorkspaceRunChangeSummary | (RunEvent & { change_id?: string })
 
 export interface WorkspaceDiffInlineFile {
@@ -791,7 +799,9 @@ export const useChatStore = defineStore('chat', () => {
   const isLoadingSessions = ref(false)
   const sessionsLoaded = ref(false)
   const isLoadingMessages = ref(false)
+  let loadSessionsRequestEpoch = 0
   let switchSessionLoadEpoch = 0
+  const latestSwitchLoadEpochBySession = new Map<string, number>()
   let hydrationRequestEpoch = 0
   const latestSuccessfulHydrationBySession = new Map<string, number>()
   const isRunActive = computed(() => isStreaming.value)
@@ -829,6 +839,9 @@ export const useChatStore = defineStore('chat', () => {
     pendingReauths.value = new Map()
     streamStates.value = new Map()
     serverWorking.value = new Set()
+    abortStates.value = new Map()
+    loadSessionsRequestEpoch += 1
+    latestSwitchLoadEpochBySession.clear()
     sessionsLoaded.value = false
     clearActiveSession()
   }
@@ -849,22 +862,29 @@ export const useChatStore = defineStore('chat', () => {
     compressionStates.value = next
   }
 
-  const abortState = ref<{
-    aborting: boolean
-    synced: boolean | null
-    timedOut?: boolean
-    message?: string
-    error?: string
-  } | null>(null)
+  // Background session sockets remain joined while another conversation is
+  // selected, so abort lifecycle state must follow the session that emitted it.
+  const abortStates = ref<Map<string, AbortState>>(new Map())
+  const abortState = computed<AbortState | null>({
+    get: () => {
+      const sid = activeSessionId.value
+      return sid ? abortStates.value.get(sid) || null : null
+    },
+    set: state => setAbortState(activeSessionId.value, state),
+  })
   const isAborting = computed(() => abortState.value?.aborting === true)
 
-  function setAbortState(state: typeof abortState.value) {
-    abortState.value = state
+  function setAbortState(sessionId: string | null | undefined, state: AbortState | null) {
+    if (!sessionId) return
+    const next = new Map(abortStates.value)
+    if (state) next.set(sessionId, state)
+    else next.delete(sessionId)
+    abortStates.value = next
   }
 
-  function applyResumedAbortCompleted(data: ResumeSessionPayload, event: RunEvent) {
+  function applyResumedAbortCompleted(sessionId: string, data: ResumeSessionPayload, event: RunEvent) {
     if (data.isAborting) return
-    setAbortState({ aborting: false, synced: (event as any).synced ?? false })
+    setAbortState(sessionId, { aborting: false, synced: (event as any).synced ?? false })
   }
 
   const activeSession = ref<Session | null>(null)
@@ -1004,18 +1024,22 @@ export const useChatStore = defineStore('chat', () => {
 
   function clearActiveSession() {
     const sid = activeSessionId.value
+    switchSessionLoadEpoch += 1
+    isLoadingMessages.value = false
     activeSessionId.value = null
     activeSession.value = null
     focusMessageId.value = null
-    setAbortState(null)
+    setAbortState(sid, null)
     setCompressionState(sid, null)
     removeItem(storageKey())
   }
 
   async function loadSessions(profile?: string | null, preferredSessionId?: string | null) {
+    const requestEpoch = ++loadSessionsRequestEpoch
     isLoadingSessions.value = true
     try {
       const list = await fetchRuntimeSessions(profile)
+      if (requestEpoch !== loadSessionsRequestEpoch) return
       const fresh = list.map(mapHermesSession)
       // Preserve already-loaded messages for sessions that are still present,
       // so we don't blow away the active session's messages on refresh.
@@ -1050,10 +1074,14 @@ export const useChatStore = defineStore('chat', () => {
         clearActiveSession()
       }
     } catch (err) {
-      console.error('Failed to load sessions:', err)
+      if (requestEpoch === loadSessionsRequestEpoch) {
+        console.error('Failed to load sessions:', err)
+      }
     } finally {
-      isLoadingSessions.value = false
-      sessionsLoaded.value = true
+      if (requestEpoch === loadSessionsRequestEpoch) {
+        isLoadingSessions.value = false
+        sessionsLoaded.value = true
+      }
     }
   }
 
@@ -1073,8 +1101,10 @@ export const useChatStore = defineStore('chat', () => {
   async function refreshSessionListOnly(profile?: string | null): Promise<void> {
     if (isStreaming.value) return
     if (isLoadingSessions.value) return
+    const requestEpoch = ++loadSessionsRequestEpoch
     try {
       const list = await fetchRuntimeSessions(profile ?? sessionProfileFilter.value)
+      if (requestEpoch !== loadSessionsRequestEpoch) return
       const incoming = list.map(mapHermesSession)
       const existingById = new Map(sessions.value.map(s => [s.id, s]))
       const incomingIds = new Set(incoming.map(s => s.id))
@@ -1132,7 +1162,9 @@ export const useChatStore = defineStore('chat', () => {
         if (again) syncActiveExpertFromSession(again)
       }
     } catch (err) {
-      console.error('Failed to refresh session list:', err)
+      if (requestEpoch === loadSessionsRequestEpoch) {
+        console.error('Failed to refresh session list:', err)
+      }
     }
   }
 
@@ -1164,8 +1196,13 @@ export const useChatStore = defineStore('chat', () => {
     profile = target.profile,
   ): Promise<boolean> {
     const requestEpoch = ++hydrationRequestEpoch
+    const sessionLoadEpoch = latestSwitchLoadEpochBySession.get(target.id)
     const messagesAtRequestStart = new Map(target.messages.map(message => [message.id, JSON.stringify(message)]))
     const detail = await fetchSessionMessagesPage(target.id, 0, limit, profile)
+    if (
+      latestSwitchLoadEpochBySession.get(target.id) !== sessionLoadEpoch
+      || sessions.value.find(session => session.id === target.id) !== target
+    ) return false
     if (!detail?.messages?.length) return false
     const mapped = mapHermesMessages(detail.messages || [])
     if (!mapped.length) return false
@@ -1250,6 +1287,8 @@ export const useChatStore = defineStore('chat', () => {
 
   async function switchSession(sessionId: string, focusId?: string | null) {
     const loadEpoch = ++switchSessionLoadEpoch
+    latestSwitchLoadEpochBySession.set(sessionId, loadEpoch)
+    const isLatestSessionLoad = () => latestSwitchLoadEpochBySession.get(sessionId) === loadEpoch
     clearThinkingObservationFor(sessionId)
     activeSessionId.value = sessionId
     focusMessageId.value = focusId ?? null
@@ -1267,6 +1306,10 @@ export const useChatStore = defineStore('chat', () => {
 
     isLoadingMessages.value = true
     const sessionAtResumeStart = activeSession.value
+    const isCurrentSessionLoad = () =>
+      isLatestSessionLoad()
+      && activeSessionId.value === sessionId
+      && sessions.value.find(session => session.id === sessionId) === sessionAtResumeStart
     const streamOwnerAtResumeStart = streamStates.value.get(sessionId)
     const messagesAtResumeStart = new Map(activeSession.value.messages.map(message => [message.id, JSON.stringify(message)]))
     let resumeConfirmedIdle = false
@@ -1277,7 +1320,7 @@ export const useChatStore = defineStore('chat', () => {
         const timeout = setTimeout(() => reject(new Error('resume timeout')), 15_000)
         resumeSession(sessionId, async (data) => {
           clearTimeout(timeout)
-          if (data.session_id !== sessionId || activeSessionId.value !== sessionId) {
+          if (data.session_id !== sessionId || !isCurrentSessionLoad()) {
             resolve()
             return []
           }
@@ -1303,9 +1346,9 @@ export const useChatStore = defineStore('chat', () => {
             replaceQueuedUserMessages(sessionId, [])
           }
           if ((data as any).isAborting) {
-            setAbortState({ aborting: true, synced: null })
+            setAbortState(sessionId, { aborting: true, synced: null })
           } else if (!data.isWorking) {
-            setAbortState(null)
+            setAbortState(sessionId, null)
           }
           if (!data.isWorking) setCompressionState(sessionId, null)
           if (data.inputTokens != null) target.inputTokens = data.inputTokens
@@ -1327,7 +1370,7 @@ export const useChatStore = defineStore('chat', () => {
               LIVE_CHAT_MAX_LOADED_MESSAGES,
             )
             await hydrateSessionMessagesFromPage(target, limit, target.profile)
-            if (activeSessionId.value !== sessionId) {
+            if (!isCurrentSessionLoad()) {
               resolve()
               return []
             }
@@ -1341,7 +1384,7 @@ export const useChatStore = defineStore('chat', () => {
           }
           activeSession.value = target
           await restoreWorkspaceDiffs(target)
-          if (activeSessionId.value !== sessionId) {
+          if (!isCurrentSessionLoad()) {
             resolve()
             return []
           }
@@ -1371,11 +1414,11 @@ export const useChatStore = defineStore('chat', () => {
                 })
                 if (e.contextTokens != null) target.contextTokens = e.contextTokens
               } else if (e.event === 'abort.started') {
-                setAbortState({ aborting: true, synced: null })
+                setAbortState(sessionId, { aborting: true, synced: null })
               } else if (e.event === 'abort.timeout') {
-                setAbortState({ aborting: true, synced: false, timedOut: true, message: (e as any).message })
+                setAbortState(sessionId, { aborting: true, synced: false, timedOut: true, message: (e as any).message })
               } else if (e.event === 'abort.completed') {
-                applyResumedAbortCompleted(data, e)
+                applyResumedAbortCompleted(sessionId, data, e)
               } else if (e.event === 'approval.requested') {
                 setPendingApproval({ ...e, session_id: sessionId } as RunEvent)
               } else if (e.event === 'approval.resolved') {
@@ -1465,13 +1508,13 @@ export const useChatStore = defineStore('chat', () => {
     } catch (err) {
       console.error('Failed to load session messages via resume:', err)
       const target = sessions.value.find(session => session.id === sessionId)
-      if (target && target === sessionAtResumeStart && activeSessionId.value === sessionId) {
+      if (target && isCurrentSessionLoad()) {
         const limit = Math.min(
           Math.max(target.loadedMessageCount || LIVE_CHAT_MESSAGE_PAGE_SIZE, LIVE_CHAT_MESSAGE_PAGE_SIZE),
           LIVE_CHAT_MAX_LOADED_MESSAGES,
         )
         const hydrated = await hydrateSessionMessagesFromPage(target, limit, target.profile)
-        if (hydrated && activeSessionId.value === sessionId) {
+        if (hydrated && isCurrentSessionLoad()) {
           activeSession.value = target
           await restoreWorkspaceDiffs(target)
         }
@@ -1485,6 +1528,7 @@ export const useChatStore = defineStore('chat', () => {
     const currentStreamOwner = streamStates.value.get(sessionId)
     const canRetireStreamOwner = !currentStreamOwner || currentStreamOwner === streamOwnerAtResumeStart
     if (
+      isLatestSessionLoad() &&
       resumeConfirmedIdle &&
       sessions.value.find(session => session.id === sessionId) === sessionAtResumeStart &&
       canRetireStreamOwner
@@ -1497,7 +1541,7 @@ export const useChatStore = defineStore('chat', () => {
       streamStates.value.delete(sessionId)
       unregisterSessionHandlers(sessionId)
       updateSessionTitle(sessionId)
-    } else if (activeSessionId.value === sessionId) {
+    } else if (activeSessionId.value === sessionId && isLatestSessionLoad()) {
       resumeServerWorkingRun(sessionId)
     }
   }
@@ -1626,7 +1670,8 @@ export const useChatStore = defineStore('chat', () => {
     clearPendingReauth(sessionId)
     setCompressionState(sessionId, null)
     latestSuccessfulHydrationBySession.delete(sessionId)
-    if (activeSessionId.value === sessionId) setAbortState(null)
+    latestSwitchLoadEpochBySession.delete(sessionId)
+    setAbortState(sessionId, null)
     sessions.value = sessions.value.filter(s => s.id !== sessionId)
     dropWorkspaceDiffs(sessionId)
     if (activeSessionId.value === sessionId) {
@@ -1644,6 +1689,8 @@ export const useChatStore = defineStore('chat', () => {
     const target = sessions.value.find(s => s.id === sessionId)
     const ok = await setSessionArchivedApi(sessionId, true, target?.profile)
     if (!ok) return false
+    latestSwitchLoadEpochBySession.delete(sessionId)
+    setAbortState(sessionId, null)
     sessions.value = sessions.value.filter(s => s.id !== sessionId)
     dropWorkspaceDiffs(sessionId)
     if (activeSessionId.value === sessionId) {
@@ -1730,8 +1777,13 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function restoreWorkspaceDiffs(session: Session): Promise<void> {
+    const sessionLoadEpoch = latestSwitchLoadEpochBySession.get(session.id)
     try {
       const changes = await fetchWorkspaceRunChanges(session.id, session.profile)
+      if (
+        latestSwitchLoadEpochBySession.get(session.id) !== sessionLoadEpoch
+        || sessions.value.find(candidate => candidate.id === session.id) !== session
+      ) return
       const normalized = changes
         .map(change => normalizeWorkspaceDiff(session.id, change))
         .filter((change): change is WorkspaceRunChangeSummary => change !== null)
@@ -1981,7 +2033,7 @@ export const useChatStore = defineStore('chat', () => {
       serverWorking.value.delete(sid)
       queueLengths.value.delete(sid)
       queuedUserMessages.value.delete(sid)
-      setAbortState(null)
+      setAbortState(sid, null)
       const msgs = getSessionMsgs(sid)
       msgs.forEach(m => {
         if (m.isStreaming) updateMessage(sid, m.id, { isStreaming: false })
@@ -2695,9 +2747,9 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         if (data.isAborting) {
-          setAbortState({ aborting: true, synced: null })
+          setAbortState(sid, { aborting: true, synced: null })
         } else if (!data.isWorking) {
-          setAbortState(null)
+          setAbortState(sid, null)
         }
         if (!data.isWorking) setCompressionState(sid, null)
 
@@ -2799,13 +2851,13 @@ export const useChatStore = defineStore('chat', () => {
                 break
               }
               case 'abort.started':
-                setAbortState({ aborting: true, synced: null })
+                setAbortState(sid, { aborting: true, synced: null })
                 break
               case 'abort.timeout':
-                setAbortState({ aborting: true, synced: false, timedOut: true, message: (e as any).message })
+                setAbortState(sid, { aborting: true, synced: false, timedOut: true, message: (e as any).message })
                 break
               case 'abort.completed':
-                applyResumedAbortCompleted(data, e)
+                applyResumedAbortCompleted(sid, data, e)
                 break
               case 'approval.requested':
                 setPendingApproval({ ...e, session_id: sid })
@@ -2880,7 +2932,7 @@ export const useChatStore = defineStore('chat', () => {
               clearSessionCompletedUnread(sid)
               serverWorking.value.add(sid)
               clearAgentEventMessages(sid)
-              setAbortState(null)
+              setAbortState(sid, null)
               setCompressionState(sid, null)
               runProducedAssistantText = false
               runProducedReasoning = false
@@ -2971,21 +3023,21 @@ export const useChatStore = defineStore('chat', () => {
             }
 
             case 'abort.started': {
-              setAbortState({ aborting: true, synced: null })
+              setAbortState(sid, { aborting: true, synced: null })
               break
             }
 
             case 'abort.timeout': {
-              setAbortState({ aborting: true, synced: false, timedOut: true, message: (evt as any).message })
+              setAbortState(sid, { aborting: true, synced: false, timedOut: true, message: (evt as any).message })
               break
             }
 
             case 'abort.completed': {
-              setAbortState({ aborting: false, synced: (evt as any).synced ?? false })
+              setAbortState(sid, { aborting: false, synced: (evt as any).synced ?? false })
               clearPendingInteractions(sid)
               if ((evt as any).queue_length > 0) {
                 queueLengths.value.set(sid, (evt as any).queue_length)
-                setAbortState(null)
+                setAbortState(sid, null)
                 break
               }
               const msgs = getSessionMsgs(sid)
@@ -2994,7 +3046,7 @@ export const useChatStore = defineStore('chat', () => {
                 updateMessage(sid, lastMsg.id, { isStreaming: false })
               }
               if (evt.failure_pending) {
-                setAbortState(null)
+                setAbortState(sid, null)
                 break
               }
               msgs.forEach((m, i) => {
@@ -3003,7 +3055,7 @@ export const useChatStore = defineStore('chat', () => {
                 }
               })
               cleanup()
-              setAbortState(null)
+              setAbortState(sid, null)
               break
             }
 
@@ -3562,7 +3614,7 @@ export const useChatStore = defineStore('chat', () => {
           handleSessionCommandEvent(evt)
           if ((evt as any).terminal !== false) {
             cleanup()
-            setAbortState(null)
+            setAbortState(sid, null)
             activeAssistantMessageId = null
             reasoningAssistantMessageId = null
             activeRunMarker = null
@@ -3598,7 +3650,7 @@ export const useChatStore = defineStore('chat', () => {
           clearSessionCompletedUnread(sid)
           serverWorking.value.add(sid)
           clearAgentEventMessages(sid)
-          setAbortState(null)
+          setAbortState(sid, null)
           setCompressionState(sid, null)
           runProducedAssistantText = false
           runProducedReasoning = false
@@ -3650,21 +3702,21 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         case 'abort.started': {
-          setAbortState({ aborting: true, synced: null })
+          setAbortState(sid, { aborting: true, synced: null })
           break
         }
 
         case 'abort.timeout': {
-          setAbortState({ aborting: true, synced: false, timedOut: true, message: (evt as any).message })
+          setAbortState(sid, { aborting: true, synced: false, timedOut: true, message: (evt as any).message })
           break
         }
 
         case 'abort.completed': {
-          setAbortState({ aborting: false, synced: (evt as any).synced ?? false })
+          setAbortState(sid, { aborting: false, synced: (evt as any).synced ?? false })
           clearPendingInteractions(sid)
           if ((evt as any).queue_length > 0) {
             queueLengths.value.set(sid, (evt as any).queue_length)
-            setAbortState(null)
+            setAbortState(sid, null)
             break
           }
           const msgs = getSessionMsgs(sid)
@@ -3673,7 +3725,7 @@ export const useChatStore = defineStore('chat', () => {
             updateMessage(sid, lastMsg.id, { isStreaming: false })
           }
           if (evt.failure_pending) {
-            setAbortState(null)
+            setAbortState(sid, null)
             break
           }
           msgs.forEach((m, i) => {
@@ -3682,7 +3734,7 @@ export const useChatStore = defineStore('chat', () => {
             }
           })
           cleanup()
-          setAbortState(null)
+          setAbortState(sid, null)
           break
         }
 
@@ -4094,8 +4146,8 @@ export const useChatStore = defineStore('chat', () => {
       } else if (!data.queueLength) {
         replaceQueuedUserMessages(sid, [])
       }
-      if (data.isAborting) setAbortState({ aborting: true, synced: null })
-      else if (!data.isWorking) setAbortState(null)
+      if (data.isAborting) setAbortState(sid, { aborting: true, synced: null })
+      else if (!data.isWorking) setAbortState(sid, null)
       if (!data.isWorking) setCompressionState(sid, null)
       if (data.inputTokens != null) target.inputTokens = data.inputTokens
       if (data.outputTokens != null) target.outputTokens = data.outputTokens
@@ -4138,7 +4190,7 @@ export const useChatStore = defineStore('chat', () => {
         const event = { ...pendingEvent.data, session_id: pendingEvent.data.session_id || sid } as RunEvent
         let consumed = true
         if (event.event === 'abort.completed') {
-          applyResumedAbortCompleted(data, event)
+          applyResumedAbortCompleted(sid, data, event)
         } else if (event.event === 'run.failed') {
           if (data.isWorking) addHistoricalAgentErrorMessage(sid, event.error, currentAssistant?.id)
           else {
@@ -4289,7 +4341,7 @@ export const useChatStore = defineStore('chat', () => {
     clearPendingInteractions(sid)
     const ctrl = streamStates.value.get(sid)
     if (ctrl) {
-      setAbortState({ aborting: true, synced: null })
+      setAbortState(sid, { aborting: true, synced: null })
       ctrl.abort()
       const msgs = getSessionMsgs(sid)
       const lastMsg = msgs[msgs.length - 1]
@@ -4299,7 +4351,7 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
     if (serverWorking.value.has(sid)) {
-      setAbortState({ aborting: true, synced: null })
+      setAbortState(sid, { aborting: true, synced: null })
       getChatRunSocket(runtimeTransport())?.emit('abort', { session_id: sid })
       const msgs = getSessionMsgs(sid)
       const lastMsg = msgs[msgs.length - 1]
@@ -4335,9 +4387,9 @@ export const useChatStore = defineStore('chat', () => {
               serverWorking.value.delete(sid)
             }
             if (data.isAborting) {
-              setAbortState({ aborting: true, synced: null })
+              setAbortState(sid, { aborting: true, synced: null })
             } else if (!data.isWorking) {
-              setAbortState(null)
+              setAbortState(sid, null)
             }
             if (!data.isWorking) setCompressionState(sid, null)
             if (data.messages?.length) {
@@ -4366,7 +4418,7 @@ export const useChatStore = defineStore('chat', () => {
               const event = pendingEvent.data as RunEvent
               let consumed = true
               if (event.event === 'abort.completed') {
-                applyResumedAbortCompleted(data, event)
+                applyResumedAbortCompleted(sid, data, event)
               } else if (event.event === 'run.failed') {
                 if (data.isWorking) addHistoricalAgentErrorMessage(sid, event.error, currentAssistant?.id)
                 else addAgentErrorMessage(sid, event.error)

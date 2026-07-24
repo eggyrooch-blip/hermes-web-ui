@@ -8,6 +8,7 @@ const chatApi = vi.hoisted(() => ({
   resumeSession: vi.fn(),
   registerSessionHandlers: vi.fn(),
   unregisterSessionHandlers: vi.fn(),
+  socketEmit: vi.fn(),
 }))
 
 const sessionsApi = vi.hoisted(() => ({
@@ -20,7 +21,7 @@ vi.mock('@/api/hermes/chat', () => ({
   resumeSession: chatApi.resumeSession,
   registerSessionHandlers: chatApi.registerSessionHandlers,
   unregisterSessionHandlers: chatApi.unregisterSessionHandlers,
-  getChatRunSocket: vi.fn(() => ({ emit: vi.fn() })),
+  getChatRunSocket: vi.fn(() => ({ emit: chatApi.socketEmit })),
   respondToolApproval: vi.fn(),
   respondClarify: vi.fn(),
   onPeerUserMessage: vi.fn(() => vi.fn()),
@@ -134,6 +135,266 @@ describe('chat store compression state', () => {
       messageCount: 6,
       beforeTokens: 1234,
     }))
+  })
+
+  it('keeps abort lifecycle and stop handling scoped to each session', async () => {
+    chatApi.resumeSession.mockImplementation((sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({
+        session_id: sessionId,
+        messages: [],
+        isWorking: true,
+        events: [],
+      })
+      return {} as any
+    })
+
+    const store = useChatStore()
+    store.sessions = [makeSession('session-1'), makeSession('session-2')]
+
+    await store.switchSession('session-1')
+    const session1Handlers = chatApi.registerSessionHandlers.mock.calls.find(call => call[0] === 'session-1')?.[1]
+    expect(session1Handlers).toBeTruthy()
+
+    await store.switchSession('session-2')
+    const session2Handlers = chatApi.registerSessionHandlers.mock.calls.find(call => call[0] === 'session-2')?.[1]
+    expect(session2Handlers).toBeTruthy()
+
+    session1Handlers.onAbortStarted({
+      event: 'abort.started',
+      session_id: 'session-1',
+    })
+
+    expect(store.activeSessionId).toBe('session-2')
+    expect(store.abortState).toBeNull()
+    expect(store.isAborting).toBe(false)
+
+    store.stopStreaming()
+
+    expect(chatApi.socketEmit).toHaveBeenCalledWith('abort', { session_id: 'session-2' })
+    expect(store.abortState).toEqual(expect.objectContaining({ aborting: true }))
+
+    session2Handlers.onRunStarted({
+      event: 'run.started',
+      session_id: 'session-2',
+    })
+    expect(store.abortState).toBeNull()
+
+    await store.switchSession('session-1')
+    expect(store.abortState).toEqual(expect.objectContaining({ aborting: true }))
+    expect(store.isAborting).toBe(true)
+
+    session1Handlers.onAbortCompleted({
+      event: 'abort.completed',
+      session_id: 'session-1',
+      synced: true,
+    })
+    expect(store.abortState).toBeNull()
+    expect(store.isAborting).toBe(false)
+  })
+
+  it('ignores an obsolete response after switching away and back to the same session', async () => {
+    const callbacks: Array<{ sessionId: string; callback: (data: any) => void }> = []
+    chatApi.resumeSession.mockImplementation((sessionId: string, callback: (data: any) => void) => {
+      callbacks.push({ sessionId, callback })
+      return {} as any
+    })
+    const store = useChatStore()
+    store.sessions = [makeSession('session-1'), makeSession('session-2')]
+
+    const firstSessionOne = store.switchSession('session-1')
+    const sessionTwo = store.switchSession('session-2')
+    const secondSessionOne = store.switchSession('session-1')
+
+    callbacks[2].callback({
+      session_id: 'session-1',
+      messages: [{ id: 'fresh', role: 'user', content: 'fresh response', timestamp: 2 }],
+      isWorking: false,
+      events: [],
+    })
+    await secondSessionOne
+
+    expect(store.isLoadingMessages).toBe(false)
+    expect(store.activeSessionId).toBe('session-1')
+    expect(store.activeSession?.messages).toEqual([
+      expect.objectContaining({ id: 'fresh', content: 'fresh response' }),
+    ])
+
+    callbacks[0].callback({
+      session_id: 'session-1',
+      messages: [{ id: 'stale', role: 'user', content: 'stale response', timestamp: 1 }],
+      isWorking: false,
+      events: [],
+    })
+    await firstSessionOne
+    callbacks[1].callback({
+      session_id: 'session-2',
+      messages: [],
+      isWorking: false,
+      events: [],
+    })
+    await sessionTwo
+
+    expect(store.isLoadingMessages).toBe(false)
+    expect(store.activeSession?.messages).toEqual([
+      expect.objectContaining({ id: 'fresh', content: 'fresh response' }),
+    ])
+  })
+
+  it('does not let an obsolete resume fallback hydrate the current session', async () => {
+    const callbacks: Array<(data: any) => Promise<unknown>> = []
+    chatApi.resumeSession.mockImplementation((_sessionId: string, callback: (data: any) => Promise<unknown>) => {
+      callbacks.push(callback)
+      return {} as any
+    })
+    let resolveStalePage!: (value: any) => void
+    sessionsApi.fetchSessionMessagesPage.mockImplementationOnce(() => new Promise(resolve => {
+      resolveStalePage = resolve
+    }))
+
+    const store = useChatStore()
+    store.sessions = [makeSession('session-1'), makeSession('session-2')]
+
+    const firstSessionOne = store.switchSession('session-1')
+    const staleCallback = callbacks[0]({
+      session_id: 'session-1',
+      messages: [],
+      messageLoadedCount: 0,
+      messageTotal: 1,
+      isWorking: false,
+      events: [],
+    })
+    await vi.waitFor(() => expect(sessionsApi.fetchSessionMessagesPage).toHaveBeenCalledTimes(1))
+
+    const sessionTwo = store.switchSession('session-2')
+    await callbacks[1]({
+      session_id: 'session-2',
+      messages: [],
+      isWorking: false,
+      events: [],
+    })
+    await sessionTwo
+
+    const secondSessionOne = store.switchSession('session-1')
+    await callbacks[2]({
+      session_id: 'session-1',
+      messages: [{ id: 'fresh', role: 'user', content: 'fresh response', timestamp: 2 }],
+      isWorking: false,
+      events: [],
+    })
+    await secondSessionOne
+
+    resolveStalePage({
+      session: { id: 'session-1', title: 'stale session' },
+      messages: [{ id: 'stale', role: 'user', content: 'stale response', timestamp: 1 }],
+      total: 1,
+      hasMore: false,
+    })
+    await staleCallback
+    await firstSessionOne
+
+    expect(store.activeSessionId).toBe('session-1')
+    expect(store.activeSession?.messages).toEqual([
+      expect.objectContaining({ id: 'fresh', content: 'fresh response' }),
+    ])
+  })
+
+  it('ignores a stale session-list response after a newer route load completes', async () => {
+    const pending: Array<(sessions: any[]) => void> = []
+    sessionsApi.fetchSessions.mockImplementation(() => new Promise(resolve => pending.push(resolve)))
+
+    const store = useChatStore()
+    const first = store.loadSessions('tester', 'session-a')
+    const second = store.loadSessions('tester', 'session-b')
+
+    pending[2]([{
+      id: 'session-b',
+      title: 'session-b',
+      source: 'cli',
+      started_at: 2000,
+      last_active: 2000,
+      message_count: 0,
+    }])
+    pending[3]([])
+    await second
+
+    pending[0]([{
+      id: 'session-a',
+      title: 'session-a',
+      source: 'cli',
+      started_at: 1000,
+      last_active: 1000,
+      message_count: 0,
+    }])
+    pending[1]([])
+    await first
+
+    expect(store.sessions.map(session => session.id)).toEqual(['session-b'])
+    expect(store.activeSessionId).toBe('session-b')
+    expect(store.activeSession?.id).toBe('session-b')
+    expect(store.isLoadingSessions).toBe(false)
+  })
+
+  it('ignores an older metadata refresh after a newer route load completes', async () => {
+    const pending: Array<(sessions: any[]) => void> = []
+    sessionsApi.fetchSessions.mockImplementation(() => new Promise(resolve => pending.push(resolve)))
+
+    const store = useChatStore()
+    const olderRefresh = store.refreshSessionListOnly('old-profile')
+    const newerLoad = store.loadSessions('new-profile', 'session-b')
+
+    pending[2]([{
+      id: 'session-b',
+      title: 'session-b',
+      source: 'cli',
+      started_at: 2000,
+      last_active: 2000,
+      message_count: 0,
+    }])
+    pending[3]([])
+    await newerLoad
+
+    pending[0]([{
+      id: 'session-a',
+      title: 'stale session-a',
+      source: 'cli',
+      started_at: 1000,
+      last_active: 1000,
+      message_count: 0,
+    }])
+    pending[1]([])
+    await olderRefresh
+
+    expect(store.sessions.map(session => session.id)).toEqual(['session-b'])
+    expect(store.activeSessionId).toBe('session-b')
+    expect(store.activeSession?.id).toBe('session-b')
+  })
+
+  it('clears active message loading immediately when there is no active session', async () => {
+    const callbacks: Array<(data: any) => void> = []
+    chatApi.resumeSession.mockImplementation((_sessionId: string, callback: (data: any) => void) => {
+      callbacks.push(callback)
+      return {} as any
+    })
+    const store = useChatStore()
+    store.sessions = [makeSession('session-1')]
+
+    const switching = store.switchSession('session-1')
+    expect(store.isLoadingMessages).toBe(true)
+
+    store.clearActiveSession()
+
+    expect(store.activeSessionId).toBeNull()
+    expect(store.activeSession).toBeNull()
+    expect(store.isLoadingMessages).toBe(false)
+
+    callbacks[0]({
+      session_id: 'session-1',
+      messages: [],
+      isWorking: false,
+      events: [],
+    })
+    await switching
+    expect(store.isLoadingMessages).toBe(false)
   })
 
   it('surfaces non-terminal reattach warnings replayed in a non-working resume payload', async () => {
