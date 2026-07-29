@@ -935,6 +935,15 @@ export async function handleBrokerRun(
       : null
     if (abandonStaleRun()) return
     if (abortController.signal.aborted) throw new DOMException('aborted', 'AbortError')
+    // The chat header's model choice is persisted on the session row, but the client
+    // only sends model/provider on the session's first turn. Without this fallback every
+    // later turn reaches the gateway with no model and silently drops back to the
+    // profile default. Fall back to the STORED PAIR (never mix request provider with
+    // session model); no validation here on purpose — an invalid model must fail loudly
+    // at the gateway rather than be silently swapped.
+    const useSessionModel = !model && !!sessionRow?.model
+    const runModel = useSessionModel ? sessionRow!.model : model
+    const runProvider = useSessionModel ? (sessionRow!.provider || undefined) : provider
     const request = isReplay ? null : await buildRunBrokerRequest({
       input,
       profile,
@@ -942,8 +951,8 @@ export async function handleBrokerRun(
       agentId,
       expertId: expert_id,
       sessionId: session_id,
-      model,
-      provider,
+      model: runModel,
+      provider: runProvider,
       instructions,
       workspace,
       messages: state?.messages || [],
