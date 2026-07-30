@@ -165,7 +165,11 @@ watch(activeProfileName, () => {
               <div class="card-meta-row">
                 <span v-if="expert.category" class="card-category">{{ expert.category }}</span>
                 <span v-if="isAiHubExpert(expert)" class="card-source-badge">{{ t('expert.catalog.aihubBadge') }}</span>
-                <span v-if="formatExpertReleaseVersion(expert)" class="card-version">
+                <span
+                  v-if="formatExpertReleaseVersion(expert)"
+                  class="card-version"
+                  :title="formatExpertReleaseVersion(expert)"
+                >
                   {{ formatExpertReleaseVersion(expert) }}
                 </span>
                 <span v-else class="card-version-placeholder" aria-hidden="true">v0.0.0</span>
@@ -347,6 +351,12 @@ watch(activeProfileName, () => {
 
 .card-version,
 .card-version-placeholder {
+  box-sizing: border-box;
+  width: 60px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
   font-size: 11px;
   line-height: 16px;
   padding: 1px 8px;

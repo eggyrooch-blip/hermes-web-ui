@@ -55,7 +55,7 @@ describe('ExpertCatalogView release metadata', () => {
           name: 'Recent expert',
           release_version: '1.0.5',
           release_installed_at: Math.floor(Date.parse('2026-07-24T02:00:00Z') / 1000),
-          use_count: 132,
+          use_count: 76,
         },
         {
           id: 'old',
@@ -65,6 +65,7 @@ describe('ExpertCatalogView release metadata', () => {
           use_count: 0,
         },
         { id: 'legacy', name: 'Legacy expert' },
+        { id: 'small', name: 'Small expert', use_count: 3 },
       ],
     })
 
@@ -84,7 +85,7 @@ describe('ExpertCatalogView release metadata', () => {
     expect(cards[0].find('.card-version').text()).toBe('v1.0.5')
     expect(cards[0].find('.card-new-badge').text()).toBe('New')
     expect(cards[0].find('.card-updated').text()).toMatch(/^更新于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
-    expect(cards[0].find('.card-usage').text()).toBe('使用 132 次')
+    expect(cards[0].find('.card-usage').text()).toBe('使用 76 次')
     expect(cards[1].find('.card-version').text()).toBe('v1.0.4')
     expect(cards[1].find('.card-new-badge').exists()).toBe(false)
     expect(cards[1].find('.card-usage').exists()).toBe(false)
@@ -92,6 +93,7 @@ describe('ExpertCatalogView release metadata', () => {
     expect(cards[2].find('.card-version').exists()).toBe(false)
     expect(cards[2].find('.card-version-placeholder').exists()).toBe(true)
     expect(cards[2].find('.card-usage').exists()).toBe(false)
+    expect(cards[3].find('.card-usage').text()).toBe('使用 3 次')
     expect(cards[0].find('.card-version-placeholder').exists()).toBe(false)
     expect(cards[2].find('.card-new-badge').exists()).toBe(false)
     expect(cards[2].find('.card-updated').exists()).toBe(false)
