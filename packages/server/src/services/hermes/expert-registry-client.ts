@@ -137,9 +137,12 @@ export function mapExpertRow(r: ExpertRowDict): ExpertEntry {
   if (typeof r.release_version === 'string' && r.release_version.trim()) {
     entry.release_version = r.release_version.trim()
   }
-  const releaseInstalledAt = Number(r.release_installed_at)
-  if (Number.isFinite(releaseInstalledAt) && releaseInstalledAt > 0) {
-    entry.release_installed_at = releaseInstalledAt
+  if (
+    typeof r.release_installed_at === 'number' &&
+    Number.isFinite(r.release_installed_at) &&
+    r.release_installed_at > 0
+  ) {
+    entry.release_installed_at = r.release_installed_at
   }
   return entry
 }

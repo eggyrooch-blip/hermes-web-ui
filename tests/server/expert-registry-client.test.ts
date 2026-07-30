@@ -104,6 +104,19 @@ describe('expert registry client', () => {
     expect(row.release_installed_at).toBeUndefined()
   })
 
+  it('drops coercible-but-non-number release_installed_at values (numeric string, boolean, array)', async () => {
+    const { mapExpertRow } = await import(SERVICE)
+
+    for (const bad of ['1785379743', true, [1785379743]]) {
+      const row = mapExpertRow({
+        id: 'kep',
+        name: '资源投放专家',
+        release_installed_at: bad,
+      })
+      expect(row.release_installed_at).toBeUndefined()
+    }
+  })
+
   it('fetchExpertCatalog returns rewritten avatar URLs and sends broker auth', async () => {
     ;(globalThis.fetch as any).mockResolvedValue({
       ok: true,
