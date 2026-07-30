@@ -79,10 +79,10 @@ describe('ExpertCatalogView release metadata', () => {
     const cards = wrapper.findAll('.expert-card')
     expect(cards[0].find('.card-version').text()).toBe('v1.0.5')
     expect(cards[0].find('.card-new-badge').text()).toBe('New')
-    expect(cards[0].find('.card-updated').text()).toMatch(/^更新于 \d{2}-\d{2}$/)
+    expect(cards[0].find('.card-updated').text()).toMatch(/^更新于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
     expect(cards[1].find('.card-version').text()).toBe('v1.0.4')
     expect(cards[1].find('.card-new-badge').exists()).toBe(false)
-    expect(cards[1].find('.card-updated').text()).toMatch(/^更新于 \d{2}-\d{2}$/)
+    expect(cards[1].find('.card-updated').text()).toMatch(/^更新于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
     expect(cards[2].find('.card-version').exists()).toBe(false)
     expect(cards[2].find('.card-new-badge').exists()).toBe(false)
     expect(cards[2].find('.card-updated').exists()).toBe(false)
@@ -120,14 +120,12 @@ describe('ExpertCatalogView release metadata', () => {
   })
 
   it('rejects out-of-range and future timestamps in helpers', async () => {
-    const { formatExpertUpdatedDate, formatExpertUpdatedFull, isExpertRecentlyUpdated } =
+    const { formatExpertUpdatedFull, isExpertRecentlyUpdated } =
       await import('@/api/hermes/experts')
     for (const bad of [0, -1, NaN, Infinity, 1e13]) {
-      expect(formatExpertUpdatedDate({ release_installed_at: bad })).toBe('')
       expect(formatExpertUpdatedFull({ release_installed_at: bad })).toBe('')
     }
     const ts = Math.floor(Date.parse('2026-07-24T02:00:00Z') / 1000)
-    expect(formatExpertUpdatedDate({ release_installed_at: ts })).toMatch(/^\d{2}-\d{2}$/)
     expect(formatExpertUpdatedFull({ release_installed_at: ts })).toMatch(/^2026-\d{2}-\d{2} \d{2}:\d{2}$/)
 
     const now = Date.parse('2026-07-24T12:00:00Z')

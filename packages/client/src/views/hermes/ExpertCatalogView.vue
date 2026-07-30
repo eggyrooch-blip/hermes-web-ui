@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import {
   fetchExperts,
   formatExpertReleaseVersion,
-  formatExpertUpdatedDate,
+  formatExpertUpdatedFull,
   isAiHubExpert,
   isExpertRecentlyUpdated,
   type ExpertInfo,
@@ -168,8 +168,8 @@ watch(activeProfileName, () => {
                 <span v-if="formatExpertReleaseVersion(expert)" class="card-version">
                   {{ formatExpertReleaseVersion(expert) }}
                 </span>
-                <span v-if="formatExpertUpdatedDate(expert)" class="card-updated">
-                  {{ t('expert.catalog.updatedAt', { date: formatExpertUpdatedDate(expert) }) }}
+                <span v-if="formatExpertUpdatedFull(expert)" class="card-updated">
+                  {{ t('expert.catalog.updatedAt', { date: formatExpertUpdatedFull(expert) }) }}
                 </span>
               </div>
             </div>

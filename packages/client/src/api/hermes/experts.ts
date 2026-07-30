@@ -67,13 +67,7 @@ function expertUpdatedDate(expert: Pick<ExpertInfo, 'release_installed_at'>): Da
   return Number.isFinite(d.getTime()) ? d : null
 }
 
-/** Short `MM-DD` for the catalog card. */
-export function formatExpertUpdatedDate(expert: Pick<ExpertInfo, 'release_installed_at'>): string {
-  const d = expertUpdatedDate(expert)
-  return d ? `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` : ''
-}
-
-/** Full `YYYY-MM-DD HH:mm` for the detail panel. */
+/** Full `YYYY-MM-DD HH:mm` for catalog card and detail panel. */
 export function formatExpertUpdatedFull(expert: Pick<ExpertInfo, 'release_installed_at'>): string {
   const d = expertUpdatedDate(expert)
   if (!d) return ''
