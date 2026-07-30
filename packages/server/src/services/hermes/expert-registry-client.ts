@@ -42,6 +42,10 @@ export interface ExpertEntry {
   /** Distribution source ('aihub' = ingested managed plugin) → drives the 来自 AiHub badge. */
   source?: string
   from_aihub?: boolean
+  /** Upstream SkillHub release version (drives the v1.0.x chip in the catalog). */
+  release_version?: string
+  /** Unix seconds when this release was installed (drives the New badge). */
+  release_installed_at?: number
 }
 
 export interface ExpertListResult {
@@ -78,6 +82,8 @@ interface ExpertRowDict {
   plugin_id?: string
   source?: unknown
   from_aihub?: unknown
+  release_version?: unknown
+  release_installed_at?: unknown
   // The persona (`agent_md`) MUST NOT be surfaced; it is dropped here even if
   // the broker ever includes it.
 }
@@ -128,6 +134,13 @@ export function mapExpertRow(r: ExpertRowDict): ExpertEntry {
   if (r.plugin_id) entry.plugin_id = String(r.plugin_id)
   if (r.source) entry.source = String(r.source)
   if (typeof r.from_aihub === 'boolean') entry.from_aihub = r.from_aihub
+  if (typeof r.release_version === 'string' && r.release_version.trim()) {
+    entry.release_version = r.release_version.trim()
+  }
+  const releaseInstalledAt = Number(r.release_installed_at)
+  if (Number.isFinite(releaseInstalledAt) && releaseInstalledAt > 0) {
+    entry.release_installed_at = releaseInstalledAt
+  }
   return entry
 }
 

@@ -76,6 +76,34 @@ describe('expert registry client', () => {
     expect(row.avatar).toBe('/api/run-broker/plugin-assets/keep-resource-delivery/nested/kep.png')
   })
 
+  it('passes release_version and release_installed_at through so the catalog can render v-chip and New badge', async () => {
+    const { mapExpertRow } = await import(SERVICE)
+
+    const row = mapExpertRow({
+      id: 'kep',
+      name: '资源投放专家',
+      release_version: ' 1.0.9 ',
+      release_installed_at: 1785379743,
+    })
+
+    expect(row.release_version).toBe('1.0.9')
+    expect(row.release_installed_at).toBe(1785379743)
+  })
+
+  it('drops malformed release metadata instead of forwarding it', async () => {
+    const { mapExpertRow } = await import(SERVICE)
+
+    const row = mapExpertRow({
+      id: 'kep',
+      name: '资源投放专家',
+      release_version: '   ',
+      release_installed_at: 'soon',
+    })
+
+    expect(row.release_version).toBeUndefined()
+    expect(row.release_installed_at).toBeUndefined()
+  })
+
   it('fetchExpertCatalog returns rewritten avatar URLs and sends broker auth', async () => {
     ;(globalThis.fetch as any).mockResolvedValue({
       ok: true,
