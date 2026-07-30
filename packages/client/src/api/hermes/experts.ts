@@ -90,9 +90,10 @@ export function isExpertRecentlyUpdated(
   expert: Pick<ExpertInfo, 'release_installed_at'>,
   now = Date.now(),
 ): boolean {
-  const installedAt = Number(expert.release_installed_at) * 1000
-  const age = now - installedAt
-  return Number.isFinite(installedAt) && installedAt > 0 && age >= 0 && age <= EXPERT_NEW_WINDOW_MS
+  const d = expertUpdatedDate(expert)
+  if (!d) return false
+  const age = now - d.getTime()
+  return age >= 0 && age <= EXPERT_NEW_WINDOW_MS
 }
 
 /** True when an expert was distributed through the AiHub managed-plugin pipeline. */

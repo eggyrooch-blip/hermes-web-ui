@@ -135,6 +135,9 @@ describe('ExpertCatalogView release metadata', () => {
     expect(isExpertRecentlyUpdated({ release_installed_at: at('2026-07-23T12:00:00Z') }, now)).toBe(true)
     expect(isExpertRecentlyUpdated({ release_installed_at: at('2026-07-23T11:59:59Z') }, now)).toBe(false)
     expect(isExpertRecentlyUpdated({ release_installed_at: at('2026-07-24T13:00:00Z') }, now)).toBe(false)
+    const recentStr = String(at('2026-07-24T11:30:00Z'))
+    expect(isExpertRecentlyUpdated({ release_installed_at: recentStr as unknown as number }, now)).toBe(false)
+    expect(isExpertRecentlyUpdated({ release_installed_at: [at('2026-07-24T11:30:00Z')] as unknown as number }, now)).toBe(false)
   })
 
   it('shows the same release metadata in the expert detail panel', () => {
