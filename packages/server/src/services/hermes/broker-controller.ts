@@ -588,6 +588,10 @@ export class BrokerRunController {
       expert_avatar?: string
       queue_id?: string
     }) => {
+      // Before ANY state or transcript write: a socket may only drive a session row
+      // owned by its own profile. This entry also guards the queue and session-command
+      // branches below, which never reach handleRun's own fence.
+      if (this.rejectsCrossProfileSession(socket, data.session_id, profile, data.queue_id)) return
       const sessionCommand = config.webuiRunBroker && data.session_id && !data.__skipSessionCommand
         ? parseBrokerSessionCommand(data.input)
         : null
@@ -979,6 +983,46 @@ export class BrokerRunController {
   }
   // --- Run handler ---
 
+  /**
+   * Persisted-row profile fence. `getSession()` resolves a session id GLOBALLY —
+   * the sessions table has a profile column but nothing filters on it — so a socket
+   * authenticated as profile B can name profile A's session_id. Everything that
+   * follows (transcript append, addMessage, queueing, the broker run itself) keys off
+   * that id, so this has to run before the first write.
+   *
+   * Returns true when the caller must stop. An unknown id is allowed through: a
+   * session's first message legitimately arrives before the row exists.
+   */
+  private rejectsCrossProfileSession(
+    socket: Socket,
+    sessionId: string | undefined,
+    profile: string,
+    queueId?: string,
+  ): boolean {
+    if (!sessionId) return false
+    let row: ReturnType<typeof getSession>
+    try {
+      row = getSession(sessionId)
+    } catch {
+      // A broken lookup is not a verdict. Fall through and let the existing run
+      // paths surface the failure - they re-read the row before writing anything,
+      // so a dead DB still cannot produce a cross-profile write.
+      return false
+    }
+    if (!row || row.profile === profile) return false
+    logger.warn(
+      { sessionId, sessionProfile: row.profile, socketProfile: profile },
+      '[chat-run-socket] rejected cross-profile session access',
+    )
+    socket.emit('run.rejected', {
+      event: 'run.rejected',
+      session_id: sessionId,
+      queue_id: queueId,
+      error: 'Session belongs to a different profile',
+    })
+    return true
+  }
+
   private async handleRun(
     socket: Socket,
     data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; source?: ChatRunSource; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; expert_label?: string; expert_avatar?: string; queue_id?: string },
@@ -986,6 +1030,9 @@ export class BrokerRunController {
     skipUserMessage = false,
   ) {
     const { input, session_id, model, provider, instructions, expert_id } = data
+    // Fence again here, not just at the socket entry: handleRun is also reached from
+    // the queue drain and other internal callers that never pass through 'run'.
+    if (this.rejectsCrossProfileSession(socket, session_id, profile, data.queue_id)) return
 
     // Local marker used only to group in-memory messages for this streamed response.
     const runMarker = session_id

@@ -1897,6 +1897,10 @@ describe('BrokerRunController run lifecycle', () => {
 
   it('fails visibly and clears working state when session identity setup throws', async () => {
     store.getSession
+      // 1: fence at the socket run entry, 2: fence at handleRun entry,
+      // 3: handleRun's own row read. The identity setup read is the one that throws.
+      .mockReturnValueOnce({ id: 's1', profile: 'research', workspace: '/tmp/workspace' })
+      .mockReturnValueOnce({ id: 's1', profile: 'research', workspace: '/tmp/workspace' })
       .mockReturnValueOnce({ id: 's1', profile: 'research', workspace: '/tmp/workspace' })
       .mockImplementationOnce(() => { throw new Error('identity failed') })
     const fetchMock = vi.fn()
@@ -1915,7 +1919,10 @@ describe('BrokerRunController run lifecycle', () => {
   })
 
   it('clears working state when the first session lookup throws before broker setup', async () => {
-    store.getSession.mockImplementationOnce(() => { throw new Error('initial lookup failed') })
+    // The DB is broken for the whole run, so every lookup throws - including the
+    // cross-profile fences, which must swallow their own failure and let the run path
+    // report the real error rather than deciding anything from a failed read.
+    store.getSession.mockImplementation(() => { throw new Error('initial lookup failed') })
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     const { controller, emitted, handlers } = makeHarness()

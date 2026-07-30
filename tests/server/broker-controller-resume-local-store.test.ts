@@ -105,7 +105,14 @@ describe('BrokerRunController local session resume', () => {
     parseBrokerSessionCommandMock.mockReturnValue(null)
     runBrokerSessionCommandMock.mockReset()
     updateSessionMock.mockReset()
-    getSessionMock.mockReturnValue({ id: 'local-session', profile: 'feishu_g41a5b5g', source: 'cli' })
+    // Id-aware: the real store returns the row for the id asked for. A single fixed row
+    // for every id makes every non-'local-session' case look cross-profile to the
+    // controller's profile fence.
+    getSessionMock.mockImplementation((id: string) => (
+      id === 'local-session'
+        ? { id, profile: 'feishu_g41a5b5g', source: 'cli' }
+        : { id, profile: 'research', source: 'cli' }
+    ))
     getSessionDetailMock.mockReturnValue({
       id: 'local-session',
       profile: 'feishu_g41a5b5g',
