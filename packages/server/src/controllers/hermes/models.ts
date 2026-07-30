@@ -8,6 +8,7 @@ import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request
 import { ownerOwnsProfile } from '../../services/hermes/agent-ownership'
 import { getCompatibleCustomProviders } from '../../services/hermes/custom-providers-compat'
 import { buildProviderModelMap, PROVIDER_PRESETS } from '../../shared/providers'
+import { withModelCapabilities, type ModelCapability } from '../../shared/model-capabilities'
 import { getCopilotModelsDetailed, resolveCopilotOAuthToken, type CopilotModelMeta } from '../../services/hermes/copilot-models'
 import { readAppConfig, writeAppConfig, type ModelVisibilityRule } from '../../services/app-config'
 import { getDb } from '../../db'
@@ -23,7 +24,7 @@ import {
 
 const PROVIDER_MODEL_CATALOG = buildProviderModelMap()
 
-type ModelMeta = { preview?: boolean; disabled?: boolean; alias?: string }
+type ModelMeta = { preview?: boolean; disabled?: boolean; alias?: string; capabilities?: ModelCapability[] }
 type AvailableGroup = { provider: string; label: string; base_url: string; models: string[]; api_key: string; api_mode?: 'chat_completions' | 'codex_responses' | 'anthropic_messages'; builtin?: boolean; model_meta?: Record<string, ModelMeta>; available_models?: string[]; base_url_env?: string; provider_source?: 'custom_providers' | 'providers'; provider_key?: string }
 type ModelVisibility = Record<string, ModelVisibilityRule>
 type CustomModels = Record<string, string[]>
@@ -737,7 +738,7 @@ export async function getAvailableChatPlane(ctx: any) {
       const fallback = buildModelGroups(config)
       ctx.body = {
         ...fallback,
-        groups: sanitizeAvailableGroups((fallback.groups as any) || []),
+        groups: withModelCapabilities(sanitizeAvailableGroups((fallback.groups as any) || [])),
         allProviders: sanitizeAvailableGroups(allProvidersBase as any),
       }
       return
@@ -746,7 +747,7 @@ export async function getAvailableChatPlane(ctx: any) {
     ctx.body = {
       default: currentDefault,
       default_provider: currentDefaultProvider,
-      groups: sanitizeAvailableGroups(groups),
+      groups: withModelCapabilities(sanitizeAvailableGroups(groups)),
       allProviders: sanitizeAvailableGroups(allProvidersBase as any),
     }
   } catch (err: any) {
@@ -771,7 +772,7 @@ export async function getAvailable(ctx: any) {
       )
       const mergedGroups = mergeAvailableGroups(profileResults.flatMap(result => result.groups))
       const groupsWithAliases = applyModelAliases(mergedGroups, modelAliases)
-      const visibleGroups = applyModelVisibility(groupsWithAliases, modelVisibility)
+      const visibleGroups = withModelCapabilities(applyModelVisibility(groupsWithAliases, modelVisibility))
       const activeProfile = requestScopedProfileName(ctx)
       const defaultProfile = profileResults.find(result => result.profile === activeProfile && (result.default || result.default_provider))
         || profileResults.find(result => result.default && result.default_provider)
@@ -797,7 +798,7 @@ export async function getAvailable(ctx: any) {
           profile: result.profile,
           default: result.default,
           default_provider: result.default_provider,
-          groups: applyModelVisibility(applyModelAliases(result.groups, modelAliases), modelVisibility),
+          groups: withModelCapabilities(applyModelVisibility(applyModelAliases(result.groups, modelAliases), modelVisibility)),
         })),
       }
       return
@@ -810,7 +811,7 @@ export async function getAvailable(ctx: any) {
     const modelCatalogCacheForProfile = await readProviderModelCatalogCache()
     const profileResult = await buildAvailableForProfile(requestedProfile, modelCatalogCacheForProfile, appConfigForProfile)
     const profileGroupsWithAliases = applyModelAliases(profileResult.groups, modelAliasesForProfile)
-    const visibleProfileGroups = applyModelVisibility(profileGroupsWithAliases, modelVisibilityForProfile)
+    const visibleProfileGroups = withModelCapabilities(applyModelVisibility(profileGroupsWithAliases, modelVisibilityForProfile))
     const visibleProfileDefault = resolveVisibleDefault(profileResult.default, profileResult.default_provider, visibleProfileGroups)
     ctx.body = {
       default: visibleProfileDefault.defaultModel,

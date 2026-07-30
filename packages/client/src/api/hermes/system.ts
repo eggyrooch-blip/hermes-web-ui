@@ -1,4 +1,9 @@
 import { request } from '../client'
+// Single source of truth for model capabilities/families lives with the BFF
+// table that produces them — see packages/server/src/shared/model-capabilities.ts.
+import type { ModelCapability } from '../../../../server/src/shared/model-capabilities'
+
+export type { ModelCapability }
 
 export interface HealthResponse {
   status: string
@@ -101,8 +106,8 @@ export interface AvailableModelGroup {
   /** Config source for custom providers. Dict-backed providers can be deleted from providers:<key>. */
   provider_source?: 'custom_providers' | 'providers'
   provider_key?: string
-  /** 可选：模型 ID -> 元数据（preview/disabled/alias）。alias 仅用于 Web UI 展示。 */
-  model_meta?: Record<string, { preview?: boolean; disabled?: boolean; alias?: string }>
+  /** 可选：模型 ID -> 元数据（preview/disabled/alias/capabilities）。alias 与 capabilities 仅用于 Web UI 展示。 */
+  model_meta?: Record<string, { preview?: boolean; disabled?: boolean; alias?: string; capabilities?: ModelCapability[] }>
 }
 
 export interface ProfileAvailableModels {

@@ -568,4 +568,44 @@ describe('App Store', () => {
     expect(store.profileModelGroups[0].groups[0].models).toEqual(['deepseek-v4-flash'])
     expect(store.profileModelGroups[0].groups[0].available_models).toEqual(['deepseek-v4-flash'])
   })
+
+  it('keeps BFF model capabilities intact on both the aggregate and per-profile groups', async () => {
+    mockSystemApi.fetchAvailableModels.mockResolvedValue({
+      default: 'glm-4.6',
+      default_provider: 'zai',
+      groups: [{
+        provider: 'zai',
+        label: 'Z.ai',
+        base_url: 'https://open.bigmodel.cn/api/paas/v4',
+        api_key: '',
+        models: ['claude-sonnet-5', 'glm-4.6'],
+        model_meta: {
+          'claude-sonnet-5': { capabilities: ['vision', 'reasoning'] },
+          'glm-4.6': { capabilities: ['reasoning'] },
+        },
+      }],
+      allProviders: [],
+      profiles: [{
+        profile: 'feishu_user_a',
+        default: 'glm-4.6',
+        default_provider: 'zai',
+        groups: [{
+          provider: 'zai',
+          label: 'Z.ai',
+          base_url: 'https://open.bigmodel.cn/api/paas/v4',
+          api_key: '',
+          models: ['claude-sonnet-5', 'glm-4.6'],
+          model_meta: { 'claude-sonnet-5': { capabilities: ['vision', 'reasoning'] } },
+        }],
+      }],
+    })
+
+    const store = useAppStore()
+    await store.loadModels(true)
+
+    expect(store.modelGroups[0].model_meta?.['claude-sonnet-5']?.capabilities).toEqual(['vision', 'reasoning'])
+    expect(store.modelGroups[0].model_meta?.['glm-4.6']?.capabilities).toEqual(['reasoning'])
+    expect(store.profileModelGroups[0].groups[0].model_meta?.['claude-sonnet-5']?.capabilities)
+      .toEqual(['vision', 'reasoning'])
+  })
 })

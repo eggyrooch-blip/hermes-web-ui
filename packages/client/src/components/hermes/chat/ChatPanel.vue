@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { renameSession, setSessionWorkspace, batchDeleteSessions, exportSession } from "@/api/hermes/sessions";
 import type { AvailableModelGroup } from "@/api/hermes/system";
+// Same table that produced the capability badges — see
+// packages/server/src/shared/model-capabilities.ts.
+import { shouldNoticeFamilySwitch } from "../../../../../server/src/shared/model-capabilities";
 import {
   fetchCodingAgentsStatus,
   inferCodingAgentApiMode,
@@ -1131,6 +1134,27 @@ function sessionModelAlias(model: string, provider: string) {
   return appStore.getModelAlias(model, provider);
 }
 
+// Badges are display-only annotations from the BFF capability table; nothing
+// here feeds the model/provider fields sent with a run.
+function sessionModelHasCapability(
+  model: string,
+  group: { model_meta?: Record<string, { capabilities?: string[] }> },
+  capability: string,
+) {
+  return !!group.model_meta?.[model]?.capabilities?.includes(capability);
+}
+
+function isSessionModelProfileDefault(model: string, provider: string) {
+  const entry = appStore.profileModelGroups.find(
+    (candidate) => candidate.profile === sessionModelProfile.value,
+  );
+  return !!entry?.default && entry.default === model && (entry.default_provider || "") === provider;
+}
+
+// In-memory, per-session: the cross-family notice fires at most once per
+// session and is deliberately not persisted.
+const familySwitchNoticedSessions = new Set<string>();
+
 function defaultSessionModelApiMode(provider: string): CodingAgentApiMode {
   const group = sessionModelBaseGroups.value.find((item) => item.provider === provider);
   const providerKey = String(group?.provider || provider || "").toLowerCase();
@@ -1143,8 +1167,22 @@ function defaultSessionModelApiMode(provider: string): CodingAgentApiMode {
 
 async function applySessionModelSwitch(model: string, provider: string, apiMode?: CodingAgentApiMode) {
   if (!sessionModelSessionId.value) return;
+  const targetSessionId = sessionModelSessionId.value;
+  // switchSessionModel() mutates the session in place, so read the outgoing
+  // model before awaiting it.
+  const previousModel = sessionModelSession.value?.model || "";
+  const messageCount = sessionModelSession.value?.messageCount || 0;
   const ok = await chatStore.switchSessionModel(model, provider, sessionModelSessionId.value, apiMode);
   if (ok) {
+    if (shouldNoticeFamilySwitch({
+      previousModel,
+      nextModel: model,
+      messageCount,
+      alreadyNoticed: familySwitchNoticedSessions.has(targetSessionId),
+    })) {
+      familySwitchNoticedSessions.add(targetSessionId);
+      message.info(t("chat.modelFamilySwitchNotice"), { duration: 6000 });
+    }
     sessionModelValue.value = model;
     sessionModelProvider.value = provider;
     if (apiMode) sessionModelApiMode.value = apiMode;
@@ -1487,6 +1525,24 @@ async function handleSessionModelCustomSubmit() {
                   {{ t('models.aliasCanonical', { model }) }}
                 </span>
               </span>
+              <span
+                v-if="sessionModelHasCapability(model, group, 'vision')"
+                class="session-model-badge-cap"
+                :title="t('models.capabilityVision')"
+                :aria-label="t('models.capabilityVision')"
+              >👁</span>
+              <span
+                v-if="sessionModelHasCapability(model, group, 'reasoning')"
+                class="session-model-badge-cap"
+                :title="t('models.capabilityReasoning')"
+                :aria-label="t('models.capabilityReasoning')"
+              >🧠</span>
+              <span
+                v-if="isSessionModelProfileDefault(model, group.provider)"
+                class="session-model-badge-cap"
+                :title="t('models.defaultModelTooltip')"
+                :aria-label="t('models.defaultModelTooltip')"
+              >⭐</span>
               <span v-if="group.model_meta?.[model]?.preview" class="session-model-badge-preview">{{ t('models.previewBadge') }}</span>
               <span v-if="group.model_meta?.[model]?.disabled" class="session-model-badge-disabled">{{ t('models.disabledBadge') }}</span>
               <span v-if="isCustomSessionModel(model, group.provider)" class="session-model-badge-custom">{{ t('models.customBadge') }}</span>
@@ -1987,6 +2043,14 @@ async function handleSessionModelCustomSubmit() {
 .session-model-check {
   flex-shrink: 0;
   color: $accent-primary;
+}
+
+.session-model-badge-cap {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.85;
+  margin-right: 2px;
 }
 
 .session-model-badge-preview,

@@ -20,10 +20,24 @@ const customInput = ref('')
 const customProvider = ref('')
 
 const activeProfileName = computed(() => profilesStore.activeProfileName || 'default')
+const activeProfileEntry = computed(() =>
+  appStore.profileModelGroups.find(entry => entry.profile === activeProfileName.value),
+)
 const activeModelGroups = computed(() => {
-  const profileModels = appStore.profileModelGroups.find(entry => entry.profile === activeProfileName.value)
+  const profileModels = activeProfileEntry.value
   return profileModels?.groups?.length ? profileModels.groups : appStore.modelGroups
 })
+
+// Badges are display-only annotations from the BFF capability table; nothing
+// here feeds the model/provider fields sent with a run.
+function hasCapability(model: string, group: { model_meta?: Record<string, { capabilities?: string[] }> }, capability: string) {
+  return !!group.model_meta?.[model]?.capabilities?.includes(capability)
+}
+
+function isProfileDefaultModel(model: string, provider: string) {
+  const entry = activeProfileEntry.value
+  return !!entry?.default && entry.default === model && (entry.default_provider || '') === provider
+}
 
 const providerOptions = computed(() => {
   const current = appStore.selectedProvider
@@ -225,6 +239,24 @@ async function handleRefresh() {
                   {{ t('models.aliasCanonical', { model }) }}
                 </span>
               </span>
+              <span
+                v-if="hasCapability(model, group, 'vision')"
+                class="model-badge-cap"
+                :title="t('models.capabilityVision')"
+                :aria-label="t('models.capabilityVision')"
+              >👁</span>
+              <span
+                v-if="hasCapability(model, group, 'reasoning')"
+                class="model-badge-cap"
+                :title="t('models.capabilityReasoning')"
+                :aria-label="t('models.capabilityReasoning')"
+              >🧠</span>
+              <span
+                v-if="isProfileDefaultModel(model, group.provider)"
+                class="model-badge-cap"
+                :title="t('models.defaultModelTooltip')"
+                :aria-label="t('models.defaultModelTooltip')"
+              >⭐</span>
               <span v-if="group.model_meta?.[model]?.preview" class="model-badge-preview">{{ t('models.previewBadge') }}</span>
               <span v-if="group.model_meta?.[model]?.disabled" class="model-badge-disabled">{{ t('models.disabledBadge') }}</span>
               <span v-if="isCustomModel(model, group.provider)" class="model-badge-custom">{{ t('models.customBadge') }}</span>
@@ -509,6 +541,14 @@ async function handleRefresh() {
     background: rgba(var(--error-rgb), 0.12);
     color: $error;
   }
+}
+
+.model-badge-cap {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.85;
+  margin-right: 2px;
 }
 
 .model-badge-preview {

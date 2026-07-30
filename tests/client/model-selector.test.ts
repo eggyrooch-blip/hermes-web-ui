@@ -79,4 +79,39 @@ describe('ModelSelector', () => {
 
     expect(wrapper.get('.model-trigger').text()).toContain('Tencent Sonnet')
   })
+
+  it('renders capability badges from model_meta and stars the profile default', async () => {
+    appStoreMock.profileModelGroups = [{
+      profile: 'feishu_user_a',
+      default: 'glm-4.6',
+      default_provider: 'zai',
+      groups: [{
+        provider: 'zai',
+        label: 'Z.ai',
+        base_url: '',
+        api_key: '',
+        models: ['claude-sonnet-5', 'glm-5v-turbo', 'glm-4.6', 'deepseek-v4-flash'],
+        model_meta: {
+          'claude-sonnet-5': { capabilities: ['vision', 'reasoning'] },
+          'glm-5v-turbo': { capabilities: ['vision'] },
+          'glm-4.6': { capabilities: ['reasoning'] },
+        },
+      }],
+    }]
+
+    const wrapper = mount(ModelSelector)
+    await wrapper.get('.model-trigger').trigger('click')
+
+    const rows = wrapper.findAll('.model-item')
+    expect(rows).toHaveLength(4)
+
+    const badges = (index: number) => rows[index].findAll('.model-badge-cap').map(node => node.text())
+    expect(badges(0)).toEqual(['👁', '🧠'])
+    expect(badges(1)).toEqual(['👁'])
+    expect(badges(2)).toEqual(['🧠', '⭐'])
+    expect(badges(3)).toEqual([])
+
+    // The model name must stay in its own cell — badges never replace it.
+    expect(rows[0].get('.model-item-name').text()).toBe('claude-sonnet-5')
+  })
 })
