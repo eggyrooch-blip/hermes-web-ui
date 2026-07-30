@@ -61,6 +61,10 @@ export const SESSIONS_SCHEMA: Record<string, string> = {
   preview: 'TEXT NOT NULL DEFAULT \'\'',
   last_active: 'INTEGER NOT NULL',
   workspace: 'TEXT',
+  // One-shot marker: this session already showed the cross-model-family switch
+  // notice. INTEGER + DEFAULT so addMissingSafeColumns() can ALTER it onto
+  // existing databases.
+  family_switch_noticed: 'INTEGER NOT NULL DEFAULT 0',
 }
 
 export const MESSAGES_TABLE = 'messages'

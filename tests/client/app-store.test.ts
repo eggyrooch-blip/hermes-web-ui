@@ -608,4 +608,65 @@ describe('App Store', () => {
     expect(store.profileModelGroups[0].groups[0].model_meta?.['claude-sonnet-5']?.capabilities)
       .toEqual(['vision', 'reasoning'])
   })
+
+  it('stars the aggregate default when profiles[] has no entry for the active profile', async () => {
+    mockSystemApi.fetchAvailableModels.mockResolvedValue({
+      default: 'glm-4.6',
+      default_provider: 'zai',
+      groups: [{
+        provider: 'zai',
+        label: 'Z.ai',
+        base_url: 'https://open.bigmodel.cn/api/paas/v4',
+        api_key: '',
+        models: ['claude-sonnet-5', 'glm-4.6'],
+      }],
+      allProviders: [],
+      // No entry for feishu_user_a — the pickers render `modelGroups`, so the
+      // aggregate default is the only ⭐ source on this path.
+      profiles: [],
+    })
+
+    const store = useAppStore()
+    await store.loadModels(true)
+
+    expect(store.isProfileDefaultModel('feishu_user_a', 'glm-4.6', 'zai')).toBe(true)
+    expect(store.isProfileDefaultModel('feishu_user_a', 'claude-sonnet-5', 'zai')).toBe(false)
+    // Wrong provider must not steal the star.
+    expect(store.isProfileDefaultModel('feishu_user_a', 'glm-4.6', 'openai')).toBe(false)
+  })
+
+  it('prefers the per-profile default over the aggregate one when the profile has groups', async () => {
+    mockSystemApi.fetchAvailableModels.mockResolvedValue({
+      default: 'glm-4.6',
+      default_provider: 'zai',
+      groups: [{
+        provider: 'zai',
+        label: 'Z.ai',
+        base_url: 'https://open.bigmodel.cn/api/paas/v4',
+        api_key: '',
+        models: ['claude-sonnet-5', 'glm-4.6'],
+      }],
+      allProviders: [],
+      profiles: [{
+        profile: 'feishu_user_a',
+        default: 'claude-sonnet-5',
+        default_provider: 'zai',
+        groups: [{
+          provider: 'zai',
+          label: 'Z.ai',
+          base_url: 'https://open.bigmodel.cn/api/paas/v4',
+          api_key: '',
+          models: ['claude-sonnet-5', 'glm-4.6'],
+        }],
+      }],
+    })
+
+    const store = useAppStore()
+    await store.loadModels(true)
+
+    expect(store.isProfileDefaultModel('feishu_user_a', 'claude-sonnet-5', 'zai')).toBe(true)
+    expect(store.isProfileDefaultModel('feishu_user_a', 'glm-4.6', 'zai')).toBe(false)
+    // A profile with no groups of its own still renders the aggregate list.
+    expect(store.isProfileDefaultModel('feishu_user_b', 'glm-4.6', 'zai')).toBe(true)
+  })
 })

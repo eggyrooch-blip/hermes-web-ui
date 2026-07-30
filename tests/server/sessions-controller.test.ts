@@ -26,6 +26,7 @@ const localRenameSessionMock = vi.fn()
 const localSetSessionArchivedMock = vi.fn()
 const localCreateSessionMock = vi.fn()
 const localUpdateSessionMock = vi.fn()
+const claimFamilySwitchNoticeMock = vi.fn()
 const localAddMessagesMock = vi.fn()
 const localUpdateSessionStatsMock = vi.fn()
 const getSessionRowIdMock = vi.fn()
@@ -102,6 +103,7 @@ vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSessionIncarnation: getSessionIncarnationMock,
   updateSession: localUpdateSessionMock,
   updateSessionStats: localUpdateSessionStatsMock,
+  claimFamilySwitchNotice: claimFamilySwitchNoticeMock,
 }))
 
 vi.mock('../../packages/server/src/db/hermes/workspace-run-changes-store', () => ({
@@ -202,6 +204,9 @@ describe('session conversations controller', () => {
     localSetSessionArchivedMock.mockReset()
     localCreateSessionMock.mockReset()
     localUpdateSessionMock.mockReset()
+    claimFamilySwitchNoticeMock.mockReset()
+    // Uncontended default: the claim succeeds unless a test says otherwise.
+    claimFamilySwitchNoticeMock.mockReturnValue(true)
     localAddMessagesMock.mockReset()
     localUpdateSessionStatsMock.mockReset()
     getSessionRowIdMock.mockReset()
@@ -1739,6 +1744,150 @@ describe('session conversations controller', () => {
       workspace: '/tmp/hermes-test/default/workspace',
     })
     expect(bridgeSwitchSessionModelMock).not.toHaveBeenCalled()
+    expect(ctx.body).toEqual({ ok: true })
+  })
+
+  it('claims the cross-family switch notice atomically instead of trusting the pre-await read', async () => {
+    getSessionMock.mockReturnValue({
+      id: 'session-1',
+      profile: 'default',
+      model: 'claude-sonnet-5',
+      provider: 'anthropic',
+      message_count: 4,
+      family_switch_noticed: false,
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'session-1' },
+      request: { body: { model: 'gpt-5.5', provider: 'openai' } },
+      body: null,
+    }
+    await mod.setModel(ctx)
+
+    // The marker is never written through updateSession — the conditional claim owns it.
+    expect(localUpdateSessionMock).toHaveBeenCalledWith('session-1', {
+      model: 'gpt-5.5',
+      provider: 'openai',
+      workspace: '/tmp/hermes-test/default/workspace',
+    })
+    expect(claimFamilySwitchNoticeMock).toHaveBeenCalledWith('session-1')
+    expect(ctx.body).toEqual({ ok: true, family_switch_notice: true })
+  })
+
+  it('notices only for the request that wins the claim when two switches contend', async () => {
+    // Both requests pass the cheap pre-await filter (each still sees an
+    // un-noticed row), so the claim is the only thing separating them. The
+    // real single-winner guarantee is SQLite's and is proven against a real
+    // database in tests/server/session-sync.test.ts; here we pin the wiring:
+    // the response follows the claim, not the stale read.
+    getSessionMock.mockReturnValue({
+      id: 'session-1',
+      profile: 'default',
+      model: 'claude-sonnet-5',
+      provider: 'anthropic',
+      message_count: 4,
+      family_switch_noticed: false,
+    })
+    claimFamilySwitchNoticeMock.mockReturnValueOnce(true).mockReturnValueOnce(false)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const makeCtx = (): any => ({
+      params: { id: 'session-1' },
+      request: { body: { model: 'gpt-5.5', provider: 'openai' } },
+      body: null,
+    })
+    const winner = makeCtx()
+    const loser = makeCtx()
+
+    await mod.setModel(winner)
+    await mod.setModel(loser)
+
+    expect(winner.body).toEqual({ ok: true, family_switch_notice: true })
+    expect(loser.body).toEqual({ ok: true })
+    // The loser still switches models — the notice is advisory, never a gate.
+    expect(localUpdateSessionMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('never re-notices a session that already carries the marker, however the picker was remounted', async () => {
+    getSessionMock.mockReturnValue({
+      id: 'session-1',
+      profile: 'default',
+      model: 'claude-sonnet-5',
+      provider: 'anthropic',
+      message_count: 9,
+      family_switch_noticed: true,
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'session-1' },
+      request: { body: { model: 'glm-4.6', provider: 'zai' } },
+      body: null,
+    }
+    await mod.setModel(ctx)
+
+    expect(localUpdateSessionMock).toHaveBeenCalledWith('session-1', {
+      model: 'glm-4.6',
+      provider: 'zai',
+      workspace: '/tmp/hermes-test/default/workspace',
+    })
+    // Already-marked rows short-circuit before the claim — no pointless UPDATE.
+    expect(claimFamilySwitchNoticeMock).not.toHaveBeenCalled()
+    expect(ctx.body).toEqual({ ok: true })
+  })
+
+  it('does not notice a cross-family switch on a session with no messages yet', async () => {
+    getSessionMock.mockReturnValue({
+      id: 'session-1',
+      profile: 'default',
+      model: 'claude-sonnet-5',
+      provider: 'anthropic',
+      message_count: 0,
+      family_switch_noticed: false,
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'session-1' },
+      request: { body: { model: 'gpt-5.5', provider: 'openai' } },
+      body: null,
+    }
+    await mod.setModel(ctx)
+
+    expect(localUpdateSessionMock).toHaveBeenCalledWith('session-1', {
+      model: 'gpt-5.5',
+      provider: 'openai',
+      workspace: '/tmp/hermes-test/default/workspace',
+    })
+    expect(claimFamilySwitchNoticeMock).not.toHaveBeenCalled()
+    expect(ctx.body).toEqual({ ok: true })
+  })
+
+  it('does not notice a same-family switch', async () => {
+    getSessionMock.mockReturnValue({
+      id: 'session-1',
+      profile: 'default',
+      model: 'claude-sonnet-5',
+      provider: 'anthropic',
+      message_count: 4,
+      family_switch_noticed: false,
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'session-1' },
+      request: { body: { model: 'claude-opus-5', provider: 'anthropic' } },
+      body: null,
+    }
+    await mod.setModel(ctx)
+
+    expect(localUpdateSessionMock).toHaveBeenCalledWith('session-1', {
+      model: 'claude-opus-5',
+      provider: 'anthropic',
+      workspace: '/tmp/hermes-test/default/workspace',
+    })
+    expect(claimFamilySwitchNoticeMock).not.toHaveBeenCalled()
     expect(ctx.body).toEqual({ ok: true })
   })
 

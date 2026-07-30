@@ -42,6 +42,8 @@ export interface HermesSessionRow {
   preview: string
   last_active: number
   workspace: string | null
+  /** This session already showed the cross-model-family switch notice. */
+  family_switch_noticed: boolean
 }
 
 export interface HermesMessageRow {
@@ -128,6 +130,7 @@ function mapSessionRow(row: Record<string, unknown>): HermesSessionRow {
     preview: String(row.preview || ''),
     last_active: Number(row.last_active || 0),
     workspace: row.workspace != null ? String(row.workspace) : null,
+    family_switch_noticed: Number(row.family_switch_noticed || 0) === 1,
   }
 }
 
@@ -185,6 +188,7 @@ export function createSession(data: {
       input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0,
       billing_provider: null, estimated_cost_usd: 0, actual_cost_usd: null,
       cost_status: '', preview: '', last_active: now, workspace: data.workspace || null,
+      family_switch_noticed: false,
     }
   }
   const db = getDb()!
@@ -292,6 +296,24 @@ export function renameSession(id: string, title: string): boolean {
   if (!isSqliteAvailable()) return false
   const db = getDb()!
   const result = db.prepare(`UPDATE ${SESSIONS_TABLE} SET title = ? WHERE id = ?`).run(title, id)
+  return result.changes > 0
+}
+
+/**
+ * Atomically claim the one-shot cross-family switch notice for this session.
+ *
+ * The `AND family_switch_noticed = 0` guard is the whole point: callers read
+ * the session row well before they write it (auth and workspace resolution sit
+ * in between), so two concurrent switches both see an un-noticed row. SQLite
+ * settles it here — exactly one UPDATE reports a change, and only that caller
+ * may notice.
+ */
+export function claimFamilySwitchNotice(id: string): boolean {
+  if (!isSqliteAvailable()) return false
+  const db = getDb()!
+  const result = db.prepare(
+    `UPDATE ${SESSIONS_TABLE} SET family_switch_noticed = 1 WHERE id = ? AND family_switch_noticed = 0`,
+  ).run(id)
   return result.changes > 0
 }
 

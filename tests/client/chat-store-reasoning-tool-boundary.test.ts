@@ -81,7 +81,7 @@ describe('chat store reasoning/tool boundaries', () => {
     setActivePinia(createPinia())
     chatApi.startRunViaSocket.mockReturnValue({ abort: vi.fn() })
     sessionsApi.deleteSession.mockResolvedValue(true)
-    sessionsApi.setSessionModel.mockResolvedValue(true)
+    sessionsApi.setSessionModel.mockResolvedValue({ ok: true, familySwitchNotice: false })
   })
 
   it('merges reasoning across tool cycles without appending post-tool text before the tool', async () => {
@@ -288,7 +288,7 @@ describe('chat store reasoning/tool boundaries', () => {
 
     const ok = await store.switchSessionModel('deepseek-v4-pro', 'deepseek', 'session-1', 'chat_completions')
 
-    expect(ok).toBe(true)
+    expect(ok).toEqual({ ok: true, familySwitchNotice: false })
     expect(sessionsApi.setSessionModel).toHaveBeenCalledWith(
       'session-1',
       'deepseek-v4-pro',

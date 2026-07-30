@@ -1,9 +1,6 @@
 <script setup lang="ts">
 import { renameSession, setSessionWorkspace, batchDeleteSessions, exportSession } from "@/api/hermes/sessions";
 import type { AvailableModelGroup } from "@/api/hermes/system";
-// Same table that produced the capability badges — see
-// packages/server/src/shared/model-capabilities.ts.
-import { shouldNoticeFamilySwitch } from "../../../../../server/src/shared/model-capabilities";
 import {
   fetchCodingAgentsStatus,
   inferCodingAgentApiMode,
@@ -1145,15 +1142,8 @@ function sessionModelHasCapability(
 }
 
 function isSessionModelProfileDefault(model: string, provider: string) {
-  const entry = appStore.profileModelGroups.find(
-    (candidate) => candidate.profile === sessionModelProfile.value,
-  );
-  return !!entry?.default && entry.default === model && (entry.default_provider || "") === provider;
+  return appStore.isProfileDefaultModel(sessionModelProfile.value, model, provider);
 }
-
-// In-memory, per-session: the cross-family notice fires at most once per
-// session and is deliberately not persisted.
-const familySwitchNoticedSessions = new Set<string>();
 
 function defaultSessionModelApiMode(provider: string): CodingAgentApiMode {
   const group = sessionModelBaseGroups.value.find((item) => item.provider === provider);
@@ -1167,20 +1157,12 @@ function defaultSessionModelApiMode(provider: string): CodingAgentApiMode {
 
 async function applySessionModelSwitch(model: string, provider: string, apiMode?: CodingAgentApiMode) {
   if (!sessionModelSessionId.value) return;
-  const targetSessionId = sessionModelSessionId.value;
-  // switchSessionModel() mutates the session in place, so read the outgoing
-  // model before awaiting it.
-  const previousModel = sessionModelSession.value?.model || "";
-  const messageCount = sessionModelSession.value?.messageCount || 0;
-  const ok = await chatStore.switchSessionModel(model, provider, sessionModelSessionId.value, apiMode);
-  if (ok) {
-    if (shouldNoticeFamilySwitch({
-      previousModel,
-      nextModel: model,
-      messageCount,
-      alreadyNoticed: familySwitchNoticedSessions.has(targetSessionId),
-    })) {
-      familySwitchNoticedSessions.add(targetSessionId);
+  const res = await chatStore.switchSessionModel(model, provider, sessionModelSessionId.value, apiMode);
+  if (res?.ok) {
+    // The BFF owns the once-per-session decision (it persists the marker on the
+    // session row in the same UPDATE as the model), so a reload or a remounted
+    // picker cannot make it fire twice.
+    if (res.familySwitchNotice) {
       message.info(t("chat.modelFamilySwitchNotice"), { duration: 6000 });
     }
     sessionModelValue.value = model;

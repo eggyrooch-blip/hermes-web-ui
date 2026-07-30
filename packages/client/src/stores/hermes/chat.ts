@@ -1627,9 +1627,9 @@ export const useChatStore = defineStore('chat', () => {
     return session
   }
 
-  async function switchSessionModel(modelId: string, provider?: string, sessionId?: string, apiMode?: ProviderApiMode): Promise<boolean> {
+  async function switchSessionModel(modelId: string, provider?: string, sessionId?: string, apiMode?: ProviderApiMode): Promise<{ ok: boolean; familySwitchNotice: boolean }> {
     const targetId = sessionId || activeSession.value?.id
-    if (!targetId) return false
+    if (!targetId) return { ok: false, familySwitchNotice: false }
     const target = sessions.value.find(s => s.id === targetId)
     const activeTarget = activeSession.value?.id === targetId ? activeSession.value : null
     const previousProvider = String(target?.provider ?? activeTarget?.provider ?? '')
@@ -1637,8 +1637,8 @@ export const useChatStore = defineStore('chat', () => {
     const shouldClearRuntimeCredentials = previousProvider !== nextProvider && (
       isCodingAgentLikeSession(target) || isCodingAgentLikeSession(activeTarget)
     )
-    const ok = await setSessionModel(targetId, modelId, provider || '', apiMode)
-    if (!ok) return false
+    const res = await setSessionModel(targetId, modelId, provider || '', apiMode)
+    if (!res?.ok) return { ok: false, familySwitchNotice: false }
     if (target) {
       target.model = modelId
       target.provider = provider || ''
@@ -1651,7 +1651,7 @@ export const useChatStore = defineStore('chat', () => {
       if (apiMode) activeTarget.apiMode = apiMode
       if (shouldClearRuntimeCredentials) clearCodingAgentRuntimeCredentials(activeTarget)
     }
-    return true
+    return { ok: true, familySwitchNotice: !!res.familySwitchNotice }
   }
 
   function dropWorkspaceDiffs(sessionId: string) {

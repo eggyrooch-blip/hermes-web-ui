@@ -8,7 +8,7 @@ vi.mock('@/api/client', () => ({
   getBaseUrlValue: vi.fn(() => ''),
 }))
 
-import { fetchSessionMessagesPage } from '@/api/hermes/sessions'
+import { fetchSessionMessagesPage, setSessionModel } from '@/api/hermes/sessions'
 
 describe('sessions api', () => {
   beforeEach(() => {
@@ -45,5 +45,27 @@ describe('sessions api', () => {
       failure,
     )
     errorSpy.mockRestore()
+  })
+
+  it('carries the BFF cross-family notice through the model switch response', async () => {
+    requestMock.mockResolvedValue({ ok: true, family_switch_notice: true })
+
+    await expect(setSessionModel('session-1', 'gpt-5.5', 'openai')).resolves.toEqual({
+      ok: true,
+      familySwitchNotice: true,
+    })
+
+    // A plain ack must not toast, and a failed switch must not either.
+    requestMock.mockResolvedValue({ ok: true })
+    await expect(setSessionModel('session-1', 'gpt-5.5', 'openai')).resolves.toEqual({
+      ok: true,
+      familySwitchNotice: false,
+    })
+
+    requestMock.mockRejectedValue(new Error('offline'))
+    await expect(setSessionModel('session-1', 'gpt-5.5', 'openai')).resolves.toEqual({
+      ok: false,
+      familySwitchNotice: false,
+    })
   })
 })

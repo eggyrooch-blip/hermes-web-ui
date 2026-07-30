@@ -37,6 +37,11 @@ export const useAppStore = defineStore('app', () => {
   const profileModelGroups = ref<ProfileAvailableModels[]>([])
   const selectedModel = ref('')
   const selectedProvider = ref('')
+  // The aggregate response's own default. `profiles[]` does not always carry an
+  // entry for the active profile, and when it doesn't the pickers render
+  // `modelGroups` — so this is the ⭐ source on that path.
+  const aggregateDefaultModel = ref('')
+  const aggregateDefaultProvider = ref('')
   const customModels = ref<Record<string, string[]>>({})
   const modelAliases = ref<Record<string, Record<string, string>>>({})
   const modelVisibility = ref<ModelVisibility>({})
@@ -88,6 +93,8 @@ export const useAppStore = defineStore('app', () => {
 
     modelGroups.value = res.groups
     profileModelGroups.value = res.profiles || []
+    aggregateDefaultModel.value = res.default || ''
+    aggregateDefaultProvider.value = res.default_provider || ''
     modelAliases.value = res.model_aliases || {}
     modelVisibility.value = res.model_visibility || {}
     customModels.value = res.custom_models || {}
@@ -149,6 +156,21 @@ export const useAppStore = defineStore('app', () => {
       selectedModel.value = ''
       selectedProvider.value = ''
     }
+  }
+
+  /**
+   * ⭐ default-badge truth for one profile, for every model picker.
+   *
+   * Mirrors the pickers' group fallback exactly: a profile entry only owns the
+   * default while it actually has groups to render. Without groups the pickers
+   * fall back to the aggregate `modelGroups`, so the aggregate default owns ⭐
+   * too — otherwise the star silently disappears on that path.
+   */
+  function isProfileDefaultModel(profile: string | null | undefined, model: string, provider: string): boolean {
+    const entry = profileModelGroups.value.find(candidate => candidate.profile === profile)
+    const expectedModel = entry?.groups?.length ? (entry.default || '') : aggregateDefaultModel.value
+    const expectedProvider = entry?.groups?.length ? (entry.default_provider || '') : aggregateDefaultProvider.value
+    return !!expectedModel && expectedModel === model && expectedProvider === (provider || '')
   }
 
   async function loadModels(force = false, opts: { preserveSelection?: boolean } = {}) {
@@ -350,6 +372,9 @@ export const useAppStore = defineStore('app', () => {
     modelVisibility,
     selectedModel,
     selectedProvider,
+    aggregateDefaultModel,
+    aggregateDefaultProvider,
+    isProfileDefaultModel,
     streamEnabled,
     sessionPersistence,
     maxTokens,

@@ -4,7 +4,7 @@ import { createPinia, disposePinia, setActivePinia, type Pinia } from 'pinia'
 
 const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
 const switchModelMock = vi.hoisted(() => vi.fn())
-const setSessionModelMock = vi.hoisted(() => vi.fn(() => Promise.resolve(true)))
+const setSessionModelMock = vi.hoisted(() => vi.fn(() => Promise.resolve({ ok: true, familySwitchNotice: false })))
 const startRunViaSocketMock = vi.hoisted(() => vi.fn(() => ({ abort: vi.fn() })))
 const registerSessionHandlersMock = vi.hoisted(() => vi.fn())
 const unregisterSessionHandlersMock = vi.hoisted(() => vi.fn())

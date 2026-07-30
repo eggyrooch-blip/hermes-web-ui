@@ -25,6 +25,7 @@ import {
   listWorkspaceRunChangesForSession,
 } from '../../db/hermes/workspace-run-changes-store'
 import { getModelContextLength } from '../../services/hermes/model-context'
+import { shouldNoticeFamilySwitch } from '../../shared/model-capabilities'
 import { getActiveProfileName, listProfileNamesFromDisk } from '../../services/hermes/hermes-profile'
 import { isNearestExistingRealPathWithin, isPathWithin } from '../../services/hermes/hermes-path'
 import { getRequestProfile, isChatPlaneRequest } from '../../services/request-context'
@@ -1104,7 +1105,7 @@ export async function setModel(ctx: any) {
     ctx.body = { error: 'provider must be a string' }
     return
   }
-  const { updateSession, getSession, createSession } = await import('../../db/hermes/session-store')
+  const { updateSession, getSession, createSession, claimFamilySwitchNotice } = await import('../../db/hermes/session-store')
   const id = ctx.params.id
   const existing = getSession(id)
   if (await denySessionAccessAsync(ctx, existing)) return
@@ -1120,7 +1121,20 @@ export async function setModel(ctx: any) {
   if (!existing) {
     createSession({ id, profile, title: '', model: cleanModel, provider: cleanProvider, workspace })
   }
-  const updates: Record<string, string> = { model: cleanModel, provider: cleanProvider }
+  // The cross-family decision is made here, from the one row that already holds
+  // every input (outgoing model, message count, the one-shot marker), so a
+  // reload or a remounted picker can never re-ask.
+  //
+  // `existing` was read before the awaits above, so this predicate alone would
+  // let two concurrent switches both notice. It is only the cheap filter; the
+  // marker is claimed atomically below and that claim is what decides.
+  const wantsFamilySwitchNotice = shouldNoticeFamilySwitch({
+    previousModel: existing?.model || '',
+    nextModel: cleanModel,
+    messageCount: existing?.message_count || 0,
+    alreadyNoticed: !!existing?.family_switch_noticed,
+  })
+  const updates: Record<string, string | number> = { model: cleanModel, provider: cleanProvider }
   if (!codingAgentSession && existing && !existing.workspace && workspace) updates.workspace = workspace
   if (
     codingAgentSession &&
@@ -1130,10 +1144,14 @@ export async function setModel(ctx: any) {
     updates.agent_native_session_id = ''
   }
   updateSession(id, updates as any)
+  // Exactly one concurrent switch wins this claim, so exactly one client toasts.
+  const noticeFamilySwitch = wantsFamilySwitchNotice && claimFamilySwitchNotice(id)
   if (!codingAgentSession) {
     await notifyBridgeSessionModelChanged(id, cleanModel, cleanProvider, profile)
   }
-  ctx.body = { ok: true }
+  // ponytail: the key only appears when the client should toast — the plain
+  // `{ ok: true }` contract every other caller asserts on stays untouched.
+  ctx.body = noticeFamilySwitch ? { ok: true, family_switch_notice: true } : { ok: true }
 }
 
 export async function contextLength(ctx: any) {

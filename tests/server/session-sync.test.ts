@@ -149,6 +149,45 @@ describe('session-sync', () => {
     expect(listSessions('research').map(row => row.id)).toEqual(['archive-session-1'])
   })
 
+  it('persists the cross-family switch marker on the session row and maps legacy rows as un-noticed', async () => {
+    await initTestDb()
+    const { SESSIONS_SCHEMA } = await import('../../packages/server/src/db/hermes/schemas')
+    const { createSession, getSession, updateSession, claimFamilySwitchNotice } =
+      await import('../../packages/server/src/db/hermes/session-store')
+
+    // Additive-safe definition: addMissingSafeColumns() can ALTER it onto an
+    // existing database instead of forcing a rebuild.
+    expect(SESSIONS_SCHEMA.family_switch_noticed).toBe('INTEGER NOT NULL DEFAULT 0')
+
+    createSession({
+      id: 'family-switch-session-1',
+      profile: 'research',
+      source: 'api_server',
+      model: 'claude-sonnet-5',
+      title: 'family switch',
+    } as any)
+
+    expect(getSession('family-switch-session-1')?.family_switch_noticed).toBe(false)
+
+    updateSession('family-switch-session-1', { model: 'gpt-5.5', provider: 'openai' } as any)
+
+    // Two racing switches both read an un-noticed row; SQLite's conditional
+    // UPDATE decides, so exactly one of them may toast.
+    const claims = [
+      claimFamilySwitchNotice('family-switch-session-1'),
+      claimFamilySwitchNotice('family-switch-session-1'),
+    ]
+    expect(claims.filter(Boolean)).toHaveLength(1)
+
+    expect(getSession('family-switch-session-1')).toMatchObject({
+      model: 'gpt-5.5',
+      family_switch_noticed: true,
+    })
+    // A later switch on the same session never re-claims.
+    expect(claimFamilySwitchNotice('family-switch-session-1')).toBe(false)
+    expect(claimFamilySwitchNotice('no-such-session')).toBe(false)
+  })
+
   it('searches archived agent sessions on empty query when includeArchived is set', async () => {
     await initTestDb()
     const { createSession, listSessionsByAgent, searchSessionsByAgent, setSessionArchived } =

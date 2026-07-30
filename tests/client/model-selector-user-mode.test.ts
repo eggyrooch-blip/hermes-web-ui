@@ -21,6 +21,7 @@ const appStoreMock = vi.hoisted(() => ({
   customModels: {} as Record<string, string[]>,
   displayModelName: (model: string) => model,
   getModelAlias: () => '',
+  isProfileDefaultModel: () => false,
   removeCustomModel: vi.fn(),
   reloadModels: vi.fn(),
   switchModel: vi.fn(),

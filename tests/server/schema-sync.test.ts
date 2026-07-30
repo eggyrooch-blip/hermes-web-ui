@@ -209,6 +209,24 @@ describe('Database Schema Synchronization', () => {
       const row = db.prepare(`SELECT session_id, created_at FROM "${USAGE_TABLE}" WHERE session_id = ?`).get('legacy-session')
       expect(row).toMatchObject({ session_id: 'legacy-session', created_at: 0 })
     })
+
+    it('adds family_switch_noticed to legacy sessions tables and defaults existing rows to un-noticed', async () => {
+      const { syncTable, SESSIONS_TABLE, SESSIONS_SCHEMA } = await import('../../packages/server/src/db/hermes/schemas')
+
+      const db = getTestDb()
+      db.exec(`CREATE TABLE "${SESSIONS_TABLE}" (id TEXT PRIMARY KEY, profile TEXT NOT NULL DEFAULT 'default', model TEXT NOT NULL DEFAULT '', started_at INTEGER NOT NULL, last_active INTEGER NOT NULL)`)
+      db.prepare(`INSERT INTO "${SESSIONS_TABLE}" (id, model, started_at, last_active) VALUES (?, ?, ?, ?)`)
+        .run('legacy-session', 'claude-sonnet-5', 1, 1)
+
+      syncTable(SESSIONS_TABLE, SESSIONS_SCHEMA)
+
+      expect(getTableColumns(db, SESSIONS_TABLE).has('family_switch_noticed')).toBe(true)
+
+      // Pre-existing conversations start un-noticed, so their first cross-family
+      // switch after the upgrade still gets its one notice.
+      const row = db.prepare(`SELECT model, family_switch_noticed FROM "${SESSIONS_TABLE}" WHERE id = ?`).get('legacy-session')
+      expect(row).toMatchObject({ model: 'claude-sonnet-5', family_switch_noticed: 0 })
+    })
   })
 
   describe('Schema sync with single-column primary keys', () => {

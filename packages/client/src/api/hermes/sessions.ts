@@ -331,15 +331,21 @@ export async function setSessionWorkspace(id: string, workspace: string | null):
   }
 }
 
-export async function setSessionModel(id: string, model: string, provider: string, apiMode?: ProviderApiMode): Promise<boolean> {
+/**
+ * `familySwitchNotice` is decided by the BFF (it owns the session row that
+ * holds the outgoing model, the message count and the one-shot marker) and is
+ * true at most once per session — see setModel in
+ * packages/server/src/controllers/hermes/sessions.ts.
+ */
+export async function setSessionModel(id: string, model: string, provider: string, apiMode?: ProviderApiMode): Promise<{ ok: boolean; familySwitchNotice: boolean }> {
   try {
-    await request(`/api/hermes/sessions/${id}/model`, {
+    const res = await request<{ ok?: boolean; family_switch_notice?: boolean }>(`/api/hermes/sessions/${id}/model`, {
       method: 'POST',
       body: JSON.stringify({ model, provider, apiMode }),
     })
-    return true
+    return { ok: true, familySwitchNotice: !!res?.family_switch_notice }
   } catch {
-    return false
+    return { ok: false, familySwitchNotice: false }
   }
 }
 

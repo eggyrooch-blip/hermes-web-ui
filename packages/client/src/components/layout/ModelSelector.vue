@@ -35,8 +35,7 @@ function hasCapability(model: string, group: { model_meta?: Record<string, { cap
 }
 
 function isProfileDefaultModel(model: string, provider: string) {
-  const entry = activeProfileEntry.value
-  return !!entry?.default && entry.default === model && (entry.default_provider || '') === provider
+  return appStore.isProfileDefaultModel(activeProfileName.value, model, provider)
 }
 
 const providerOptions = computed(() => {

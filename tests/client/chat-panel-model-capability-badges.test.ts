@@ -21,14 +21,13 @@ describe('ChatPanel session model picker badges', () => {
 })
 
 describe('ChatPanel cross-family switch notice', () => {
-  it('asks the shared table whether to warn, once per session, without blocking the switch', () => {
-    expect(SOURCE).toContain('shouldNoticeFamilySwitch')
-    expect(SOURCE).toContain('familySwitchNoticedSessions')
-    expect(SOURCE).toContain('alreadyNoticed: familySwitchNoticedSessions.has(targetSessionId)')
+  it('toasts on the BFF decision instead of keeping its own memory-only once-per-session state', () => {
+    expect(SOURCE).toContain('if (res.familySwitchNotice)')
     expect(SOURCE).toContain('message.info(t("chat.modelFamilySwitchNotice")')
-    // Captured before the await — switchSessionModel() mutates the session.
-    expect(SOURCE).toContain('const previousModel = sessionModelSession.value?.model || ""')
-    expect(SOURCE).toContain('const messageCount = sessionModelSession.value?.messageCount || 0')
+    // The decision and its one-shot marker live on the session row, so a
+    // remount or a page reload cannot make the notice fire twice.
+    expect(SOURCE).not.toContain('familySwitchNoticedSessions')
+    expect(SOURCE).not.toContain('shouldNoticeFamilySwitch')
   })
 
   it('leaves the model switch itself unguarded — notice only, no confirm dialog', () => {
@@ -39,5 +38,9 @@ describe('ChatPanel cross-family switch notice', () => {
     expect(applyBlock).toContain('chatStore.switchSessionModel(model, provider, sessionModelSessionId.value, apiMode)')
     expect(applyBlock).not.toContain('return false')
     expect(applyBlock).not.toMatch(/confirm|dialog/i)
+  })
+
+  it('stars the default through the store so the aggregate-fallback path keeps its ⭐', () => {
+    expect(SOURCE).toContain('appStore.isProfileDefaultModel(sessionModelProfile.value, model, provider)')
   })
 })

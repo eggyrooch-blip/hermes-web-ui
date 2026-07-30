@@ -14,6 +14,7 @@ const appStoreMock = vi.hoisted(() => ({
   removeCustomModel: vi.fn(),
   displayModelName: vi.fn((model: string) => model),
   getModelAlias: vi.fn(() => ''),
+  isProfileDefaultModel: vi.fn(() => false),
 }))
 
 const profilesStoreMock = vi.hoisted(() => ({
@@ -56,6 +57,7 @@ describe('ModelSelector', () => {
     appStoreMock.selectedProvider = ''
     appStoreMock.customModels = {}
     appStoreMock.displayModelName.mockImplementation((model: string) => model)
+    appStoreMock.isProfileDefaultModel.mockImplementation(() => false)
   })
 
   it('falls back to aggregate model groups when the API has no profile groups', () => {
@@ -80,7 +82,36 @@ describe('ModelSelector', () => {
     expect(wrapper.get('.model-trigger').text()).toContain('Tencent Sonnet')
   })
 
+  it('stars the default on the aggregate-fallback path, where profiles[] has no entry', async () => {
+    appStoreMock.modelGroups = [{
+      provider: 'zai',
+      label: 'Z.ai',
+      base_url: '',
+      api_key: '',
+      models: ['claude-sonnet-5', 'glm-4.6'],
+    }]
+    // profileModelGroups stays empty — the picker renders modelGroups, and the
+    // store resolves ⭐ from the aggregate default.
+    appStoreMock.isProfileDefaultModel.mockImplementation(
+      (profile: string, model: string, provider: string) =>
+        profile === 'feishu_user_a' && model === 'glm-4.6' && provider === 'zai',
+    )
+
+    const wrapper = mount(ModelSelector)
+    await wrapper.get('.model-trigger').trigger('click')
+
+    const rows = wrapper.findAll('.model-item')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].findAll('.model-badge-cap').map(node => node.text())).toEqual([])
+    expect(rows[1].findAll('.model-badge-cap').map(node => node.text())).toEqual(['⭐'])
+    expect(appStoreMock.isProfileDefaultModel).toHaveBeenCalledWith('feishu_user_a', 'glm-4.6', 'zai')
+  })
+
   it('renders capability badges from model_meta and stars the profile default', async () => {
+    appStoreMock.isProfileDefaultModel.mockImplementation(
+      (profile: string, model: string, provider: string) =>
+        profile === 'feishu_user_a' && model === 'glm-4.6' && provider === 'zai',
+    )
     appStoreMock.profileModelGroups = [{
       profile: 'feishu_user_a',
       default: 'glm-4.6',
