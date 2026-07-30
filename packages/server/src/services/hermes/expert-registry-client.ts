@@ -147,7 +147,7 @@ export function mapExpertRow(r: ExpertRowDict): ExpertEntry {
   ) {
     entry.release_installed_at = r.release_installed_at
   }
-  if (typeof r.use_count === 'number' && Number.isInteger(r.use_count) && r.use_count >= 0) {
+  if (typeof r.use_count === 'number' && Number.isSafeInteger(r.use_count) && r.use_count >= 0) {
     entry.use_count = r.use_count
   }
   return entry

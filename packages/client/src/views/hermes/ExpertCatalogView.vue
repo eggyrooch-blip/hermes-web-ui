@@ -168,6 +168,7 @@ watch(activeProfileName, () => {
                 <span v-if="formatExpertReleaseVersion(expert)" class="card-version">
                   {{ formatExpertReleaseVersion(expert) }}
                 </span>
+                <span v-else class="card-version-placeholder" aria-hidden="true">v0.0.0</span>
                 <span v-if="formatExpertUpdatedFull(expert)" class="card-updated">
                   {{ t('expert.catalog.updatedAt', { date: formatExpertUpdatedFull(expert) }) }}
                 </span>
@@ -344,11 +345,17 @@ watch(activeProfileName, () => {
   color: #4a90d9;
 }
 
-.card-version {
+.card-version,
+.card-version-placeholder {
   font-size: 11px;
   line-height: 16px;
   padding: 1px 8px;
   border-radius: 999px;
+}
+
+/* keep the version slot's space so Updated aligns across cards (sunke 2026-07-30) */
+.card-version-placeholder {
+  visibility: hidden;
 }
 
 .card-updated,

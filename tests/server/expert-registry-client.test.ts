@@ -95,7 +95,10 @@ describe('expert registry client', () => {
 
     expect(mapExpertRow({ id: 'kep', name: 'x', use_count: 132 }).use_count).toBe(132)
     expect(mapExpertRow({ id: 'kep', name: 'x', use_count: 0 }).use_count).toBe(0)
-    for (const bad of [-1, 1.5, '132', NaN, Infinity, [132], true]) {
+    expect(
+      mapExpertRow({ id: 'kep', name: 'x', use_count: Number.MAX_SAFE_INTEGER }).use_count,
+    ).toBe(Number.MAX_SAFE_INTEGER)
+    for (const bad of [-1, 1.5, '132', NaN, Infinity, [132], true, Number.MAX_SAFE_INTEGER + 1, 1e100]) {
       expect(mapExpertRow({ id: 'kep', name: 'x', use_count: bad }).use_count).toBeUndefined()
     }
   })
