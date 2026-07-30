@@ -116,7 +116,11 @@ function signPayload(payload: SignedPayload, secret: string): string {
 
 function parseSignedPayload<T extends SignedPayload>(cookie: string | undefined, secret: string): T | null {
   if (!cookie || !secret) return null
-  const [body, signature] = cookie.split('.')
+  // Exactly body.signature — trailing extra segments would otherwise ride along
+  // unverified (review FSHP-001: "valid-cookie.junk" must be rejected).
+  const segments = cookie.split('.')
+  if (segments.length !== 2) return null
+  const [body, signature] = segments
   if (!body || !signature) return null
   if (!safeEqual(signature, hmac(body, secret))) return null
   try {

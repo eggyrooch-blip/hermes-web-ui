@@ -117,6 +117,8 @@ describe('Feishu session persistence', () => {
     expect(parseFeishuSession(`${cookie}x`, { secret: SECRET, now })).toEqual({ user: null, reason: 'bad-signature' })
     expect(parseFeishuSession(cookie, { secret: 'other-secret', now })).toEqual({ user: null, reason: 'bad-signature' })
     expect(parseFeishuSession('garbage', { secret: SECRET, now })).toEqual({ user: null, reason: 'bad-signature' })
+    // FSHP-001: trailing extra segments must not ride along on a valid cookie.
+    expect(parseFeishuSession(`${cookie}.junk`, { secret: SECRET, now })).toEqual({ user: null, reason: 'bad-signature' })
   })
 
   it('keeps parseFeishuSessionCookie returning the bare WebUser', async () => {
