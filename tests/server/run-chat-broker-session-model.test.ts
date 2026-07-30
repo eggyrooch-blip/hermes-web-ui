@@ -53,23 +53,34 @@ function fakeContext() {
   } as any
 }
 
-const socket = { data: { user: { openid: 'ou_alice' } }, join: vi.fn(), connected: true } as any
+function fakeSocket() {
+  return { data: { user: { openid: 'ou_alice' } }, join: vi.fn(), emit: vi.fn(), connected: true } as any
+}
+
+/** Runs one broker turn and hands back everything the assertions need. */
+async function runTurn(data: Record<string, any>, profile = 'default') {
+  let body: any
+  const fetchMock = vi.fn(async (_url: string, init: any) => {
+    body = JSON.parse(String(init?.body || '{}'))
+    return { ok: true, body: sseStream('event: done\ndata: {"kind":"done","run_id":"r"}\n\n'), status: 200 } as any
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const socket = fakeSocket()
+  const context = fakeContext()
+  await handleBrokerRun(socket, { input: 'hi', session_id: 's1', ...data } as any, profile, 'rm', vi.fn(), context)
+  return { fetchMock, socket, context, metadata: (body?.metadata || {}) as Record<string, any> }
+}
 
 /** Runs a broker turn and returns the metadata block the broker actually received. */
 async function runAndCaptureMetadata(data: Record<string, any>): Promise<Record<string, any>> {
-  let body: any
-  vi.stubGlobal('fetch', vi.fn(async (_url: string, init: any) => {
-    body = JSON.parse(String(init?.body || '{}'))
-    return { ok: true, body: sseStream('event: done\ndata: {"kind":"done","run_id":"r"}\n\n'), status: 200 } as any
-  }))
-  await handleBrokerRun(socket, { input: 'hi', session_id: 's1', ...data } as any, 'default', 'rm', vi.fn(), fakeContext())
-  return body?.metadata || {}
+  return (await runTurn(data)).metadata
 }
 
 afterEach(() => {
   vi.restoreAllMocks()
   sessionStore.getSession.mockReset()
   sessionStore.getSession.mockReturnValue({ id: 's1', profile: 'default', workspace: null, model: '', provider: '' })
+  sessionStore.updateSession.mockClear()
 })
 
 describe('broker run model stickiness', () => {
@@ -111,5 +122,53 @@ describe('broker run model stickiness', () => {
 
     expect('model' in metadata).toBe(false)
     expect('provider' in metadata).toBe(false)
+  })
+})
+
+// getSession() resolves a session id globally — nothing filters by profile. A socket
+// authenticated as profile B must not be able to drive profile A's session, or it
+// would write into A's transcript and (via the stickiness fallback above) run under
+// A's persisted model/provider and workspace.
+describe('broker run cross-profile session fence', () => {
+  it('rejects the run when the session row belongs to another profile', async () => {
+    sessionStore.getSession.mockReturnValue({
+      id: 's1', profile: 'user_a', workspace: '/tmp/a', model: 'a-model', provider: 'a-provider',
+    } as any)
+
+    const { fetchMock, socket, context } = await runTurn({}, 'user_b')
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(context.abandonRun).toHaveBeenCalled()
+    // No transcript write: markCompleted is the only path that persists messages here.
+    expect(context.markCompleted).not.toHaveBeenCalled()
+    expect(sessionStore.updateSession).not.toHaveBeenCalled()
+    expect(socket.emit).toHaveBeenCalledWith('run.rejected', expect.objectContaining({
+      event: 'run.rejected',
+      session_id: 's1',
+      error: 'Session belongs to a different profile',
+    }))
+  })
+
+  it('allows the run when the session row profile matches the socket profile', async () => {
+    sessionStore.getSession.mockReturnValue({
+      id: 's1', profile: 'user_a', workspace: null, model: 'a-model', provider: 'a-provider',
+    } as any)
+
+    const { fetchMock, socket, metadata } = await runTurn({}, 'user_a')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(metadata.model).toBe('a-model')
+    expect(socket.emit).not.toHaveBeenCalledWith('run.rejected', expect.anything())
+  })
+
+  it('allows legacy sessions where both sides default to the "default" profile', async () => {
+    sessionStore.getSession.mockReturnValue({
+      id: 's1', profile: 'default', workspace: null, model: '', provider: '',
+    } as any)
+
+    const { fetchMock, socket } = await runTurn({}, 'default')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(socket.emit).not.toHaveBeenCalledWith('run.rejected', expect.anything())
   })
 })

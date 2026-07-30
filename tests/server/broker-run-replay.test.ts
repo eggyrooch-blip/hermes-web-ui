@@ -265,7 +265,7 @@ describe('handleBrokerRun replay mode', () => {
   it('falls back from a stored workspace pointing at another profile', async () => {
     // setWorkspace persists any string, so the stored value is attacker-controlled;
     // the prompt AND the diff tracker must both land on the profile default.
-    sessionStore.getSession.mockReturnValueOnce({ id: 's1', workspace: '/tmp/other-profile/workspace' } as any)
+    sessionStore.getSession.mockReturnValueOnce({ id: 's1', profile: 'default', workspace: '/tmp/other-profile/workspace' } as any)
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body || '{}'))
       expect(body.metadata.instructions).toContain('[Current working directory: /tmp/workspace]')

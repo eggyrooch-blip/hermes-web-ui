@@ -920,6 +920,29 @@ export async function handleBrokerRun(
       identityError = err
       throw err
     }
+    // getSession() looks a session up by id ALONE — the sessions table has a profile
+    // column but no query filters on it. Without this fence a socket authenticated as
+    // profile B could pass profile A's session_id and write into A's transcript, adopt
+    // A's persisted model/provider, and inherit A's workspace below. Fail closed before
+    // any message write or broker fetch. Strict equality is safe for shared agents:
+    // the socket middleware already resolves socket.data.profile to the SHARED profile
+    // (broker-controller.ts sharedAgentProfile / ownerOwnsProfile), so legitimate shared
+    // access arrives with the owner's profile. Legacy rows are safe too — both the row
+    // mapper and createSession default a blank profile to 'default'.
+    if (sessionRow && sessionRow.profile !== profile) {
+      logger.warn(
+        { sessionId: session_id, sessionProfile: sessionRow.profile, socketProfile: profile },
+        '[broker-run] rejected cross-profile session access',
+      )
+      if (session_id && state) context.abandonRun(session_id, state, runMarker)
+      rejectReplay()
+      socket.emit('run.rejected', {
+        event: 'run.rejected',
+        session_id,
+        error: 'Session belongs to a different profile',
+      })
+      return
+    }
     if (isReplay && (!sessionRow || workspaceDiffSessionRowId == null || workspaceDiffSessionIncarnation == null)) {
       if (session_id && state) context.abandonRun(session_id, state, runMarker)
       rejectReplay()
