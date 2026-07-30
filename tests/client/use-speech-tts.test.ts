@@ -102,7 +102,8 @@ describe('client TTS unified synthesize flow', () => {
         signal: controller.signal,
       },
     )
-    expect(result.audio).toBeInstanceOf(Blob)
+    // undici's response.blob() returns a Blob from node's realm, not the test global's — instanceof is realm-sensitive
+    expect(Object.prototype.toString.call(result.audio)).toBe('[object Blob]')
     expect(result.audio.size).toBeGreaterThan(0)
     expect(result.engine).toBe('openai-engine')
     expect(result.provider).toBe('openai')
