@@ -417,6 +417,8 @@ export default {
       noResults: 'No matching experts.',
       activeBadge: 'Active',
       aihubBadge: 'From AiHub',
+      newBadge: 'New',
+      updatedAt: '更新 {date}',
     },
     aihub: {
       label: 'AiHub',

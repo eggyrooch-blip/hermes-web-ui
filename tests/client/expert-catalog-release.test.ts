@@ -88,6 +88,55 @@ describe('ExpertCatalogView release metadata', () => {
     expect(cards[2].find('.card-updated').exists()).toBe(false)
   })
 
+  it('drops the New badge when the 24h window expires while the page stays open', async () => {
+    const now = Date.parse('2026-07-24T12:00:00Z')
+    fetchExpertsMock.mockResolvedValue({
+      experts: [
+        {
+          id: 'edge',
+          name: 'Edge expert',
+          release_version: '1.0.0',
+          release_installed_at: Math.floor((now - 24 * 60 * 60 * 1000 + 90_000) / 1000),
+        },
+      ],
+    })
+
+    const wrapper = mount(ExpertCatalogView, {
+      global: {
+        stubs: {
+          NInput: true,
+          NDrawer: { template: '<div><slot /></div>' },
+          NDrawerContent: { template: '<div><slot /></div>' },
+          ExpertDetailPanel: true,
+        },
+      },
+    })
+    await flushPromises()
+    expect(wrapper.find('.card-new-badge').exists()).toBe(true)
+
+    vi.advanceTimersByTime(120_000)
+    await flushPromises()
+    expect(wrapper.find('.card-new-badge').exists()).toBe(false)
+  })
+
+  it('rejects out-of-range and future timestamps in helpers', async () => {
+    const { formatExpertUpdatedDate, formatExpertUpdatedFull, isExpertRecentlyUpdated } =
+      await import('@/api/hermes/experts')
+    for (const bad of [0, -1, NaN, Infinity, 1e13]) {
+      expect(formatExpertUpdatedDate({ release_installed_at: bad })).toBe('')
+      expect(formatExpertUpdatedFull({ release_installed_at: bad })).toBe('')
+    }
+    const ts = Math.floor(Date.parse('2026-07-24T02:00:00Z') / 1000)
+    expect(formatExpertUpdatedDate({ release_installed_at: ts })).toMatch(/^\d{2}-\d{2}$/)
+    expect(formatExpertUpdatedFull({ release_installed_at: ts })).toMatch(/^2026-\d{2}-\d{2} \d{2}:\d{2}$/)
+
+    const now = Date.parse('2026-07-24T12:00:00Z')
+    const at = (iso: string) => Math.floor(Date.parse(iso) / 1000)
+    expect(isExpertRecentlyUpdated({ release_installed_at: at('2026-07-23T12:00:00Z') }, now)).toBe(true)
+    expect(isExpertRecentlyUpdated({ release_installed_at: at('2026-07-23T11:59:59Z') }, now)).toBe(false)
+    expect(isExpertRecentlyUpdated({ release_installed_at: at('2026-07-24T13:00:00Z') }, now)).toBe(false)
+  })
+
   it('shows the same release metadata in the expert detail panel', () => {
     const wrapper = mount(ExpertDetailPanel, {
       props: {

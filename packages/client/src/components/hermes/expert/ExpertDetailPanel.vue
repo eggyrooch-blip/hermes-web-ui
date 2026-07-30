@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   formatExpertReleaseVersion,
@@ -9,6 +9,15 @@ import {
 } from '@/api/hermes/experts'
 
 const { t } = useI18n()
+
+const nowTick = ref(Date.now())
+let nowTimer: number | undefined
+onMounted(() => {
+  nowTimer = window.setInterval(() => { nowTick.value = Date.now() }, 60_000)
+})
+onUnmounted(() => {
+  if (nowTimer !== undefined) window.clearInterval(nowTimer)
+})
 const props = defineProps<{
   expert: ExpertInfo
   /** Whether this expert is the currently-active overlay in the composer. */
@@ -51,7 +60,7 @@ watch(() => props.expert.id, () => {
           <span v-if="formatExpertReleaseVersion(expert)" class="detail-version">
             {{ formatExpertReleaseVersion(expert) }}
           </span>
-          <span v-if="isExpertRecentlyUpdated(expert)" class="detail-new">{{ t('expert.catalog.newBadge') }}</span>
+          <span v-if="isExpertRecentlyUpdated(expert, nowTick)" class="detail-new">{{ t('expert.catalog.newBadge') }}</span>
           <span v-if="formatExpertUpdatedFull(expert)" class="detail-updated">
             {{ t('expert.catalog.updatedAt', { date: formatExpertUpdatedFull(expert) }) }}
           </span>

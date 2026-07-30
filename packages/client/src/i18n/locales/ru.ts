@@ -342,6 +342,8 @@ export default {
       noResults: 'No matching experts.',
       activeBadge: 'Active',
       aihubBadge: 'From AiHub',
+      newBadge: 'New',
+      updatedAt: 'Обновлено {date}',
     },
     aihub: {
       label: 'AiHub',

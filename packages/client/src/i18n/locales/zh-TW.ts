@@ -417,6 +417,8 @@ export default {
       noResults: '沒有符合的專家。',
       activeBadge: '已啟用',
       aihubBadge: '來自 AiHub',
+      newBadge: 'New',
+      updatedAt: '更新於 {date}',
     },
     aihub: {
       label: 'AiHub',

@@ -63,7 +63,8 @@ const pad2 = (n: number) => String(n).padStart(2, '0')
 function expertUpdatedDate(expert: Pick<ExpertInfo, 'release_installed_at'>): Date | null {
   const ts = expert.release_installed_at
   if (typeof ts !== 'number' || !Number.isFinite(ts) || ts <= 0) return null
-  return new Date(ts * 1000)
+  const d = new Date(ts * 1000)
+  return Number.isFinite(d.getTime()) ? d : null
 }
 
 /** Short `MM-DD` for the catalog card. */

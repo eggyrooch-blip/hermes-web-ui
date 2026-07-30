@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { NInput, NDrawer, NDrawerContent } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import {
@@ -22,6 +22,16 @@ const experts = ref<ExpertInfo[]>([])
 const loading = ref(false)
 const errored = ref(false)
 const searchQuery = ref('')
+
+// New-badge expiry must track wall-clock, not just render time
+const nowTick = ref(Date.now())
+let nowTimer: number | undefined
+onMounted(() => {
+  nowTimer = window.setInterval(() => { nowTick.value = Date.now() }, 60_000)
+})
+onUnmounted(() => {
+  if (nowTimer !== undefined) window.clearInterval(nowTimer)
+})
 const selected = ref<ExpertInfo | null>(null)
 const showDetail = ref(false)
 const brokenAvatarIds = ref<Set<string>>(new Set())
@@ -132,11 +142,11 @@ watch(activeProfileName, () => {
           v-for="expert in filteredExperts"
           :key="expert.id"
           class="expert-card"
-          :class="{ active: isActive(expert) }"
+          :class="{ active: isActive(expert), 'has-new': isExpertRecentlyUpdated(expert, nowTick) }"
           type="button"
           @click="openDetail(expert)"
         >
-          <span v-if="isExpertRecentlyUpdated(expert)" class="card-new-badge">{{ t('expert.catalog.newBadge') }}</span>
+          <span v-if="isExpertRecentlyUpdated(expert, nowTick)" class="card-new-badge">{{ t('expert.catalog.newBadge') }}</span>
           <div class="card-header">
             <div class="card-avatar" :class="{ 'has-image': hasAvatar(expert) }">
               <img
@@ -347,6 +357,11 @@ watch(activeProfileName, () => {
 .card-version {
   border: 1px solid $border-color;
   color: $text-secondary;
+}
+
+/* keep the long-title row clear of the absolute top-right pill */
+.expert-card.has-new .card-title-row {
+  padding-right: 48px;
 }
 
 .card-new-badge {
