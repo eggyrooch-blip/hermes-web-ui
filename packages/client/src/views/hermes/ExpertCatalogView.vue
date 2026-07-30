@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import {
   fetchExperts,
   formatExpertReleaseVersion,
+  formatExpertUpdatedDate,
   isAiHubExpert,
   isExpertRecentlyUpdated,
   type ExpertInfo,
@@ -135,6 +136,7 @@ watch(activeProfileName, () => {
           type="button"
           @click="openDetail(expert)"
         >
+          <span v-if="isExpertRecentlyUpdated(expert)" class="card-new-badge">{{ t('expert.catalog.newBadge') }}</span>
           <div class="card-header">
             <div class="card-avatar" :class="{ 'has-image': hasAvatar(expert) }">
               <img
@@ -156,7 +158,9 @@ watch(activeProfileName, () => {
                 <span v-if="formatExpertReleaseVersion(expert)" class="card-version">
                   {{ formatExpertReleaseVersion(expert) }}
                 </span>
-                <span v-if="isExpertRecentlyUpdated(expert)" class="card-new-badge">{{ t('expert.catalog.newBadge') }}</span>
+                <span v-if="formatExpertUpdatedDate(expert)" class="card-updated">
+                  {{ t('expert.catalog.updatedAt', { date: formatExpertUpdatedDate(expert) }) }}
+                </span>
               </div>
             </div>
           </div>
@@ -224,6 +228,7 @@ watch(activeProfileName, () => {
 }
 
 .expert-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -326,12 +331,17 @@ watch(activeProfileName, () => {
   color: #4a90d9;
 }
 
-.card-version,
-.card-new-badge {
+.card-version {
   font-size: 11px;
   line-height: 16px;
   padding: 1px 8px;
   border-radius: 999px;
+}
+
+.card-updated {
+  font-size: 11px;
+  line-height: 16px;
+  color: $text-secondary;
 }
 
 .card-version {
@@ -340,9 +350,17 @@ watch(activeProfileName, () => {
 }
 
 .card-new-badge {
-  background: rgba(var(--accent-primary-rgb), 0.14);
-  color: $accent-primary;
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-size: 11px;
+  line-height: 16px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: $accent-primary;
+  color: var(--text-on-accent, #fff);
   font-weight: 600;
+  box-shadow: 0 1px 4px rgba(var(--accent-primary-rgb), 0.35);
 }
 
 .card-category {

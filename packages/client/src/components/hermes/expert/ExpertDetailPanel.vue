@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   formatExpertReleaseVersion,
+  formatExpertUpdatedFull,
   isExpertRecentlyUpdated,
   type ExpertInfo,
 } from '@/api/hermes/experts'
@@ -51,6 +52,9 @@ watch(() => props.expert.id, () => {
             {{ formatExpertReleaseVersion(expert) }}
           </span>
           <span v-if="isExpertRecentlyUpdated(expert)" class="detail-new">{{ t('expert.catalog.newBadge') }}</span>
+          <span v-if="formatExpertUpdatedFull(expert)" class="detail-updated">
+            {{ t('expert.catalog.updatedAt', { date: formatExpertUpdatedFull(expert) }) }}
+          </span>
         </div>
         <p v-if="expert.tagline" class="detail-tagline">{{ expert.tagline }}</p>
       </div>
@@ -193,6 +197,12 @@ watch(() => props.expert.id, () => {
 .detail-active {
   background: $accent-primary;
   color: var(--text-on-accent);
+}
+
+.detail-updated {
+  line-height: 18px;
+  font-size: 12px;
+  color: $text-secondary;
 }
 
 .detail-version {

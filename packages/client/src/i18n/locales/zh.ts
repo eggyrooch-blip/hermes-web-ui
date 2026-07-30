@@ -417,6 +417,8 @@ export default {
       noResults: '没有匹配的专家。',
       activeBadge: '已启用',
       aihubBadge: '来自 AiHub',
+      newBadge: 'New',
+      updatedAt: '更新于 {date}',
     },
     detail: {
       close: '关闭',

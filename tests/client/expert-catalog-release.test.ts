@@ -22,7 +22,12 @@ vi.mock('@/stores/hermes/profiles', () => ({
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
-    t: (key: string) => key === 'expert.catalog.newBadge' ? 'New' : key,
+    t: (key: string, params?: Record<string, unknown>) =>
+      key === 'expert.catalog.newBadge'
+        ? 'New'
+        : key === 'expert.catalog.updatedAt'
+          ? `更新于 ${params?.date}`
+          : key,
   }),
 }))
 
@@ -40,20 +45,20 @@ describe('ExpertCatalogView release metadata', () => {
     vi.useRealTimers()
   })
 
-  it('shows the release version and only marks updates from the last 7 days as New', async () => {
+  it('shows the release version, updated date, and only marks updates from the last 24 hours as New', async () => {
     fetchExpertsMock.mockResolvedValue({
       experts: [
         {
           id: 'recent',
           name: 'Recent expert',
           release_version: '1.0.5',
-          release_installed_at: Math.floor(Date.parse('2026-07-20T12:00:00Z') / 1000),
+          release_installed_at: Math.floor(Date.parse('2026-07-24T02:00:00Z') / 1000),
         },
         {
           id: 'old',
           name: 'Old expert',
           release_version: '1.0.4',
-          release_installed_at: Math.floor(Date.parse('2026-07-01T12:00:00Z') / 1000),
+          release_installed_at: Math.floor(Date.parse('2026-07-20T12:00:00Z') / 1000),
         },
         { id: 'legacy', name: 'Legacy expert' },
       ],
@@ -74,10 +79,13 @@ describe('ExpertCatalogView release metadata', () => {
     const cards = wrapper.findAll('.expert-card')
     expect(cards[0].find('.card-version').text()).toBe('v1.0.5')
     expect(cards[0].find('.card-new-badge').text()).toBe('New')
+    expect(cards[0].find('.card-updated').text()).toMatch(/^更新于 \d{2}-\d{2}$/)
     expect(cards[1].find('.card-version').text()).toBe('v1.0.4')
     expect(cards[1].find('.card-new-badge').exists()).toBe(false)
+    expect(cards[1].find('.card-updated').text()).toMatch(/^更新于 \d{2}-\d{2}$/)
     expect(cards[2].find('.card-version').exists()).toBe(false)
     expect(cards[2].find('.card-new-badge').exists()).toBe(false)
+    expect(cards[2].find('.card-updated').exists()).toBe(false)
   })
 
   it('shows the same release metadata in the expert detail panel', () => {
@@ -87,12 +95,13 @@ describe('ExpertCatalogView release metadata', () => {
           id: 'recent',
           name: 'Recent expert',
           release_version: '1.0.5',
-          release_installed_at: Math.floor(Date.parse('2026-07-20T12:00:00Z') / 1000),
+          release_installed_at: Math.floor(Date.parse('2026-07-24T02:00:00Z') / 1000),
         },
       },
     })
 
     expect(wrapper.find('.detail-version').text()).toBe('v1.0.5')
     expect(wrapper.find('.detail-new').text()).toBe('New')
+    expect(wrapper.find('.detail-updated').text()).toMatch(/^更新于 2026-\d{2}-\d{2} \d{2}:\d{2}$/)
   })
 })

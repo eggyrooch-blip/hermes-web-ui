@@ -418,6 +418,7 @@ export default {
       activeBadge: 'Active',
       aihubBadge: 'From AiHub',
       newBadge: 'New',
+      updatedAt: 'Updated {date}',
     },
     detail: {
       close: 'Close',

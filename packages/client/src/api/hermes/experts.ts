@@ -56,7 +56,28 @@ export interface ExpertInfo {
   release_installed_at?: number
 }
 
-const EXPERT_NEW_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
+const EXPERT_NEW_WINDOW_MS = 24 * 60 * 60 * 1000
+
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+function expertUpdatedDate(expert: Pick<ExpertInfo, 'release_installed_at'>): Date | null {
+  const ts = expert.release_installed_at
+  if (typeof ts !== 'number' || !Number.isFinite(ts) || ts <= 0) return null
+  return new Date(ts * 1000)
+}
+
+/** Short `MM-DD` for the catalog card. */
+export function formatExpertUpdatedDate(expert: Pick<ExpertInfo, 'release_installed_at'>): string {
+  const d = expertUpdatedDate(expert)
+  return d ? `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` : ''
+}
+
+/** Full `YYYY-MM-DD HH:mm` for the detail panel. */
+export function formatExpertUpdatedFull(expert: Pick<ExpertInfo, 'release_installed_at'>): string {
+  const d = expertUpdatedDate(expert)
+  if (!d) return ''
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+}
 
 export function formatExpertReleaseVersion(expert: Pick<ExpertInfo, 'release_version'>): string {
   const version = expert.release_version?.trim()
