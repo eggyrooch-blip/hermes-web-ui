@@ -353,9 +353,11 @@ watch(activeProfileName, () => {
   border-radius: 999px;
 }
 
-/* keep the version slot's space so Updated aligns across cards (sunke 2026-07-30) */
+/* keep the version slot's space so Updated aligns across cards (sunke 2026-07-30);
+   border matches .card-version's 1px so the box metrics are identical */
 .card-version-placeholder {
   visibility: hidden;
+  border: 1px solid transparent;
 }
 
 .card-updated,

@@ -62,6 +62,7 @@ describe('ExpertCatalogView release metadata', () => {
           name: 'Old expert',
           release_version: '1.0.4',
           release_installed_at: Math.floor(Date.parse('2026-07-20T12:00:00Z') / 1000),
+          use_count: 0,
         },
         { id: 'legacy', name: 'Legacy expert' },
       ],
@@ -90,6 +91,7 @@ describe('ExpertCatalogView release metadata', () => {
     expect(cards[1].find('.card-updated').text()).toMatch(/^更新于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
     expect(cards[2].find('.card-version').exists()).toBe(false)
     expect(cards[2].find('.card-version-placeholder').exists()).toBe(true)
+    expect(cards[2].find('.card-usage').exists()).toBe(false)
     expect(cards[0].find('.card-version-placeholder').exists()).toBe(false)
     expect(cards[2].find('.card-new-badge').exists()).toBe(false)
     expect(cards[2].find('.card-updated').exists()).toBe(false)
