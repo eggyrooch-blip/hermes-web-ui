@@ -1,6 +1,7 @@
 import type { Context, Next } from 'koa'
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto'
 import { config } from '../config'
+import { logger } from './logger'
 import { resolveProfileForOpenId, type WebUser } from './request-context'
 import { ensureWebUserForFeishu } from './compat-user'
 
@@ -148,7 +149,22 @@ export function createFeishuSessionCookie(options: CookieOptions): string {
   }, options.secret)
 }
 
-export function parseFeishuSessionCookie(cookie: string | undefined, options: ParseOptions): WebUser | null {
+/**
+ * Why a session cookie was rejected. Logged on 401 so a lost login can be
+ * traced to the actual failing link (browser dropped the cookie / TTL ran out /
+ * signing secret changed) instead of being guessed at.
+ */
+export type FeishuSessionRejectReason = 'no-cookie' | 'bad-signature' | 'expired' | 'malformed-payload'
+
+export interface FeishuSessionParseResult {
+  user: WebUser | null
+  /** Cookie `exp` (unix seconds) — present only when the cookie parsed cleanly. */
+  exp?: number
+  reason?: FeishuSessionRejectReason
+}
+
+export function parseFeishuSession(cookie: string | undefined, options: ParseOptions): FeishuSessionParseResult {
+  if (!cookie) return { user: null, reason: 'no-cookie' }
   const payload = parseSignedPayload<{
     openid?: unknown
     profile?: unknown
@@ -162,22 +178,56 @@ export function parseFeishuSessionCookie(cookie: string | undefined, options: Pa
     avatarUrl?: unknown
     exp?: unknown
   }>(cookie, options.secret)
-  if (!payload) return null
+  // parseSignedPayload also returns null for a structurally broken cookie; both
+  // land here as bad-signature — from the outside they are indistinguishable.
+  if (!payload) return { user: null, reason: 'bad-signature' }
   const now = options.now ?? Math.floor(Date.now() / 1000)
-  if (typeof payload.exp !== 'number' || payload.exp < now) return null
-  if (typeof payload.openid !== 'string' || typeof payload.profile !== 'string') return null
-  return {
-    openid: payload.openid,
-    profile: payload.profile,
-    role: payload.role === 'admin' ? 'admin' : 'user',
-    ...(typeof payload.userId === 'string' && payload.userId ? { userId: payload.userId } : {}),
-    ...(typeof payload.unionId === 'string' && payload.unionId ? { unionId: payload.unionId } : {}),
-    ...(typeof payload.tenantKey === 'string' && payload.tenantKey ? { tenantKey: payload.tenantKey } : {}),
-    ...(typeof payload.appId === 'string' && payload.appId ? { appId: payload.appId } : {}),
-    ...(typeof payload.email === 'string' && payload.email ? { email: payload.email } : {}),
-    ...(typeof payload.name === 'string' && payload.name ? { name: payload.name } : {}),
-    ...(typeof payload.avatarUrl === 'string' && payload.avatarUrl ? { avatarUrl: payload.avatarUrl } : {}),
+  if (typeof payload.exp !== 'number') return { user: null, reason: 'malformed-payload' }
+  if (payload.exp < now) return { user: null, exp: payload.exp, reason: 'expired' }
+  if (typeof payload.openid !== 'string' || typeof payload.profile !== 'string') {
+    return { user: null, reason: 'malformed-payload' }
   }
+  return {
+    exp: payload.exp,
+    user: {
+      openid: payload.openid,
+      profile: payload.profile,
+      role: payload.role === 'admin' ? 'admin' : 'user',
+      ...(typeof payload.userId === 'string' && payload.userId ? { userId: payload.userId } : {}),
+      ...(typeof payload.unionId === 'string' && payload.unionId ? { unionId: payload.unionId } : {}),
+      ...(typeof payload.tenantKey === 'string' && payload.tenantKey ? { tenantKey: payload.tenantKey } : {}),
+      ...(typeof payload.appId === 'string' && payload.appId ? { appId: payload.appId } : {}),
+      ...(typeof payload.email === 'string' && payload.email ? { email: payload.email } : {}),
+      ...(typeof payload.name === 'string' && payload.name ? { name: payload.name } : {}),
+      ...(typeof payload.avatarUrl === 'string' && payload.avatarUrl ? { avatarUrl: payload.avatarUrl } : {}),
+    },
+  }
+}
+
+/** Narrow view kept for the Socket.IO handshake / broker-controller callers. */
+export function parseFeishuSessionCookie(cookie: string | undefined, options: ParseOptions): WebUser | null {
+  return parseFeishuSession(cookie, options).user
+}
+
+export function cookieSecure(ctx: Context): boolean {
+  const forwardedProto = (typeof ctx.get === 'function' ? ctx.get('x-forwarded-proto') : '')
+    .split(',')[0]?.trim().toLowerCase() || ''
+  return ctx.protocol === 'https' || ctx.secure || forwardedProto === 'https'
+}
+
+/**
+ * Single implementation of the Feishu cookie write — the OAuth callback, the
+ * logout clear and the sliding renewal below MUST agree on flags, otherwise a
+ * renewal silently writes a second cookie next to the original one.
+ */
+export function setFeishuCookie(ctx: Context, name: string, value: string, maxAgeSeconds: number) {
+  ctx.cookies.set(name, value, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: cookieSecure(ctx),
+    maxAge: maxAgeSeconds * 1000,
+    overwrite: true,
+  })
 }
 
 export function createFeishuState(secret = getFeishuSessionSecret()): string {
@@ -317,12 +367,22 @@ export async function feishuOAuthAuth(ctx: Context, next: Next): Promise<void> {
     return
   }
 
-  const user = parseFeishuSessionCookie(ctx.cookies.get(FEISHU_SESSION_COOKIE), {
+  const now = Math.floor(Date.now() / 1000)
+  const parsed = parseFeishuSession(ctx.cookies.get(FEISHU_SESSION_COOKIE), {
     secret: getFeishuSessionSecret(),
+    now,
   })
+  const user = parsed.user
   if (!user) {
     // Feishu OAuth is the ONLY accepted auth: no Feishu session cookie → 401.
     // No JWT/password fallback (sunke: 飞书唯一登录, no other login entry).
+    // The reason is the only observability we have into "why did I get logged
+    // out again" — never log the cookie itself, it is a bearer credential.
+    logger.warn({
+      reason: parsed.reason,
+      path: ctx.path,
+      ua: ctx.headers['user-agent'],
+    }, 'Feishu session rejected')
     ctx.status = 401
     ctx.set('Content-Type', 'application/json')
     ctx.body = { error: 'Unauthorized' }
@@ -341,6 +401,27 @@ export async function feishuOAuthAuth(ctx: Context, next: Next): Promise<void> {
   // while ALSO retaining the WebUser fields (openid/profile/role) that the
   // fork's own readers — getRequestProfile etc. — cast back to. Merge order:
   // WebUser first, AuthenticatedUser last, so `id`/`profiles` are authoritative.
+  // Sliding renewal: an actively used session never ages out. Re-sign once the
+  // cookie is more than a day old so a daily user always carries a full-TTL
+  // cookie; skipping fresh cookies keeps Set-Cookie off the hot path.
+  const maxAgeSeconds = config.feishuSessionMaxAgeSeconds
+  if (typeof parsed.exp === 'number' && parsed.exp - now < maxAgeSeconds - 24 * 60 * 60) {
+    setFeishuCookie(ctx, FEISHU_SESSION_COOKIE, createFeishuSessionCookie({
+      openid: user.openid,
+      profile: user.profile,
+      userId: user.userId,
+      unionId: user.unionId,
+      tenantKey: user.tenantKey,
+      appId: user.appId,
+      email: user.email,
+      name: user.name,
+      avatarUrl: user.avatarUrl,
+      secret: getFeishuSessionSecret(),
+      now,
+      maxAgeSeconds,
+    }), maxAgeSeconds)
+  }
+
   const authUser = ensureWebUserForFeishu(user.openid, {
     ...(user.name ? { name: user.name } : {}),
     ...(user.avatarUrl ? { avatarUrl: user.avatarUrl } : {}),

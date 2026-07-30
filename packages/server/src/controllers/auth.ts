@@ -34,6 +34,8 @@ import {
   createFeishuState,
   exchangeFeishuCode,
   verifyFeishuState,
+  cookieSecure,
+  setFeishuCookie,
   FEISHU_SESSION_COOKIE,
   FEISHU_STATE_COOKIE,
 } from '../services/feishu-oauth'
@@ -690,20 +692,8 @@ function firstForwardedHeader(value: string): string {
   return value.split(',')[0]?.trim() || ''
 }
 
-function cookieSecure(ctx: Context): boolean {
-  const forwardedProto = firstForwardedHeader(getHeader(ctx, 'x-forwarded-proto')).toLowerCase()
-  return ctx.protocol === 'https' || ctx.secure || forwardedProto === 'https'
-}
-
-function setFeishuCookie(ctx: Context, name: string, value: string, maxAgeSeconds: number) {
-  ctx.cookies.set(name, value, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: cookieSecure(ctx),
-    maxAge: maxAgeSeconds * 1000,
-    overwrite: true,
-  })
-}
+// cookieSecure / setFeishuCookie now live in services/feishu-oauth so the OAuth
+// callback here and the middleware's sliding renewal write identical cookies.
 
 function maybeCanonicalFeishuLoginRedirect(ctx: Context): string | null {
   const requestOrigin = externalRequestOrigin(ctx)

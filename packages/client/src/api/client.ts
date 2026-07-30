@@ -42,6 +42,17 @@ function clearAuthSessionState() {
   localStorage.removeItem(ACTIVE_AGENT_STORAGE_KEY)
 }
 
+/**
+ * In server-session (Feishu OAuth) mode the credential is an httpOnly cookie we
+ * cannot see, so a 401 says nothing about our localStorage. Wiping authMode here
+ * only makes the login page fall back to the password form instead of silently
+ * re-running the OAuth hop — so leave it alone and just route to /login.
+ */
+function clearAuthSessionStateUnlessServerSession() {
+  if (isServerSessionAuthMode()) return
+  clearAuthSessionState()
+}
+
 export function hasApiKey(): boolean {
   return !!getApiKey()
 }
@@ -278,7 +289,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     !path.startsWith('/v1/')
 
   if (res.status === 401 && isLocalBff && !skipAuthRedirect) {
-    clearAuthSessionState()
+    clearAuthSessionStateUnlessServerSession()
     emitAuthNotice('expired')
     if (router.currentRoute.value.name !== 'login') {
       router.replace({ name: 'login' })
@@ -290,7 +301,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     const text = await res.text().catch(() => '')
     if (res.status === 403 && isLocalBff) {
       if (text.includes('User is disabled or does not exist')) {
-        clearAuthSessionState()
+        clearAuthSessionStateUnlessServerSession()
         emitAuthNotice('expired')
         if (router.currentRoute.value.name !== 'login') {
           router.replace({ name: 'login' })

@@ -151,7 +151,7 @@ export const config = {
   feishuAuthorizeUrl: process.env.FEISHU_AUTHORIZE_URL || 'https://open.feishu.cn/open-apis/authen/v1/index',
   feishuApiBaseUrl: process.env.FEISHU_API_BASE_URL || 'https://open.feishu.cn',
   feishuSessionSecret: process.env.FEISHU_SESSION_SECRET || '',
-  feishuSessionMaxAgeSeconds: parseInt(process.env.FEISHU_SESSION_MAX_AGE_SECONDS || String(7 * 24 * 60 * 60), 10),
+  feishuSessionMaxAgeSeconds: parseInt(process.env.FEISHU_SESSION_MAX_AGE_SECONDS || String(30 * 24 * 60 * 60), 10),
   feishuCallbackRedirect: getFeishuCallbackRedirect(),
   webuiRunBroker: parseBool(process.env.HERMES_WEBUI_RUN_BROKER),
   webuiJobsBroker: getJobsBrokerEnabled(),

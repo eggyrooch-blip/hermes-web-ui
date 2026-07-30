@@ -188,7 +188,7 @@ describe('API Client', () => {
 
     it('clears token and redirects on 401 for local BFF endpoints', async () => {
       setApiKey('secret-key')
-      localStorage.setItem('hermes_auth_mode', 'feishu-oauth-dev')
+      localStorage.setItem('hermes_auth_mode', 'token')
       localStorage.setItem('hermes_web_plane', 'chat')
       localStorage.setItem('hermes_active_profile_name', 'research')
       mockFetch.mockResolvedValue({ ok: false, status: 401 })
@@ -199,6 +199,19 @@ describe('API Client', () => {
       expect(localStorage.getItem('hermes_web_plane')).toBeNull()
       expect(localStorage.getItem('hermes_active_profile_name')).toBeNull()
       expect(localStorage.getItem('hermes_active_agent_id')).toBeNull()
+      expect(router.replace).toHaveBeenCalledWith({ name: 'login' })
+    })
+
+    it('keeps the server-session auth mode on 401 so login can re-run OAuth silently', async () => {
+      localStorage.setItem('hermes_auth_mode', 'feishu-oauth-dev')
+      localStorage.setItem('hermes_web_plane', 'chat')
+      localStorage.setItem('hermes_active_profile_name', 'research')
+      mockFetch.mockResolvedValue({ ok: false, status: 401 })
+
+      await expect(request('/api/hermes/sessions')).rejects.toThrow('Unauthorized')
+      expect(localStorage.getItem('hermes_auth_mode')).toBe('feishu-oauth-dev')
+      expect(localStorage.getItem('hermes_web_plane')).toBe('chat')
+      expect(localStorage.getItem('hermes_active_profile_name')).toBe('research')
       expect(router.replace).toHaveBeenCalledWith({ name: 'login' })
     })
 
