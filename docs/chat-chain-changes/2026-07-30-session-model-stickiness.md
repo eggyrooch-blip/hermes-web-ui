@@ -24,6 +24,11 @@ is used (the request provider is never mixed with the stored model); a session t
 never picked a model keeps the previous behavior and falls through to the profile
 default.
 
+First-turn session creation now stores `provider` alongside `model`. It previously
+stored the model alone, which meant a session created by its own first turn fell back
+to a model with no provider on every later turn — the exact mismatch the pair rule
+exists to prevent. This is invisible in any single-provider deployment.
+
 No `model_groups` validation is performed on purpose. An invalid or delisted model
 must fail loudly at the gateway rather than be silently swapped for another one.
 The visible consequence: if a session's stored model is later delisted, that
@@ -44,7 +49,10 @@ The fence lives at three points, outermost first:
    `createSessionAndBind`, and `addMessage`. This is the one that stops B's text from
    landing in A's persisted transcript, and it also covers internal callers such as
    the queue drain, which never pass through the socket entry.
-3. `handle-broker-run` — before workspace resolution and the broker fetch, as
+3. `handleBrokerSessionCommand` entry — `/plan` and `/goal` persist a command message
+   without going through `handleRun`, and the queue drain calls this method directly,
+   so a queued command is not covered by the socket entry check.
+4. `handle-broker-run` — before workspace resolution and the broker fetch, as
    defense in depth for any future direct caller.
 
 On mismatch the run is abandoned and the socket receives `run.rejected`; nothing is

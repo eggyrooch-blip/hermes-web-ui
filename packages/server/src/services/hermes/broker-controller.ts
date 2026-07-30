@@ -1005,8 +1005,11 @@ export class BrokerRunController {
       row = getSession(sessionId)
     } catch {
       // A broken lookup is not a verdict. Fall through and let the existing run
-      // paths surface the failure - they re-read the row before writing anything,
-      // so a dead DB still cannot produce a cross-profile write.
+      // paths surface the failure. This is deliberately fail-open AT THIS LAYER and
+      // is only safe because every write path re-reads the row before persisting
+      // (handleRun's existingSession read, persistCommandMessage's own getSession):
+      // a read that throws here throws there too, and the run dies before writing.
+      // If a write path ever stops re-reading, this branch must become fail-closed.
       return false
     }
     if (!row || row.profile === profile) return false
@@ -1082,7 +1085,11 @@ export class BrokerRunController {
               profile,
               agent: (socket.data?.agentId as string | undefined)?.trim(),
               user_id: String(socket.data?.user?.openid || socket.data?.user?.id || '') || null,
+              // model/provider are stored as a PAIR, matching POST sessions/:id/model.
+              // Storing the model alone would make later turns fall back to a model with
+              // no provider, which is exactly the mismatch the fallback exists to avoid.
               model,
+              provider,
               title: preview,
             })
           }
@@ -1330,6 +1337,11 @@ export class BrokerRunController {
     const sessionId = String(data.session_id || '').trim()
     const parsed = parseBrokerSessionCommand(data.input)
     if (!sessionId || !parsed) return false
+    // /plan and /goal persist a command message without ever passing through
+    // handleRun, and the queue drain calls this directly, so the socket entry fence
+    // does not cover a queued command. Re-check at write time: the row may have been
+    // created by another profile between enqueue and drain.
+    if (this.rejectsCrossProfileSession(socket, sessionId, profile, data.queue_id)) return true
     if (!state) {
       try {
         state = this.getOrCreateSession(sessionId, profile)
