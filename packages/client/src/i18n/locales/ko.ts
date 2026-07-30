@@ -418,6 +418,7 @@ export default {
       activeBadge: 'Active',
       aihubBadge: 'From AiHub',
       newBadge: 'New',
+      usedCount: '사용 {count}회',
       updatedAt: '업데이트 {date}',
     },
     aihub: {

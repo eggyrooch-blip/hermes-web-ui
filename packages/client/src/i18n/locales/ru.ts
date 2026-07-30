@@ -343,6 +343,7 @@ export default {
       activeBadge: 'Active',
       aihubBadge: 'From AiHub',
       newBadge: 'New',
+      usedCount: 'Использован {count} раз',
       updatedAt: 'Обновлено {date}',
     },
     aihub: {

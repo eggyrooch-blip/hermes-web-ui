@@ -46,6 +46,8 @@ export interface ExpertEntry {
   release_version?: string
   /** Unix seconds when this release was installed (drives the New badge). */
   release_installed_at?: number
+  /** All-channel run count (webui + feishu + cron), maintained by multitenancy. */
+  use_count?: number
 }
 
 export interface ExpertListResult {
@@ -84,6 +86,7 @@ interface ExpertRowDict {
   from_aihub?: unknown
   release_version?: unknown
   release_installed_at?: unknown
+  use_count?: unknown
   // The persona (`agent_md`) MUST NOT be surfaced; it is dropped here even if
   // the broker ever includes it.
 }
@@ -143,6 +146,9 @@ export function mapExpertRow(r: ExpertRowDict): ExpertEntry {
     r.release_installed_at > 0
   ) {
     entry.release_installed_at = r.release_installed_at
+  }
+  if (typeof r.use_count === 'number' && Number.isInteger(r.use_count) && r.use_count >= 0) {
+    entry.use_count = r.use_count
   }
   return entry
 }

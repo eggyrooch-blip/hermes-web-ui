@@ -171,6 +171,9 @@ watch(activeProfileName, () => {
                 <span v-if="formatExpertUpdatedFull(expert)" class="card-updated">
                   {{ t('expert.catalog.updatedAt', { date: formatExpertUpdatedFull(expert) }) }}
                 </span>
+                <span v-if="(expert.use_count ?? 0) > 0" class="card-usage">
+                  {{ t('expert.catalog.usedCount', { count: expert.use_count }) }}
+                </span>
               </div>
             </div>
           </div>
@@ -348,7 +351,8 @@ watch(activeProfileName, () => {
   border-radius: 999px;
 }
 
-.card-updated {
+.card-updated,
+.card-usage {
   font-size: 11px;
   line-height: 16px;
   color: $text-secondary;

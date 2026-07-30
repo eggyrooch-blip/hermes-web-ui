@@ -54,6 +54,8 @@ export interface ExpertInfo {
   release_version?: string
   /** Unix seconds when this release was successfully installed. */
   release_installed_at?: number
+  /** All-channel run count (webui + feishu + cron). */
+  use_count?: number
 }
 
 const EXPERT_NEW_WINDOW_MS = 24 * 60 * 60 * 1000

@@ -90,6 +90,16 @@ describe('expert registry client', () => {
     expect(row.release_installed_at).toBe(1785379743)
   })
 
+  it('passes a sane use_count through and drops malformed ones', async () => {
+    const { mapExpertRow } = await import(SERVICE)
+
+    expect(mapExpertRow({ id: 'kep', name: 'x', use_count: 132 }).use_count).toBe(132)
+    expect(mapExpertRow({ id: 'kep', name: 'x', use_count: 0 }).use_count).toBe(0)
+    for (const bad of [-1, 1.5, '132', NaN, Infinity, [132], true]) {
+      expect(mapExpertRow({ id: 'kep', name: 'x', use_count: bad }).use_count).toBeUndefined()
+    }
+  })
+
   it('drops malformed release metadata instead of forwarding it', async () => {
     const { mapExpertRow } = await import(SERVICE)
 
