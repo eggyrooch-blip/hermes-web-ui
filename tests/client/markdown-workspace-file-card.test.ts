@@ -363,6 +363,54 @@ describe('MarkdownRenderer workspace artifact file card', () => {
     expect(img.attributes('alt')).toBe('pic name.png')
   })
 
+  it('treats a remote URL whose path contains /workspace/ as remote, not a local card', () => {
+    // RMP-001: the `/workspace/` substring test used to run before the scheme
+    // test, so this legitimate remote image became href="/workspace/x.jpg" —
+    // it neither rendered nor opened.
+    const url = 'https://cdn.example.com/workspace/x.jpg'
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: `MEDIA:${url}` },
+    })
+
+    const img = wrapper.find('img')
+    expect(img.exists()).toBe(true)
+    expect(img.attributes('src')).toBe(url)
+    expect(wrapper.find('.markdown-file-card').exists()).toBe(false)
+  })
+
+  it('leaves a remote MEDIA directive inside a fenced code block verbatim', () => {
+    const line = 'MEDIA:https://cdn.example.com/x.jpg'
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: ['```', line, '```'].join('\n') },
+    })
+
+    expect(wrapper.find('img').exists()).toBe(false)
+    expect(wrapper.find('a').exists()).toBe(false)
+    expect(wrapper.find('pre').text()).toContain(line)
+  })
+
+  it('leaves a workspace MEDIA directive inside a fenced code block verbatim', () => {
+    const line = 'MEDIA:/Users/kite/.hermes/profiles/sunke/workspace/report.html'
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: ['~~~text', line, '~~~'].join('\n') },
+    })
+
+    expect(wrapper.find('.markdown-file-card').exists()).toBe(false)
+    expect(wrapper.find('pre').text()).toContain(line)
+  })
+
+  it('still rewrites a MEDIA directive that follows a closed code block', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: ['```', 'MEDIA:https://cdn.example.com/fenced.jpg', '```', '', 'MEDIA:https://cdn.example.com/real.jpg'].join('\n'),
+      },
+    })
+
+    const images = wrapper.findAll('img')
+    expect(images).toHaveLength(1)
+    expect(images[0].attributes('src')).toBe('https://cdn.example.com/real.jpg')
+  })
+
   it('degrades a remote http image to a link, since CSP img-src blocks http', () => {
     // security.ts sends "img-src 'self' data: blob: https:" — an inlined
     // cross-origin http image is blocked and shows a broken-image icon, so it

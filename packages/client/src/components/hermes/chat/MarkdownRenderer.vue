@@ -7,7 +7,7 @@ import MarkdownItConstructor from 'markdown-it'
 import katex from 'katex'
 import markdownItKatex from '@vscode/markdown-it-katex'
 import { handleCodeBlockCopyClick, renderHighlightedCodeBlock } from './highlight'
-import { repairNestedMarkdownFences } from './markdownFenceRepair'
+import { isClosingFence, parseFence, repairNestedMarkdownFences } from './markdownFenceRepair'
 import {
   MERMAID_MAX_DIAGRAMS_PER_MESSAGE,
   MERMAID_MAX_SOURCE_LENGTH,
@@ -323,28 +323,17 @@ function hasExtension(path: string, extensions: Set<string>): boolean {
 // a clickable card (click -> previewByDisplayPath -> panel render). Done on the
 // CLIENT because the agent persists the raw MEDIA line and, for gateway-routed
 // profiles (e.g. Feishu users), the server never rewrites it on the serve path.
-// Only workspace artifacts are linkable as cards (the file must be reachable
-// under the profile workspace for preview/download). http(s) targets (e.g. the
-// VOD URL image_generate returns) become an inline image when they are an https
-// image, and a plain link otherwise — they are served by the remote host, and
-// isLocalFilePath() below keeps the local download proxy off them. Anything
-// else stays text.
-function preprocessMediaDirectives(content: string): string {
-  if (!content || !content.includes('MEDIA:')) return content
-  return content.replace(/(^|\n)[ \t]*MEDIA:([^\r\n]+)/g, (match, leading: string, rawTarget: string) => {
-    const target = rawTarget.trim()
-    const marker = '/workspace/'
-    const idx = target.indexOf(marker)
-    if (idx !== -1) {
-      const rel = target.slice(idx + marker.length).replace(/^\/+/, '')
-      if (!rel) return match
-      const name = rel.split('/').filter(Boolean).pop() || rel
-      const href = '/workspace/' + rel.split('/').map(encodeURIComponent).join('/')
-      return `${leading}[${name}](${href})`
-    }
-    // Remote targets only — the http(s) guard is also what keeps `javascript:`
-    // and friends out of the generated markdown link destination.
-    if (!/^https?:\/\//i.test(target)) return match
+// Remote targets (e.g. the VOD URL image_generate returns) are served by the
+// remote host, and isLocalFilePath() below keeps the local download proxy off
+// them. Returns the markdown a single MEDIA: target becomes, or null to leave
+// the directive line untouched.
+function mediaDirectiveMarkdown(target: string): string | null {
+  // Remote targets are classified FIRST: a legitimate remote URL can contain
+  // `/workspace/` in its path (https://cdn.example.com/workspace/x.jpg), and
+  // testing for that substring first mistook it for a local profile-workspace
+  // artifact — the emitted href became `/workspace/x.jpg`, which neither
+  // renders nor opens.
+  if (/^https?:\/\//i.test(target)) {
     const name = fileNameFromPath(target.split('?')[0].split('#')[0]).replace(/[[\]]/g, '')
     // Angle-bracket destination: markdown-it then accepts everything except
     // `<`, `>` and whitespace verbatim, so parens/quotes in the URL survive
@@ -359,8 +348,50 @@ function preprocessMediaDirectives(content: string): string {
     // non-images; that link still opens. VOD has historically handed back http
     // URLs (mixed-content incident), so this tier is the defense for that case.
     const inlineImage = /^https:\/\//i.test(target) && isImageFile(name)
-    return `${leading}${inlineImage ? '!' : ''}[${name}](${href})`
-  })
+    return `${inlineImage ? '!' : ''}[${name}](${href})`
+  }
+
+  // Local targets: only workspace artifacts are linkable as cards. Non-remote,
+  // non-workspace targets (and `javascript:`-style schemes, which never reach
+  // the remote branch above) stay literal text.
+  const marker = '/workspace/'
+  const idx = target.indexOf(marker)
+  if (idx === -1) return null
+  const rel = target.slice(idx + marker.length).replace(/^\/+/, '')
+  if (!rel) return null
+  const name = rel.split('/').filter(Boolean).pop() || rel
+  const href = '/workspace/' + rel.split('/').map(encodeURIComponent).join('/')
+  return `[${name}](${href})`
+}
+
+function preprocessMediaDirectives(content: string): string {
+  if (!content || !content.includes('MEDIA:')) return content
+  const lines = content.split('\n')
+  // Fenced code blocks are skipped: a MEDIA: line inside one is source the
+  // assistant is quoting, not a produced artifact, so rewriting it corrupts the
+  // sample. Fence bookkeeping reuses markdownFenceRepair's CommonMark parser so
+  // the two agree on info strings, marker lengths and indentation, and this runs
+  // after repairNestedMarkdownFences (see renderedHtml) on already-normalized
+  // fences.
+  // ponytail: fenced blocks only — a 4-space indented code block still gets
+  // rewritten. Track indented blocks too if that ever shows up in real output.
+  let openFence: ReturnType<typeof parseFence> = null
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]
+    if (openFence) {
+      if (isClosingFence(line, openFence)) openFence = null
+      continue
+    }
+    const fence = parseFence(line)
+    if (fence) {
+      openFence = fence
+      continue
+    }
+    const directive = /^[ \t]*MEDIA:(.+)$/.exec(line)
+    if (!directive) continue
+    lines[i] = mediaDirectiveMarkdown(directive[1].trim()) ?? line
+  }
+  return lines.join('\n')
 }
 
 const renderedHtml = computed(() => {
