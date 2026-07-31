@@ -323,20 +323,34 @@ function hasExtension(path: string, extensions: Set<string>): boolean {
 // a clickable card (click -> previewByDisplayPath -> panel render). Done on the
 // CLIENT because the agent persists the raw MEDIA line and, for gateway-routed
 // profiles (e.g. Feishu users), the server never rewrites it on the serve path.
-// Only workspace artifacts are linkable (the file must be reachable under the
-// profile workspace for preview/download); other MEDIA targets are left as text.
+// Only workspace artifacts are linkable as cards (the file must be reachable
+// under the profile workspace for preview/download). http(s) targets (e.g. the
+// VOD URL image_generate returns) get an inline image / plain link instead —
+// they are served by the remote host, and isLocalFilePath() below keeps the
+// local download proxy off them. Anything else stays text.
 function preprocessMediaDirectives(content: string): string {
   if (!content || !content.includes('MEDIA:')) return content
   return content.replace(/(^|\n)[ \t]*MEDIA:([^\r\n]+)/g, (match, leading: string, rawTarget: string) => {
     const target = rawTarget.trim()
     const marker = '/workspace/'
     const idx = target.indexOf(marker)
-    if (idx === -1) return match
-    const rel = target.slice(idx + marker.length).replace(/^\/+/, '')
-    if (!rel) return match
-    const name = rel.split('/').filter(Boolean).pop() || rel
-    const href = '/workspace/' + rel.split('/').map(encodeURIComponent).join('/')
-    return `${leading}[${name}](${href})`
+    if (idx !== -1) {
+      const rel = target.slice(idx + marker.length).replace(/^\/+/, '')
+      if (!rel) return match
+      const name = rel.split('/').filter(Boolean).pop() || rel
+      const href = '/workspace/' + rel.split('/').map(encodeURIComponent).join('/')
+      return `${leading}[${name}](${href})`
+    }
+    // Remote targets only — the http(s) guard is also what keeps `javascript:`
+    // and friends out of the generated markdown link destination.
+    if (!/^https?:\/\//i.test(target)) return match
+    const name = fileNameFromPath(target.split('?')[0].split('#')[0]).replace(/[[\]]/g, '')
+    // Angle-bracket destination: markdown-it then accepts everything except
+    // `<`, `>` and whitespace verbatim, so parens/quotes in the URL survive
+    // unmangled and only those three need encoding (`%` is never touched, so an
+    // already-encoded URL is not double-encoded).
+    const href = `<${target.replace(/[\s<>]/g, encodeURIComponent)}>`
+    return `${leading}${isImageFile(name) ? '!' : ''}[${name}](${href})`
   })
 }
 

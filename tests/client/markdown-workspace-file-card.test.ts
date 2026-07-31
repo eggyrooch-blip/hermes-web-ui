@@ -323,6 +323,74 @@ describe('MarkdownRenderer workspace artifact file card', () => {
     expect(wrapper.find('.markdown-file-card').exists()).toBe(false)
   })
 
+  it('renders a remote MEDIA image directive as an inline image, not a blue link', () => {
+    const url = 'https://251000800.vod2.myqcloud.com/8bd1c0c1/aigcImageGenFile.jpg'
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: `图片已生成 ✅\n\nMEDIA:${url}` },
+    })
+
+    const img = wrapper.find('img')
+    expect(img.exists()).toBe(true)
+    // remote src must stay untouched — no /api/hermes/download proxy (VOD 404 lesson)
+    expect(img.attributes('src')).toBe(url)
+    expect(img.attributes('alt')).toBe('aigcImageGenFile.jpg')
+    expect(wrapper.text()).not.toContain('MEDIA:')
+  })
+
+  it('renders a remote MEDIA non-image directive as a clickable link only', () => {
+    const url = 'https://files.example.com/reports/report.pdf'
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: `MEDIA:${url}` },
+    })
+
+    expect(wrapper.find('img').exists()).toBe(false)
+    const link = wrapper.find('a')
+    expect(link.attributes('href')).toBe(url)
+    expect(link.text()).toBe('report.pdf')
+    expect(wrapper.find('.markdown-file-card').exists()).toBe(false)
+  })
+
+  it('keeps remote MEDIA URLs with parens and query strings intact', () => {
+    const url = 'https://cdn.example.com/a(1)/pic name.png?sign=a%2Fb&t=1'
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: `MEDIA:${url}` },
+    })
+
+    const img = wrapper.find('img')
+    expect(img.exists()).toBe(true)
+    // only the space is encoded; parens and the pre-encoded %2F survive as-is
+    expect(img.attributes('src')).toBe('https://cdn.example.com/a(1)/pic%20name.png?sign=a%2Fb&t=1')
+    expect(img.attributes('alt')).toBe('pic name.png')
+  })
+
+  it('does not turn a non-http MEDIA scheme into a link or image', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: 'MEDIA:javascript:alert(1)//evil.jpg' },
+    })
+
+    expect(wrapper.find('img').exists()).toBe(false)
+    expect(wrapper.html()).not.toMatch(/(href|src)="\s*javascript:/i)
+    expect(wrapper.text()).toContain('MEDIA:javascript:alert(1)')
+  })
+
+  it('escapes a hostile remote MEDIA URL instead of producing an executable sink', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'MEDIA:https://evil.example.com/a" onerror="alert(1)<script>x</script>.jpg',
+      },
+    })
+
+    expect(wrapper.html()).not.toContain('<script')
+    expect(wrapper.element.querySelector('[onerror]')).toBeNull()
+    const img = wrapper.find('img')
+    expect(img.exists()).toBe(true)
+    // the quote/space/angle brackets stay inside the src value, they cannot
+    // close the attribute and start a new one
+    expect(img.attributes('src')).toBe(
+      'https://evil.example.com/a%22%20onerror=%22alert(1)%3Cscript%3Ex%3C/script%3E.jpg',
+    )
+  })
+
   it('keeps the embedded-browser card click for run-changed HTML artifacts', async () => {
     previewByDisplayPath.mockClear()
     requestBrowserArtifact.mockClear()
