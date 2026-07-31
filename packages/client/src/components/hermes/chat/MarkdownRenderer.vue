@@ -325,9 +325,10 @@ function hasExtension(path: string, extensions: Set<string>): boolean {
 // profiles (e.g. Feishu users), the server never rewrites it on the serve path.
 // Only workspace artifacts are linkable as cards (the file must be reachable
 // under the profile workspace for preview/download). http(s) targets (e.g. the
-// VOD URL image_generate returns) get an inline image / plain link instead —
-// they are served by the remote host, and isLocalFilePath() below keeps the
-// local download proxy off them. Anything else stays text.
+// VOD URL image_generate returns) become an inline image when they are an https
+// image, and a plain link otherwise — they are served by the remote host, and
+// isLocalFilePath() below keeps the local download proxy off them. Anything
+// else stays text.
 function preprocessMediaDirectives(content: string): string {
   if (!content || !content.includes('MEDIA:')) return content
   return content.replace(/(^|\n)[ \t]*MEDIA:([^\r\n]+)/g, (match, leading: string, rawTarget: string) => {
@@ -350,7 +351,15 @@ function preprocessMediaDirectives(content: string): string {
     // unmangled and only those three need encoding (`%` is never touched, so an
     // already-encoded URL is not double-encoded).
     const href = `<${target.replace(/[\s<>]/g, encodeURIComponent)}>`
-    return `${leading}${isImageFile(name) ? '!' : ''}[${name}](${href})`
+    // Inline only https images. The server's CSP img-src allowlist
+    // (packages/server/src/security.ts: "img-src 'self' data: blob: https:")
+    // has no http:, so a cross-origin http image is blocked by the browser and
+    // renders as a broken-image icon — worse than the plain text it replaced.
+    // http images therefore degrade to the same clickable-link tier as
+    // non-images; that link still opens. VOD has historically handed back http
+    // URLs (mixed-content incident), so this tier is the defense for that case.
+    const inlineImage = /^https:\/\//i.test(target) && isImageFile(name)
+    return `${leading}${inlineImage ? '!' : ''}[${name}](${href})`
   })
 }
 

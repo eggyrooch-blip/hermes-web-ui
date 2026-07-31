@@ -363,6 +363,32 @@ describe('MarkdownRenderer workspace artifact file card', () => {
     expect(img.attributes('alt')).toBe('pic name.png')
   })
 
+  it('degrades a remote http image to a link, since CSP img-src blocks http', () => {
+    // security.ts sends "img-src 'self' data: blob: https:" — an inlined
+    // cross-origin http image is blocked and shows a broken-image icon, so it
+    // must stay a link (live-browser finding: naturalWidth=0).
+    const url = 'http://127.0.0.1:8649/logo.png'
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: `MEDIA:${url}` },
+    })
+
+    expect(wrapper.find('img').exists()).toBe(false)
+    const link = wrapper.find('a')
+    expect(link.attributes('href')).toBe(url)
+    expect(link.text()).toBe('logo.png')
+  })
+
+  it('still inlines a remote https image (http downgrade must not catch https)', () => {
+    const url = 'https://cdn.example.com/logo.png'
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: `MEDIA:${url}` },
+    })
+
+    const img = wrapper.find('img')
+    expect(img.exists()).toBe(true)
+    expect(img.attributes('src')).toBe(url)
+  })
+
   it('does not turn a non-http MEDIA scheme into a link or image', () => {
     const wrapper = mount(MarkdownRenderer, {
       props: { content: 'MEDIA:javascript:alert(1)//evil.jpg' },
