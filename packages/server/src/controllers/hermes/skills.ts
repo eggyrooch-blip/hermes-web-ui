@@ -1,6 +1,6 @@
-import { lstat, mkdir, readdir, readFile, rm, stat, writeFile, cp } from 'fs/promises'
+import { lstat, mkdir, readdir, readFile, readlink, rm, stat, writeFile, cp } from 'fs/promises'
 import { homedir, tmpdir } from 'os'
-import { dirname, join, relative, resolve } from 'path'
+import { basename, dirname, join, relative, resolve } from 'path'
 import { createHash, randomBytes } from 'crypto'
 import AdmZip from 'adm-zip'
 import {
@@ -8,8 +8,8 @@ import {
   safeReadFile, extractDescription, listFilesRecursive,
 } from '../../services/config-helpers'
 import type { SkillSource } from '../../services/config-helpers'
-import { isPathWithin } from '../../services/hermes/hermes-path'
-import { getActiveProfileName, getProfileDir } from '../../services/hermes/hermes-profile'
+import { isPathWithin, nearestExistingRealPath, realPathOrResolved } from '../../services/hermes/hermes-path'
+import { getActiveProfileName, getHermesBaseDir, getProfileDir } from '../../services/hermes/hermes-profile'
 import { getRequestProfile, getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 import { getSkillUsageStatsFromDb } from '../../db/hermes/sessions-db'
 import { safeFileStore } from '../../services/safe-file-store'
@@ -31,6 +31,29 @@ function requestProfileDir(ctx: any): string {
 
 function requestSkillsDir(ctx: any): string {
   return join(requestProfileDir(ctx), 'skills')
+}
+
+// `getProfileDir()` silently falls back to the SHARED hermes root when the
+// profile directory does not exist (hermes-profile.ts). For skills that is a
+// privilege escalation: the caller's skills dir becomes <shared>/skills — the
+// CENTRAL repo that thousands of profiles symlink into — so an unprovisioned
+// profile could list, edit, delete or import into skills shared by everyone.
+// Production has active routing entries whose profile dir is absent, so this is
+// reachable. Detect the fallback here and refuse, rather than changing
+// getProfileDir() itself (59 call sites, several of which legitimately write
+// into the shared root for the 'default' profile).
+function isUnprovisionedProfile(ctx: any): boolean {
+  const name = requestedProfile(ctx)
+  if (!name || name === 'default') return false
+  return resolve(requestProfileDir(ctx)) === resolve(getHermesBaseDir())
+}
+
+/** Writes 403 and returns true when the request's profile was never provisioned. */
+function refuseUnprovisionedProfile(ctx: any): boolean {
+  if (!isUnprovisionedProfile(ctx)) return false
+  ctx.status = 403
+  ctx.body = { error: 'Profile is not provisioned' }
+  return true
 }
 
 function expandConfiguredPath(value: string): string {
@@ -110,6 +133,200 @@ async function resolveExternalSkillsDirs(config: Record<string, any>, localSkill
   }
 
   return dirs
+}
+
+// ── Read-path containment (fork) ──────────────────────────────────────────────
+// A profile's skills dir legitimately contains SYMLINKS into shared roots: in
+// production ~110k profile skill entries are symlinks to <shared>/skills,
+// <shared>/skill-releases and <shared>/_managed (managed/org-distributed
+// installs). `findSkillDirByName` follows them on purpose — see the comment
+// there — otherwise every managed skill 404s when clicked.
+//
+// That makes a lexical `isPathWithin` check insufficient on READ paths: the
+// string <profile>/skills/<link>/... always sits under the skills dir, while
+// the OS follows the link to wherever it points. A tenant whose agent creates
+// `skills/x -> <other profile>` (the sandbox binds PROFILE_HOME read-write)
+// can then read the other tenant's files through the WebUI process, which does
+// NOT run inside the sandbox. The write paths already defend against this via
+// `assertEditablePathHasNoSymlinks`; the read paths did not.
+//
+// Fix: resolve the real path and require it to land inside an allow-listed
+// root. Same shape as the multitenancy sandbox's `allowed_roots`
+// (hermes_multitenancy/agent_real/_core.py), so legitimate managed installs
+// keep working byte-for-byte while out-of-bounds links are refused.
+// Review round 1 found that an allow-list alone is NOT enough, because one of
+// its entries is tenant-controlled: `skills.external_dirs` lives in the
+// caller's OWN <profile>/config.yaml, which the sandbox binds read-write
+// (bwrap-default.args: `--bind ${PROFILE_HOME}`). A tenant could point
+// external_dirs at another profile and thereby allow-list it — two independent
+// reviewers reproduced a 200 with the victim's plaintext .env.
+//
+// So the allow-list is paired with a DENY rule that wins unconditionally:
+// anything resolving under <shared>/profiles that is not under the caller's own
+// profile is refused no matter which root matched. That single predicate also
+// closes the case where <profile>/skills is ITSELF a symlink pointing at
+// another profile (prod: 0 profiles have a symlinked skills dir, 2038 have a
+// real one, so this costs nothing).
+async function allowedSkillRealRoots(
+  ctx: any,
+  config: Record<string, any>,
+  profileSkillsDir: string,
+): Promise<string[]> {
+  const sharedBase = getHermesBaseDir()
+  // NOTE: the caller's own skills dir is deliberately NOT here. It is not a
+  // trust destination — staying inside the profile is handled separately, and
+  // listing it would let a tenant chain inside its own directory and out again
+  // (round-4 review finding).
+  const candidates = [
+    join(sharedBase, 'skills'),
+    join(sharedBase, 'skill-releases'),
+    join(sharedBase, '_managed'),
+    // external_dirs is admin configuration, not tenant configuration. On the
+    // chat plane the tenant cannot even PUT it (request-context forbids writes
+    // to /api/hermes/skills*), so honouring it there only creates the hole.
+    ...(isChatPlaneRequest(ctx) ? [] : await resolveExternalSkillsDirs(config, profileSkillsDir)),
+  ]
+  return Promise.all(candidates.map(realPathOrResolved))
+}
+
+/**
+ * True when `target` is readable for this request.
+ *
+ * Two independent properties, because they have different owners:
+ *
+ * 1. DENY (checked on the FULLY resolved path): the target must not land inside
+ *    another tenant's profile. This is the cross-tenant isolation property and
+ *    it outranks everything else.
+ *
+ * 2. ALLOW (checked on the TENANT-CONTROLLED hop): the tenant only controls the
+ *    entry it can create under its own <profile>/skills — the sandbox binds
+ *    PROFILE_HOME read-write and nothing above it. So the hop that must land in
+ *    a trusted root is that first hop, not the end of the chain.
+ *
+ *    Chaining beyond the shared root is the platform's business: production
+ *    installs really are two hops
+ *    (<profile>/skills/x -> <shared>/skills/x -> ~/.agents/skills/x), and
+ *    resolving to the end would refuse them. Verified in a browser against a
+ *    real profile — an earlier fully-resolved allow-check 403'd every managed
+ *    lark-* skill.
+ */
+async function isWithinAllowedSkillRoots(
+  target: string,
+  sharedRoots: string[],
+  ownProfileRealDir: string,
+  profilesRealRoot: string,
+): Promise<boolean> {
+  // Resolve via the deepest EXISTING ancestor: a not-yet-existing leaf would
+  // otherwise fall back to a purely lexical path, and on platforms where a
+  // prefix is itself a symlink (macOS /var -> /private/var) that no longer
+  // compares against the realpath'd roots — every containment check would fail
+  // closed and refuse legitimate reads.
+  const realTarget = await nearestExistingRealPath(target)
+  // 1. Deny — outranks everything.
+  if (isPathWithin(realTarget, profilesRealRoot) && !isPathWithin(realTarget, ownProfileRealDir)) return false
+  // 2. Never left the caller's own profile → nothing to authorise.
+  if (isPathWithin(realTarget, ownProfileRealDir)) return true
+  // 3. Lands directly inside a shared root — the common case for skills read
+  //    straight out of <shared>/skills or a configured external_dir, where no
+  //    symlink is involved at all. (Round-5 review: without this, direct
+  //    external_dirs reads 403'd because there was no crossing hop to inspect.)
+  if (sharedRoots.some(root => isPathWithin(realTarget, root))) return true
+  // 4. Resolves outside every root — only legal as a chained platform install.
+  //    The hop that CROSSES out of the profile is the one the tenant is
+  //    accountable for, so that is what must land in a shared root.
+  const crossing = await boundaryCrossingTarget(target, ownProfileRealDir)
+  return crossing ? sharedRoots.some(root => isPathWithin(crossing, root)) : false
+}
+
+/**
+ * Follow the symlink chain and return the first target that leaves
+ * `ownProfileRealDir`.
+ *
+ * Round-4 review found that returning merely the FIRST hop is exploitable: the
+ * tenant can chain inside its own directory —
+ *   <profile>/skills/a -> <profile>/skills/b -> /
+ * — and the first hop (`skills/b`) sits in the tenant's own skills dir, which
+ * would be "trusted". Staying inside the profile is not a trust decision at all,
+ * so those hops are followed through; only the hop that actually crosses out of
+ * the profile is authorised.
+ */
+async function boundaryCrossingTarget(target: string, ownProfileRealDir: string): Promise<string | null> {
+  let current = resolve(target)
+  for (let hops = 0; hops < 40; hops++) {
+    const linkPath = await nearestSymlinkAncestor(current)
+    if (!linkPath) return null
+    const raw = await readlink(linkPath)
+    const linked = resolve(raw.startsWith('/') ? raw : join(dirname(linkPath), raw))
+    // Normalise the CONTAINING directory only (so platform prefixes like macOS
+    // /var -> /private/var line up with the realpath'd roots) — resolving the
+    // final component would follow the link and defeat the check.
+    const normalised = join(await realPathOrResolved(dirname(linked)), basename(linked))
+    if (!isPathWithin(normalised, ownProfileRealDir)) return normalised
+    // Still inside the profile — keep following, carrying any trailing segments.
+    const rest = relative(linkPath, current)
+    current = rest && !rest.startsWith('..') ? join(normalised, rest) : normalised
+  }
+  return null
+}
+
+/** Deepest ancestor of `path` (inclusive) that is itself a symlink. */
+async function nearestSymlinkAncestor(path: string): Promise<string | null> {
+  let current = resolve(path)
+  for (let depth = 0; depth < 64; depth++) {
+    const info = await lstatOrNull(current)
+    if (info?.isSymbolicLink()) return current
+    const parent = dirname(current)
+    if (parent === current) return null
+    current = parent
+  }
+  return null
+}
+
+/** Resolve the two anchors the deny rule needs. */
+async function skillReadAnchors(ctx: any): Promise<{ own: string; profilesRoot: string }> {
+  return {
+    own: await realPathOrResolved(requestProfileDir(ctx)),
+    profilesRoot: await realPathOrResolved(join(getHermesBaseDir(), 'profiles')),
+  }
+}
+
+// Cross-model review round 2 (codex) found that the allow-list still contained a
+// tenant-replaceable entry: `profileSkillsDir` is allow-listed by its REAL path,
+// so a tenant whose own `<profile>/skills` is a symlink to `/etc` promotes
+// `/etc` to an allowed root. The deny rule does not help — it only covers
+// <shared>/profiles, and /etc is not under it.
+//
+// Rather than enumerate forbidden targets, refuse the premise: neither the
+// caller's skills directory nor the profile directory holding it may be a
+// symlink. Either one being a link lets its target become an allow-list root.
+//
+// Review round 2 correctly rejected a version that only lstat'd the skills dir:
+// lstat inspects the final component only, so a symlinked PROFILE directory with
+// a real `skills` child achieved the same promotion. Both levels are checked now.
+//
+// THREAT MODEL — why two levels and not the whole ancestor chain: the sandbox
+// binds only ${PROFILE_HOME} read-write, and mounts <shared>/profiles as an empty
+// --dir, so a tenant can create symlinks *inside* its own profile but cannot
+// replace its own profile entry, nor anything above it. Components above the
+// profile dir are therefore operator-controlled, not tenant-controlled, and are
+// out of scope here (an operator who can symlink <shared>/profiles already has
+// direct filesystem access to every tenant).
+//
+// Pointing at another profile is a different case and stays with the deny rule in
+// isWithinAllowedSkillRoots(). Production has 0 symlinked skills dirs and 0
+// symlinked profile dirs against 2038 real ones, so this rejects nothing that
+// exists today.
+async function refuseSymlinkedSkillsPath(ctx: any): Promise<boolean> {
+  const profileDir = requestProfileDir(ctx)
+  for (const candidate of [join(profileDir, 'skills'), profileDir]) {
+    const info = await lstatOrNull(candidate)
+    if (info?.isSymbolicLink()) {
+      ctx.status = 403
+      ctx.body = { error: 'Access denied' }
+      return true
+    }
+  }
+  return false
 }
 
 /** Read bundled manifest as a name→hash map from ~/.hermes/skills/.bundled_manifest */
@@ -485,6 +702,8 @@ function mergeExternalCategories(categories: any[], externalCategories: any[]): 
 }
 
 export async function list(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
   const chatPlane = isChatPlaneRequest(ctx)
   const skillsDir = requestSkillsDir(ctx)
   try {
@@ -506,7 +725,13 @@ export async function list(ctx: any) {
     for (const entry of await describeRawExternalDirs(config)) {
       if (!rawByResolved.has(entry.expanded)) rawByResolved.set(entry.expanded, entry.raw)
     }
-    for (const externalDir of await resolveExternalSkillsDirs(config, skillsDir)) {
+    // external_dirs is admin configuration living in the caller's OWN
+    // <profile>/config.yaml, which the sandbox binds read-write. Honouring it on
+    // the chat plane lets a tenant allow-list another profile. The chat plane
+    // cannot even PUT this setting (request-context forbids writes here), so
+    // suppressing it costs nothing. Same reasoning as allowedSkillRealRoots().
+    const scannableExternalDirs = chatPlane ? [] : await resolveExternalSkillsDirs(config, skillsDir)
+    for (const externalDir of scannableExternalDirs) {
       const sourcePath = rawByResolved.get(externalDir) || externalDir
       const externalCategories = await scanExternalSkillsDir(externalDir, disabledList, usageStats, sourcePath)
       categories = mergeExternalCategories(categories, externalCategories)
@@ -563,6 +788,8 @@ const MAX_EXTERNAL_DIR_LEN = 2048
 
 /** GET /api/hermes/skills/external-dirs — return the raw list with existence flags */
 export async function listExternalDirs(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
   try {
     const config = await readConfigYamlForProfile(requestedProfile(ctx))
     ctx.body = { dirs: await describeRawExternalDirs(config) }
@@ -574,6 +801,8 @@ export async function listExternalDirs(ctx: any) {
 
 /** PUT /api/hermes/skills/external-dirs — replace the list verbatim. */
 export async function updateExternalDirs(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
   const body = (ctx.request.body || {}) as { dirs?: unknown }
   if (!Array.isArray(body.dirs)) {
     ctx.status = 400
@@ -631,6 +860,8 @@ export async function updateExternalDirs(ctx: any) {
 }
 
 export async function toggle(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
   const { name, enabled } = ctx.request.body as { name?: string; enabled?: boolean }
   if (!name || typeof enabled !== 'boolean') {
     ctx.status = 400
@@ -655,6 +886,8 @@ export async function toggle(ctx: any) {
 }
 
 export async function listFiles(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
   const { category, skill } = ctx.params
   const profileSkillsDir = requestSkillsDir(ctx)
   try {
@@ -663,6 +896,15 @@ export async function listFiles(ctx: any) {
     if (!skillDir) {
       ctx.status = 404
       ctx.body = { error: 'Skill not found' }
+      return
+    }
+    // Real-path containment: a symlink under the skills dir must still resolve
+    // into an allow-listed root (own profile / shared installs / external dirs).
+    const allowedRoots = await allowedSkillRealRoots(ctx, config, profileSkillsDir)
+    const anchors = await skillReadAnchors(ctx)
+    if (!(await isWithinAllowedSkillRoots(skillDir, allowedRoots, anchors.own, anchors.profilesRoot))) {
+      ctx.status = 403
+      ctx.body = { error: 'Access denied' }
       return
     }
     const allFiles = await listFilesRecursive(skillDir, '')
@@ -675,6 +917,8 @@ export async function listFiles(ctx: any) {
 }
 
 export async function readFile_(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
   const filePath = (ctx.params as any).path
   const profileSkillsDir = requestSkillsDir(ctx)
   // Handle 'misc' category: real skill dir is skills/<skill>, not skills/misc/<skill>
@@ -683,7 +927,12 @@ export async function readFile_(ctx: any) {
     realPath = filePath.slice(5)
   }
   const fullPath = resolve(join(profileSkillsDir, realPath))
-  if (!isPathWithin(fullPath, profileSkillsDir)) {
+  const config = await readConfigYamlForProfile(requestedProfile(ctx))
+  const allowedRoots = await allowedSkillRealRoots(ctx, config, profileSkillsDir)
+  const anchors = await skillReadAnchors(ctx)
+  // Lexical containment first (cheap, rejects `..`), then REAL-path containment
+  // so a symlink under the skills dir cannot reach outside the allow-listed roots.
+  if (!isPathWithin(fullPath, profileSkillsDir) || !(await isWithinAllowedSkillRoots(fullPath, allowedRoots, anchors.own, anchors.profilesRoot))) {
     ctx.status = 403
     ctx.body = { error: 'Access denied' }
     return
@@ -697,11 +946,10 @@ export async function readFile_(ctx: any) {
       const category = parts[0]
       const skillName = parts[1]
       const restPath = parts.slice(2).join('/')
-      const config = await readConfigYamlForProfile(requestedProfile(ctx))
       const skillDir = await resolveSkillDirFromConfig(config, profileSkillsDir, category, skillName)
       if (skillDir) {
         const resolvedPath = resolve(join(skillDir, restPath))
-        if (isPathWithin(resolvedPath, skillDir)) {
+        if (isPathWithin(resolvedPath, skillDir) && await isWithinAllowedSkillRoots(resolvedPath, allowedRoots, anchors.own, anchors.profilesRoot)) {
           const nestedContent = await safeReadFile(resolvedPath)
           if (nestedContent !== null) {
             ctx.body = { content: nestedContent }
@@ -803,6 +1051,8 @@ async function assertEditablePathHasNoSymlinks(rootDir: string, relativePath: st
 }
 
 export async function updateFile_(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
   const body = (ctx.request.body || {}) as {
     category?: unknown
     skill?: unknown
@@ -911,6 +1161,8 @@ async function updatePinnedSkill(skillsDir: string, name: string, pinned: boolea
 }
 
 export async function pin_(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
   const { name, pinned } = ctx.request.body as { name?: string; pinned?: boolean }
   if (!name || typeof pinned !== 'boolean') {
     ctx.status = 400
@@ -980,6 +1232,8 @@ function parsePart(part: Buffer): ParsedPart | null {
 }
 
 export async function deleteSkill(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
   const category = String((ctx.params as any)?.category || '')
   const name = String((ctx.params as any)?.skill || '')
   if (!isValidSkillName(category) || !isValidSkillName(name)) {
@@ -1089,6 +1343,8 @@ async function pathExists(p: string): Promise<boolean> {
 }
 
 export async function importSkill(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
   const parsed = await readMultipartBody(ctx)
   if ('error' in parsed) {
     ctx.status = parsed.status

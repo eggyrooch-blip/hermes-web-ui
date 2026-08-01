@@ -1,0 +1,62 @@
+stages:
+  - policy
+  - test
+  - leak
+
+default:
+  tags:
+    - hermes
+
+variables:
+  GIT_DEPTH: "0"
+  NPM_CONFIG_CACHE: "$CI_PROJECT_DIR/.npm"
+
+cache:
+  key:
+    files:
+      - package-lock.json
+  paths:
+    - .npm/
+
+policy:
+  stage: policy
+  image:
+    name: docker.io/alpine/git:v2.45.2
+    entrypoint: [""]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - |
+      # Bootstrap is allowed once because target main has no policy yet. After merge,
+      # GitLab reads CI from protected main and this job rejects attempts to weaken it.
+      if git cat-file -e "$CI_MERGE_REQUEST_DIFF_BASE_SHA:.gitlab-ci.yml" 2>/dev/null; then
+        changed=$(git diff --name-only "$CI_MERGE_REQUEST_DIFF_BASE_SHA" "$CI_COMMIT_SHA" -- \
+          .gitlab-ci.yml .gitleaks.toml .gitleaksignore)
+        test -z "$changed" || { echo "Protected CI policy changed:"; echo "$changed"; exit 1; }
+      fi
+
+test:
+  stage: test
+  image: docker.io/library/node:24-bookworm
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+  before_script:
+    - npm ci --ignore-scripts --no-audit --no-fund
+    - npm rebuild node-pty
+  script:
+    - npm run harness:check
+    # ponytail: cap workers below the 8-CPU runner quota; raise only with measured headroom.
+    - npm test -- --maxWorkers=4
+    - npm run build
+
+leak:
+  stage: leak
+  image:
+    name: docker.io/zricethezav/gitleaks:v8.30.0
+    entrypoint: [""]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - gitleaks git . --config .gitleaks.toml --no-banner --redact=100 --verbose

@@ -1,0 +1,4 @@
+title = "hermes-web-ui gitleaks config"
+
+[extend]
+useDefault = true

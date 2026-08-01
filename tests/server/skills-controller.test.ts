@@ -7,6 +7,7 @@ import { Readable } from 'node:stream'
 const mockGetSkillUsageStatsFromDb = vi.hoisted(() => vi.fn())
 const mockGetActiveProfileName = vi.hoisted(() => vi.fn())
 const mockGetProfileDir = vi.hoisted(() => vi.fn())
+const mockGetHermesBaseDir = vi.hoisted(() => vi.fn())
 const mockUpdateConfigYamlForProfile = vi.hoisted(() => vi.fn())
 const mockReadConfigYamlForProfile = vi.hoisted(() => vi.fn())
 const mockSafeReadFile = vi.hoisted(() => vi.fn())
@@ -20,6 +21,7 @@ vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
   getActiveProfileName: mockGetActiveProfileName,
   getProfileDir: mockGetProfileDir,
+  getHermesBaseDir: mockGetHermesBaseDir,
 }))
 
 vi.mock('../../packages/server/src/services/config-helpers', () => ({
@@ -59,6 +61,7 @@ describe('skills controller', () => {
     vi.clearAllMocks()
     mockGetActiveProfileName.mockReturnValue('default')
     mockGetProfileDir.mockImplementation((profile: string) => `/tmp/hermes-${profile}`)
+    mockGetHermesBaseDir.mockReturnValue('/tmp/hermes-shared-root')
     mockReadConfigYamlForProfile.mockResolvedValue({})
     mockSafeReadFile.mockImplementation(async (path: string) => {
       try {
@@ -261,7 +264,9 @@ describe('skills controller', () => {
     const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-files-symlink-'))
     const profileDir = join(root, 'research')
     const skillsRoot = join(profileDir, 'skills')
-    const central = join(root, 'central', 'nested-linked')
+    // Mirror production: managed installs symlink into the SHARED skills root
+    // (<shared>/skills), which is on the read-path allow-list.
+    const central = join(root, 'skills', 'nested-linked')
     await mkdir(central, { recursive: true })
     await mkdir(join(skillsRoot, 'tools'), { recursive: true })
     await writeFile(join(central, 'SKILL.md'), '# Nested Linked\n', 'utf-8')
@@ -269,6 +274,7 @@ describe('skills controller', () => {
     // shows it, so its files endpoint must resolve it (findSkillDirByName follows symlinks).
     await symlink(central, join(skillsRoot, 'tools', 'nested-linked'))
     mockGetProfileDir.mockReturnValue(profileDir)
+    mockGetHermesBaseDir.mockReturnValue(root)
     mockReadConfigYamlForProfile.mockResolvedValue({})
     mockListFilesRecursive.mockResolvedValue([{ path: 'SKILL.md' }, { path: 'guide.md' }])
 
@@ -285,6 +291,424 @@ describe('skills controller', () => {
 
       expect(ctx.status).not.toBe(404)
       expect(ctx.body.files).toEqual([{ path: 'guide.md' }])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses skills access for an UNPROVISIONED profile instead of falling back to the shared root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-unprovisioned-'))
+    // Central shared repo exists and holds skills that many profiles symlink to.
+    await mkdir(join(root, 'skills', 'lark-doc'), { recursive: true })
+    await writeFile(join(root, 'skills', 'lark-doc', 'SKILL.md'), '# CENTRAL\n', 'utf-8')
+    // The caller's profile dir does NOT exist → getProfileDir() falls back to root.
+    mockGetProfileDir.mockReturnValue(root)
+    mockGetHermesBaseDir.mockReturnValue(root)
+
+    const ctx: any = {
+      params: { path: 'lark-doc/SKILL.md' },
+      state: { profile: { name: 'ghost-profile' } },
+      status: 200,
+      body: null,
+    }
+
+    try {
+      const { readFile_, deleteSkill } = await loadController()
+      await readFile_(ctx)
+      expect(ctx.status).toBe(403)
+      expect(JSON.stringify(ctx.body)).not.toContain('CENTRAL')
+
+      const delCtx: any = {
+        params: { category: 'misc', skill: 'lark-doc' },
+        state: { profile: { name: 'ghost-profile' } },
+        status: 200,
+        body: null,
+      }
+      await deleteSkill(delCtx)
+      expect(delCtx.status).toBe(403)
+      // Central repo untouched
+      expect(await readFile(join(root, 'skills', 'lark-doc', 'SKILL.md'), 'utf-8')).toContain('CENTRAL')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  // ── Read-path containment (fork) ────────────────────────────────────────────
+  // A tenant's agent can create symlinks under its own skills dir (the sandbox
+  // binds PROFILE_HOME read-write). The WebUI process does NOT run inside the
+  // sandbox, so a lexical containment check would let it follow such a link into
+  // another tenant's profile. Reads must resolve the REAL path and require it to
+  // land in an allow-listed root.
+
+  // Review round 1 blockers: the allow-list alone was bypassable because one of
+  // its entries (external_dirs) is tenant-controlled, and because the skills dir
+  // itself can be a symlink. A deny rule now outranks the allow-list.
+
+  it('R4-BLOCKER: chaining INSIDE the own skills dir and out to / is refused', async () => {
+    // Round-4 review finding: <profile>/skills/a -> <profile>/skills/b -> /
+    // The first hop stays in the tenant's own skills dir, so a naive first-hop
+    // check treats it as trusted and GET a/etc/passwd reads arbitrary host files.
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-selfchain-'))
+    const outside = join(root, 'outside')
+    const profileSkills = join(root, 'profiles', 'attacker', 'skills')
+    await mkdir(join(outside, 'etc'), { recursive: true })
+    await mkdir(profileSkills, { recursive: true })
+    await writeFile(join(outside, 'etc', 'passwd'), 'HOST-PASSWD-XYZ\n', 'utf-8')
+    await symlink(outside, join(profileSkills, 'b'))              // hop 2: escapes
+    await symlink(join(profileSkills, 'b'), join(profileSkills, 'a')) // hop 1: stays inside
+    mockGetProfileDir.mockReturnValue(join(root, 'profiles', 'attacker'))
+    mockGetHermesBaseDir.mockReturnValue(root)
+
+    const ctx: any = {
+      params: { path: 'a/etc/passwd' },
+      state: { profile: { name: 'attacker' } },
+      status: 200,
+      body: null,
+    }
+
+    try {
+      const { readFile_ } = await loadController()
+      await readFile_(ctx)
+
+      expect(ctx.status).toBe(403)
+      expect(JSON.stringify(ctx.body)).not.toContain('HOST-PASSWD')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('R3: a TWO-HOP managed chain (<profile>/skills/x -> <shared>/skills/x -> ~/.agents/skills/x) still reads', async () => {
+    // Real production shape, found by browser verification: the central repo entry
+    // is itself a symlink into another platform-owned root. Resolving to the END of
+    // the chain refuses it; only the tenant-controlled FIRST hop must be trusted.
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-twohop-'))
+    const agentsRoot = join(root, 'agents-skills', 'lark-doc')
+    const sharedSkills = join(root, 'skills')
+    const profileSkills = join(root, 'profiles', 'research', 'skills')
+    await mkdir(agentsRoot, { recursive: true })
+    await mkdir(sharedSkills, { recursive: true })
+    await mkdir(profileSkills, { recursive: true })
+    await writeFile(join(agentsRoot, 'SKILL.md'), '# Lark Doc\nchained managed skill\n', 'utf-8')
+    await symlink(agentsRoot, join(sharedSkills, 'lark-doc'))           // hop 2: platform-owned
+    await symlink(join(sharedSkills, 'lark-doc'), join(profileSkills, 'lark-doc')) // hop 1: tenant-visible
+    mockGetProfileDir.mockReturnValue(join(root, 'profiles', 'research'))
+    mockGetHermesBaseDir.mockReturnValue(root)
+
+    const ctx: any = {
+      params: { path: 'lark-doc/SKILL.md' },
+      state: { profile: { name: 'research' } },
+      status: 200,
+      body: null,
+    }
+
+    try {
+      const { readFile_ } = await loadController()
+      await readFile_(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body.content).toContain('chained managed skill')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('R3-deny: a two-hop chain whose END lands in another profile is still refused', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-twohop-deny-'))
+    const victimSkills = join(root, 'profiles', 'victim', 'skills', 'private')
+    const sharedSkills = join(root, 'skills')
+    const attackerSkills = join(root, 'profiles', 'attacker', 'skills')
+    await mkdir(victimSkills, { recursive: true })
+    await mkdir(sharedSkills, { recursive: true })
+    await mkdir(attackerSkills, { recursive: true })
+    await writeFile(join(victimSkills, 'SKILL.md'), 'VICTIM-TOPSECRET\n', 'utf-8')
+    // hop 2 points back INTO a profile — the deny rule must still win even though
+    // the tenant's first hop lands in the trusted shared root.
+    await symlink(victimSkills, join(sharedSkills, 'trojan'))
+    await symlink(join(sharedSkills, 'trojan'), join(attackerSkills, 'trojan'))
+    mockGetProfileDir.mockReturnValue(join(root, 'profiles', 'attacker'))
+    mockGetHermesBaseDir.mockReturnValue(root)
+
+    const ctx: any = {
+      params: { path: 'trojan/SKILL.md' },
+      state: { profile: { name: 'attacker' } },
+      status: 200,
+      body: null,
+    }
+
+    try {
+      const { readFile_ } = await loadController()
+      await readFile_(ctx)
+
+      expect(ctx.status).toBe(403)
+      expect(JSON.stringify(ctx.body)).not.toContain('VICTIM-TOPSECRET')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('R2-1b: a symlinked PROFILE dir (real skills child) is refused — intermediate component', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-profiledir-symlink-'))
+    const fakeEtc = join(root, 'etc')
+    await mkdir(join(fakeEtc, 'skills'), { recursive: true })
+    await mkdir(join(root, 'profiles'), { recursive: true })
+    await writeFile(join(fakeEtc, 'skills', 'SKILL.md'), 'ROOT-PASSWD-XYZ\n', 'utf-8')
+    // The PROFILE dir is the symlink; `skills` under it is a real directory, so a
+    // final-component lstat check would wave this through.
+    const attackerDir = join(root, 'profiles', 'attacker')
+    await symlink(fakeEtc, attackerDir)
+    mockGetProfileDir.mockReturnValue(attackerDir)
+    mockGetHermesBaseDir.mockReturnValue(root)
+
+    const ctx: any = {
+      params: { path: 'SKILL.md' },
+      state: { profile: { name: 'attacker' } },
+      status: 200,
+      body: null,
+    }
+
+    try {
+      const { readFile_ } = await loadController()
+      await readFile_(ctx)
+
+      expect(ctx.status).toBe(403)
+      expect(JSON.stringify(ctx.body)).not.toContain('ROOT-PASSWD')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('R2-1: a skills dir symlinked OUTSIDE profiles (e.g. /etc) is refused, not allow-listed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-skillsdir-etc-'))
+    // Stand-in for /etc: a system dir that is NOT under <shared>/profiles, so the
+    // deny rule alone would not catch it.
+    const fakeEtc = join(root, 'etc')
+    const attackerDir = join(root, 'profiles', 'attacker')
+    await mkdir(fakeEtc, { recursive: true })
+    await mkdir(attackerDir, { recursive: true })
+    await writeFile(join(fakeEtc, 'SKILL.md'), 'ROOT-PASSWD-XYZ\n', 'utf-8')
+    await symlink(fakeEtc, join(attackerDir, 'skills'))
+    mockGetProfileDir.mockReturnValue(attackerDir)
+    mockGetHermesBaseDir.mockReturnValue(root)
+
+    const ctx: any = {
+      params: { path: 'SKILL.md' },
+      state: { profile: { name: 'attacker' } },
+      status: 200,
+      body: null,
+    }
+
+    try {
+      const { readFile_ } = await loadController()
+      await readFile_(ctx)
+
+      expect(ctx.status).toBe(403)
+      expect(JSON.stringify(ctx.body)).not.toContain('ROOT-PASSWD')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('R2-3: listExternalDirs refuses an unprovisioned profile (no shared-root fallback)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-extdirs-ghost-'))
+    await mkdir(join(root, 'skills'), { recursive: true })
+    // Ghost profile → getProfileDir falls back to the shared root.
+    mockGetProfileDir.mockReturnValue(root)
+    mockGetHermesBaseDir.mockReturnValue(root)
+    mockReadConfigYamlForProfile.mockResolvedValue({ skills: { external_dirs: ['/srv/team-skills'] } })
+
+    const ctx: any = { state: { profile: { name: 'ghost-profile' } }, status: 200, body: null }
+
+    try {
+      const { listExternalDirs } = await loadController()
+      await listExternalDirs(ctx)
+
+      expect(ctx.status).toBe(403)
+      expect(JSON.stringify(ctx.body)).not.toContain('team-skills')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('BLOCKER-1: external_dirs pointing at another profile does NOT allow-list it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-extdir-escape-'))
+    const victimSkills = join(root, 'profiles', 'victim', 'skills', 'secret-skill')
+    const attackerDir = join(root, 'profiles', 'attacker')
+    await mkdir(victimSkills, { recursive: true })
+    await mkdir(join(attackerDir, 'skills'), { recursive: true })
+    await writeFile(join(victimSkills, 'SKILL.md'), 'VICTIM_SECRET=hunter2\n', 'utf-8')
+    // Attacker points their own external_dirs at the victim's skills root and
+    // symlinks it into their own skills dir.
+    await symlink(join(root, 'profiles', 'victim', 'skills'), join(attackerDir, 'skills', 'peek'))
+    mockGetProfileDir.mockReturnValue(attackerDir)
+    mockGetHermesBaseDir.mockReturnValue(root)
+    mockReadConfigYamlForProfile.mockResolvedValue({
+      skills: { external_dirs: [join(root, 'profiles', 'victim', 'skills')] },
+    })
+
+    const ctx: any = {
+      params: { path: 'peek/secret-skill/SKILL.md' },
+      state: { profile: { name: 'attacker' } },
+      status: 200,
+      body: null,
+    }
+
+    try {
+      const { readFile_ } = await loadController()
+      await readFile_(ctx)
+
+      expect(ctx.status).toBe(403)
+      expect(JSON.stringify(ctx.body)).not.toContain('hunter2')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('BLOCKER-2: a skills dir that is ITSELF a symlink to another profile is refused', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-skillsdir-symlink-'))
+    const victimSkills = join(root, 'profiles', 'victim', 'skills', 'private')
+    const attackerDir = join(root, 'profiles', 'attacker')
+    await mkdir(victimSkills, { recursive: true })
+    await mkdir(attackerDir, { recursive: true })
+    await writeFile(join(victimSkills, 'SKILL.md'), 'TOPSECRET-XYZ\n', 'utf-8')
+    // The attacker's whole skills dir is a link into the victim's.
+    await symlink(join(root, 'profiles', 'victim', 'skills'), join(attackerDir, 'skills'))
+    mockGetProfileDir.mockReturnValue(attackerDir)
+    mockGetHermesBaseDir.mockReturnValue(root)
+
+    const ctx: any = {
+      params: { path: 'private/SKILL.md' },
+      state: { profile: { name: 'attacker' } },
+      status: 200,
+      body: null,
+    }
+
+    try {
+      const { readFile_ } = await loadController()
+      await readFile_(ctx)
+
+      expect(ctx.status).toBe(403)
+      expect(JSON.stringify(ctx.body)).not.toContain('TOPSECRET')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses to READ a file through a symlink pointing at another profile', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-read-escape-'))
+    const victimDir = join(root, 'profiles', 'victim')
+    const attackerSkills = join(root, 'profiles', 'attacker', 'skills')
+    await mkdir(victimDir, { recursive: true })
+    await mkdir(attackerSkills, { recursive: true })
+    await writeFile(join(victimDir, 'SKILL.md'), '# VICTIM SECRET\n', 'utf-8')
+    await symlink(victimDir, join(attackerSkills, 'evil'))
+    mockGetProfileDir.mockReturnValue(join(root, 'profiles', 'attacker'))
+    mockGetHermesBaseDir.mockReturnValue(root)
+
+    const ctx: any = {
+      params: { path: 'evil/SKILL.md' },
+      state: { profile: { name: 'attacker' } },
+      status: 200,
+      body: null,
+    }
+
+    try {
+      const { readFile_ } = await loadController()
+      await readFile_(ctx)
+
+      expect(ctx.status).toBe(403)
+      expect(JSON.stringify(ctx.body)).not.toContain('VICTIM SECRET')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses to LIST files through a symlink pointing outside the allow-listed roots', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-list-escape-'))
+    const outside = join(root, 'elsewhere', 'stolen')
+    const attackerSkills = join(root, 'profiles', 'attacker', 'skills')
+    await mkdir(outside, { recursive: true })
+    await mkdir(attackerSkills, { recursive: true })
+    await writeFile(join(outside, 'SKILL.md'), '# OUTSIDE\n', 'utf-8')
+    await symlink(outside, join(attackerSkills, 'stolen'))
+    mockGetProfileDir.mockReturnValue(join(root, 'profiles', 'attacker'))
+    mockGetHermesBaseDir.mockReturnValue(root)
+    mockListFilesRecursive.mockResolvedValue([{ path: 'SKILL.md' }, { path: 'loot.md' }])
+
+    const ctx: any = {
+      params: { category: 'misc', skill: 'stolen' },
+      state: { profile: { name: 'attacker' } },
+      status: 200,
+      body: null,
+    }
+
+    try {
+      const { listFiles } = await loadController()
+      await listFiles(ctx)
+
+      expect(ctx.status).toBe(403)
+      expect(ctx.body.files).toBeUndefined()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('still READS a managed skill symlinked into the shared skills root (regression: 110k prod installs)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-read-managed-'))
+    const shared = join(root, 'skills', 'lark-doc')
+    const profileSkills = join(root, 'profiles', 'research', 'skills')
+    await mkdir(shared, { recursive: true })
+    await mkdir(profileSkills, { recursive: true })
+    await writeFile(join(shared, 'SKILL.md'), '# Lark Doc\n', 'utf-8')
+    await symlink(shared, join(profileSkills, 'lark-doc'))
+    mockGetProfileDir.mockReturnValue(join(root, 'profiles', 'research'))
+    mockGetHermesBaseDir.mockReturnValue(root)
+
+    const ctx: any = {
+      params: { path: 'lark-doc/SKILL.md' },
+      state: { profile: { name: 'research' } },
+      status: 200,
+      body: null,
+    }
+
+    try {
+      const { readFile_ } = await loadController()
+      await readFile_(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body.content).toContain('Lark Doc')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('still READS a skill under a configured external_dirs root — DIRECTLY, no symlink', async () => {
+    // Round-5 review caught the previous version of this test: it symlinked the
+    // external dir into the profile, which is NOT how external skills are read.
+    // The real path has no symlink at all, so the containment check must accept a
+    // target that simply resolves inside a configured external root.
+    const root = await mkdtemp(join(tmpdir(), 'hermes-web-ui-read-external-'))
+    const external = join(root, 'team-skills', 'shared-helper')
+    const profileSkills = join(root, 'profiles', 'research', 'skills')
+    await mkdir(external, { recursive: true })
+    await mkdir(profileSkills, { recursive: true })
+    await writeFile(join(external, 'SKILL.md'), '# Shared Helper\nexternal skill body\n', 'utf-8')
+    mockGetProfileDir.mockReturnValue(join(root, 'profiles', 'research'))
+    mockGetHermesBaseDir.mockReturnValue(root)
+    mockReadConfigYamlForProfile.mockResolvedValue({ skills: { external_dirs: [join(root, 'team-skills')] } })
+
+    const ctx: any = {
+      params: { path: 'misc/shared-helper/SKILL.md' },
+      state: { profile: { name: 'research' } },
+      status: 200,
+      body: null,
+    }
+
+    try {
+      const { readFile_ } = await loadController()
+      await readFile_(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(ctx.body.content).toContain('external skill body')
     } finally {
       await rm(root, { recursive: true, force: true })
     }
