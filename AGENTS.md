@@ -64,6 +64,7 @@ constraint directly.
 
 ## Known gotchas
 - 2026-06-23：WebUI chat-plane 上传图片会落在 routed profile 的 `workspace/uploads`；Run Broker `content` 不能把 ContentBlock 直接 JSON.stringify，否则 multitenancy AIAgent 只会看到普通 JSON 文本并让工具去错误目录按 basename 搜图。broker 当前用户消息必须提供 `/workspace/uploads/...` 语义的工具路径。
+- 2026-08-02：Skills 页的 profile-local 导入不能复用“宿主级操作仅 super-admin”显示条件；飞书 server-session 没有本地 JWT，导入按钮需对已认证页面可见，并由 chat-plane 请求白名单与 `requestProfileDir()` 在服务端约束到当前 profile。外部目录管理仍只给 super-admin。
 <!-- /ftask:managed -->
 
 ## Local known gotchas

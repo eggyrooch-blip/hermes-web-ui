@@ -250,7 +250,6 @@ function handlePinToggled(name: string, pinned: boolean) {
           </span>
         </NButton>
         <NButton
-          v-if="showHostSkillActions"
           class="header-action-btn"
           size="small"
           :title="t('skills.import')"
@@ -291,7 +290,7 @@ function handlePinToggled(name: string, pinned: boolean) {
       </div>
     </header>
 
-    <SkillImportModal v-if="showHostSkillActions && showImportModal" @close="showImportModal = false" @saved="handleImported" />
+    <SkillImportModal v-if="showImportModal" @close="showImportModal = false" @saved="handleImported" />
     <SkillExternalDirsModal v-if="showHostSkillActions && showExternalDirsModal"
       @close="showExternalDirsModal = false" @saved="handleExternalDirsSaved" />
     <NDrawer

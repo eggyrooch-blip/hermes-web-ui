@@ -1,6 +1,6 @@
 ---
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-07-24
+updated: 2026-08-02
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
@@ -14,6 +14,15 @@ related:
 ---
 
 # hermes-web-ui 架构速查 — EKKO fork
+
+> [!info] 2026-08-02 候选 — 飞书聊天平面恢复 profile-local Skill 导入
+> `Expert → Skills` 的导入入口不再与“外部目录管理”共用 super-admin 显示条件；
+> 飞书 server-session 用户可打开既有 ZIP/文件夹导入弹窗。服务端只对白名单
+> `POST /api/hermes/skills/import` 放行，导入控制器仍以可信 request context
+> 解析当前 profile，并保留未建档、skills 根软链接、路径穿越、重名和 20MB
+> 限制；toggle/pin/delete/外部目录等其他 Skills 写入口仍关闭。定向回归覆盖
+> 非 super-admin UI、chat-plane allow/deny matrix 与 profile-only 实际落盘；
+> 当前尚未合入或发布生产。
 
 > [!info] 2026-07-24 本机已切换 Hermes Agent v0.19.0，生产未发布
 > v0.19 的 `load_config()` 会补齐默认值，不能直接作为 profile override 覆盖 shared config；Agent Bridge 现在用公开 `read_raw_config()` 读取 profile 原始层，再复用既有 merge 路径，避免默认值清空共享 custom provider、model 和 agent 设置。修复只改 WebUI 2 行，不改 Hermes Agent、认证、路由或页面行为。

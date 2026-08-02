@@ -114,18 +114,21 @@ describe('chat plane access control', () => {
     expect(downloadCtx.status).toBe(200)
   })
 
-  it('allows only the profile-local skill file editor write in chat plane', async () => {
+  it('allows profile-local skill import and file edits while blocking other skill writes in chat plane', async () => {
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const importCtx = mockCtx('/api/hermes/skills/import', 'POST')
     const editCtx = mockCtx('/api/hermes/skills/file', 'PUT')
     const toggleCtx = mockCtx('/api/hermes/skills/toggle', 'PUT')
     const pinCtx = mockCtx('/api/hermes/skills/pin', 'PUT')
     const next = vi.fn(async () => {})
 
+    await enforcePlaneAccess(importCtx, next)
     await enforcePlaneAccess(editCtx, next)
     await enforcePlaneAccess(toggleCtx, next)
     await enforcePlaneAccess(pinCtx, next)
 
-    expect(next).toHaveBeenCalledOnce()
+    expect(next).toHaveBeenCalledTimes(2)
+    expect(importCtx.status).toBe(200)
     expect(editCtx.status).toBe(200)
     expect(toggleCtx.status).toBe(403)
     expect(pinCtx.status).toBe(403)

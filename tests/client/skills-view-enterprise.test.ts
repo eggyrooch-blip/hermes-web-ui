@@ -73,13 +73,13 @@ describe('SkillsView enterprise surface gating', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: vi.fn().mockResolvedValue('') }))
   })
 
-  it('hides host-level skill import controls from non-super-admin users', async () => {
+  it('shows profile-local skill import but hides host-level directory controls from non-super-admin users', async () => {
     const wrapper = mount(SkillsView)
     await flushPromises()
 
     expect(mockFetchSkills).toHaveBeenCalledWith('feishu_g41a5b5g')
     expect(wrapper.text()).toContain('Pending 0')
-    expect(wrapper.text()).not.toContain('skills.import')
+    expect(wrapper.text()).toContain('skills.import')
     expect(wrapper.text()).not.toContain('skills.externalDirs.manage')
     expect(mockFetchPendingWrites).toHaveBeenCalledOnce()
   })
