@@ -15,14 +15,34 @@ related:
 
 # hermes-web-ui 架构速查 — EKKO fork
 
-> [!info] 2026-08-02 候选 — 飞书聊天平面恢复 profile-local Skill 导入
+> [!success] 2026-08-02 production `8550b0f2a4d6` — skill 读取隔离与 GitLab CI
+> skill 内容读取在允许根判定前解析 realpath；目标尚不存在时从最近存在祖先解析，
+> symlink/悬空祖先不能把读取带出 shared/profile skill roots。生产定向
+> `tests/server/skills-controller.test.ts` 33/33 通过。
+>
+> GitLab main 现禁止直推、要求 pipeline 成功，并固定从 protected main 的
+> `.gitlab-ci.yml` 读取策略；CI 使用项目 runner 9 依次跑 policy、完整 Vitest/
+> harness/build 和全历史 gitleaks。MR pipeline `534623` 与 main pipeline
+> `534624` 成功。受保护 tag `release-20260802-01` 经 pull-based 执行器部署，
+> 回滚包 `/home/hermes/backups/pre-release/release-20260802-01`，12/12 probes
+> 成功；8648/public/静态资源为 200，两库和身份隔离检查通过。未主动发送员工
+> 消息或执行 cron/model canary。
+
+> [!success] 2026-07-25 production `81362d74c814` — v0.19 兼容版已发布
+> 生产使用已验证的 v0.19 raw-profile config 兼容实现，并补齐 Linux
+> `npm ci` 所需的两个缺失 transitive lock entry；未新增依赖或页面逻辑。
+> 本机 323 files / 2680 passed / 2 skipped、production build、8648/public
+> health 与真实 Chromium 飞书登录跳转均通过。浏览器一度
+> `ERR_CONNECTION_CLOSED` 的原因是本机 Clash 未直连内部域名，不是 WebUI
+> 服务故障或静态资源缺失。
+
+> [!info] 2026-08-02 已合入 main（MR !2），生产未发布 — 飞书聊天平面恢复 profile-local Skill 导入
 > `Expert → Skills` 的导入入口不再与“外部目录管理”共用 super-admin 显示条件；
 > 飞书 server-session 用户可打开既有 ZIP/文件夹导入弹窗。服务端只对白名单
 > `POST /api/hermes/skills/import` 放行，导入控制器仍以可信 request context
 > 解析当前 profile，并保留未建档、skills 根软链接、路径穿越、重名和 20MB
 > 限制；toggle/pin/delete/外部目录等其他 Skills 写入口仍关闭。定向回归覆盖
-> 非 super-admin UI、chat-plane allow/deny matrix 与 profile-only 实际落盘；
-> 当前尚未合入或发布生产。
+> 非 super-admin UI、chat-plane allow/deny matrix 与 profile-only 实际落盘。
 
 > [!info] 2026-07-24 本机已切换 Hermes Agent v0.19.0，生产未发布
 > v0.19 的 `load_config()` 会补齐默认值，不能直接作为 profile override 覆盖 shared config；Agent Bridge 现在用公开 `read_raw_config()` 读取 profile 原始层，再复用既有 merge 路径，避免默认值清空共享 custom provider、model 和 agent 设置。修复只改 WebUI 2 行，不改 Hermes Agent、认证、路由或页面行为。

@@ -60,3 +60,7 @@ Plans/
 # ftask: per-slug runtime files (env + sim artifacts) — never committed
 .ftask/*/.env
 .ftask/*/sim_artifacts/
+
+# ftask: per-slug runtime files (env + sim artifacts) — never committed
+.ftask/*/STATE.json
+.ftask/*/STATE.json.tmp
