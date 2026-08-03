@@ -571,14 +571,14 @@ Test files live in `tests/client/` and `tests/server/`. Configuration is in root
 <!-- ftask:managed v1 — auto-generated; edit OUTSIDE this block -->
 # Agent rules — hermes-web-ui (managed by ftask)
 
-- This repo is part of sunke's agent-OS. Agents NEVER run git directly here — use `bun ~/.claude/PAI/TOOLS/ftask.ts`.
+- This repo is part of sunke's agent-OS. Agents NEVER run git directly here — use `bun ~/.claude/LIFEOS/TOOLS/ftask.ts`.
 - Base branch: `main`. WORKTREE MODE: the main checkout stays PERMANENTLY on `main` — it is sunke's verification environment, NEVER switch its branch or write to it. `ftask new <slug>` gives each task its own worktree at `hermes-web-ui.tasks/<slug>`; do ALL work there. Parallel agents = parallel worktrees, zero contention.
-- Test gate: `ftask ship` runs `bun run test` (auto-detected) in the rebased tree and BLOCKS the merge if it fails.
+- Test gate: `ftask ship` runs valid SPEC-targeted paths first, then `bun run test` (auto-detected) once as the final local-ff gate (PR: required CI owns full); invalid/missing targets fall back to full and failures BLOCK merge.
 - Ship semantics: `ftask ship` merges into `main` then STOPS — sunke verifies in his local environment on `main` (worktree mode: the main checkout already shows the merge, zero switching); only after his OK run `ftask postship <slug> --finalize` (push + remove worktree + delete branch). NOT OK → `ftask revert <slug>`.
 - Code questions (where is X / who calls X / what breaks if I change X): this repo has a `.codegraph/` index — use the `codegraph_*` MCP tools (explore/callers/callees/impact) FIRST instead of grep/Read sweeps; cross-repo queries take a `projectPath` arg. Human-readable architecture map: vault `AgentOS/<repo>/GRAPH.md`.
 - When you fix a bug found while troubleshooting (a 排障), add a regression test that FAILS without the fix BEFORE `ftask ship`, and record the root cause as one line under "Known gotchas" below.
-- Global protocol: `~/.claude/CLAUDE.md` (Claude) and `~/.codex/AGENTS.md` (Codex) — "AGENT-OS" section. User cheatsheet: `~/code/AGENT-OS.md`.
+- Global protocol: `~/.claude/CLAUDE.md` (Claude), `~/.codex/AGENTS.md` (Codex), and `~/.grok/AGENTS.md` (Grok) — "AGENT-OS" section. User cheatsheet: `~/code/AGENT-OS.md`.
 
 ## Known gotchas
-- (root causes from 排障 sessions accrue here so the same bug is never debugged twice)
+- 2026-06-23：WebUI chat-plane 上传图片会落在 routed profile 的 `workspace/uploads`；Run Broker `content` 不能把 ContentBlock 直接 JSON.stringify，否则 multitenancy AIAgent 只会看到普通 JSON 文本并让工具去错误目录按 basename 搜图。broker 当前用户消息必须提供 `/workspace/uploads/...` 语义的工具路径。
 <!-- /ftask:managed -->
