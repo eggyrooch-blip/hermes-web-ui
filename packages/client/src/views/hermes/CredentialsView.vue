@@ -218,6 +218,20 @@ const gitlabForm = ref({ tier: 'read' as 'read' | 'write', token: '', expires_on
 const gitlabSubmitting = ref(false)
 const gitlabError = ref('')
 
+/** Which entries open the personal-token form instead of an interactive auth flow.
+ *
+ * Keyed on provider + manual action, NOT on a literal id: the broker splits GitLab
+ * into two rows (`gitlab` = the admin-placed global token, `gitlab-personal` = the
+ * employee's own), and an `id === 'gitlab'` check would leave the personal card's
+ * button doing nothing — which is the exact bug this card exists to fix.
+ * The global row DOES reach here (the registry adapter fills `kind: 'manual'` even when
+ * the broker sent an empty action) — what keeps it harmless is that its button is never
+ * rendered at all, because the button is gated on a non-empty `action.label`.
+ */
+function isGitlabTokenEntry(entry: SkillCredentialEntry) {
+  return entry.provider === 'gitlab' && entry.action?.kind === 'manual'
+}
+
 /** GitLab has no interactive auth flow — the employee supplies the token, so
  *  this row opens a form instead of starting a device/QR flow. */
 function openGitlabDialog(entry: SkillCredentialEntry) {
@@ -403,14 +417,18 @@ watch(requestedProfile, async (profile, previous) => {
                   <code v-if="entry.action?.command" class="credential-command">{{ entry.action.command }}</code>
                 </div>
               </div>
+              <!-- 没有 action.label 的条目是纯陈述卡（如「GitLab（全局）」：管理员运维，
+                   员工点了也改不了），给按钮等于骗人。判据用 label 不用 kind：连接器注册表
+                   会按 builtin 定义把 kind 补成 "manual"，只有 label 才真正为空。 -->
               <NButton
+                v-if="entry.action?.label"
                 size="small"
                 :loading="startingId === entry.id"
                 :disabled="entry.status === 'missing'"
                 :data-credential-action="entry.id"
-                @click="entry.id === 'gitlab' ? openGitlabDialog(entry) : startCredential(entry)"
+                @click="isGitlabTokenEntry(entry) ? openGitlabDialog(entry) : startCredential(entry)"
               >
-                {{ entry.action?.label || '连接' }}
+                {{ entry.action?.label }}
               </NButton>
             </article>
           </div>

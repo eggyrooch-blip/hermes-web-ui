@@ -40,7 +40,8 @@ const CANONICAL_CONNECTORS: ReadonlyArray<{ id: string; title: string; provider:
   { id: 'keep-record', title: 'Keep-record', provider: 'keep' },
   { id: 'kep-cli-online', title: 'kep-cli online', provider: 'keep' },
   { id: 'kep-cli-pre', title: 'kep-cli pre', provider: 'keep' },
-  { id: 'gitlab', title: 'GitLab', provider: 'gitlab' },
+  { id: 'gitlab', title: 'GitLab（全局）', provider: 'gitlab' },
+  { id: 'gitlab-personal', title: 'GitLab（我的）', provider: 'gitlab' },
 ]
 
 const VALID_STATES: ReadonlySet<string> = new Set<SkillCredentialState>([
@@ -124,7 +125,10 @@ export function failSafeResult(profileName: string): SkillCredentialsResult {
       installed: false,
       status: 'error' as SkillCredentialState,
       detail: '凭证状态服务暂时不可用，请稍后重试（未能确认登录状态）。',
-      action: { kind: 'manual' as SkillCredentialActionKind, label: '' },
+      // 必须给一个非空 label：客户端按 `action.label` 决定渲不渲染按钮（空 label =
+      // 管理员运维的纯陈述卡，如「GitLab（全局）」）。这里留空会让 broker 一挂，整个
+      // 面板一颗按钮都没有，用户连重试都点不了。
+      action: { kind: 'manual' as SkillCredentialActionKind, label: '重试' },
     })),
   }
 }

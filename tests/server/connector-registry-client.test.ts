@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Mock config so we control runBroker url/key without env wiring.
 vi.mock('../../packages/server/src/config', () => ({
@@ -83,14 +83,30 @@ describe('mapConnectorToEntry', () => {
 })
 
 describe('failSafeResult', () => {
+  let failSafeResultSync: (p: string) => any
+  beforeAll(async () => { failSafeResultSync = (await import(MODULE)).failSafeResult })
+
   it('returns all canonical connectors as error — NEVER authenticated', async () => {
     const { failSafeResult } = await import(MODULE)
     const r = failSafeResult('p1')
     expect(r.profile_name).toBe('p1')
     expect(r.credentials.map((c: any) => c.id)).toEqual(
-      ['lark-cli', 'feishu-project', 'keep-record', 'kep-cli-online', 'kep-cli-pre', 'gitlab'])
+      ['lark-cli', 'feishu-project', 'keep-record', 'kep-cli-online', 'kep-cli-pre',
+       'gitlab', 'gitlab-personal'])
     expect(r.credentials.every((c: any) => c.status === 'error')).toBe(true)
     expect(r.credentials.some((c: any) => c.status === 'authenticated')).toBe(false)
+  })
+
+  it('gives every fail-safe row a non-empty action label so the panel stays actionable', () => {
+    // The client renders a card's button only when `action.label` is non-empty (an
+    // empty label means "admin-operated, nothing the employee can do" — the
+    // GitLab（全局）card). Leaving the fail-safe rows label-less would strip EVERY
+    // button the moment the broker is down, so the user could not even retry.
+    const r = failSafeResultSync('p1')
+    for (const c of r.credentials as any[]) {
+      expect(c.action?.label, `${c.id} must keep a usable label when the broker is down`)
+        .toBeTruthy()
+    }
   })
 })
 
