@@ -2,8 +2,9 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
-import { NButton, NModal, NSpin, useMessage } from 'naive-ui'
+import { NAlert, NButton, NFormItem, NInput, NModal, NSelect, NSpin, useMessage } from 'naive-ui'
 import { completeSkillCredentialAuth, fetchSkillCredentials, pollFeishuUatSession, startSkillCredentialAuth } from '@/api/skillCredentials'
+import { submitGitlabToken } from '@/api/skillCredentials'
 import type { SkillCredentialEntry, SkillCredentialsResponse } from '@/api/skillCredentials'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { readCachedConnectorStatus, writeCachedConnectorStatus } from '@/utils/connector-status-cache'
@@ -212,6 +213,43 @@ async function pollCredentialAfterOAuth(id: string, token: number, sessionId = '
   }
 }
 
+const gitlabDialog = ref<{ title: string } | null>(null)
+const gitlabForm = ref({ tier: 'read' as 'read' | 'write', token: '', expires_on: '' })
+const gitlabSubmitting = ref(false)
+const gitlabError = ref('')
+
+/** GitLab has no interactive auth flow — the employee supplies the token, so
+ *  this row opens a form instead of starting a device/QR flow. */
+function openGitlabDialog(entry: SkillCredentialEntry) {
+  gitlabForm.value = { tier: 'read', token: '', expires_on: '' }
+  gitlabError.value = ''
+  gitlabDialog.value = { title: entry.title }
+}
+
+async function confirmGitlabToken() {
+  gitlabSubmitting.value = true
+  gitlabError.value = ''
+  try {
+    const res = await submitGitlabToken({
+      tier: gitlabForm.value.tier,
+      token: gitlabForm.value.token,
+      expires_on: gitlabForm.value.expires_on,
+    })
+    if (!res?.ok) {
+      gitlabError.value = res?.reason || '保存失败，请稍后重试'
+      return
+    }
+    // Never keep the token in memory after a successful hand-off.
+    gitlabForm.value.token = ''
+    gitlabDialog.value = null
+    await loadCredentials()
+  } catch (err: any) {
+    gitlabError.value = err?.data?.reason || err?.message || '保存失败，请稍后重试'
+  } finally {
+    gitlabSubmitting.value = false
+  }
+}
+
 async function startCredential(entry: SkillCredentialEntry) {
   startingId.value = entry.id
   // Mint the attempt token BEFORE the await so it marks the LATEST user start. If a
@@ -370,7 +408,7 @@ watch(requestedProfile, async (profile, previous) => {
                 :loading="startingId === entry.id"
                 :disabled="entry.status === 'missing'"
                 :data-credential-action="entry.id"
-                @click="startCredential(entry)"
+                @click="entry.id === 'gitlab' ? openGitlabDialog(entry) : startCredential(entry)"
               >
                 {{ entry.action?.label || '连接' }}
               </NButton>
@@ -379,6 +417,68 @@ watch(requestedProfile, async (profile, previous) => {
         </section>
       </div>
     </NSpin>
+
+    <NModal
+      :show="!!gitlabDialog"
+      preset="card"
+      style="max-width: 520px"
+      :title="`${gitlabDialog?.title || 'GitLab'} — 使用我自己的权限`"
+      @update:show="(v: boolean) => { if (!v) gitlabDialog = null }"
+    >
+      <div class="gitlab-form">
+        <p class="gitlab-hint">
+          填你自己的 GitLab token，hermes 之后就用<strong>你本人的权限</strong>操作仓库。
+        </p>
+        <ol class="gitlab-steps">
+          <li>在 GitLab 建 token 时，<strong>名字必须填 <code>hermes</code></strong>——我们靠这个名字核对你给的权限</li>
+          <li><strong>填一个到期日</strong>（GitLab 允许不填，但我们不接受永久有效的）</li>
+          <li>按下面选的档位勾 scope</li>
+        </ol>
+
+        <NFormItem label="授权档位">
+          <NSelect
+            v-model:value="gitlabForm.tier"
+            :options="[
+              { label: '只读 — 看 MR/issue/流水线、拉代码（read_api + read_repository）', value: 'read' },
+              { label: '可写 — 上面全部，外加改动和推代码（api + write_repository）', value: 'write' },
+            ]"
+          />
+        </NFormItem>
+        <NFormItem label="GitLab token">
+          <NInput
+            v-model:value="gitlabForm.token"
+            type="password"
+            show-password-on="click"
+            placeholder="粘贴你的 token"
+          />
+        </NFormItem>
+        <NFormItem label="到期日">
+          <NInput v-model:value="gitlabForm.expires_on" placeholder="YYYY-MM-DD" />
+        </NFormItem>
+
+        <NAlert v-if="gitlabError" type="warning" :show-icon="false" class="gitlab-error">
+          {{ gitlabError }}
+        </NAlert>
+        <p class="gitlab-note">
+          我们靠 token 的名字核对权限，这能帮你发现填错档位，但没法严格保证你粘贴的就是那个 token。
+          请自己确认交出的权限就是你想给的。
+        </p>
+      </div>
+      <template #footer>
+        <div class="gitlab-actions">
+          <NButton size="small" @click="gitlabDialog = null">取消</NButton>
+          <NButton
+            size="small"
+            type="primary"
+            :loading="gitlabSubmitting"
+            :disabled="!gitlabForm.token || !gitlabForm.expires_on"
+            @click="confirmGitlabToken"
+          >
+            提交
+          </NButton>
+        </div>
+      </template>
+    </NModal>
 
     <NModal
       :show="!!qrDialog"
@@ -412,6 +512,22 @@ watch(requestedProfile, async (profile, previous) => {
   &.is-embedded {
     height: 100%;
     min-height: 0;
+    // Embedded in the expert panel the parent is overflow:hidden, so without
+    // this the content simply overflows out of view and the bottom rows
+    // (GitLab among them) are unreachable — measured 1004px of content in a
+    // 628px box. Pre-existing; confirmed by A/B against a build without the
+    // GitLab form.
+    overflow-y: auto;
+
+    // 面板自己能滚之后，卡片内那个限高滚动框就成了滚轮陷阱：光标停在页面正中的
+    // 「关联技能」标签上，10 格滚轮全被内层吃掉，外层停在 0，底部 GitLab 够不着。
+    // 嵌入态取消它，整页一条连续滚动。只作用于嵌入态 —— 独立页 /hermes/connectors
+    // 的布局不在本次范围内，保持原样。
+    // 代价：技能多的卡片会变高。真要压高度，走「前 N 个 + 展开」，别再放回嵌套滚动。
+    .credential-required-scroll {
+      max-height: none;
+      overflow-y: visible;
+    }
   }
 }
 
@@ -540,6 +656,8 @@ watch(requestedProfile, async (profile, previous) => {
   font-size: 12px;
 }
 
+// 独立页 /hermes/connectors 保持限高滚动（本次不动它）；嵌入态在上面的
+// `.is-embedded` 块里取消，理由见那里。
 .credential-required-scroll {
   max-height: 188px;
   overflow-y: auto;

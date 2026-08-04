@@ -91,3 +91,29 @@ export async function completeSkillCredentialAuth(id: string, qrcodeId: string, 
 export async function pollFeishuUatSession(sessionId: string, profile?: string): Promise<FeishuUatSessionResponse> {
   return request(withProfile(`/api/auth/feishu/uat/sessions/${encodeURIComponent(sessionId)}`, profile))
 }
+
+export interface GitlabTokenSubmitPayload {
+  /** 'read' = read_api + read_repository, 'write' = api + write_repository */
+  tier: 'read' | 'write'
+  token: string
+  /** YYYY-MM-DD; mandatory — this GitLab allows non-expiring tokens, we do not */
+  expires_on: string
+}
+
+export interface GitlabTokenSubmitResult {
+  ok: boolean
+  /** user-facing rejection reason; never contains the submitted token */
+  reason?: string
+  tier?: string
+  expires_at?: number
+  legacy_file_retired?: boolean
+}
+
+/** Submit YOUR OWN GitLab token. The server derives whose vault to write from
+ *  the verified session — no identity field is sent from the browser. */
+export function submitGitlabToken(payload: GitlabTokenSubmitPayload) {
+  return request<GitlabTokenSubmitResult>('/api/hermes/credentials/gitlab', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
