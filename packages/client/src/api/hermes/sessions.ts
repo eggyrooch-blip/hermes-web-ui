@@ -1,4 +1,5 @@
 import { request, getApiKey, getBaseUrlValue } from '../client'
+import { filenameFromContentDisposition, foreignResponseError, isForeignResponse } from './download'
 
 export type ProviderApiMode = 'chat_completions' | 'codex_responses' | 'anthropic_messages'
 
@@ -355,11 +356,9 @@ export async function exportSession(id: string, mode: 'full' | 'compressed' = 'f
   const url = `${baseUrl}/api/hermes/sessions/${id}/export?mode=${mode}&ext=${ext}&token=${encodeURIComponent(token)}`
   const res = await fetch(url)
   if (!res.ok) throw new Error('Export failed')
+  if (isForeignResponse(res)) throw foreignResponseError('导出')
   const blob = await res.blob()
-  const contentDisposition = res.headers.get('Content-Disposition') || ''
-  let filename = `session_${id}.${ext}`
-  const match = contentDisposition.match(/filename\*?=(?:UTF-8'')?([^;\n]+)/i)
-  if (match) filename = decodeURIComponent(match[1].replace(/"/g, ''))
+  const filename = filenameFromContentDisposition(res) || `session_${id}.${ext}`
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
   a.download = filename

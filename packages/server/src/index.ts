@@ -297,7 +297,15 @@ export async function bootstrap() {
   console.log('[bootstrap] all stores initialized')
 
   app.use(securityHeaders())
-  app.use(cors({ origin: createCorsOriginResolver(config.corsOrigins) }))
+  // exposeHeaders: Content-Disposition is not CORS-safelisted, so a cross-origin
+  // client (custom server URL) cannot read the filename or use the header's
+  // presence to tell a real Hermes file response from a WAF error page. The
+  // header is already sent on every download/export response; expose it so the
+  // client can verify unconditionally instead of fail-open (zhouyifei 2026-08-04).
+  app.use(cors({
+    origin: createCorsOriginResolver(config.corsOrigins),
+    exposeHeaders: ['Content-Disposition'],
+  }))
   // Raise body limits above the default 1mb: profile avatars and MiMo voice-clone
   // reference audio are posted as base64 data URLs before reaching handlers.
   app.use(bodyParser({
