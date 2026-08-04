@@ -21,7 +21,10 @@ export interface SkillCredentialEntry {
   default_identity?: string
   detail?: string
   required_by?: string[]
-  action: SkillCredentialAction
+  /** 缺省 = 这张卡没有员工可执行的操作（如管理员运维的「GitLab（全局）」）。
+   *  别拿「label 是空字符串」当这个意思的暗号 —— 那分不清「没有操作」和
+   *  「有操作但忘了填标签」，后者会静默变成一张点不动的卡。 */
+  action?: SkillCredentialAction
 }
 
 export interface SkillCredentialsResponse {

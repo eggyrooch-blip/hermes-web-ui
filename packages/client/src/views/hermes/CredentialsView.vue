@@ -224,9 +224,8 @@ const gitlabError = ref('')
  * into two rows (`gitlab` = the admin-placed global token, `gitlab-personal` = the
  * employee's own), and an `id === 'gitlab'` check would leave the personal card's
  * button doing nothing — which is the exact bug this card exists to fix.
- * The global row DOES reach here (the registry adapter fills `kind: 'manual'` even when
- * the broker sent an empty action) — what keeps it harmless is that its button is never
- * rendered at all, because the button is gated on a non-empty `action.label`.
+ * The global row never reaches here: the broker sends no action for it and `coerceAction`
+ * passes that absence through, so its button is never rendered in the first place.
  */
 function isGitlabTokenEntry(entry: SkillCredentialEntry) {
   return entry.provider === 'gitlab' && entry.action?.kind === 'manual'
@@ -417,18 +416,22 @@ watch(requestedProfile, async (profile, previous) => {
                   <code v-if="entry.action?.command" class="credential-command">{{ entry.action.command }}</code>
                 </div>
               </div>
-              <!-- 没有 action.label 的条目是纯陈述卡（如「GitLab（全局）」：管理员运维，
-                   员工点了也改不了），给按钮等于骗人。判据用 label 不用 kind：连接器注册表
-                   会按 builtin 定义把 kind 补成 "manual"，只有 label 才真正为空。 -->
+              <!-- 没有 action 的条目是纯陈述卡（如「GitLab（全局）」：管理员运维，员工点了
+                   也改不了），给按钮等于骗人。判据是 action 本身在不在 —— 不再看 label 是否
+                   为空：那个暗号分不清「没有操作」和「有操作但忘了填标签」，后者会静默变成
+                   一张点不动的卡。broker 侧对无操作送 null，适配层 coerceAction 如实返回
+                   undefined。 -->
               <NButton
-                v-if="entry.action?.label"
+                v-if="entry.action"
                 size="small"
                 :loading="startingId === entry.id"
                 :disabled="entry.status === 'missing'"
                 :data-credential-action="entry.id"
                 @click="isGitlabTokenEntry(entry) ? openGitlabDialog(entry) : startCredential(entry)"
               >
-                {{ entry.action?.label }}
+                <!-- 兜底只管文案，不当渲染开关：渲不渲染由上面的 v-if="entry.action" 决定。
+                     有 action 却缺 label 是数据问题，宁可显示「连接」也别渲染一颗空白按钮。 -->
+                {{ entry.action.label || '连接' }}
               </NButton>
             </article>
           </div>

@@ -225,7 +225,10 @@ describe('CredentialsView', () => {
         { id: 'kep-cli', title: 'kep-cli', provider: 'keep', installed: true, status: 'authenticated', action: { kind: 'oauth_url', label: '重新认证' } },
       ],
     }
-    localStorage.setItem('hermes:connector-status:feishu_g41a5b5g', JSON.stringify(cached))
+    // 用导出的 key 助手，别硬编码字符串：缓存 key 里带 schema 版本，形状一变就 bump，
+    // 硬编码会让这条测试在 bump 后静默读不到缓存（本次 v1→v2 就是这么红的）。
+    const { connectorStatusCacheKey } = await import('@/utils/connector-status-cache')
+    localStorage.setItem(connectorStatusCacheKey('feishu_g41a5b5g'), JSON.stringify(cached))
     // Hang the live refresh so only the cached instant-paint is observable.
     let resolveFetch: (v: any) => void = () => {}
     fetchSkillCredentialsMock.mockReturnValue(new Promise(r => { resolveFetch = r }))
@@ -690,9 +693,9 @@ describe('CredentialsView', () => {
           installed: true,
           status: 'configured',
           detail: '管理员配置的共用 GitLab token（不展示内容），全员共享；你不能改它。',
-          // 实测形状：连接器注册表会按 builtin 定义把 kind 补成 "manual"，只有 label 是空的。
-          // 用 {} 当夹具会让这条测试测不到真实链路（2026-08-04 活体探测发现）。
-          action: { kind: 'manual', label: '' },
+          // action 缺省 = 没有员工可执行的操作。这是 broker(送 null) + coerceAction(如实
+          // 返回 undefined) 之后的真实形状；旧夹具写 {kind:'manual',label:''} 是"有操作但
+          // 没标签"，语义完全不同，现在会渲染出一颗兜底文案的按钮。
         },
         {
           id: 'gitlab-personal',
@@ -730,5 +733,43 @@ describe('CredentialsView', () => {
     // modal chrome, which NModal teleports out of the wrapper.
     const html = wrapper.html() + document.body.innerHTML
     expect(html).toContain('gitlab-form')
+  })
+
+  it('renders a button whenever an action exists — even if its label went missing', async () => {
+    // 区分两种判据的唯一用例：按 `entry.action` 判 → 渲染；按 `entry.action?.label` 判 →
+    // 不渲染。有 kind 却没 label 是数据问题，不是"没有操作"；静默吞掉会让那张卡永远
+    // 点不动且无人察觉。没有这条，客户端那行 v-if 改动等于没有测试锁。
+    fetchSkillCredentialsMock.mockResolvedValue({
+      profile: 'feishu_g41a5b5g',
+      credentials: [
+        {
+          id: 'gitlab',
+          title: 'GitLab（全局）',
+          provider: 'gitlab',
+          installed: true,
+          status: 'configured',
+          detail: '没有操作的卡',
+          // action 整个缺省 = 真的没有操作
+        },
+        {
+          id: 'kep-cli-online',
+          title: 'kep-cli online',
+          provider: 'keep',
+          installed: true,
+          status: 'needs_auth',
+          detail: '标签丢了的卡',
+          action: { kind: 'oauth_url', label: '', env: 'online' },
+        },
+      ],
+    })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-credential-action="gitlab"]').exists()).toBe(false)
+    const labelless = wrapper.find('[data-credential-action="kep-cli-online"]')
+    expect(labelless.exists()).toBe(true)
+    expect(labelless.text()).toBe('连接')
   })
 })
