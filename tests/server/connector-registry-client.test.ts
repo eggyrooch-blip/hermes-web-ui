@@ -80,6 +80,27 @@ describe('mapConnectorToEntry', () => {
     }))
     expect(e.action).toMatchObject({ kind: 'oauth_url', label: '认证 pre', env: 'pre' })
   })
+
+  it('drops the action entirely when the broker says there is none', async () => {
+    // broker 对「管理员运维、员工无可执行操作」的卡送 action: null（见 hermes-multitenancy
+    // ConnectorStatus.to_dict）。以前这里会造一个 {kind:'manual', label:''}，把缺省抹成
+    // "有操作但没标签"，逼客户端拿空 label 当哨兵 —— 该暗号 2026-08-04 咬过两次。
+    const { mapConnectorToEntry } = await import(MODULE)
+    for (const raw of [null, undefined, {}]) {
+      const e = mapConnectorToEntry(brokerConnector({ action: raw }))
+      expect(e.action, `action=${JSON.stringify(raw)} must map to absent`).toBeUndefined()
+      expect('action' in e).toBe(false)
+    }
+  })
+
+  it('keeps an action that has a kind but no label — that is a data bug, not "no action"', async () => {
+    // 只有 label 空、kind 还在 → broker 确实想表达一个操作，只是标签丢了。静默吞成
+    // "无操作" 会让那张卡永远点不动且无人察觉；保留下来，客户端会用兜底文案渲染。
+    const { mapConnectorToEntry } = await import(MODULE)
+    const e = mapConnectorToEntry(brokerConnector({ action: { kind: 'manual', label: '' } }))
+    expect(e.action).toBeDefined()
+    expect(e.action!.kind).toBe('manual')
+  })
 })
 
 describe('failSafeResult', () => {

@@ -58,7 +58,8 @@ export interface SkillCredentialEntry {
   default_identity?: string
   detail?: string
   required_by?: string[]
-  action: SkillCredentialAction
+  /** 缺省 = 这张卡没有员工可执行的操作。见客户端同名类型的注释。 */
+  action?: SkillCredentialAction
 }
 
 export interface SkillCredentialsResult {

@@ -91,6 +91,27 @@ describe('skill credential status', () => {
     return profileDir
   }
 
+  it('local fallback still fills action on every row — the type no longer forces it', async () => {
+    // action 放宽为可选后，编译器不再逼着这里填。但本地实现是 broker 不可用时的兜底，
+    // 它的每一行都代表一个员工能操作的连接器：漏填会让那张卡在降级态永远点不动，
+    // 而且没有任何类型错误提醒。可选性是给 broker 表达"无操作"用的，不是给这里偷懒用的。
+    const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = makeProfile()
+
+    const result = await listSkillCredentialStatuses({
+      profileName: 'feishu_user_a',
+      profileDir,
+      user: { openid: 'ou_user_a', profile: 'feishu_user_a', role: 'user', name: '孙可' },
+      larkStatus: null,
+    } as any)
+
+    expect(result.credentials.length).toBeGreaterThan(0)
+    for (const c of result.credentials) {
+      expect(c.action, `${c.id} 缺 action —— 本地兜底的每一行都必须可操作`).toBeDefined()
+      expect(c.action!.label, `${c.id} 的 action.label 为空`).toBeTruthy()
+    }
+  })
+
   it('summarizes first-party skill credentials without returning raw secrets', async () => {
     const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
     const profileDir = makeProfile()

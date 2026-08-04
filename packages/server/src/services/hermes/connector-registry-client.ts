@@ -71,7 +71,9 @@ interface ConnectorStatusDict {
   default_identity?: string
   detail?: string
   required_by?: string[]
-  action?: { kind?: string; label?: string; command?: string; description?: string; env?: string }
+  // broker 对「无可执行操作」的卡实际送 null（见 hermes-multitenancy ConnectorStatus.to_dict），
+  // wire 类型必须容得下它，否则测试只能靠 `as any` 绕过去。
+  action?: { kind?: string; label?: string; command?: string; description?: string; env?: string } | null
   // additive control-plane fields (scope/profile/acting_identity/credential_owner/
   // runtime_policy_owner/kind/stale/expires_at) are intentionally DROPPED in the
   // SkillCredentialEntry mapping — the frontend shape stays unchanged.
@@ -82,8 +84,21 @@ function coerceState(raw: unknown): SkillCredentialState {
   return (VALID_STATES.has(s) ? s : 'unknown') as SkillCredentialState
 }
 
-function coerceAction(raw: ConnectorStatusDict['action']): SkillCredentialAction {
-  const kind = String(raw?.kind || 'manual')
+/** broker 的 action → WebUI 的 action，缺省时返回 undefined。
+ *
+ * broker 对「这张卡没有员工可执行的操作」送 null/{}（见 hermes-multitenancy
+ * ConnectorStatus.to_dict）。以前这里无条件造一个 {kind:'manual', label:''}，把缺省
+ * 抹成了"有操作但没标签"，逼客户端拿空 label 当哨兵 —— 那个暗号 2026-08-04 咬过两次。
+ * 现在缺省如实向上传递，可选性才真正生效。
+ *
+ * 判据是 kind 与 label 都没有：只有 label 没有 kind 说明 broker 确实想表达一个操作
+ * （只是标签空了），那属于数据问题，不该被静默吞成"无操作"。
+ */
+function coerceAction(raw: ConnectorStatusDict['action']): SkillCredentialAction | undefined {
+  const rawKind = String(raw?.kind || '').trim()
+  const rawLabel = String(raw?.label || '').trim()
+  if (!rawKind && !rawLabel) return undefined
+  const kind = rawKind || 'manual'
   const action: SkillCredentialAction = {
     kind: (VALID_ACTION_KINDS.has(kind) ? kind : 'manual') as SkillCredentialActionKind,
     label: String(raw?.label || ''),
@@ -103,8 +118,9 @@ export function mapConnectorToEntry(c: ConnectorStatusDict): SkillCredentialEntr
     provider: String(c.provider || ''),
     installed: Boolean(c.installed),
     status: coerceState(c.status),
-    action: coerceAction(c.action),
   }
+  const action = coerceAction(c.action)
+  if (action) entry.action = action
   if (c.account_hint) entry.account_hint = String(c.account_hint)
   if (c.default_identity) entry.default_identity = String(c.default_identity)
   if (c.detail) entry.detail = String(c.detail)
@@ -125,9 +141,8 @@ export function failSafeResult(profileName: string): SkillCredentialsResult {
       installed: false,
       status: 'error' as SkillCredentialState,
       detail: '凭证状态服务暂时不可用，请稍后重试（未能确认登录状态）。',
-      // 必须给一个非空 label：客户端按 `action.label` 决定渲不渲染按钮（空 label =
-      // 管理员运维的纯陈述卡，如「GitLab（全局）」）。这里留空会让 broker 一挂，整个
-      // 面板一颗按钮都没有，用户连重试都点不了。
+      // 降级态的每一行都必须带 action 且 label 非空：客户端按 action 是否存在渲染按钮，
+      // 这里若整个不给 action，broker 一挂面板就一颗按钮都没有，用户连重试都点不了。
       action: { kind: 'manual' as SkillCredentialActionKind, label: '重试' },
     })),
   }
@@ -225,8 +240,12 @@ export function shadowDiff(
     if (lc.status !== bc.status) {
       diffs.push({ id, field: 'status', local: lc.status, broker: bc.status })
     }
-    if (lc.action.kind !== bc.action.kind) {
-      diffs.push({ id, field: 'action.kind', local: lc.action.kind, broker: bc.action.kind })
+    // action 可缺省（= 这张卡没有员工可执行的操作）。把缺省当成一等取值 'none' 参与
+    // 比对，而不是跳过：一侧有操作、另一侧没有，正是最值得报的那种漂移。
+    const lKind = lc.action?.kind ?? 'none'
+    const bKind = bc.action?.kind ?? 'none'
+    if (lKind !== bKind) {
+      diffs.push({ id, field: 'action.kind', local: lKind, broker: bKind })
     }
     const lReq = (lc.required_by || []).length
     const bReq = (bc.required_by || []).length

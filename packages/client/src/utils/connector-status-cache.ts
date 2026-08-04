@@ -6,14 +6,35 @@ import type { SkillCredentialsResponse } from '@/api/skillCredentials'
 // FIRST open of the panel this session is also instant). Status only, no secrets — the
 // broker already redacts tokens. Every localStorage access is guarded: private mode /
 // quota simply falls back to a normal load.
-const STATUS_CACHE_PREFIX = 'hermes:connector-status:'
+//
+// 版本写在 key 里，不写在值里：改了 entry 的形状就 bump 一次，旧条目自然读不到，
+// 不需要迁移逻辑。v1 → v2 的原因：action 由「必有，无操作时是 {kind:'manual',label:''}」
+// 改为「无操作时整个缺省」。旧缓存若被新 UI 读到，会把那个空壳当成有 action，
+// 让「GitLab（全局）」冒出一颗「连接」按钮，且在刷新失败时一直留着（codex 评审 2026-08-04）。
+const STATUS_CACHE_VERSION = 'v2'
+const STATUS_CACHE_PREFIX = `hermes:connector-status:${STATUS_CACHE_VERSION}:`
+const STATUS_CACHE_LEGACY_PREFIXES = ['hermes:connector-status:']
 
 export function connectorStatusCacheKey(profile: string): string {
   return STATUS_CACHE_PREFIX + (profile || '_active')
 }
 
+/** 顺手清掉上一版留下的条目 —— 否则每 bump 一次就多一批永远读不到的垃圾。 */
+function dropLegacyCacheEntries(): void {
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i)
+      if (!key || key.startsWith(STATUS_CACHE_PREFIX)) continue
+      if (STATUS_CACHE_LEGACY_PREFIXES.some(prefix => key.startsWith(prefix))) {
+        localStorage.removeItem(key)
+      }
+    }
+  } catch { /* unavailable — nothing to clean */ }
+}
+
 export function readCachedConnectorStatus(profile: string): SkillCredentialsResponse | null {
   try {
+    dropLegacyCacheEntries()
     const raw = localStorage.getItem(connectorStatusCacheKey(profile))
     if (!raw) return null
     const parsed = JSON.parse(raw)
