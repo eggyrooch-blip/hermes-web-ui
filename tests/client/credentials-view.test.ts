@@ -674,4 +674,61 @@ describe('CredentialsView', () => {
 
     expect(completeSkillCredentialAuthMock).toHaveBeenCalledWith('keep-record', 'qr-1', 'feishu_g41a5b5g')
   })
+
+  it('splits GitLab into a button-less global card and an actionable personal card', async () => {
+    // The broker now emits two gitlab rows. The global one is admin-operated, so it
+    // must render NO button; the personal one must open the own-token form. Keying the
+    // form on the literal id 'gitlab' (the old check) would leave the personal card's
+    // button inert — the exact defect this split exists to fix.
+    fetchSkillCredentialsMock.mockResolvedValue({
+      profile: 'feishu_g41a5b5g',
+      credentials: [
+        {
+          id: 'gitlab',
+          title: 'GitLab（全局）',
+          provider: 'gitlab',
+          installed: true,
+          status: 'configured',
+          detail: '管理员配置的共用 GitLab token（不展示内容），全员共享；你不能改它。',
+          // 实测形状：连接器注册表会按 builtin 定义把 kind 补成 "manual"，只有 label 是空的。
+          // 用 {} 当夹具会让这条测试测不到真实链路（2026-08-04 活体探测发现）。
+          action: { kind: 'manual', label: '' },
+        },
+        {
+          id: 'gitlab-personal',
+          title: 'GitLab（我的）',
+          provider: 'gitlab',
+          installed: true,
+          status: 'needs_auth',
+          detail: '绑定后 hermes 用你本人的权限操作仓库；不绑就一直用全局那个。',
+          action: { kind: 'manual', label: '绑定我的 GitLab' },
+        },
+      ],
+    })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    // Two cards, not one.
+    expect(wrapper.text()).toContain('GitLab（全局）')
+    expect(wrapper.text()).toContain('GitLab（我的）')
+
+    // Global card: stated only, no affordance the employee cannot act on.
+    expect(wrapper.find('[data-credential-action="gitlab"]').exists()).toBe(false)
+
+    // Personal card: the button opens the own-token form, and does NOT start an
+    // interactive auth flow (GitLab has none).
+    const personal = wrapper.find('[data-credential-action="gitlab-personal"]')
+    expect(personal.exists()).toBe(true)
+    expect(personal.text()).toContain('绑定我的 GitLab')
+    await personal.trigger('click')
+    await wrapper.vm.$nextTick()
+
+    expect(startSkillCredentialAuthMock).not.toHaveBeenCalled()
+    // The own-token form is what opened — assert on the form itself rather than the
+    // modal chrome, which NModal teleports out of the wrapper.
+    const html = wrapper.html() + document.body.innerHTML
+    expect(html).toContain('gitlab-form')
+  })
 })
