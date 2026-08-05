@@ -265,6 +265,13 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   if (path === '/api/hermes/profiles' && (method === 'GET' || method === 'POST')) return false
   if (path === '/api/hermes/slash/commands' && method === 'GET') return false
   if (path === '/api/hermes/config/model' && method === 'PUT') return false
+  // 员工提交自己的 GitLab token —— 这个端点的目标用户**就是** chat 面的员工，
+  // 却因为落到本函数结尾的 catch-all 而一直被拒（403 not available in chat plane），
+  // 等于功能从上线起对它唯一的用户就没工作过（sunke 2026-08-05 实机撞到）。
+  // 放行是安全的：控制器不从请求体取身份，owner 只认已验证会话的 ctx.state.user.openid，
+  // 服务端盖 X-Hermes-Owner-Open-Id，无身份仍自行 403 —— 与 kanban/jobs 同款写法。
+  // 只放 POST：这个路径没有别的动词。
+  if (path === '/api/hermes/credentials/gitlab' && method === 'POST') return false
   if (path === '/api/hermes/config/credentials') return true
   if (config.chatPlaneAllowSettings && path === '/api/hermes/config' && (method === 'GET' || method === 'PUT')) return false
   if (path === '/api/hermes/skills/skillhub/install' && method === 'POST') return false
