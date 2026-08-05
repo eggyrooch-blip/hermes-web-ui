@@ -47,9 +47,10 @@ export async function submitGitlabToken(ctx: Context) {
 
   // Only token material crosses this boundary. Any profile_name / open_id /
   // agent_id the client may have sent is dropped here by construction.
+  // 不转发 expires_on：到期日由 broker 从 GitLab 的 token 行读取，
+  // 员工填的任何日期都不再参与校验。
   const payload = {
     token: String(body.token ?? ''),
-    expires_on: String(body.expires_on ?? ''),
     tier: String(body.tier ?? ''),
   }
 

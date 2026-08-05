@@ -68,6 +68,8 @@ export async function authStatus(ctx: Context) {
     hasUsers: countUsers() > 0,
     authMode: config.authMode,
     plane: config.webPlane,
+    // 空字符串 = 未配置 → 前端不渲染「去 GitLab 建 token」链接。
+    gitlabBaseUrl: config.gitlabBaseUrl,
   }
 }
 

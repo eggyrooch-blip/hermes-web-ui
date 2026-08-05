@@ -145,6 +145,10 @@ export const config = {
   trustedHeaderMaxAgeSeconds: parseInt(process.env.HERMES_TRUSTED_HEADER_MAX_AGE_SECONDS || '300', 10),
   multitenancyDb: process.env.HERMES_MULTITENANCY_DB || resolve(homedir(), '.hermes', 'multitenancy.db'),
   requiredProfile: process.env.HERMES_REQUIRED_PROFILE?.trim() || '',
+  // 员工建 GitLab token 的页面基址（如 https://gitlab.example.com）。运行时可配、默认空：
+  // 没配就不渲染那个链接。**绝不写死内网域名** —— 本仓有 GitHub 远端，该域名当前在仓内
+  // 出现 0 次，不能由这里引入（sunke TELOS C3：公开仓已有大量内网域名泄漏）。
+  gitlabBaseUrl: (process.env.HERMES_GITLAB_BASE_URL || '').trim().replace(/\/+$/, ''),
   feishuAppId: process.env.FEISHU_APP_ID || '',
   feishuAppSecret: process.env.FEISHU_APP_SECRET || '',
   feishuRedirectUri: process.env.FEISHU_REDIRECT_URI || '',

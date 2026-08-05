@@ -30,6 +30,40 @@ describe('chat plane access control', () => {
     vi.doUnmock('../../packages/server/src/services/compat-user')
   })
 
+  it('lets a chat-plane employee submit their OWN GitLab token', async () => {
+    // 这个端点的目标用户就是 chat 面的员工，却因为落到 forbiddenInChatPlane 结尾的
+    // catch-all 而一直被拒 —— 功能从上线起对它唯一的用户就没工作过（sunke 2026-08-05
+    // 实机撞到 403: This endpoint is not available in chat plane）。
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const ctx = mockCtx('/api/hermes/credentials/gitlab', 'POST')
+    const next = vi.fn(async () => {})
+
+    await enforcePlaneAccess(ctx, next)
+
+    expect(next).toHaveBeenCalledOnce()
+    expect(ctx.status).toBe(200)
+  })
+
+  it('does not widen the hole: only POST on that exact path, neighbours stay blocked', async () => {
+    // 放行一条路径最怕顺手放宽了一片。逐条钉死：动词、路径前缀、以及相邻的 ops 端点。
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const mustStayBlocked: Array<[string, string]> = [
+      ['/api/hermes/credentials/gitlab', 'GET'],
+      ['/api/hermes/credentials/gitlab', 'DELETE'],
+      ['/api/hermes/credentials', 'POST'],
+      ['/api/hermes/credentials/other', 'POST'],
+      ['/api/hermes/gateways', 'GET'],
+      ['/api/hermes/logs', 'GET'],
+    ]
+    for (const [path, method] of mustStayBlocked) {
+      const ctx = mockCtx(path, method)
+      const next = vi.fn(async () => {})
+      await enforcePlaneAccess(ctx, next)
+      expect(next, `${method} ${path} 不该被放行`).not.toHaveBeenCalled()
+      expect(ctx.status, `${method} ${path} 应为 403`).toBe(403)
+    }
+  })
+
   it('allows model list endpoints in chat plane', async () => {
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
     const ctx = mockCtx('/api/hermes/available-models')

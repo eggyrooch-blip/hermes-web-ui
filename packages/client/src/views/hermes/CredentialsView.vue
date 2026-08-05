@@ -214,7 +214,23 @@ async function pollCredentialAfterOAuth(id: string, token: number, sessionId = '
 }
 
 const gitlabDialog = ref<{ title: string } | null>(null)
-const gitlabForm = ref({ tier: 'read' as 'read' | 'write', token: '', expires_on: '' })
+/** GitLab 建 token 页要勾的 scope，与档位一一对应。文案里明写出来，否则员工在 GitLab
+ *  那一长串 checkbox 里根本不知道该勾哪几个（sunke 2026-08-05 反馈：卡片没指引）。 */
+const GITLAB_TIER_SCOPES: Record<'read' | 'write', string[]> = {
+  read: ['read_api', 'read_repository'],
+  write: ['api', 'write_repository'],
+}
+const gitlabScopes = computed(() => GITLAB_TIER_SCOPES[gitlabForm.value.tier] || [])
+/** 建 token 页基址来自服务端运行时配置（未配置则为空 → 不渲染链接）。
+ *  绝不写死内网域名：本仓有 GitHub 远端。 */
+const gitlabBaseUrl = ref('')
+/** 直达建 token 页，并预填 name 与该档位的 scopes —— GitLab 支持这两个 query 参数。 */
+const gitlabTokenUrl = computed(() => {
+  if (!gitlabBaseUrl.value) return ''
+  const params = new URLSearchParams({ name: 'hermes', scopes: gitlabScopes.value.join(',') })
+  return `${gitlabBaseUrl.value}/-/profile/personal_access_tokens?${params.toString()}`
+})
+const gitlabForm = ref({ tier: 'read' as 'read' | 'write', token: '' })
 const gitlabSubmitting = ref(false)
 const gitlabError = ref('')
 
@@ -233,8 +249,19 @@ function isGitlabTokenEntry(entry: SkillCredentialEntry) {
 
 /** GitLab has no interactive auth flow — the employee supplies the token, so
  *  this row opens a form instead of starting a device/QR flow. */
+async function loadGitlabBaseUrl() {
+  if (gitlabBaseUrl.value) return
+  try {
+    const res = await fetch('/api/auth/status', { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+    if (!res.ok) return
+    const status = await res.json().catch(() => ({})) as { gitlabBaseUrl?: unknown }
+    if (typeof status.gitlabBaseUrl === 'string') gitlabBaseUrl.value = status.gitlabBaseUrl.trim()
+  } catch { /* 拿不到就不显示链接，不影响填写 */ }
+}
+
 function openGitlabDialog(entry: SkillCredentialEntry) {
-  gitlabForm.value = { tier: 'read', token: '', expires_on: '' }
+  void loadGitlabBaseUrl()
+  gitlabForm.value = { tier: 'read', token: '' }
   gitlabError.value = ''
   gitlabDialog.value = { title: entry.title }
 }
@@ -246,7 +273,6 @@ async function confirmGitlabToken() {
     const res = await submitGitlabToken({
       tier: gitlabForm.value.tier,
       token: gitlabForm.value.token,
-      expires_on: gitlabForm.value.expires_on,
     })
     if (!res?.ok) {
       gitlabError.value = res?.reason || '保存失败，请稍后重试'
@@ -451,19 +477,39 @@ watch(requestedProfile, async (profile, previous) => {
           填你自己的 GitLab token，hermes 之后就用<strong>你本人的权限</strong>操作仓库。
         </p>
         <ol class="gitlab-steps">
-          <li>在 GitLab 建 token 时，<strong>名字必须填 <code>hermes</code></strong>——我们靠这个名字核对你给的权限</li>
-          <li><strong>填一个到期日</strong>（GitLab 允许不填，但我们不接受永久有效的）</li>
-          <li>按下面选的档位勾 scope</li>
+          <li>
+            在 GitLab 建 token，<strong>名字必须填 <code>hermes</code></strong>——我们靠这个名字核对你给的权限
+            <a
+              v-if="gitlabTokenUrl"
+              class="gitlab-open-link"
+              :href="gitlabTokenUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+            >去 GitLab 建 token →</a>
+          </li>
+          <li>
+            按下面选的档位勾 scope，这一档要勾：
+            <code v-for="scope in gitlabScopes" :key="scope" class="gitlab-scope">{{ scope }}</code>
+          </li>
+          <li><strong>在 GitLab 那边给 token 填一个到期日</strong>——不填我们不收；到期日会直接从 GitLab 读，不用抄回来</li>
         </ol>
 
         <NFormItem label="授权档位">
-          <NSelect
-            v-model:value="gitlabForm.tier"
-            :options="[
-              { label: '只读 — 看 MR/issue/流水线、拉代码（read_api + read_repository）', value: 'read' },
-              { label: '可写 — 上面全部，外加改动和推代码（api + write_repository）', value: 'write' },
-            ]"
-          />
+          <div class="gitlab-tier-field">
+            <NSelect
+              v-model:value="gitlabForm.tier"
+              :options="[
+                { label: '只读 — 看 MR/issue/流水线、拉代码（read_api + read_repository）', value: 'read' },
+                { label: '可写 — 上面全部，外加改动和推代码（api + write_repository）', value: 'write' },
+              ]"
+            />
+            <!-- 评审采纳：勾选指引直接跟在下拉下方随档位联动，只写在上面步骤里的话，
+                 换档位的人不会回头看第 2 步。 -->
+            <p class="gitlab-scope-hint">
+              这一档要在 GitLab 勾：
+              <code v-for="scope in gitlabScopes" :key="scope" class="gitlab-scope">{{ scope }}</code>
+            </p>
+          </div>
         </NFormItem>
         <NFormItem label="GitLab token">
           <NInput
@@ -473,10 +519,6 @@ watch(requestedProfile, async (profile, previous) => {
             placeholder="粘贴你的 token"
           />
         </NFormItem>
-        <NFormItem label="到期日">
-          <NInput v-model:value="gitlabForm.expires_on" placeholder="YYYY-MM-DD" />
-        </NFormItem>
-
         <NAlert v-if="gitlabError" type="warning" :show-icon="false" class="gitlab-error">
           {{ gitlabError }}
         </NAlert>
@@ -492,7 +534,7 @@ watch(requestedProfile, async (profile, previous) => {
             size="small"
             type="primary"
             :loading="gitlabSubmitting"
-            :disabled="!gitlabForm.token || !gitlabForm.expires_on"
+            :disabled="!gitlabForm.token"
             @click="confirmGitlabToken"
           >
             提交
@@ -699,6 +741,35 @@ watch(requestedProfile, async (profile, previous) => {
   white-space: nowrap;
   color: $text-secondary;
   background: $bg-primary;
+}
+
+.gitlab-open-link {
+  margin-left: 6px;
+  color: $accent-primary;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.gitlab-open-link:hover {
+  text-decoration: underline;
+}
+
+.gitlab-scope {
+  margin-right: 4px;
+  padding: 0 4px;
+  border: 1px solid $border-color;
+  border-radius: $radius-sm;
+  font-size: 12px;
+}
+
+.gitlab-tier-field {
+  width: 100%;
+}
+
+.gitlab-scope-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: $text-secondary;
 }
 
 .credential-command {

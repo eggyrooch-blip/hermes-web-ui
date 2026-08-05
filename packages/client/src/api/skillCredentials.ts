@@ -99,8 +99,8 @@ export interface GitlabTokenSubmitPayload {
   /** 'read' = read_api + read_repository, 'write' = api + write_repository */
   tier: 'read' | 'write'
   token: string
-  /** YYYY-MM-DD; mandatory — this GitLab allows non-expiring tokens, we do not */
-  expires_on: string
+  // 到期日不再由员工填：broker 从 GitLab 的 token 行直接读 expires_at，
+  // 没有到期日的 token 会被拒（我们不收永久有效的）。
 }
 
 export interface GitlabTokenSubmitResult {
