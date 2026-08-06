@@ -20,6 +20,43 @@ const props = withDefaults(defineProps<{
   embedded: false,
   preferActiveProfile: false,
 })
+/** 「关联技能」默认只露这么多，其余折进「+N」。
+ *
+ *  为什么是折叠而不是卡内滚动：嵌入态里内层滚动框会吃掉滚轮，外层滚不动、底部卡片
+ *  够不着（见 .is-embedded 里那段注释）。那次的结论就是「真要压高度，走前 N 个 +
+ *  展开」——本次照办。lark-cli 有 30+ 技能，不折叠会把整行撑成一根柱子。 */
+const SKILL_PREVIEW_COUNT = 6
+const expandedSkills = ref<Set<string>>(new Set())
+
+function visibleSkills(entry: SkillCredentialEntry): string[] {
+  const all = entry.required_by ?? []
+  if (expandedSkills.value.has(entry.id)) return all
+  return all.slice(0, SKILL_PREVIEW_COUNT)
+}
+
+function hiddenSkillCount(entry: SkillCredentialEntry): number {
+  const total = entry.required_by?.length ?? 0
+  return expandedSkills.value.has(entry.id) ? 0 : Math.max(0, total - SKILL_PREVIEW_COUNT)
+}
+
+/** 是否渲染那颗折叠按钮。
+ *
+ *  条件挂在「这张卡的技能数真的超过预览上限」而不是「它在 expandedSkills 里」：
+ *  刷新后技能数掉到 ≤6 的卡，id 仍留在展开集合里，只看展开态会渲染出一颗
+ *  什么都收不了的「收起」（codex 评审）。 */
+function isSkillListFoldable(entry: SkillCredentialEntry): boolean {
+  return (entry.required_by?.length ?? 0) > SKILL_PREVIEW_COUNT
+}
+
+function toggleSkills(entry: SkillCredentialEntry) {
+  // 重新赋值而不是原地 add/delete。Vue 3 的 ref(Set) 其实能追踪原地改动（codex
+  // 指出我原先的注释说错了），这里仍然整只换掉，图的是「每次 toggle 产生一个新
+  // 引用」这条更好推理的性质，代价是一个几十元素的浅拷贝。
+  const next = new Set(expandedSkills.value)
+  next.has(entry.id) ? next.delete(entry.id) : next.add(entry.id)
+  expandedSkills.value = next
+}
+
 const loading = ref(false)
 const startingId = ref('')
 const completingId = ref('')
@@ -437,7 +474,19 @@ watch(requestedProfile, async (profile, previous) => {
                   <p v-if="entry.detail" class="credential-detail">{{ entry.detail }}</p>
                   <div v-if="entry.required_by?.length" class="credential-required credential-required-scroll">
                     <span class="required-label">关联技能</span>
-                    <span v-for="skill in entry.required_by" :key="skill" class="required-skill">{{ skill }}</span>
+                    <span v-for="skill in visibleSkills(entry)" :key="skill" class="required-skill">{{ skill }}</span>
+                    <button
+                      v-if="isSkillListFoldable(entry)"
+                      type="button"
+                      class="required-skill required-skill-toggle"
+                      :aria-expanded="expandedSkills.has(entry.id)"
+                      :aria-label="expandedSkills.has(entry.id)
+                        ? `收起 ${entry.title} 的关联技能`
+                        : `展开 ${entry.title} 剩余 ${hiddenSkillCount(entry)} 个关联技能`"
+                      @click="toggleSkills(entry)"
+                    >
+                      {{ hiddenSkillCount(entry) ? `+${hiddenSkillCount(entry)}` : '收起' }}
+                    </button>
                   </div>
                   <code v-if="entry.action?.command" class="credential-command">{{ entry.action.command }}</code>
                 </div>
@@ -621,8 +670,11 @@ watch(requestedProfile, async (profile, previous) => {
   gap: 12px;
 }
 
+// 同一行的卡片等高（grid 默认 stretch）。之前是 align-items: start，每张卡各自
+// 按内容长，技能多的那张（lark-cli 30+ 个）就成了一根柱子，旁边两张矮一截。
+// 折叠了技能之后高度差已经很小，stretch 把剩下的差抹平。
 .credentials-grid-compact {
-  align-items: start;
+  align-items: stretch;
 }
 
 .credential-card {
@@ -729,6 +781,18 @@ watch(requestedProfile, async (profile, previous) => {
 
 .required-label {
   color: $text-muted;
+}
+
+// button 自带 UA 样式（background: buttonface、自己的 padding/line-height），
+// 光靠 .required-skill 盖不干净，会比旁边的标签高出一点点。逐项归零（codex 评审）。
+.required-skill-toggle {
+  appearance: none;
+  background: none;
+  font: inherit;
+  line-height: inherit;
+  cursor: pointer;
+  color: $accent-primary;
+  border-style: dashed;
 }
 
 .required-skill {
