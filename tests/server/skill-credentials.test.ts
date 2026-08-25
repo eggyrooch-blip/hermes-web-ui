@@ -410,44 +410,50 @@ describe('skill credential status', () => {
     expect(JSON.stringify(result)).not.toContain('refresh_token')
   })
 
-  it('uses a Meegle profile without overriding HOME so macOS keychain can use the login keychain', async () => {
-    const { startFeishuProjectAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
-    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-keychain-home-'))
-    roots.push(profileDir)
-    const realHome = join(profileDir, 'real-home')
-    mkdirSync(realHome, { recursive: true })
-    const meegle = join(profileDir, 'fake-meegle')
-    const invoked = join(profileDir, 'meegle-profile-home-args.txt')
-    writeFileSync(meegle, [
-      '#!/bin/sh',
-      `test "$HOME" = "${realHome}" || { echo "bad HOME=$HOME" >&2; exit 12; }`,
-      `printf '%s\\n' "$@" >> "${invoked}"`,
-      'profile=""',
-      'while [ "$#" -gt 0 ]; do',
-      '  if [ "$1" = "--profile" ]; then profile="$2"; shift 2; continue; fi',
-      '  break',
-      'done',
-      'test "$profile" = "hermes_feishu_user_a" || { echo "bad profile=$profile" >&2; exit 11; }',
-      'if [ "$1" = "config" ]; then exit 0; fi',
-      'if [ "$1" = "auth" ] && [ "$2" = "login" ]; then',
-      '  echo "Open https://project.feishu.cn/oauth/device?user_code=KEYCHAIN-1234"',
-      '  sleep 0.2',
-      '  exit 0',
-      'fi',
-      'exit 9',
-    ].join('\n'), 'utf-8')
-    chmodSync(meegle, 0o755)
-    process.env.HERMES_MEEGLE_BIN = meegle
-    process.env.HOME = realHome
+  it('starts Feishu Project auth only in the selected profile HOME', async () => {
+    const { listSkillCredentialStatuses, startFeishuProjectAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    for (const profileName of ['alice', 'bob']) {
+      const profileDir = mkdtempSync(join(tmpdir(), `hermes-skill-credentials-meegle-${profileName}-`))
+      roots.push(profileDir)
+      const profileHome = join(profileDir, 'home')
+      mkdirSync(profileHome, { recursive: true })
+      const meegle = join(profileDir, 'fake-meegle')
+      const invoked = join(profileDir, 'meegle-profile-home-args.txt')
+      writeFileSync(meegle, [
+        '#!/bin/sh',
+        `test "$HOME" = "${profileHome}" || { echo "bad HOME=$HOME" >&2; exit 12; }`,
+        `printf '%s\\n' "$@" >> "${invoked}"`,
+        'profile=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  if [ "$1" = "--profile" ]; then profile="$2"; shift 2; continue; fi',
+        '  break',
+        'done',
+        `test "$profile" = "hermes_${profileName}" || { echo "bad profile=$profile" >&2; exit 11; }`,
+        'if [ "$1" = "config" ]; then exit 0; fi',
+        'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then',
+        '  test -f "$HOME/.meegle/authenticated" && echo \'{"authenticated":true,"access_token":"secret-token"}\' || echo \'{"authenticated":false}\'',
+        '  exit 0',
+        'fi',
+        'if [ "$1" = "auth" ] && [ "$2" = "login" ]; then',
+        '  mkdir -p "$HOME/.meegle" && touch "$HOME/.meegle/authenticated"',
+        '  echo "Open https://project.feishu.cn/oauth/device?user_code=KEYCHAIN-1234"',
+        '  sleep 0.2',
+        '  exit 0',
+        'fi',
+        'exit 9',
+      ].join('\n'), 'utf-8')
+      chmodSync(meegle, 0o755)
+      process.env.HERMES_MEEGLE_BIN = meegle
+      process.env.HOME = join(profileDir, 'service-home')
 
-    const result = await startFeishuProjectAuth({
-      id: 'feishu-project',
-      profileName: 'feishu_user_a',
-      profileDir,
-    })
+      const result = await startFeishuProjectAuth({ id: 'feishu-project', profileName, profileDir })
+      const status = await listSkillCredentialStatuses({ profileName, profileDir })
 
-    expect(result.verification_uri).toBe('https://project.feishu.cn/oauth/device?user_code=KEYCHAIN-1234')
-    expect(readFileSync(invoked, 'utf-8')).toContain('--profile\nhermes_feishu_user_a')
+      expect(result.verification_uri).toBe('https://project.feishu.cn/oauth/device?user_code=KEYCHAIN-1234')
+      expect(readFileSync(invoked, 'utf-8')).toContain(`--profile\nhermes_${profileName}`)
+      expect(status.credentials.find(item => item.id === 'feishu-project')?.status).toBe('authenticated')
+      expect(JSON.stringify(status)).not.toContain('secret-token')
+    }
   })
 
   it('starts Feishu Project auth through npx when no global meegle command is installed', async () => {
@@ -669,7 +675,7 @@ describe('skill credential status', () => {
     expect(detectSkillCredentialRequirements({
       name: 'keep-login-skill',
       tags: [],
-      text: 'Fetch proxy.cms.gotokeep.com APIs with kep-auth and KEP_PROFILE.',
+      text: 'Fetch proxy.cms.example.com APIs with kep-auth and KEP_PROFILE.',
       source: 'hub',
     })).toEqual(['kep-cli'])
 
@@ -689,7 +695,7 @@ describe('skill credential status', () => {
     expect(detectSkillCredentialRequirements({
       name: 'kep-prd-analysis',
       tags: ['aidock'],
-      text: '分析 PRD 需求、任务、工作项和排期，并调用 proxy.cms.gotokeep.com。',
+      text: '分析 PRD 需求、任务、工作项和排期，并调用 proxy.cms.example.com。',
       source: 'hub',
     })).toEqual(['kep-cli'])
 
@@ -709,7 +715,7 @@ describe('skill credential status', () => {
     expect(detectSkillCredentialRequirements({
       name: 'mixed-internal-report',
       tags: ['aidock'],
-      text: 'Download SkillHub data from ark.gotokeep.com/aidock-cms, then write the result to a Feishu docx.',
+      text: 'Download SkillHub data from ark.example.com/aidock-cms, then write the result to a Feishu docx.',
     })).toEqual(['lark-cli', 'kep-cli'])
 
     expect(detectSkillCredentialRequirements({
@@ -739,7 +745,7 @@ describe('skill credential status', () => {
       '  hermes:',
       '    tags: [aidock]',
       '---',
-      'Call proxy.cms.gotokeep.com through kep-auth to analyze PRD 需求、任务、工作项 and 排期.',
+      'Call proxy.cms.example.com through kep-auth to analyze PRD 需求、任务、工作项 and 排期.',
     ].join('\n'), 'utf-8')
     writeFileSync(join(profileDir, 'skills', 'internal', 'meegle', 'SKILL.md'), [
       '---',
@@ -1237,12 +1243,59 @@ describe('skill credential status', () => {
       },
     })
 
-    const gitlab = await getSkillCredentialStartAction({
-      id: 'gitlab',
+    await expect(getSkillCredentialStartAction({
+      id: 'gitlab-personal',
       profileName: 'feishu_user_a',
       profileDir,
+      publicOrigin: 'https://hermes.example.com',
+    })).resolves.toEqual({
+      id: 'gitlab-personal',
+      verification_uri: 'https://hermes.example.com/#/hermes/chat?surface=expert&tab=connectors&open_credential=gitlab-personal',
     })
-    expect(JSON.stringify(gitlab)).not.toContain('gitlab-secret-token')
+
+    // 全局 GitLab 和未知连接器仍没有员工可启动的流程，不能返回假成功。
+    for (const id of ['gitlab', 'no-such-connector']) {
+      const err = await getSkillCredentialStartAction({
+        id,
+        profileName: 'feishu_user_a',
+        profileDir,
+      }).then(() => null, (e: any) => e)
+      expect(err, `${id} must not report a started flow`).toBeInstanceOf(Error)
+      expect(err.status).toBe(400)
+      expect(JSON.stringify(err.message)).not.toContain('gitlab-secret-token')
+    }
+  })
+
+  it('returns a same-origin current-page handoff for stale GitLab personal start requests', async () => {
+    const hermesHome = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-home-'))
+    roots.push(hermesHome)
+    process.env.HERMES_HOME = hermesHome
+    mkdirSync(join(hermesHome, 'profiles', 'preview'), { recursive: true })
+
+    vi.resetModules()
+    const { skillCredentialStart } = await import('../../packages/server/src/controllers/auth')
+    const ctx: any = {
+      params: { id: 'gitlab-personal' },
+      query: { profile: 'preview' },
+      request: { body: {} },
+      state: {},
+      origin: 'http://127.0.0.1:8648',
+      get: (name: string) => ({
+        'x-forwarded-proto': 'https',
+        'x-forwarded-host': 'hermes.example.com',
+      } as Record<string, string>)[name.toLowerCase()] || '',
+    }
+
+    await skillCredentialStart(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body).toEqual({
+      id: 'gitlab-personal',
+      verification_uri: 'https://hermes.example.com/#/hermes/chat?surface=expert&tab=connectors&open_credential=gitlab-personal',
+    })
+    expect(JSON.stringify(ctx.body)).not.toContain('profile=')
+    expect(JSON.stringify(ctx.body)).not.toContain('open_id')
+    expect(JSON.stringify(ctx.body)).not.toContain('token=')
   })
 
   it('starts and completes Keep-record QR auth without returning the token', async () => {

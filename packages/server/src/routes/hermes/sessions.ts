@@ -1,5 +1,6 @@
 import Router from '@koa/router'
 import * as ctrl from '../../controllers/hermes/sessions'
+import * as feedbackCtrl from '../../controllers/hermes/feedback'
 
 export const sessionRoutes = new Router()
 
@@ -15,9 +16,13 @@ sessionRoutes.get('/api/hermes/sessions/search', ctrl.search)
 sessionRoutes.get('/api/hermes/sessions/usage', ctrl.usageBatch)
 sessionRoutes.get('/api/hermes/usage/stats', ctrl.usageStats)
 sessionRoutes.get('/api/hermes/sessions/context-length', ctrl.contextLength)
+sessionRoutes.get('/api/hermes/sessions/:sessionId/feedback', feedbackCtrl.listFeedback)
+sessionRoutes.put('/api/hermes/sessions/:sessionId/runs/:runId/feedback', feedbackCtrl.putFeedback)
+sessionRoutes.delete('/api/hermes/sessions/:sessionId/runs/:runId/feedback', feedbackCtrl.deleteFeedback)
 sessionRoutes.get('/api/hermes/sessions/:id/workspace-run-changes', ctrl.listWorkspaceRunChanges)
 sessionRoutes.get('/api/hermes/sessions/:id/workspace-run-changes/:changeId', ctrl.getWorkspaceRunChange)
 sessionRoutes.get('/api/hermes/sessions/:id/workspace-run-changes/:changeId/files/:fileId', ctrl.getWorkspaceRunChangeFile)
+sessionRoutes.get('/api/hermes/sessions/source-refs/:runId/:refId/open', ctrl.openSourceRef)
 sessionRoutes.get('/api/hermes/sessions/:id', ctrl.get)
 sessionRoutes.get('/api/hermes/sessions/:id/export', ctrl.exportSession)
 sessionRoutes.get('/api/hermes/sessions/:id/usage', ctrl.usageSingle)

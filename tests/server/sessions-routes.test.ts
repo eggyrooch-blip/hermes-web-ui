@@ -12,6 +12,7 @@ const getMock = vi.fn(async (ctx: any) => { ctx.body = { session: { id: ctx.para
 const listWorkspaceRunChangesMock = vi.fn(async (ctx: any) => { ctx.body = { changes: [] } })
 const getWorkspaceRunChangeMock = vi.fn(async (ctx: any) => { ctx.body = { change: { change_id: ctx.params.changeId } } })
 const getWorkspaceRunChangeFileMock = vi.fn(async (ctx: any) => { ctx.body = { file: { id: Number(ctx.params.fileId) } } })
+const openSourceRefMock = vi.fn(async (ctx: any) => { ctx.status = 302 })
 const removeMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const renameMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const archiveSessionMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true, archived: true } })
@@ -28,6 +29,9 @@ const usageStatsMock = vi.fn(async (ctx: any) => { ctx.body = { total_input_toke
 const contextLengthMock = vi.fn(async (ctx: any) => { ctx.body = { context_length: 256000 } })
 const batchRemoveMock = vi.fn(async (ctx: any) => { ctx.body = { deleted: 1, failed: 0, errors: [] } })
 const exportSessionMock = vi.fn(async (ctx: any) => { ctx.body = JSON.stringify({ id: ctx.params.id }) })
+const listFeedbackMock = vi.fn(async (ctx: any) => { ctx.body = { feedback: [] } })
+const putFeedbackMock = vi.fn(async (ctx: any) => { ctx.body = { feedback: { run_id: ctx.params.runId } } })
+const deleteFeedbackMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 
 vi.mock('../../packages/server/src/controllers/hermes/sessions', () => ({
   listConversations: listConversationsMock,
@@ -42,6 +46,7 @@ vi.mock('../../packages/server/src/controllers/hermes/sessions', () => ({
   listWorkspaceRunChanges: listWorkspaceRunChangesMock,
   getWorkspaceRunChange: getWorkspaceRunChangeMock,
   getWorkspaceRunChangeFile: getWorkspaceRunChangeFileMock,
+  openSourceRef: openSourceRefMock,
   remove: removeMock,
   batchRemove: batchRemoveMock,
   rename: renameMock,
@@ -58,6 +63,12 @@ vi.mock('../../packages/server/src/controllers/hermes/sessions', () => ({
   usageStats: usageStatsMock,
   contextLength: contextLengthMock,
   exportSession: exportSessionMock,
+}))
+
+vi.mock('../../packages/server/src/controllers/hermes/feedback', () => ({
+  listFeedback: listFeedbackMock,
+  putFeedback: putFeedbackMock,
+  deleteFeedback: deleteFeedbackMock,
 }))
 
 describe('session routes', () => {
@@ -109,6 +120,8 @@ describe('session routes', () => {
       '/api/hermes/sessions/:id',
       '/api/hermes/sessions/:id/export',
       '/api/hermes/sessions/:id/usage',
+      '/api/hermes/sessions/:sessionId/feedback',
+      '/api/hermes/sessions/:sessionId/runs/:runId/feedback',
       '/api/hermes/sessions/:id/archive',
       '/api/hermes/sessions/:id/unarchive',
       '/api/hermes/sessions/:id/rename',
@@ -116,6 +129,23 @@ describe('session routes', () => {
       '/api/hermes/workspace/folders',
       '/api/hermes/workspace/folders/rename',
     ]))
+  })
+
+  it('delegates feedback routes to the isolated controller', async () => {
+    const { sessionRoutes } = await import('../../packages/server/src/routes/hermes/sessions')
+    const listLayer = sessionRoutes.stack.find((entry: any) => entry.path === '/api/hermes/sessions/:sessionId/feedback')
+    const mutationLayers = sessionRoutes.stack.filter((entry: any) => entry.path === '/api/hermes/sessions/:sessionId/runs/:runId/feedback')
+    const putLayer = mutationLayers.find((entry: any) => entry.methods.includes('PUT'))
+    const deleteLayer = mutationLayers.find((entry: any) => entry.methods.includes('DELETE'))
+    const ctx: any = { params: { sessionId: 's1', runId: 'r1' }, request: { body: { rating: 'up' } }, body: null }
+
+    await listLayer.stack[0](ctx)
+    await putLayer.stack[0](ctx)
+    await deleteLayer.stack[0](ctx)
+
+    expect(listFeedbackMock).toHaveBeenCalledWith(ctx)
+    expect(putFeedbackMock).toHaveBeenCalledWith(ctx)
+    expect(deleteFeedbackMock).toHaveBeenCalledWith(ctx)
   })
 
   it('delegates workspace folder routes to the controller', async () => {

@@ -9,7 +9,7 @@ import { createHash, randomBytes } from 'crypto'
 import type { WebUser } from '../request-context'
 
 export type SkillCredentialState = 'authenticated' | 'configured' | 'missing' | 'needs_auth' | 'unknown' | 'error'
-export type SkillCredentialActionKind = 'feishu_device_flow' | 'skill_flow' | 'qr_flow' | 'oauth_url' | 'manual'
+export type SkillCredentialActionKind = 'feishu_device_flow' | 'skill_flow' | 'qr_flow' | 'oauth_url' | 'manual' | 'retry'
 
 const execFileAsync = promisify(execFile)
 type KepAuthLoginProcess = ChildProcessByStdio<Writable | null, Readable, Readable>
@@ -81,6 +81,10 @@ export interface SkillCredentialStartOptions {
   publicOrigin?: string
   env?: string
 }
+
+export type SkillCredentialStartResult =
+  | { id: string; action: SkillCredentialAction; verification_uri?: never }
+  | { id: string; verification_uri: string; action?: never }
 
 interface ProfileSkill {
   name: string
@@ -185,17 +189,17 @@ export function detectSkillCredentialRequirements(input: SkillCredentialRequirem
     /\bskillhub\b/,
     /\bkeep[-_ ]?login\b/,
     /\bproxy[-_ ]?cms\b/,
-    /proxy\.cms\.(pre\.)?gotokeep\.com/,
-    /ark\.gotokeep\.com\/aidock-cms/,
+    /proxy\.cms\.(pre\.)?example\.com/,
+    /ark\.example\.com\/aidock-cms/,
     /skill\/zipfile/,
     /\bkep_profile\b/,
     /\bkep_no_auto_login\b/,
-    /bearer\s+token.*gotokeep/,
+    /bearer\s+token.*example/,
   ].some(pattern => pattern.test(text))
 
   const needsGitlab = [
     /\bgitlab_token\b/,
-    /gitlab\.gotokeep\.com/,
+    /gitlab\.example\.com/,
     /oauth2:\$\{?gitlab_token\}?@/i,
   ].some(pattern => pattern.test(text))
 
@@ -249,8 +253,20 @@ function kepCliRequirementsByEnv(skills: ProfileSkill[]): Record<'online' | 'pre
   }
 }
 
-export async function getSkillCredentialStartAction(options: SkillCredentialStartOptions): Promise<{ id: string; action: SkillCredentialAction }> {
+export async function getSkillCredentialStartAction(options: SkillCredentialStartOptions): Promise<SkillCredentialStartResult> {
   const id = normalizeId(options.id)
+  if (id === 'gitlab-personal') {
+    let publicOrigin: string
+    try {
+      publicOrigin = new URL(String(options.publicOrigin || '')).origin
+    } catch {
+      throw noInteractiveFlowError(id)
+    }
+    return {
+      id,
+      verification_uri: new URL('/#/hermes/chat?surface=expert&tab=connectors&open_credential=gitlab-personal', publicOrigin).toString(),
+    }
+  }
   if (id === 'lark-cli') {
     return {
       id,
@@ -294,24 +310,22 @@ export async function getSkillCredentialStartAction(options: SkillCredentialStar
       },
     }
   }
-  if (id === 'gitlab') {
-    return {
-      id,
-      action: {
-        kind: 'manual',
-        label: '检查 GitLab Token',
-        description: 'GitLab tokens are managed by the multitenancy credential vault or materialized profile credential file.',
-      },
-    }
-  }
-  return {
-    id,
-    action: {
-      kind: 'manual',
-      label: 'Open skill authentication',
-      description: 'This skill does not have a WebUI authentication adapter yet.',
-    },
-  }
+  // 到这里说明这个连接器没有可启动的交互式流程。以前它回 200 + 一个空操作，
+  // 客户端把 200 当成"启动成功"，弹一句绿色「认证流程已启动」，而实际上什么都
+  // 没发生 —— 员工点「绑定我的 GitLab」只看到这句提示、卡片永远停在未认证
+  // (ligaofeng 2026-08-06)。没启动就不能回成功：400 + 一句人话，客户端照实说。
+  throw noInteractiveFlowError(id)
+}
+
+/** 该连接器没有 WebUI 可启动的认证流程 —— 400，而不是"假装启动了"。 */
+function noInteractiveFlowError(id: string): Error & { status: number } {
+  const err: any = new Error(
+    id.startsWith('gitlab')
+      ? 'GitLab 不走交互式认证：请在连接器卡片上提交你自己的 GitLab token。'
+      : '该连接器没有可在 WebUI 启动的认证流程。',
+  )
+  err.status = 400
+  return err
 }
 
 export async function startFeishuProjectAuth(options: SkillCredentialStartOptions): Promise<FeishuProjectAuthStartResult> {
@@ -328,7 +342,7 @@ export async function startFeishuProjectAuth(options: SkillCredentialStartOption
   const args = meegleArgs(invocation, options.profileName, ['auth', 'login', '--device-code', '--host', host])
   const child = spawn(invocation.command, args, {
     cwd: options.profileDir,
-    env: meegleEnv(host, invocation),
+    env: meegleEnv(options.profileDir, host, invocation),
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   activeFeishuProjectLogins.set(sessionKey, { child, sessionKey })
@@ -409,9 +423,10 @@ function meegleHost(): string {
   return String(process.env.HERMES_MEEGLE_HOST || MEEGLE_DEFAULT_HOST).trim() || MEEGLE_DEFAULT_HOST
 }
 
-function meegleEnv(host = meegleHost(), invocation?: MeegleInvocation): NodeJS.ProcessEnv {
+function meegleEnv(profileDir: string, host = meegleHost(), invocation?: MeegleInvocation): NodeJS.ProcessEnv {
   return {
     ...process.env,
+    HOME: join(profileDir, 'home'),
     MEEGLE_HOST: host,
     PATH: meegleChildPath(invocation),
   }
@@ -435,7 +450,7 @@ async function configureMeegleHost(invocation: MeegleInvocation, profileDir: str
   try {
     await execFileAsync(invocation.command, meegleArgs(invocation, profileName, ['config', 'set', 'host', host]), {
       cwd: profileDir,
-      env: meegleEnv(host, invocation),
+      env: meegleEnv(profileDir, host, invocation),
       timeout: 10_000,
       maxBuffer: 256 * 1024,
     })
@@ -804,7 +819,7 @@ async function readMeegleAuthStatus(profileDir: string, profileName: string): Pr
   try {
     const { stdout } = await execFileAsync(invocation.command, meegleArgs(invocation, profileName, ['auth', 'status', '--format', 'json']), {
       cwd: profileDir,
-      env: meegleEnv(meegleHost(), invocation),
+      env: meegleEnv(profileDir, meegleHost(), invocation),
       timeout: 10_000,
       maxBuffer: 256 * 1024,
     })

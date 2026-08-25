@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -145,6 +145,9 @@ describe('bridge run final context usage', () => {
     const home = mkdtempSync(join(tmpdir(), 'hermes-bridge-run-token-'))
     homes.push(home)
     process.env.HERMES_WEB_UI_HOME = home
+    rmSync('/tmp/hermes-bridge-final-context', { recursive: true, force: true })
+    mkdirSync('/tmp/hermes-bridge-final-context/default/workspace/explicit', { recursive: true })
+    mkdirSync('/tmp/hermes-bridge-final-context/default/workspace/stored', { recursive: true })
     vi.clearAllMocks()
     getSystemPromptMock.mockReturnValue('system prompt')
     issueModelRunJwtMock.mockResolvedValue('model-run-token')
@@ -181,6 +184,7 @@ describe('bridge run final context usage', () => {
   afterEach(() => {
     delete process.env.HERMES_WEB_UI_HOME
     for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true })
+    rmSync('/tmp/hermes-bridge-final-context', { recursive: true, force: true })
   })
 
   it('refreshes full context tokens when a bridge run completes', async () => {
@@ -302,9 +306,7 @@ describe('bridge run final context usage', () => {
     const socket = makeSocket()
     const state = makeState()
     const sessionMap = new Map([['session-1', state]])
-    // Explicit, but inside the profile workspace — ensureHermesRunWorkspace now
-    // contains every run path, so an out-of-tree value would be rewritten to the
-    // profile default (see run-workspace-containment.test.ts).
+    // Explicit, existing, and inside the profile workspace.
     const workspace = '/tmp/hermes-bridge-final-context/default/workspace/explicit'
     completeWorkspaceRunCheckpointMock.mockReturnValue({
       change_id: 'change-1',
@@ -578,7 +580,7 @@ describe('bridge run final context usage', () => {
       profile: 'default',
       model: '',
       provider: '',
-      workspace: '/tmp/hermes-stored-workspace',
+      workspace: 'stored',
     })
     const emit = vi.fn()
     const nsp = makeNamespace(emit)
@@ -621,9 +623,7 @@ describe('bridge run final context usage', () => {
       flushedRunIds.push(targetState.runId)
     })
     const sessionMap = new Map([['session-1', state]])
-    // Explicit, but inside the profile workspace — ensureHermesRunWorkspace now
-    // contains every run path, so an out-of-tree value would be rewritten to the
-    // profile default (see run-workspace-containment.test.ts).
+    // Explicit, existing, and inside the profile workspace.
     const workspace = '/tmp/hermes-bridge-final-context/default/workspace/explicit'
     const change = {
       change_id: 'change-failed',
@@ -844,9 +844,7 @@ describe('bridge run final context usage', () => {
       id: 'session-1',
       source: 'global_agent',
     }))
-    expect(updateSessionMock).toHaveBeenCalledWith('session-1', {
-      workspace: '/tmp/hermes-bridge-final-context/default/workspace',
-    })
+    expect(updateSessionMock).toHaveBeenCalledWith('session-1', { workspace: null })
     expect(state.source).toBe('global_agent')
   })
 

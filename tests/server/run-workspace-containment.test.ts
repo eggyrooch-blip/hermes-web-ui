@@ -35,28 +35,28 @@ describe('ensureHermesRunWorkspace containment', () => {
     rmSync(state.hermesBase, { recursive: true, force: true })
   })
 
-  it('falls back when a stored workspace points at another profile', async () => {
+  it('rejects when a stored workspace points at another profile', async () => {
     // The regression: setWorkspace persists any string, and callers trusted it.
-    expect(await ensureHermesRunWorkspace('mine', theirWorkspace)).toBe(mineWorkspace)
+    await expect(ensureHermesRunWorkspace('mine', theirWorkspace)).rejects.toThrow(/invalid workspace/i)
   })
 
-  it('falls back when a workspace points outside the hermes tree', async () => {
-    expect(await ensureHermesRunWorkspace('mine', '/etc')).toBe(mineWorkspace)
+  it('rejects when a workspace points outside the hermes tree', async () => {
+    await expect(ensureHermesRunWorkspace('mine', '/etc')).rejects.toThrow(/invalid workspace/i)
   })
 
-  it('falls back when a symlink inside the workspace escapes it', async () => {
+  it('rejects when a symlink inside the workspace escapes it', async () => {
     const escape = join(mineWorkspace, 'escape')
     symlinkSync(state.hermesBase, escape)
-    expect(await ensureHermesRunWorkspace('mine', escape)).toBe(mineWorkspace)
+    await expect(ensureHermesRunWorkspace('mine', escape)).rejects.toThrow(/invalid workspace/i)
   })
 
-  it('falls back on relative traversal', async () => {
-    expect(await ensureHermesRunWorkspace('mine', '../../profiles/theirs/workspace')).toBe(mineWorkspace)
+  it('rejects relative traversal', async () => {
+    await expect(ensureHermesRunWorkspace('mine', '../../profiles/theirs/workspace')).rejects.toThrow(/invalid workspace/i)
   })
 
   it('never creates an out-of-bounds directory', async () => {
     const victim = join(state.hermesBase, 'credentials', 'nested')
-    await ensureHermesRunWorkspace('mine', victim)
+    await expect(ensureHermesRunWorkspace('mine', victim)).rejects.toThrow(/invalid workspace/i)
     expect(existsSync(victim)).toBe(false)
   })
 
@@ -66,7 +66,7 @@ describe('ensureHermesRunWorkspace containment', () => {
     const pathModule = await import('../../packages/server/src/services/hermes/hermes-path')
     const spy = vi.spyOn(pathModule, 'isNearestExistingRealPathWithin').mockResolvedValue(true)
     try {
-      expect(await ensureHermesRunWorkspace('mine', theirWorkspace)).toBe(mineWorkspace)
+      await expect(ensureHermesRunWorkspace('mine', theirWorkspace)).rejects.toThrow(/invalid workspace/i)
     } finally {
       spy.mockRestore()
     }
@@ -103,24 +103,31 @@ describe('ensureHermesRunWorkspace containment', () => {
     await expect(ensureHermesRunWorkspace('mine')).rejects.toThrow(/not a directory/)
   })
 
-  it('falls back on a dangling symlink instead of crashing the run', async () => {
+  it('rejects a dangling symlink instead of crashing the run', async () => {
     const dangling = join(mineWorkspace, 'dangling')
     symlinkSync(join(state.hermesBase, 'gone', 'target'), dangling)
-    expect(await ensureHermesRunWorkspace('mine', dangling)).toBe(mineWorkspace)
+    await expect(ensureHermesRunWorkspace('mine', dangling)).rejects.toThrow(/invalid workspace/i)
   })
 
   it('keeps a compliant stored workspace', async () => {
     expect(await ensureHermesRunWorkspace('mine', mineWorkspace)).toBe(mineWorkspace)
   })
 
-  it('allows a subdirectory of the profile workspace and creates it', async () => {
+  it('allows an existing subdirectory of the profile workspace', async () => {
     const sub = join(mineWorkspace, 'project')
+    mkdirSync(sub)
     expect(await ensureHermesRunWorkspace('mine', sub)).toBe(sub)
     expect(existsSync(sub)).toBe(true)
   })
 
   it('resolves a relative workspace against the profile workspace', async () => {
+    mkdirSync(join(mineWorkspace, 'project'))
     expect(await ensureHermesRunWorkspace('mine', 'project')).toBe(join(mineWorkspace, 'project'))
+  })
+
+  it('rejects an explicit missing workspace instead of creating it', async () => {
+    await expect(ensureHermesRunWorkspace('mine', 'missing')).rejects.toThrow(/invalid workspace/i)
+    expect(existsSync(join(mineWorkspace, 'missing'))).toBe(false)
   })
 
   it('defaults to the profile workspace when empty and creates it', async () => {

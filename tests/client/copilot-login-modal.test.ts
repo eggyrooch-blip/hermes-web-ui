@@ -58,7 +58,7 @@ describe('CopilotLoginModal device-flow state machine', () => {
     expect(mockApi.startCopilotLogin).toHaveBeenCalledTimes(1)
   })
 
-  it('approved 时 emit success 且消息为 copilotApproved', async () => {
+  it('approved 时关闭弹窗并 emit success', async () => {
     mockApi.startCopilotLogin.mockResolvedValue({
       session_id: 'sess-2',
       user_code: 'WXYZ-9999',
@@ -75,7 +75,8 @@ describe('CopilotLoginModal device-flow state machine', () => {
     await vi.advanceTimersByTimeAsync(3000)
     await flushPromises()
 
-    expect(mockMessage.success).toHaveBeenCalledWith('models.copilotApproved')
+    // approved 不再弹 toast：弹窗随即关闭并 emit success，那就是回执本身。
+    // 这条用例真正要保的是下面的 emit('success')。
 
     // approved 后 1s 自动关闭
     await vi.advanceTimersByTimeAsync(1500)
@@ -108,7 +109,8 @@ describe('CopilotLoginModal device-flow state machine', () => {
     const wrapper = mountModal()
     await flushPromises()
 
-    expect(mockMessage.error).toHaveBeenCalled()
+    // 失败落在弹窗自己那条常驻错误行上（原来是 toast + 同一份文案的重复）。
+    expect(wrapper.find('.copilot-login__error').text()).toBeTruthy()
     expect(wrapper.emitted('success')).toBeFalsy()
   })
 

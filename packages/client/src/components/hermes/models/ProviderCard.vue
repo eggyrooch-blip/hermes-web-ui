@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { NButton, NCheckbox, NCheckboxGroup, NModal, NInput, useMessage, useDialog } from 'naive-ui'
+import { NButton, NCheckbox, NCheckboxGroup, NModal, NInput, useDialog } from 'naive-ui'
 import type { AvailableModelGroup } from '@/api/hermes/system'
 import { useModelsStore } from '@/stores/hermes/models'
 import { useAppStore } from '@/stores/hermes/app'
@@ -14,12 +14,13 @@ const { t } = useI18n()
 const modelsStore = useModelsStore()
 const appStore = useAppStore()
 const chatStore = useChatStore()
-const message = useMessage()
 const dialog = useDialog()
 
 const isCustom = computed(() => !props.provider.builtin && props.provider.provider.startsWith('custom:'))
 const isCopilot = computed(() => props.provider.provider === 'copilot')
 const displayName = computed(() => props.provider.label)
+/** Validation and failures for this card, shown on the card itself. */
+const paneError = ref('')
 const deleting = ref(false)
 
 const showAliasListModal = ref(false)
@@ -64,7 +65,7 @@ async function saveAlias() {
     await appStore.setModelAlias(aliasModel.value, aliasProvider.value, aliasInput.value)
     showAliasModal.value = false
   } catch (e: any) {
-    message.error(e.message || t('models.aliasSaveFailed'))
+    paneError.value = e.message || t('models.aliasSaveFailed')
   }
 }
 
@@ -81,7 +82,7 @@ function openVisibilityModal() {
 
 async function handleVisibilitySave() {
   if (selectedVisibleModels.value.length === 0) {
-    message.error(t('models.visibilitySelectOne'))
+    paneError.value = t('models.visibilitySelectOne')
     return
   }
   visibilitySaving.value = true
@@ -90,10 +91,10 @@ async function handleVisibilitySave() {
     const mode = selected.length === allModels.value.length ? 'all' : 'include'
     await appStore.setModelVisibility(props.provider.provider, { mode, models: selected })
     await modelsStore.fetchProviders()
+    // The dialog closes and the card lists the models it now shows.
     showVisibilityModal.value = false
-    message.success(t('models.visibilitySaved'))
   } catch (e: any) {
-    message.error(e.message || t('models.visibilitySaveFailed'))
+    paneError.value = e.message || t('models.visibilitySaveFailed')
   } finally {
     visibilitySaving.value = false
   }
@@ -150,9 +151,9 @@ async function handleDelete() {
             await appStore.switchModel(first.models[0], first.provider)
           }
         }
-        message.success(t('models.providerDeleted'))
+        // Success removes this card from the list.
       } catch (e: any) {
-        message.error(e.message)
+        paneError.value = e.message
       } finally {
         deleting.value = false
       }
@@ -163,6 +164,7 @@ async function handleDelete() {
 
 <template>
   <div class="provider-card">
+    <p v-if="paneError" class="pane-notice is-error" data-testid="provider-card-error">{{ paneError }}</p>
     <div class="card-header">
       <h3 class="provider-name">{{ displayName }}</h3>
       <div class="provider-badges">
@@ -308,6 +310,27 @@ async function handleDelete() {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.pane-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
+.pane-notice.is-error {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.pane-notice.is-info {
+  background: var(--surface-2);
+  color: var(--fg-primary);
+  box-shadow: inset 0 0 0 0.5px var(--divider);
+}
+
 
 .provider-card {
   background-color: $bg-card;

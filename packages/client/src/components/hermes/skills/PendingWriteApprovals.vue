@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NButton, NTag, useMessage } from 'naive-ui'
+import { NButton, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
 import {
@@ -17,8 +17,9 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const message = useMessage()
 const pendingWrites = ref<PendingWriteRecord[]>([])
+/** Load, diff and decision failures for this list. */
+const paneError = ref('')
 const pendingLoading = ref(false)
 const pendingAction = ref('')
 const expandedReviews = ref<Record<string, string>>({})
@@ -101,7 +102,7 @@ async function loadPendingWrites() {
     pendingWrites.value = writeGateSupported.value ? data.records || [] : []
     emit('count-change', pendingWrites.value.length)
   } catch (err: any) {
-    message.error(t('skills.writeApprovalLoadFailed'))
+    paneError.value = t('skills.writeApprovalLoadFailed')
   } finally {
     pendingLoading.value = false
   }
@@ -120,7 +121,7 @@ async function toggleDiff(record: PendingWriteRecord) {
     const review = await fetchPendingWriteReview(record.subsystem, record.id)
     expandedReviews.value = { ...expandedReviews.value, [key]: buildReviewMarkdown(review) }
   } catch (err: any) {
-    message.error(t('skills.writeApprovalDiffFailed'))
+    paneError.value = t('skills.writeApprovalDiffFailed')
   } finally {
     pendingAction.value = ''
   }
@@ -132,17 +133,16 @@ async function resolvePendingWrite(record: PendingWriteRecord, decision: 'approv
   try {
     if (decision === 'approve') {
       await approvePendingWrite(record.subsystem, record.id)
-      message.success(t('skills.writeApprovalApproved'))
     } else {
       await rejectPendingWrite(record.subsystem, record.id)
-      message.success(t('skills.writeApprovalRejected'))
     }
+    // Either way the request leaves the pending list, which is the report.
     const nextReviews = { ...expandedReviews.value }
     delete nextReviews[key]
     expandedReviews.value = nextReviews
     await loadPendingWrites()
   } catch (err: any) {
-    message.error(t('skills.writeApprovalActionFailed'))
+    paneError.value = t('skills.writeApprovalActionFailed')
   } finally {
     pendingAction.value = ''
   }
@@ -155,6 +155,7 @@ onMounted(() => {
 
 <template>
   <section class="write-approval-panel">
+    <p v-if="paneError" class="pane-notice is-error" data-testid="pending-writes-error">{{ paneError }}</p>
     <div class="write-approval-header">
       <div>
         <h3>{{ t('skills.writeApprovalTitle') }}</h3>
@@ -223,6 +224,27 @@ onMounted(() => {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.pane-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
+.pane-notice.is-error {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.pane-notice.is-info {
+  background: var(--surface-2);
+  color: var(--fg-primary);
+  box-shadow: inset 0 0 0 0.5px var(--divider);
+}
+
 
 .write-approval-panel {
   display: flex;

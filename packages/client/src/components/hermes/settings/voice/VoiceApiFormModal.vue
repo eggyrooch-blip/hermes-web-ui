@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { NModal, NForm, NFormItem, NInput, NButton, NSelect, useMessage } from 'naive-ui'
+import { NModal, NForm, NFormItem, NInput, NButton, NSelect } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { probeVoiceProvider, type VoiceProviderProbeModel } from '@/api/hermes/voice-provider-probe'
 import { VOICE_API_PRESETS } from '@/constants/voiceApiPresets'
@@ -21,7 +21,6 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const message = useMessage()
 
 const loading = ref(false)
 const selectedPresetId = ref<string | null>(null)
@@ -301,7 +300,8 @@ async function handleSave() {
   modelTouched.value = true
 
   if (!canSave.value) {
-    message.warning(modelError.value || baseUrlError.value || apiKeyError.value || t('settings.voice.completeRequiredProviderFields'))
+    // The three field errors are already rendered next to their inputs; this
+    // toast was a fourth copy of whichever one fired first.
     return
   }
 
@@ -513,5 +513,17 @@ async function handleSave() {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+</style>
+
+<style scoped lang="scss">
+.pane-notice {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+  white-space: pre-line;
 }
 </style>

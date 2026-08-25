@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { NButton, NSelect, NSpin, NCollapse, NCollapseItem, NModal, NInput, useMessage } from 'naive-ui'
+import { NButton, NSelect, NSpin, NCollapse, NCollapseItem, NModal, NInput } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import KanbanTaskCard from '@/components/hermes/kanban/KanbanTaskCard.vue'
@@ -15,10 +15,11 @@ import type { ProfileAvatar } from '@/api/hermes/profiles'
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
-const message = useMessage()
 const kanbanStore = useKanbanStore()
 const profilesStore = useProfilesStore()
 
+/** Failures and the recovered-board explanation, resident on the page. */
+const notice = ref<{ text: string; tone: 'error' | 'info' } | null>(null)
 const showCreateForm = ref(false)
 const showCreateBoardForm = ref(false)
 const selectedTaskId = ref<string | null>(null)
@@ -51,7 +52,11 @@ async function applyBoardSelection(candidate: string | null, notify = true, forc
   selectedTaskId.value = null
   showCreateForm.value = false
   showCreateBoardForm.value = false
-  if (notify && recovered && kanbanStore.boardWarning) message.warning(kanbanStore.boardWarning)
+  // A recovered board is information, not a failure — and it explains why the
+  // board on screen is not the one that was asked for, so it must not expire.
+  if (notify && recovered && kanbanStore.boardWarning) {
+    notice.value = { text: kanbanStore.boardWarning, tone: 'info' }
+  }
   await replaceRouteBoard(board)
   if (forceRefresh || board !== previousBoard) {
     await kanbanStore.refreshAll()
@@ -181,7 +186,7 @@ async function handleTaskCreated() {
 async function handleCreateBoard() {
   const slug = newBoardSlug.value.trim()
   if (!slug) {
-    message.warning(t('kanban.board.slugRequired'))
+    notice.value = { text: t('kanban.board.slugRequired'), tone: 'error' }
     return
   }
   boardActionLoading.value = true
@@ -193,10 +198,10 @@ async function handleCreateBoard() {
     newBoardSlug.value = ''
     newBoardName.value = ''
     showCreateBoardForm.value = false
+    // The route switches to the new board and it appears in the picker.
     await replaceRouteBoard(board.slug)
-    message.success(t('kanban.board.created'))
   } catch (err: any) {
-    message.error(err.message)
+    notice.value = { text: err.message, tone: 'error' }
   } finally {
     boardActionLoading.value = false
   }
@@ -208,10 +213,10 @@ async function handleArchiveSelectedBoard() {
   boardActionLoading.value = true
   try {
     await kanbanStore.archiveSelectedBoard()
+    // The board leaves the picker and the route moves off it.
     await replaceRouteBoard(DEFAULT_KANBAN_BOARD)
-    message.success(t('kanban.board.archived'))
   } catch (err: any) {
-    message.error(err.message)
+    notice.value = { text: err.message, tone: 'error' }
   } finally {
     boardActionLoading.value = false
   }
@@ -221,10 +226,10 @@ async function handleDispatch() {
   boardActionLoading.value = true
   try {
     await kanbanStore.dispatch()
+    // The board reloads right after, so any task that moved shows it.
     await kanbanStore.refreshAll()
-    message.success(t('kanban.message.dispatchNudged'))
   } catch (err: any) {
-    message.error(err.message)
+    notice.value = { text: err.message, tone: 'error' }
   } finally {
     boardActionLoading.value = false
   }
@@ -233,6 +238,7 @@ async function handleDispatch() {
 
 <template>
   <div class="kanban-view">
+    <p v-if="notice" class="pane-notice" :class="`is-${notice.tone}`" data-testid="kanban-notice">{{ notice.text }}</p>
     <header class="page-header">
       <h2 class="header-title">{{ t('kanban.title') }}</h2>
       <div class="header-actions">
@@ -372,6 +378,27 @@ async function handleDispatch() {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.pane-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
+.pane-notice.is-error {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.pane-notice.is-info {
+  background: var(--surface-2);
+  color: var(--fg-primary);
+  box-shadow: inset 0 0 0 0.5px var(--divider);
+}
+
 
 .kanban-view {
   height: calc(100 * var(--vh));

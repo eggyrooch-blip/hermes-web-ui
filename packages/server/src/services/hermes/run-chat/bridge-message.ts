@@ -7,7 +7,12 @@ import { addMessage } from '../../../db/hermes/session-store'
 import { logger } from '../../logger'
 import type { SessionMessage, SessionState } from './types'
 
-export function flushBridgePendingToDb(state: SessionState, sessionId: string, runMarker?: string) {
+export function flushBridgePendingToDb(
+  state: SessionState,
+  sessionId: string,
+  runMarker?: string,
+  finishReason?: string,
+) {
   const content = state.bridgePendingAssistantContent || ''
   const reasoning = state.bridgePendingReasoningContent || ''
   if (!content.trim()) return
@@ -21,6 +26,7 @@ export function flushBridgePendingToDb(state: SessionState, sessionId: string, r
     content,
     reasoning: reasoning || null,
     reasoning_content: reasoning || null,
+    finish_reason: finishReason || null,
     run_id: state.runId || null,
     timestamp: Math.floor(Date.now() / 1000),
   })
@@ -28,7 +34,7 @@ export function flushBridgePendingToDb(state: SessionState, sessionId: string, r
   state.bridgePendingReasoningContent = ''
   if (runMarker) {
     const last = findOpenBridgeAssistantMessage(state, runMarker)
-    if (last && last.finish_reason == null) last.finish_reason = 'stop'
+    if (last && last.finish_reason == null && finishReason) last.finish_reason = finishReason
   }
 }
 

@@ -14,10 +14,13 @@ const chatStoreMock = vi.hoisted(() => ({
   compressionState: null as any,
   removeQueuedMessage: vi.fn(),
 }))
+const feedbackStoreMock = vi.hoisted(() => ({ load: vi.fn() }))
 
 vi.mock('@/stores/hermes/chat', () => ({
   useChatStore: () => chatStoreMock,
 }))
+
+vi.mock('@/stores/hermes/feedback', () => ({ useFeedbackStore: () => feedbackStoreMock }))
 
 vi.mock('@/composables/useTheme', () => ({
   useTheme: () => ({ isDark: false }),
@@ -29,9 +32,9 @@ vi.mock('vue-i18n', () => ({
 
 vi.mock('@/components/hermes/chat/MessageItem.vue', () => ({
   default: {
-    props: ['message'],
+    props: ['message', 'feedbackEligible'],
     template: `
-      <div class="message-item" :data-role="message.role" :data-id="message.id">
+      <div class="message-item" :data-role="message.role" :data-id="message.id" :data-feedback="feedbackEligible ? 'yes' : 'no'">
         <template v-if="message.role === 'tool'">
           {{ message.toolName }} {{ message.toolPreview }}
         </template>
@@ -41,6 +44,7 @@ vi.mock('@/components/hermes/chat/MessageItem.vue', () => ({
   },
 }))
 
+import KpMascotFace from '@/components/kippies/KpMascotFace.vue'
 import MessageList from '@/components/hermes/chat/MessageList.vue'
 
 describe('MessageList streaming display', () => {
@@ -57,6 +61,40 @@ describe('MessageList streaming display', () => {
     vi.clearAllMocks()
   })
 
+  it('loads feedback once per session and marks only the final completed answer for each run', async () => {
+    chatStoreMock.activeSession = { id: 'session-1', source: 'cli' }
+    chatStoreMock.messages = [
+      { id: 'a1', role: 'assistant', content: 'draft', runId: 'run-1', timestamp: 1 },
+      { id: 'a2', role: 'assistant', content: 'final', runId: 'run-1', timestamp: 2 },
+      { id: 'legacy', role: 'assistant', content: 'legacy', timestamp: 3 },
+      { id: 'stream', role: 'assistant', content: 'live', runId: 'run-2', isStreaming: true, timestamp: 4 },
+    ]
+
+    const wrapper = mount(MessageList)
+    await vi.waitFor(() => expect(feedbackStoreMock.load).toHaveBeenCalledTimes(1))
+
+    expect(wrapper.get('[data-id="a1"]').attributes('data-feedback')).toBe('no')
+    expect(wrapper.get('[data-id="a2"]').attributes('data-feedback')).toBe('yes')
+    expect(wrapper.get('[data-id="legacy"]').attributes('data-feedback')).toBe('no')
+    expect(wrapper.get('[data-id="stream"]').attributes('data-feedback')).toBe('no')
+  })
+
+  it('does not fall back to an older answer when the latest assistant row in a run is incomplete', () => {
+    chatStoreMock.activeSession = { id: 'session-1', source: 'cli' }
+    chatStoreMock.messages = [
+      { id: 'old-final', role: 'assistant', content: 'older answer', runId: 'run-1', timestamp: 1 },
+      { id: 'latest-stream', role: 'assistant', content: 'still working', runId: 'run-1', isStreaming: true, timestamp: 2 },
+      { id: 'old-final-error-run', role: 'assistant', content: 'older answer', runId: 'run-2', timestamp: 3 },
+      { id: 'latest-error', role: 'assistant', content: 'failed', runId: 'run-2', systemType: 'error', timestamp: 4 },
+    ]
+
+    const wrapper = mount(MessageList)
+
+    for (const id of ['old-final', 'latest-stream', 'old-final-error-run', 'latest-error']) {
+      expect(wrapper.get(`[data-id="${id}"]`).attributes('data-feedback')).toBe('no')
+    }
+  })
+
   it('hides a transient reasoning-only assistant bubble while the thinking animation owns the run state', () => {
     chatStoreMock.isRunActive = true
     chatStoreMock.messages = [
@@ -68,9 +106,9 @@ describe('MessageList streaming display', () => {
 
     expect(wrapper.findAll('.message-item').map(node => node.attributes('data-id'))).toEqual(['u1'])
     expect(wrapper.find('.streaming-indicator').exists()).toBe(true)
-    // Upstream rebaseline replaced the fork's <video class="thinking-video"> with an
-    // <img class="thinking-avatar"> (thinking.gif) inside the streaming indicator.
-    expect(wrapper.find('.thinking-avatar').exists()).toBe(true)
+    // The run's face is the mascot, riding on the status line (the prototype
+    // dropped the standalone avatar tile above it).
+    expect(wrapper.findComponent(KpMascotFace).exists()).toBe(true)
   })
 
   it('does not use the global active expert avatar for an ordinary live thinking indicator', () => {
@@ -84,9 +122,9 @@ describe('MessageList streaming display', () => {
 
     const wrapper = mount(MessageList)
 
-    const avatar = wrapper.get('img.thinking-avatar')
-    expect(avatar.attributes('src')).not.toBe(expertAvatar)
-    expect(avatar.attributes('src')).toContain('thinking.gif')
+    // No expert on the session → the mascot, not a picture of anyone.
+    expect(wrapper.find('img.thinking-avatar').exists()).toBe(false)
+    expect(wrapper.findComponent(KpMascotFace).exists()).toBe(true)
   })
 
   it('uses the persisted active session expert avatar for the live thinking indicator', () => {
@@ -105,8 +143,10 @@ describe('MessageList streaming display', () => {
 
     const wrapper = mount(MessageList)
 
+    // An expert has a real face of its own — that identity outranks the mascot.
     const avatar = wrapper.get('img.thinking-avatar')
     expect(avatar.attributes('src')).toBe(expertAvatar)
+    expect(wrapper.findComponent(KpMascotFace).exists()).toBe(false)
   })
 
   it('does not use the selected expert avatar for a live coding-agent thinking indicator', () => {
@@ -120,9 +160,9 @@ describe('MessageList streaming display', () => {
 
     const wrapper = mount(MessageList)
 
-    const avatar = wrapper.get('img.thinking-avatar')
-    expect(avatar.attributes('src')).not.toBe(expertAvatar)
-    expect(avatar.attributes('src')).toContain('thinking.gif')
+    // A coding-agent run is not driven by the picked expert — mascot, not face.
+    expect(wrapper.find('img.thinking-avatar').exists()).toBe(false)
+    expect(wrapper.findComponent(KpMascotFace).exists()).toBe(true)
   })
 
   it('shows current tool calls in the streaming tool panel while the run is active', () => {
@@ -146,7 +186,7 @@ describe('MessageList streaming display', () => {
     expect(wrapper.find('.tool-calls-panel').exists()).toBe(true)
     expect(wrapper.text()).toContain('terminal')
     expect(wrapper.text()).toContain('python3 -c "print(1)"')
-    expect(wrapper.find('.thinking-avatar').exists()).toBe(true)
+    expect(wrapper.findComponent(KpMascotFace).exists()).toBe(true)
   })
 
   it('renders completed tool calls through the upstream MessageItem transcript after the run finishes', () => {
@@ -226,7 +266,7 @@ describe('MessageList streaming display', () => {
     expect(wrapper.findAll('.message-item').map(node => node.attributes('data-id'))).toEqual(['u1', 'a1'])
     expect(wrapper.find('.tool-trace-message').exists()).toBe(false)
     expect(wrapper.find('.streaming-indicator').exists()).toBe(true)
-    expect(wrapper.find('.thinking-avatar').exists()).toBe(true)
+    expect(wrapper.findComponent(KpMascotFace).exists()).toBe(true)
     expect(wrapper.findAll('.tool-call-item')).toHaveLength(1)
     expect(wrapper.text()).toContain('STREAMING_RESULT')
   })

@@ -20,6 +20,7 @@ const sessionDeleterMocks = vi.hoisted(() => ({
 
 const usersStoreMocks = vi.hoisted(() => ({
   listUserProfiles: vi.fn(),
+  addUserProfile: vi.fn(),
 }))
 
 const gatewayAutostartMocks = vi.hoisted(() => ({
@@ -67,6 +68,7 @@ vi.mock('../../packages/server/src/services/hermes/session-deleter', () => ({
 
 vi.mock('../../packages/server/src/db/hermes/users-store', () => ({
   listUserProfiles: usersStoreMocks.listUserProfiles,
+  addUserProfile: usersStoreMocks.addUserProfile,
 }))
 
 vi.mock('../../packages/server/src/services/hermes/gateway-autostart', () => ({
@@ -514,6 +516,89 @@ describe('Profile Routes', () => {
 
       expect(hermesCli.createProfile).toHaveBeenCalledWith('unregistered_agent', false)
       expect(hermesCli.deleteProfile).toHaveBeenCalledWith('unregistered_agent')
+      expect(ctx.status).toBe(500)
+      expect(ctx.body).toEqual({ error: 'Failed to register created profile ownership' })
+    })
+
+    it('attributes a web-plane user-created profile so its creator sees it in the list', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-create-webplane-'))
+      tempHomes.push(hermesHome)
+      process.env.HERMES_HOME = hermesHome
+      delete process.env.HERMES_AUTH_MODE
+      delete process.env.HERMES_WEB_PLANE
+      await mkdir(join(hermesHome, 'profiles'), { recursive: true })
+      await writeFile(join(hermesHome, 'active_profile'), 'default\n', 'utf-8')
+
+      // Simulate the real user_profiles table: rows added by addUserProfile
+      // become visible to the next listUserProfiles call.
+      const userProfileRows: any[] = []
+      usersStoreMocks.listUserProfiles.mockImplementation(() => userProfileRows)
+      usersStoreMocks.addUserProfile.mockImplementation((userId: number, profileName: string) => {
+        userProfileRows.push({ user_id: userId, profile_name: profileName, is_default: 0, created_at: 2 })
+        return true
+      })
+      vi.mocked(hermesCli.createProfile).mockImplementation(async (name: string) => {
+        const profileDir = join(hermesHome, 'profiles', name)
+        await mkdir(profileDir, { recursive: true })
+        await writeFile(join(profileDir, 'config.yaml'), 'model:\n  default: web-model\n', 'utf-8')
+        return `Profile ${name} created`
+      })
+      vi.mocked(hermesCli.listProfiles).mockRejectedValue(new Error('slow profile list should not run'))
+      vi.resetModules()
+      const { create, list } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const user = { id: 7, role: 'user' }
+
+      const createCtx: any = {
+        state: { user, profile: { name: 'default' } },
+        request: { body: { name: 'my_web_agent' } },
+        status: 200,
+        body: undefined,
+      }
+      await create(createCtx)
+
+      expect(createCtx.status).toBe(200)
+      expect(usersStoreMocks.addUserProfile).toHaveBeenCalledWith(7, 'my_web_agent')
+
+      const listCtx: any = {
+        state: { user, profile: { name: 'default' } },
+        get: vi.fn(() => ''),
+        status: 200,
+        body: undefined,
+      }
+      await list(listCtx)
+
+      expect(listCtx.status).toBe(200)
+      expect(listCtx.body.profiles.map((profile: any) => profile.name)).toContain('my_web_agent')
+    })
+
+    it('does not report web-plane create success when user attribution cannot be persisted', async () => {
+      const hermesHome = await mkdtemp(join(tmpdir(), 'hermes-profile-create-webplane-unattributed-'))
+      tempHomes.push(hermesHome)
+      process.env.HERMES_HOME = hermesHome
+      delete process.env.HERMES_AUTH_MODE
+      delete process.env.HERMES_WEB_PLANE
+      await mkdir(join(hermesHome, 'profiles'), { recursive: true })
+      await writeFile(join(hermesHome, 'active_profile'), 'default\n', 'utf-8')
+      usersStoreMocks.addUserProfile.mockReturnValue(false)
+      vi.mocked(hermesCli.createProfile).mockImplementation(async (name: string) => {
+        const profileDir = join(hermesHome, 'profiles', name)
+        await mkdir(profileDir, { recursive: true })
+        await writeFile(join(profileDir, 'config.yaml'), 'model:\n  default: web-model\n', 'utf-8')
+        return `Profile ${name} created`
+      })
+      vi.mocked(hermesCli.deleteProfile).mockResolvedValue(true)
+      vi.resetModules()
+      const { create } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = {
+        state: { user: { id: 7, role: 'user' }, profile: { name: 'default' } },
+        request: { body: { name: 'orphan_web_agent' } },
+        status: 200,
+        body: undefined,
+      }
+
+      await create(ctx)
+
+      expect(hermesCli.deleteProfile).toHaveBeenCalledWith('orphan_web_agent')
       expect(ctx.status).toBe(500)
       expect(ctx.body).toEqual({ error: 'Failed to register created profile ownership' })
     })

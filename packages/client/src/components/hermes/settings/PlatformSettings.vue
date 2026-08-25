@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { ref, reactive, onUnmounted, watch } from 'vue'
-import { NSwitch, NInput, NButton, NSpin, useMessage } from 'naive-ui'
+import { NSwitch, NInput, NButton, NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import { saveCredentials as saveCredsApi, fetchWeixinQrCode, pollWeixinQrStatus, saveWeixinCredentials } from '@/api/hermes/config'
 import PlatformCard from './PlatformCard.vue'
 import SettingRow from './SettingRow.vue'
 
+/** Save and QR failures for this pane. */
+const paneError = ref('')
 const settingsStore = useSettingsStore()
-const message = useMessage()
 const { t } = useI18n()
 
 const saving = reactive<Record<string, boolean>>({})
@@ -90,9 +91,9 @@ async function savePlatform(platform: string) {
     credentialDrafts[platform] = cloneValue(getCreds(platform))
     touchedConfig[platform] = false
     touchedCredentials[platform] = false
-    message.success(t('settings.saved'))
+    // Saved: the form's touched markers clear and the stored values are shown.
   } catch (err: any) {
-    message.error(err?.message || t('settings.saveFailed'))
+    paneError.value = err?.message || t('settings.saveFailed')
   } finally {
     saving[platform] = false
   }
@@ -126,8 +127,9 @@ async function startWeixinQrLogin() {
     wxQrStatus.value = 'waiting'
     pollWeixinStatus()
   } catch (err: any) {
+    // The QR block already renders its own 'error' state; this adds the reason.
     wxQrStatus.value = 'error'
-    message.error(err.message || t('platform.qrFetching'))
+    paneError.value = err.message || t('platform.qrFetching')
   }
 }
 
@@ -151,7 +153,7 @@ function pollWeixinStatus() {
           base_url: data.base_url,
         })
         await settingsStore.fetchSettings()
-        message.success(t('settings.saved'))
+        // The scanned account now shows as bound, which is the report.
       }
     } catch {
       pollWeixinStatus()
@@ -253,6 +255,7 @@ watch(
 
 <template>
   <section class="settings-section">
+    <p v-if="paneError" class="pane-notice" data-testid="platform-error">{{ paneError }}</p>
     <PlatformCard
       v-for="p in platforms"
       :key="p.key"
@@ -477,6 +480,15 @@ watch(
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.pane-notice {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 
 .settings-section {
   margin-top: 16px;

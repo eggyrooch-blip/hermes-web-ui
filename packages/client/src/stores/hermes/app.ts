@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { reportGatewayHealth } from '@/composables/useNet'
 import {
   checkHealth,
   fetchAvailableModels,
@@ -84,6 +85,11 @@ export const useAppStore = defineStore('app', () => {
     } catch {
       connected.value = false
       clientOutdated.value = false
+    } finally {
+      // Push the result into useNet rather than letting it read this store: the
+      // store drags @/api/client → @/router behind it, and the leaf components
+      // that display network state must not import that chain. See useNet.ts.
+      reportGatewayHealth(connected.value)
     }
   }
 

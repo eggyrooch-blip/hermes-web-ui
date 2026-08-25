@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { NInputNumber, NSwitch, useMessage } from 'naive-ui'
+import { NInputNumber, NSwitch } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import SettingRow from './SettingRow.vue'
+import KpSectionTitle from '@/components/kippies/KpSectionTitle.vue'
+import { useAutosave } from '@/composables/useAutosave'
 
 const settingsStore = useSettingsStore()
-const message = useMessage()
 const { t } = useI18n()
+// Autosave: the control's new position is the success report, and a refused
+// save puts it back rather than leaving the pane disagreeing with the server.
+const { error: saveError, run: autosave } = useAutosave()
 
 const defaults = {
   enabled: true,
@@ -19,30 +23,38 @@ const defaults = {
 const debounceTimers: Record<string, ReturnType<typeof setTimeout>> = {}
 
 function save(values: Record<string, any>) {
-  settingsStore.updateLocal('compression', values)
-  settingsStore.saveSection('compression', values).then(() => {
-    message.success(t('settings.saved'))
-  }).catch(() => {
-    message.error(t('settings.saveFailed'))
+  const previous = Object.fromEntries(
+    Object.keys(values).map(key => [key, (settingsStore.compression as Record<string, any>)[key]]),
+  )
+  void autosave({
+    apply: () => settingsStore.updateLocal('compression', values),
+    revert: () => settingsStore.updateLocal('compression', previous),
+    save: () => settingsStore.saveSection('compression', values),
+    failMessage: t('settings.saveFailed'),
   })
 }
 
 function debouncedSave(key: string, value: any) {
+  // Captured BEFORE the optimistic write, and only on the first keystroke of
+  // a burst — reading it inside the timer would capture the optimistic value
+  // and make the revert a no-op.
+  const previous = (settingsStore.compression as Record<string, any>)[key]
   settingsStore.updateLocal('compression', { [key]: value })
   if (debounceTimers[key]) clearTimeout(debounceTimers[key])
-  debounceTimers[key] = setTimeout(async () => {
-    try {
-      await settingsStore.saveSection('compression', { [key]: value })
-      message.success(t('settings.saved'))
-    } catch {
-      message.error(t('settings.saveFailed'))
-    }
+  debounceTimers[key] = setTimeout(() => {
+    void autosave({
+      revert: () => settingsStore.updateLocal('compression', { [key]: previous }),
+      save: () => settingsStore.saveSection('compression', { [key]: value }),
+      failMessage: t('settings.saveFailed'),
+    })
   }, 300)
 }
 </script>
 
 <template>
   <section class="settings-section">
+    <p v-if="saveError" class="settings-save-error" data-testid="settings-save-error">{{ saveError }}</p>
+    <KpSectionTitle>{{ t('settings.tabs.compression') }}</KpSectionTitle>
     <SettingRow :label="t('settings.compression.enabled')" :hint="t('settings.compression.enabledHint')">
       <NSwitch
         :value="settingsStore.compression.enabled ?? defaults.enabled"
@@ -99,8 +111,17 @@ function debouncedSave(key: string, value: any) {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.settings-save-error {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 
 .settings-section {
-  margin-top: 16px;
+  margin-top: 0;
 }
 </style>

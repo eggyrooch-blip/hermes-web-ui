@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../../../lib/context-compressor'
+import type { SourceRef } from '../../../db/hermes/session-store'
 
 /**
  * Content block types for Anthropic-compatible message format
@@ -27,6 +28,7 @@ export interface SessionMessage {
   reasoning?: string | null
   reasoning_details?: string | null
   reasoning_content?: string | null
+  source_refs?: SourceRef[] | null
 }
 
 export interface QueuedSessionCommand {

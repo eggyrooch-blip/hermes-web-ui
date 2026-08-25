@@ -7,6 +7,7 @@ const loadModelsMock = vi.hoisted(() => vi.fn())
 const loadSessionsMock = vi.hoisted(() => vi.fn())
 const setRuntimeModeMock = vi.hoisted(() => vi.fn())
 const switchSessionMock = vi.hoisted(() => vi.fn())
+const newChatMock = vi.hoisted(() => vi.fn())
 const chatState = vi.hoisted(() => ({
   sessionProfileFilter: 'tester',
   activeSessionId: null as string | null,
@@ -18,6 +19,8 @@ const fetchProfilesMock = vi.hoisted(() => vi.fn())
 const isStoredSuperAdminMock = vi.hoisted(() => vi.fn(() => false))
 const profilesState = vi.hoisted(() => ({
   activeProfileName: 'tester',
+  profilesLoaded: true,
+  profiles: [{ name: 'tester' }, { name: 'bianmaceshi' }],
 }))
 const fetchSettingsMock = vi.hoisted(() => vi.fn())
 const routerReplaceMock = vi.hoisted(() => vi.fn())
@@ -41,6 +44,7 @@ vi.mock('@/stores/hermes/chat', () => ({
     loadSessions: loadSessionsMock,
     setRuntimeMode: setRuntimeModeMock,
     switchSession: switchSessionMock,
+    newChat: newChatMock,
     get sessionProfileFilter() { return chatState.sessionProfileFilter },
     set sessionProfileFilter(value) { chatState.sessionProfileFilter = value },
     get activeSessionId() { return chatState.activeSessionId },
@@ -54,6 +58,8 @@ vi.mock('@/stores/hermes/profiles', () => ({
   useProfilesStore: () => ({
     fetchProfiles: fetchProfilesMock,
     get activeProfileName() { return profilesState.activeProfileName },
+    get profilesLoaded() { return profilesState.profilesLoaded },
+    get profiles() { return profilesState.profiles },
   }),
 }))
 
@@ -92,6 +98,8 @@ describe('ChatView startup', () => {
     routeState.query = {}
     chatState.sessionProfileFilter = 'tester'
     profilesState.activeProfileName = 'tester'
+    profilesState.profilesLoaded = true
+    profilesState.profiles = [{ name: 'tester' }, { name: 'bianmaceshi' }]
     chatState.activeSessionId = null
     chatState.activeSession = null
     chatState.sessionsLoaded = false
@@ -134,7 +142,12 @@ describe('ChatView startup', () => {
     expect(loadSessionsMock).toHaveBeenCalledWith('tester', 'session-9')
   })
 
-  it('defaults employee chat sessions to the active frontend profile', async () => {
+  it('leaves the task list unscoped (全部配置) for every role', async () => {
+    // Deliberate: the new sidebar carries no agent dropdown, so scoping the task
+    // list to the active profile would hide tasks with no visible control that
+    // explains why. An explicit filter (route ?profile=, or the 筛选 popover)
+    // still wins — see the test below. Server-side authorization is unchanged;
+    // this only widens what a user is OFFERED, never what they may read.
     chatState.sessionProfileFilter = null
     profilesState.activeProfileName = 'bianmaceshi'
 
@@ -143,8 +156,8 @@ describe('ChatView startup', () => {
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(chatState.sessionProfileFilter).toBe('bianmaceshi')
-    expect(loadSessionsMock).toHaveBeenCalledWith('bianmaceshi', null)
+    expect(chatState.sessionProfileFilter).toBeNull()
+    expect(loadSessionsMock).toHaveBeenCalledWith(null, null)
   })
 
   it('uses the route profile query when opening a session link', async () => {
@@ -160,5 +173,56 @@ describe('ChatView startup', () => {
 
     expect(chatState.sessionProfileFilter).toBe('bianmaceshi')
     expect(loadSessionsMock).toHaveBeenCalledWith('bianmaceshi', 'session-9')
+  })
+
+  it('consumes a new-task query without dropping the profile and reloading sessions', async () => {
+    routeState.query = { profile: 'bianmaceshi', new: '1' }
+    chatState.sessionProfileFilter = null
+    profilesState.activeProfileName = 'bianmaceshi'
+
+    mount(ChatView)
+    await vi.waitFor(() => expect(newChatMock).toHaveBeenCalledTimes(1))
+
+    expect(newChatMock).toHaveBeenCalledWith({ profile: 'bianmaceshi' })
+    expect(routerReplaceMock).toHaveBeenCalledWith({
+      name: 'hermes.chat',
+      query: { profile: 'bianmaceshi' },
+    })
+    expect(loadSessionsMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a forged new-task profile before creating a local session', async () => {
+    routeState.query = { profile: 'forged-profile', new: '1' }
+
+    mount(ChatView)
+    await vi.waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith({ name: 'hermes.chat' }))
+
+    expect(newChatMock).not.toHaveBeenCalled()
+  })
+
+  it('waits for profile authorization before consuming an authorized new-task route', async () => {
+    routeState.query = { profile: 'bianmaceshi', new: '1' }
+    profilesState.profilesLoaded = false
+    fetchProfilesMock.mockImplementationOnce(async () => { profilesState.profilesLoaded = true })
+
+    mount(ChatView)
+    await vi.waitFor(() => expect(newChatMock).toHaveBeenCalledWith({ profile: 'bianmaceshi' }))
+
+    expect(routerReplaceMock).toHaveBeenCalledWith({
+      name: 'hermes.chat',
+      query: { profile: 'bianmaceshi' },
+    })
+    expect(fetchProfilesMock).toHaveBeenCalledTimes(1)
+    expect(newChatMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails closed when profile authorization cannot be loaded', async () => {
+    routeState.query = { profile: 'bianmaceshi', new: '1' }
+    profilesState.profilesLoaded = false
+
+    mount(ChatView)
+    await vi.waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith({ name: 'hermes.chat' }))
+
+    expect(newChatMock).not.toHaveBeenCalled()
   })
 })

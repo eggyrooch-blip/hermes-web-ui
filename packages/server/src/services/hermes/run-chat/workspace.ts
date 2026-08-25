@@ -1,6 +1,5 @@
-import { lstat, mkdir, realpath } from 'fs/promises'
-import { existsSync } from 'fs'
-import { isAbsolute, join, resolve, sep } from 'path'
+import { lstat, mkdir, realpath, stat } from 'fs/promises'
+import { isAbsolute, join, relative, resolve, sep } from 'path'
 import { getProfileDir } from '../hermes-profile'
 import { isNearestExistingRealPathWithin } from '../hermes-path'
 
@@ -11,14 +10,6 @@ export function defaultHermesWorkspace(profile: string): string {
 function within(target: string, base: string): boolean {
   const prefix = base.endsWith(sep) ? base : `${base}${sep}`
   return target === base || target.startsWith(prefix)
-}
-
-async function resolvedOr(path: string): Promise<string> {
-  try {
-    return await realpath(path)
-  } catch {
-    return resolve(path)
-  }
 }
 
 /**
@@ -46,9 +37,10 @@ async function assertWorkspaceRootSafe(base: string): Promise<void> {
  *
  * This is the single read point every run path funnels through (chat, bridge and
  * broker runs alike), so containment lives HERE rather than in each caller — a
- * stored session.workspace is attacker-controlled (the setWorkspace endpoint
- * persists any string), and callers have historically trusted it verbatim.
- * Anything resolving outside the profile's own workspace falls back to it.
+ * stored session.workspace must still be treated as attacker-controlled (legacy
+ * rows predate validation), and callers have historically trusted it verbatim.
+ * Anything explicitly selected must already be a real directory within the
+ * profile workspace. Invalid stored/request values fail closed before dispatch.
  */
 export async function ensureHermesRunWorkspace(profile: string, workspace?: string | null): Promise<string> {
   // Unresolved on purpose: this is the namespace callers and the DB speak in, and
@@ -59,31 +51,52 @@ export async function ensureHermesRunWorkspace(profile: string, workspace?: stri
   await assertWorkspaceRootSafe(base)
 
   const raw = String(workspace || '').trim()
-  const candidate = !raw
-    ? base
-    : isAbsolute(raw) ? resolve(raw) : resolve(base, raw)
+  if (!raw) {
+    await mkdir(base, { recursive: true })
+    return base
+  }
+  if (raw.includes('\0') || raw.includes('\\') || raw.split('/').includes('..')) {
+    throw new Error('Invalid workspace')
+  }
+
+  const candidate = isAbsolute(raw) ? resolve(raw) : resolve(base, raw)
 
   // Two independent checks, on purpose: the lexical one rejects traversal without
   // touching the disk, the realpath one additionally catches symlinks pointing out
   // of the workspace (it resolves both sides, so it is symlink-root safe).
   const contained = within(candidate, base)
     && await isNearestExistingRealPathWithin(candidate, base)
-  // A dangling symlink reads as "absent" to the realpath check (existsSync follows
-  // the link), so that check clears it via an ancestor and mkdir would then ENOENT
-  // the whole run. Fall back instead of dying.
-  const dangling = await lstat(candidate)
-    .then(s => s.isSymbolicLink() && !existsSync(candidate))
-    .catch(() => false)
+  const directory = await stat(candidate).then(value => value.isDirectory()).catch(() => false)
+  if (!contained || !directory) throw new Error('Invalid workspace')
 
-  // Checks run BEFORE mkdir so an out-of-bounds path is never created as a side effect.
-  const target = contained && !dangling ? candidate : base
-  await mkdir(target, { recursive: true })
+  // Re-resolve immediately before dispatch so a symlink replacement does not turn a
+  // previously valid lexical path into a cross-profile cwd.
+  if (!within(await realpath(candidate), await realpath(base))) throw new Error('Invalid workspace')
+  return candidate
+}
 
-  // The path could have been swapped between check and mkdir; re-resolve what now
-  // exists. Not a complete TOCTOU defence (see SPEC), but it closes the window where
-  // a run would launch against a post-check replacement.
-  if (!within(await resolvedOr(target), await resolvedOr(base))) {
-    throw new Error(`Refusing to run: workspace ${target} escaped the profile after creation`)
+export async function normalizeHermesSessionWorkspace(profile: string, workspace?: string | null): Promise<string | null> {
+  const target = await ensureHermesRunWorkspace(profile, workspace)
+  const normalized = relative(defaultHermesWorkspace(profile), target)
+  return normalized ? normalized.split(sep).join('/') : null
+}
+
+/**
+ * Same normalization, but for a value READ BACK from `sessions.workspace` rather
+ * than one a user just picked. Those two are not the same trust question: an
+ * explicit selection must fail closed, while a stored row may predate validation
+ * entirely (the old endpoint persisted any string, the old admin picker handed out
+ * absolute host paths) or may simply point at a directory that has since been
+ * deleted. Failing those closed would strand the session — no run, and a 500 on
+ * every model switch — for a value the user never chose in this UI. Falling back
+ * to null means the run uses the profile workspace root, exactly as it did before
+ * this feature existed; callers persist the null and the stale binding disappears.
+ * Containment is not weakened: the fallback is the root, never the bad path.
+ */
+export async function normalizeStoredHermesSessionWorkspace(profile: string, workspace?: string | null): Promise<string | null> {
+  try {
+    return await normalizeHermesSessionWorkspace(profile, workspace)
+  } catch {
+    return null
   }
-  return target
 }

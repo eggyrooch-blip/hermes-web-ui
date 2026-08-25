@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NButton, NInput, NSelect, useMessage } from 'naive-ui'
+import { NButton, NInput, NSelect } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSpeech, type MimoTtsOptions, type OpenaiTtsOptions } from '@/composables/useSpeech'
 import { useMicRecorder } from '@/composables/useMicRecorder'
@@ -19,11 +19,12 @@ interface VoiceApiFormSavedPayload extends VoiceApiSavePayload {
 }
 
 const { t } = useI18n()
-const message = useMessage()
 const speech = useSpeech()
 const voiceApi = useVoiceApiConnections()
 
 const testText = ref(t('settings.voice.testTextDefault'))
+/** Save/clear failures for this pane. Successes are visible in the list itself. */
+const paneError = ref('')
 const showAddModal = ref(false)
 const addModalKind = ref<VoiceApiKind>('tts')
 const showConfigurator = ref(false)
@@ -66,10 +67,10 @@ async function handleAddSaved(data: VoiceApiFormSavedPayload) {
       settings: data.settings,
       secrets: data.secrets,
     })
+    // The dialog closes and the connection appears in the list.
     showAddModal.value = false
-    message.success(t('settings.voice.ttsSaved'))
   } catch (err) {
-    message.error(err instanceof Error ? err.message : t('settings.voice.ttsSaveFailed'))
+    paneError.value = err instanceof Error ? err.message : t('settings.voice.ttsSaveFailed')
   }
 }
 
@@ -82,19 +83,18 @@ async function handleConfigSave(conn: VoiceApiConnection, payload: VoiceApiSaveP
   try {
     await voiceApi.saveConnection(conn.kind, conn.provider, payload)
     showConfigurator.value = false
-    message.success(t('settings.voice.ttsSaved'))
   } catch (err) {
-    message.error(err instanceof Error ? err.message : t('settings.voice.ttsSaveFailed'))
+    paneError.value = err instanceof Error ? err.message : t('settings.voice.ttsSaveFailed')
   }
 }
 
 async function handleRemove(conn: VoiceApiConnection) {
   try {
     await voiceApi.deleteSecret(conn.kind, conn.provider)
+    // The card losing its configured state is the report.
     setCardTestState(conn.id, 'idle')
-    message.success(t('settings.voice.ttsCleared'))
   } catch (err) {
-    message.error(err instanceof Error ? err.message : t('settings.voice.ttsClearFailed'))
+    paneError.value = err instanceof Error ? err.message : t('settings.voice.ttsClearFailed')
   }
 }
 
@@ -226,6 +226,7 @@ async function handleCardTest(connection: VoiceApiConnection) {
 
 <template>
   <div class="voice-settings">
+    <p v-if="paneError" class="settings-save-error" data-testid="voice-settings-error">{{ paneError }}</p>
     <section class="settings-section voice-provider-section" aria-labelledby="tts-providers-title">
       <header class="section-header">
         <div class="section-copy">
@@ -331,19 +332,26 @@ async function handleCardTest(connection: VoiceApiConnection) {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.settings-save-error {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 
 .voice-settings {
-  padding: 8px 0;
+  padding: 0;
 }
 
 .settings-section {
-  margin-top: 16px;
+  margin-top: 0;
 }
 
 .voice-provider-section + .voice-provider-section {
-  margin-top: 28px;
-  padding-top: 20px;
-  border-top: 1px solid $border-color;
+  margin-top: 36px;
 }
 
 .section-header {
@@ -351,18 +359,22 @@ async function handleCardTest(connection: VoiceApiConnection) {
   align-items: flex-start;
   justify-content: space-between;
   gap: 20px;
+  padding-bottom: 12px;
   margin-bottom: 14px;
+  border-bottom: 0.5px solid var(--divider);
 }
 
 .section-copy {
   min-width: 0;
 }
 
+// Matches KpSectionTitle's own text style — this header just also carries
+// trailing controls (active-provider select + add button) that don't fit
+// KpSectionTitle's single action slot.
 .section-title {
   margin: 0 0 6px;
-  color: $text-primary;
-  font-size: 15px;
-  font-weight: 600;
+  font: var(--w-semibold) var(--t-16) / var(--lh-1) var(--font-cn);
+  color: var(--fg-title);
 }
 
 .section-desc {

@@ -36,9 +36,10 @@ import { listUserProfiles } from '../../db/hermes/users-store'
 import { readConfigYamlForProfile } from '../../services/config-helpers'
 import { codingAgentRunManager } from '../../services/agent-runner/coding-agent-run-manager'
 import { AgentBridgeClient, getAgentBridgeManager } from '../../services/hermes/agent-bridge'
-import { ensureHermesRunWorkspace } from '../../services/hermes/run-chat/workspace'
+import { defaultHermesWorkspace, ensureHermesRunWorkspace, normalizeHermesSessionWorkspace, normalizeStoredHermesSessionWorkspace } from '../../services/hermes/run-chat/workspace'
 import { readSessionGeneration } from '../../services/hermes/run-chat/session-generation'
 import { getChatRunServer } from '../../routes/hermes/chat-run'
+import { authorizePrivateTargets, authorizeSourceRefs, normalizeSourceRefs } from '../../services/hermes/source-refs'
 
 function getPendingDeletedSessionIds(): Set<string> {
   return getGroupChatServer()?.getStorage().getPendingDeletedSessionIds() || new Set<string>()
@@ -119,9 +120,21 @@ function explicitSessionCollectionProfile(ctx: any): { profile?: string; denied:
     : { profile, denied: true }
 }
 
+function normalizedOwner(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
 function actorOpenId(ctx: any): string {
   const value = ctx.state?.user?.openid
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function actorSessionOwnerId(ctx: any): string | null {
+  const openid = actorOpenId(ctx)
+  if (openid) return openid
+  const id = ctx.state?.user?.id
+  const value = typeof id === 'string' || typeof id === 'number' ? String(id).trim() : ''
+  return value || null
 }
 
 function requestedAgentId(ctx: any): string {
@@ -200,8 +213,26 @@ async function canAccessSharedAgentSession(ctx: any, session: any | null | undef
   return String(session?.user_id || '').trim() === scope.userId
 }
 
-async function canAccessSessionAsync(ctx: any, session: any | null | undefined): Promise<boolean> {
-  return !session || canAccessProfile(ctx, session.profile) || await canAccessSharedAgentSession(ctx, session)
+// Chat-plane owner rule (mirrors the socket fence): an owner-stamped row is
+// private to its owner; legacy ownerless rows stay profile-scoped; the admin
+// plane keeps its profile-based oversight; explicit shared-agent policy is
+// evaluated separately and can still grant access.
+function actorOwnsSessionRow(ctx: any, session: any): boolean {
+  if (!isChatPlaneRequest(ctx)) return true
+  const owner = String(session?.user_id || '').trim()
+  // Mirror the socket fence: an ownerless EXPERT row is dirty state, not
+  // legacy — nobody can claim it. Plain ownerless legacy rows stay
+  // profile-scoped.
+  if (!owner) return !String(session?.expert_id || '').trim()
+  const actor = actorOpenId(ctx)
+  if (!actor) return false
+  return owner === actor
+}
+
+export async function canAccessSessionAsync(ctx: any, session: any | null | undefined): Promise<boolean> {
+  if (!session) return true
+  if (canAccessProfile(ctx, session.profile) && actorOwnsSessionRow(ctx, session)) return true
+  return await canAccessSharedAgentSession(ctx, session)
 }
 
 async function denySessionAccessAsync(ctx: any, session: any | null | undefined): Promise<boolean> {
@@ -225,8 +256,18 @@ async function readableLocalSessionForParam(ctx: any): Promise<{ id?: string } |
 
 function filterByAllowedProfiles<T>(ctx: any, items: T[]): T[] {
   const allowed = allowedProfileSet(ctx)
-  if (!allowed) return items
-  return items.filter(item => allowed.has(((item as any).profile as string | null | undefined) || 'default'))
+  const profileScoped = allowed
+    ? items.filter(item => allowed.has(((item as any).profile as string | null | undefined) || 'default'))
+    : items
+  // Same owner rule as canAccessSessionAsync for collections: on the chat
+  // plane an owner-stamped row is only listed for its owner.
+  if (!isChatPlaneRequest(ctx)) return profileScoped
+  const actor = actorOpenId(ctx)
+  return profileScoped.filter(item => {
+    const owner = String((item as any).user_id || '').trim()
+    if (!owner) return !String((item as any).expert_id || '').trim()
+    return actor !== '' && owner === actor
+  })
 }
 
 function isVisibleWebUiSessionSource(source?: string | null): boolean {
@@ -501,6 +542,8 @@ export async function listConversations(ctx: any) {
   const sessions = localListSessions(profile, source, limit && limit > 0 ? limit : 200)
   const summaries: ConversationSummary[] = sessions.map(s => ({
     id: s.id,
+    // Owner id rides along so the chat-plane owner filter can see it.
+    user_id: (s as any).user_id ?? null,
     profile: s.profile || null,
     source: s.source,
     agent: s.agent,
@@ -647,11 +690,36 @@ export async function listHermesSessions(ctx: any) {
   const localById = new Map(localHistorySessions.map(session => [session.id, session]))
   const stateSessions = (await listSessionSummaries(source, effectiveLimit, profile))
     .map(session => {
-      const localSession = localById.get(session.id)
+      // Exact lookup, not just the (limit-truncated) listing: a narrow ?limit=
+      // must never leave a state summary un-enriched and thus mistaken for a
+      // legacy ownerless row by the collection fence below.
+      const localSession = localById.get(session.id) || localGetSession(session.id) || null
+      const stateOwner = normalizedOwner((session as any).user_id)
+      const localOwner = normalizedOwner(localSession?.user_id)
+      // Conflicting owners on the same id are dirty state, never a merge: the
+      // local row wins for identity and the state CONTENT is dropped, so B can
+      // never see A's title/preview.
+      const ownersConflict = Boolean(stateOwner && localOwner && stateOwner !== localOwner)
+      const base = ownersConflict
+        ? { id: session.id, source: (session as any).source }
+        : (profile ? { ...session, profile } : session)
       return {
-        ...(profile ? { ...session, profile } : session),
+        ...base,
+        ...(ownersConflict && profile ? { profile } : {}),
         webui_imported: Boolean(localSession),
         is_archived: localSession?.is_archived ?? false,
+        ...(localSession
+          ? {
+              // Identity always comes from the local row (empty means empty —
+              // `??` would let a blank local owner keep the state owner alive).
+              user_id: localOwner || null,
+              expert_id: localSession.expert_id || null,
+              expert_label: localSession.expert_label || null,
+              expert_avatar: localSession.expert_avatar || null,
+              title: localSession.title ?? (ownersConflict ? null : (session as any).title),
+              preview: ownersConflict ? null : (session as any).preview,
+            }
+          : {}),
       }
     })
   const stateIds = new Set(stateSessions.map(session => session.id))
@@ -711,7 +779,8 @@ export async function get(ctx: any) {
     return
   }
   if (await denySessionAccessAsync(ctx, session)) return
-  ctx.body = { session }
+  const sources = await authorizeSourceRefs({ profile: session.profile || 'default', ownerOpenId: actorOpenId(ctx), messages: session.messages })
+  ctx.body = { session: { ...session, messages: session.messages.map(message => ({ ...message, source_refs: sources.get(String(message.id)) || null })) } }
 }
 
 export async function listWorkspaceRunChanges(ctx: any) {
@@ -773,7 +842,8 @@ export async function getHermesSession(ctx: any) {
     (!profile || localSessionProfile === profile || await canAccessSharedAgentSession(ctx, localSession))
   ) {
     if (await denySessionAccessAsync(ctx, localSession)) return
-    ctx.body = { session: localSession }
+    const sources = await authorizeSourceRefs({ profile: localSession.profile || 'default', ownerOpenId: actorOpenId(ctx), messages: localSession.messages })
+    ctx.body = { session: { ...localSession, messages: localSession.messages.map(message => ({ ...message, source_refs: sources.get(String(message.id)) || null })) } }
     return
   }
 
@@ -822,6 +892,15 @@ export async function importHermesSession(ctx: any) {
 
   const existing = localGetSessionDetail(sessionId)
   if (existing) {
+    // Import returns the FULL transcript: it must pass the same owner fence as
+    // every other read path, not just the profile check above, and the row must
+    // belong to the profile this request is bound to.
+    if (await denySessionAccessAsync(ctx, existing)) return
+    if (normalizedOwner((existing as any).profile) !== normalizedOwner(profile)) {
+      ctx.status = 404
+      ctx.body = { error: 'Session not found' }
+      return
+    }
     ctx.body = { ok: true, imported: false, session: existing }
     return
   }
@@ -841,6 +920,9 @@ export async function importHermesSession(ctx: any) {
     ctx.body = { error: 'Session not found' }
     return
   }
+
+  // Fence the state row BEFORE persisting it locally or returning it.
+  if (await denySessionAccessAsync(ctx, { ...detail, profile })) return
 
   const profileDefault = await getProfileDefaultModel(profile)
   const importTimestamp = Math.floor(Date.now() / 1000)
@@ -1085,12 +1167,47 @@ export async function setWorkspace(ctx: any) {
   const id = ctx.params.id
   const existing = getSession(id)
   if (await denySessionAccessAsync(ctx, existing)) return
-  if (!existing) {
-    const newProfile = isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : (requestedProfile(ctx) || 'default')
-    createSession({ id, profile: newProfile, title: '' })
+  if (isCodingAgentSession(existing)) {
+    updateSession(id, { workspace: workspace || null } as any)
+    ctx.body = { ok: true, workspace: workspace || null }
+    return
   }
-  updateSession(id, { workspace: workspace || null } as any)
-  ctx.body = { ok: true }
+  const profile = existing?.profile
+    || (isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : requestedProfile(ctx))
+    || 'default'
+  // The admin plane's FolderPicker still browses the host WORKSPACE_BASE and hands
+  // back absolute paths (see requestWorkspaceFolderBase), so rejecting them here
+  // would break the super-admin surface this task promised not to touch. Storing
+  // is not trusting: the run path normalizes the stored value and falls back to
+  // the profile workspace root, which is exactly what it did before this feature.
+  if (!isChatPlaneRequest(ctx)) {
+    if (!existing) createSession({ id, profile, user_id: actorSessionOwnerId(ctx), title: '' })
+    updateSession(id, { workspace: workspace || null } as any)
+    ctx.body = { ok: true, workspace: workspace || null }
+    return
+  }
+  let normalized: string | null
+  try {
+    normalized = await normalizeHermesSessionWorkspace(profile, workspace)
+  } catch {
+    ctx.status = 400
+    ctx.body = { error: 'Invalid workspace' }
+    return
+  }
+  // A session's cwd is fixed once it has history: the transcript above was produced
+  // in one directory, and moving the binding mid-conversation would silently run the
+  // rest of it somewhere else. The UI forks a new session instead — but the UI is
+  // only a convention, so the invariant is enforced here, where every client lands.
+  if (existing && (existing.message_count || 0) > 0 && (existing.workspace || null) !== normalized) {
+    ctx.status = 409
+    ctx.body = { error: 'Workspace is fixed once the session has messages' }
+    return
+  }
+  if (!existing) {
+    createSession({ id, profile, title: '' })
+  }
+  updateSession(id, { workspace: normalized } as any)
+  ctx.body = { ok: true, workspace: normalized }
 }
 
 export async function setModel(ctx: any) {
@@ -1115,11 +1232,13 @@ export async function setModel(ctx: any) {
   const cleanModel = model.trim()
   const cleanProvider = (provider || '').trim()
   const codingAgentSession = isCodingAgentSession(existing)
+  // Stored value, not user input: a legacy or since-deleted path must not turn a
+  // model switch into a 500. See normalizeStoredHermesSessionWorkspace.
   const workspace = !codingAgentSession
-    ? await ensureHermesRunWorkspace(profile, existing?.workspace)
+    ? await normalizeStoredHermesSessionWorkspace(profile, existing?.workspace)
     : undefined
   if (!existing) {
-    createSession({ id, profile, title: '', model: cleanModel, provider: cleanProvider, workspace })
+    createSession({ id, profile, user_id: actorSessionOwnerId(ctx), title: '', model: cleanModel, provider: cleanProvider, workspace: workspace || undefined })
   }
   // The cross-family decision is made here, from the one row that already holds
   // every input (outgoing model, message count, the one-shot marker), so a
@@ -1229,9 +1348,8 @@ export async function listWorkspaceFolders(ctx: any) {
   const { resolve, join } = await import('path')
   const { readdir, stat } = await import('fs/promises')
   const { existsSync } = await import('fs')
-  const { homedir } = await import('os')
-
-  const WORKSPACE_BASE = process.env.WORKSPACE_BASE?.trim() || homedir()
+  const WORKSPACE_BASE = await requestWorkspaceFolderBase(ctx)
+  const chatPlane = isChatPlaneRequest(ctx)
   const subPath = (ctx.query.path as string) || ''
 
   // Security: prevent path traversal
@@ -1266,7 +1384,7 @@ export async function listWorkspaceFolders(ctx: any) {
         folders.push({
           name: e.name,
           path: subPath ? `${subPath}/${e.name}` : e.name,
-          fullPath: entryPath,
+          fullPath: chatPlane ? (subPath ? `${subPath}/${e.name}` : e.name) : entryPath,
         })
       } catch {
         // Skip unreadable or broken symlink entries.
@@ -1274,7 +1392,7 @@ export async function listWorkspaceFolders(ctx: any) {
     }
     folders.sort((a, b) => a.name.localeCompare(b.name))
 
-    ctx.body = { base: WORKSPACE_BASE, current: subPath, folders }
+    ctx.body = { base: chatPlane ? '' : WORKSPACE_BASE, current: subPath, folders }
   } catch (err: any) {
     ctx.status = 500
     ctx.body = { error: err.message }
@@ -1292,8 +1410,7 @@ function invalidWorkspaceFolderName(name: string): boolean {
 
 async function resolveWorkspaceFolderPath(ctx: any, inputPath: string) {
   const { resolve, join } = await import('path')
-  const { homedir } = await import('os')
-  const WORKSPACE_BASE = process.env.WORKSPACE_BASE?.trim() || homedir()
+  const WORKSPACE_BASE = await requestWorkspaceFolderBase(ctx)
   const fullPath = resolve(join(WORKSPACE_BASE, inputPath || ''))
   if (!isPathWithin(fullPath, WORKSPACE_BASE)) {
     ctx.status = 403
@@ -1306,6 +1423,16 @@ async function resolveWorkspaceFolderPath(ctx: any, inputPath: string) {
     return null
   }
   return { base: WORKSPACE_BASE, fullPath }
+}
+
+async function requestWorkspaceFolderBase(ctx: any): Promise<string> {
+  if (isChatPlaneRequest(ctx)) {
+    const profile = getRequestProfile(ctx)
+    await ensureHermesRunWorkspace(profile, null)
+    return defaultHermesWorkspace(profile)
+  }
+  const { homedir } = await import('os')
+  return process.env.WORKSPACE_BASE?.trim() || homedir()
 }
 
 export async function createWorkspaceFolder(ctx: any) {
@@ -1526,6 +1653,7 @@ export async function getConversationMessagesPaginated(ctx: any) {
   }
   if (await denySessionAccessAsync(ctx, session)) return
 
+  const sources = await authorizeSourceRefs({ profile: session.profile, ownerOpenId: actorOpenId(ctx), messages: result.messages })
   ctx.body = {
     session: {
       id: session.id,
@@ -1543,10 +1671,35 @@ export async function getConversationMessagesPaginated(ctx: any) {
       expert_label: expertSession.expert_label ?? null,
       expert_avatar: expertSession.expert_avatar ?? null,
     },
-    messages: result.messages,
+    messages: result.messages.map(message => ({ ...message, source_refs: sources.get(String(message.id)) || null })),
     total: result.total,
     offset: result.offset,
     limit: result.limit,
     hasMore: result.hasMore,
   }
+}
+
+export async function openSourceRef(ctx: any) {
+  const runId = String(ctx.params.runId || '')
+  const refId = String(ctx.params.refId || '')
+  if (!runId || !refId) {
+    ctx.status = 404
+    return
+  }
+  const sessionId = String(ctx.query.session_id || '')
+  const session = localGetSessionDetail(sessionId)
+  if (!session || await denySessionAccessAsync(ctx, session)) return
+  const message = [...session.messages].reverse().find(item => item.run_id === runId && item.role === 'assistant' && item.content && !item.tool_calls?.length)
+  const ref = normalizeSourceRefs(message?.source_refs).find(item => item.id === refId && item.type === 'lark_doc')
+  if (!ref) {
+    ctx.status = 404
+    return
+  }
+  const targets = await authorizePrivateTargets(session.profile || 'default', actorOpenId(ctx), [ref])
+  const target = targets.get(ref.id)
+  if (!target) {
+    ctx.status = 404
+    return
+  }
+  ctx.redirect(target)
 }

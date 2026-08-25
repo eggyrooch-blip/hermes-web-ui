@@ -96,6 +96,9 @@ vi.mock('naive-ui', () => ({
     props: ['value', 'options'],
     template: '<div><slot /></div>',
   },
+  NPopover: {
+    template: '<div class="n-popover-stub"><slot name="trigger" /><slot /></div>',
+  },
   useMessage: () => ({
     error: vi.fn(),
     success: vi.fn(),
@@ -110,6 +113,10 @@ function findCommandItem(wrapper: any, name: string) {
     item.find('.slash-command-name').text() === `/${name}`,
   )
 }
+
+// ComposerBox is the shared box the composer roots on. Left stubbed it swallows
+// its default slot, so the field, the tool row and the textarea never render.
+const SHALLOW_OPTS = { global: { stubs: { ComposerBox: false } } }
 
 describe('ChatInput slash registry', () => {
   beforeEach(() => {
@@ -132,7 +139,7 @@ describe('ChatInput slash registry', () => {
   })
 
   it('merges built-in commands with per-profile skill/slash commands from the backend', async () => {
-    const wrapper = shallowMount(ChatInput)
+    const wrapper = shallowMount(ChatInput, SHALLOW_OPTS)
     const textarea = wrapper.find('textarea')
 
     await textarea.setValue('/')
@@ -150,7 +157,7 @@ describe('ChatInput slash registry', () => {
   })
 
   it('does not add a duplicate /clear when the server returns it as a local command', async () => {
-    const wrapper = shallowMount(ChatInput)
+    const wrapper = shallowMount(ChatInput, SHALLOW_OPTS)
     const textarea = wrapper.find('textarea')
 
     await textarea.setValue('/clear')
@@ -166,7 +173,7 @@ describe('ChatInput slash registry', () => {
   })
 
   it('clears the previous profile slash commands when the profile changes', async () => {
-    const wrapper = shallowMount(ChatInput)
+    const wrapper = shallowMount(ChatInput, SHALLOW_OPTS)
     const textarea = wrapper.find('textarea')
     await textarea.setValue('/')
     await textarea.trigger('input')
@@ -192,13 +199,17 @@ describe('ChatInput slash registry', () => {
     // fetch resolves on a deferred promise so we can type /strategy while it is pending
     let resolveFetch: (v: any) => void = () => {}
     fetchSlashCommandsMock.mockReturnValue(new Promise(r => { resolveFetch = r }))
-    const wrapper = shallowMount(ChatInput)
+    const wrapper = shallowMount(ChatInput, SHALLOW_OPTS)
     const textarea = wrapper.find('textarea')
 
     await textarea.setValue('/strategy')   // matches NO built-in
     await textarea.trigger('input')
     await flushPromises()
-    expect(wrapper.find('.slash-command-dropdown').exists()).toBe(false)  // closed while pending
+    // Prototype SlashPanel: an unmatched prefix keeps the panel open with the
+    // 没有匹配的结果 empty state instead of closing it.
+    expect(wrapper.find('.slash-command-dropdown').exists()).toBe(true)
+    expect(wrapper.find('.slash-command-empty').exists()).toBe(true)
+    expect(findCommandItem(wrapper, 'strategy')).toBeFalsy()
 
     resolveFetch({ ok: true, commands: [
       { name: 'strategy', slash: '/strategy', title: 's', description: 'strategy', source: 'skill-alias', type: 'skill', category: '' },
@@ -214,7 +225,7 @@ describe('ChatInput slash registry', () => {
     // must not reopen it.
     let resolveFetch: (v: any) => void = () => {}
     fetchSlashCommandsMock.mockReturnValue(new Promise(r => { resolveFetch = r }))
-    const wrapper = shallowMount(ChatInput)
+    const wrapper = shallowMount(ChatInput, SHALLOW_OPTS)
     const textarea = wrapper.find('textarea')
 
     await textarea.setValue('/')
@@ -234,7 +245,7 @@ describe('ChatInput slash registry', () => {
 
   it('shows skill commands for non-CLI (web) sessions too', async () => {
     chatStoreMock.activeSession = { id: 's2', source: 'web', profile: 'owner_sync_profile' } as any
-    const wrapper = shallowMount(ChatInput)
+    const wrapper = shallowMount(ChatInput, SHALLOW_OPTS)
     const textarea = wrapper.find('textarea')
 
     await textarea.setValue('/')
@@ -247,7 +258,7 @@ describe('ChatInput slash registry', () => {
 
   it('degrades to built-in commands when the backend fetch fails (fail-soft)', async () => {
     fetchSlashCommandsMock.mockRejectedValueOnce(new Error('boom'))
-    const wrapper = shallowMount(ChatInput)
+    const wrapper = shallowMount(ChatInput, SHALLOW_OPTS)
     const textarea = wrapper.find('textarea')
 
     await textarea.setValue('/')
@@ -260,7 +271,7 @@ describe('ChatInput slash registry', () => {
   })
 
   it('does not expose host-maintenance MCP reload to ordinary users', async () => {
-    const wrapper = shallowMount(ChatInput)
+    const wrapper = shallowMount(ChatInput, SHALLOW_OPTS)
     const textarea = wrapper.find('textarea')
 
     await textarea.setValue('/reload')
@@ -270,8 +281,10 @@ describe('ChatInput slash registry', () => {
     expect(wrapper.text()).not.toContain('/reload-mcp')
   })
 
-  it('inserts the selected command and still sends slash text through the normal chat path', async () => {
-    const wrapper = shallowMount(ChatInput)
+  it('turns the selected command into a pill and prepends it to the sent message', async () => {
+    // Prototype pickSlash: the pick becomes an attachment pill and the "/"
+    // query is cleared; whatever the user types next becomes the arguments.
+    const wrapper = shallowMount(ChatInput, SHALLOW_OPTS)
     const textarea = wrapper.find('textarea')
 
     await textarea.setValue('/clea')
@@ -283,16 +296,18 @@ describe('ChatInput slash registry', () => {
     await clearItem!.trigger('mousedown')
     await flushPromises()
 
-    expect((textarea.element as HTMLTextAreaElement).value).toBe('/clear ')
+    expect((textarea.element as HTMLTextAreaElement).value).toBe('')
+    expect(wrapper.find('[data-testid="skill-chip"]').exists()).toBe(true)
 
-    await textarea.setValue('/clear --history')
+    await textarea.setValue('--history')
     await textarea.trigger('keydown', { key: 'Enter', shiftKey: false, isComposing: false })
 
     expect(chatStoreMock.sendMessage).toHaveBeenCalledWith('/clear --history', undefined)
+    expect(wrapper.find('[data-testid="skill-chip"]').exists()).toBe(false)
   })
 
   it('supports keyboard selection without sending the message early', async () => {
-    const wrapper = shallowMount(ChatInput)
+    const wrapper = shallowMount(ChatInput, SHALLOW_OPTS)
     const textarea = wrapper.find('textarea')
 
     await textarea.setValue('/')
@@ -303,12 +318,13 @@ describe('ChatInput slash registry', () => {
     await flushPromises()
 
     expect(chatStoreMock.sendMessage).not.toHaveBeenCalled()
-    // First bridge command is `/usage`; selection inserts it with a trailing space.
-    expect((textarea.element as HTMLTextAreaElement).value).toBe('/usage ')
+    // First bridge command is `/usage`; selection becomes a pill, not text.
+    expect((textarea.element as HTMLTextAreaElement).value).toBe('')
+    expect(wrapper.find('[data-testid="skill-chip"]').exists()).toBe(true)
   })
 
   it('dismisses slash suggestions with Escape until the input changes', async () => {
-    const wrapper = shallowMount(ChatInput)
+    const wrapper = shallowMount(ChatInput, SHALLOW_OPTS)
     const textarea = wrapper.find('textarea')
 
     await textarea.setValue('/')
@@ -327,7 +343,7 @@ describe('ChatInput slash registry', () => {
   })
 
   it('sends an unknown slash command as normal user text', async () => {
-    const wrapper = shallowMount(ChatInput)
+    const wrapper = shallowMount(ChatInput, SHALLOW_OPTS)
     const textarea = wrapper.find('textarea')
 
     await textarea.setValue('/unknown do not scan paths')
@@ -347,8 +363,9 @@ describe('ChatInput slash registry', () => {
     )
 
     // Upstream renders the dropdown as `.slash-command-dropdown`, absolutely
-    // positioned with a stacking z-index so it overlays the message list.
+    // positioned with a stacking z-index so it overlays the message list. 50 is
+    // the prototype's own value for this panel.
     expect(source).toMatch(/\.slash-command-dropdown\s*\{[^}]*position:\s*absolute;/s)
-    expect(source).toMatch(/\.slash-command-dropdown\s*\{[^}]*z-index:\s*20;/s)
+    expect(source).toMatch(/\.slash-command-dropdown\s*\{[^}]*z-index:\s*50;/s)
   })
 })

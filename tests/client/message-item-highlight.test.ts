@@ -15,6 +15,9 @@ index 1111111..2222222 100644
 
 const fetchWorkspaceRunChangeFileMock = vi.hoisted(() => vi.fn())
 const readFileMock = vi.hoisted(() => vi.fn())
+const fetchFeedbackMock = vi.hoisted(() => vi.fn())
+const putFeedbackMock = vi.hoisted(() => vi.fn())
+const deleteFeedbackMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/hermes/sessions', () => ({
   fetchWorkspaceRunChangeFile: fetchWorkspaceRunChangeFileMock,
@@ -22,6 +25,12 @@ vi.mock('@/api/hermes/sessions', () => ({
 
 vi.mock('@/api/hermes/files', () => ({
   readFile: readFileMock,
+}))
+
+vi.mock('@/api/hermes/feedback', () => ({
+  fetchFeedback: fetchFeedbackMock,
+  putFeedback: putFeedbackMock,
+  deleteFeedback: deleteFeedbackMock,
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -53,6 +62,7 @@ vi.mock('naive-ui', () => ({
 
 import MessageItem from '@/components/hermes/chat/MessageItem.vue'
 import { useChatStore, type Message } from '@/stores/hermes/chat'
+import { useFeedbackStore } from '@/stores/hermes/feedback'
 import { useFilesStore } from '@/stores/hermes/files'
 
 describe('MessageItem tool details', () => {
@@ -83,6 +93,70 @@ describe('MessageItem tool details', () => {
     fetchWorkspaceRunChangeFileMock.mockReset()
     readFileMock.mockReset()
     readFileMock.mockResolvedValue({ content: 'const value = 2' })
+    fetchFeedbackMock.mockReset()
+    putFeedbackMock.mockReset()
+    deleteFeedbackMock.mockReset()
+    fetchFeedbackMock.mockResolvedValue([])
+    putFeedbackMock.mockImplementation(async (_sessionId: string, runId: string, rating: string, reason: string | null) => ({
+      run_id: runId, rating, reason,
+    }))
+    deleteFeedbackMock.mockResolvedValue(undefined)
+  })
+
+  it('renders final-answer feedback, changes rating, and removes the active rating', async () => {
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: { id: 'answer', role: 'assistant', content: 'final answer', timestamp: Date.now(), runId: 'run-1' } satisfies Message,
+        session: { id: 'session-1' } as any,
+        feedbackEligible: true,
+      },
+    })
+
+    await wrapper.get('[data-feedback-rating="up"]').trigger('click')
+    await vi.waitFor(() => expect(putFeedbackMock).toHaveBeenCalledWith('session-1', 'run-1', 'up', null))
+    expect(wrapper.get('[data-feedback-rating="up"]').attributes('aria-pressed')).toBe('true')
+
+    await wrapper.get('[data-feedback-rating="down"]').trigger('click')
+    await wrapper.get('[data-feedback-reason="inaccurate"]').trigger('click')
+    await vi.waitFor(() => expect(putFeedbackMock).toHaveBeenCalledWith('session-1', 'run-1', 'down', 'inaccurate'))
+    expect(wrapper.get('[data-feedback-rating="down"]').attributes('aria-pressed')).toBe('true')
+
+    await wrapper.get('[data-feedback-rating="down"]').trigger('click')
+    await vi.waitFor(() => expect(deleteFeedbackMock).toHaveBeenCalledWith('session-1', 'run-1'))
+    expect(wrapper.get('[data-feedback-rating="down"]').attributes('aria-pressed')).toBe('false')
+  })
+
+  it('keeps the answer and prior state visible when feedback storage fails', async () => {
+    putFeedbackMock.mockRejectedValueOnce(new Error('storage failed'))
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: { id: 'answer', role: 'assistant', content: 'still visible', timestamp: Date.now(), runId: 'run-1' } satisfies Message,
+        session: { id: 'session-1' } as any,
+        feedbackEligible: true,
+      },
+    })
+
+    await wrapper.get('[data-feedback-rating="up"]').trigger('click')
+    await vi.waitFor(() => expect(wrapper.find('[role="alert"]').exists()).toBe(true))
+    expect(wrapper.text()).toContain('still visible')
+    expect(wrapper.get('[data-feedback-rating="up"]').attributes('aria-pressed')).toBe('false')
+    expect(wrapper.find('.feedback-retry').exists()).toBe(true)
+  })
+
+  it('deduplicates one feedback load per session and restores the saved selection', async () => {
+    let release!: (rows: any[]) => void
+    fetchFeedbackMock.mockReturnValueOnce(new Promise(resolve => { release = resolve }))
+    const store = useFeedbackStore()
+
+    const first = store.load('session-1')
+    const second = store.load('session-1')
+    expect(fetchFeedbackMock).toHaveBeenCalledTimes(1)
+    release([{ session_id: 'session-1', run_id: 'run-1', expert_id: 'expert-x', rating: 'up', reason: null, created_at: 1, updated_at: 1 }])
+    await Promise.all([first, second])
+    await store.load('session-1')
+
+    expect(fetchFeedbackMock).toHaveBeenCalledTimes(1)
+    expect(store.get('session-1', 'run-1')?.rating).toBe('up')
   })
 
   it('renders highlighted code blocks for tool arguments and tool results', async () => {

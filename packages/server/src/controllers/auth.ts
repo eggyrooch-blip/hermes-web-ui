@@ -1150,6 +1150,7 @@ export async function skillCredentialStart(ctx: Context) {
       id,
       profileName,
       profileDir: getProfileDir(profileName),
+      publicOrigin: externalRequestOrigin(ctx),
     })
   } catch (err: any) {
     handleUatProxyError(ctx, err)

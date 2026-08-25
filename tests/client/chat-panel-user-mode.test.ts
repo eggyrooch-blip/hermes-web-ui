@@ -102,6 +102,12 @@ vi.mock('@/stores/hermes/session-browser-prefs', () => ({
 
 vi.mock('@/stores/hermes/files', () => ({
   useFilesStore: () => ({ previewPanelRequestedAt: 0 }),
+  // ChatPanel now imports FilesView (the `files` sidebar surface), whose file
+  // components pull these module-level helpers in at import time.
+  DEFAULT_EDITOR_SCOPE: 'files-view:__default__',
+  isTextFile: () => false,
+  isPreviewableFile: () => false,
+  isHtmlFile: () => false,
 }))
 
 vi.mock('@/api/hermes/sessions', () => ({
@@ -151,7 +157,10 @@ vi.mock('naive-ui', () => ({
   },
   NModal: {
     props: ['show'],
-    template: '<div v-if="show"><slot /></div>',
+    emits: ['positive-click'],
+    // preset="dialog" modals confirm through @positive-click, not a slotted button —
+    // the stub needs to offer that affordance or those flows are untestable.
+    template: '<div v-if="show"><slot /><button class="n-modal-positive" @click="$emit(\'positive-click\')" /></div>',
   },
   NPopconfirm: {
     template: '<div><slot name="trigger" /><slot /></div>',
@@ -186,10 +195,15 @@ vi.mock('naive-ui', () => ({
     error: vi.fn(),
     warning: vi.fn(),
   }),
+  useDialog: () => ({
+    warning: vi.fn(),
+  }),
 }))
 
 vi.mock('@/components/hermes/chat/ChatInput.vue', () => ({
-  default: { template: '<div class="chat-input-stub" />' },
+  // Renders the scope slot: the workspace chip lives inside the composer box,
+  // so a stub that drops slots would hide it from every assertion below.
+  default: { template: '<div class="chat-input-stub"><slot name="pillbar" /></div>' },
 }))
 
 vi.mock('@/components/hermes/chat/ConversationMonitorPane.vue', () => ({
@@ -203,8 +217,10 @@ vi.mock('@/components/hermes/chat/MessageList.vue', () => ({
 vi.mock('@/components/hermes/chat/SessionListItem.vue', () => ({
   default: {
     props: ['session', 'to'],
-    emits: ['select'],
-    template: '<a class="session-item-stub" :href="to" @click.prevent="$emit(\'select\')">{{ session.title }}</a>',
+    emits: ['select', 'contextmenu'],
+    // The `⋯` trigger is stubbed too: the workspace entry point lives in the
+    // row menu, so tests need a way to open it.
+    template: `<a class="session-item-stub" :href="to" @click.prevent="$emit('select')">{{ session.title }}<button class="session-item-menu-stub" @click.prevent.stop="$emit('contextmenu', $event)" /></a>`,
   },
 }))
 
@@ -213,15 +229,19 @@ vi.mock('@/components/hermes/chat/DrawerPanel.vue', () => ({
 }))
 
 vi.mock('@/components/hermes/chat/FolderPicker.vue', () => ({
-  default: { template: '<div class="folder-picker-stub" />' },
+  default: {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template: '<button class="folder-picker-stub" @click="$emit(\'update:modelValue\', \'media-matrix\')" />',
+  },
 }))
 
 // Upstream-rebaseline drift: ChatPanel now imports these heavy side panels.
 // FilesPanel -> FileEditor.vue pulls in monaco-editor (crashes in jsdom at
 // import time via document.queryCommandSupported); TerminalPanel pulls xterm.
 // Stub them like the other child components above to sever those import chains.
-vi.mock('@/components/hermes/chat/OutlinePanel.vue', () => ({
-  default: { template: '<div class="outline-panel-stub" />' },
+vi.mock('@/components/hermes/chat/RunPanel.vue', () => ({
+  default: { template: '<div class="run-panel-stub" />' },
 }))
 
 vi.mock('@/components/hermes/chat/DetailPanel.vue', async () => {
@@ -245,22 +265,33 @@ vi.mock('@/components/hermes/chat/FilesPanel.vue', () => ({
   default: { template: '<div class="files-panel-stub" />' },
 }))
 
+// ChatPanel now imports FilesView (the `files` sidebar surface), whose
+// FileEditor.vue pulls in monaco-editor — which crashes at import time under
+// jsdom (document.queryCommandSupported is not a function). Sever the import
+// chain with a harmless stub, mirroring router-user-mode.test.ts.
+vi.mock('monaco-editor', () => ({}))
+
 vi.mock('@/components/hermes/chat/TerminalPanel.vue', () => ({
   default: { template: '<div class="terminal-panel-stub" />' },
 }))
 
 vi.mock('@/components/layout/PageSidebarNav.vue', () => ({
   default: {
-    props: ['primaryLabel', 'active'],
-    emits: ['primary'],
-    template: '<button class="page-sidebar-nav-stub" :data-active="active" @click="$emit(\'primary\')">{{ primaryLabel }}</button>',
+    props: ['primaryLabel', 'active', 'showPrimaryConfig'],
+    emits: ['primary', 'primaryConfig'],
+    template:
+      '<div class="page-sidebar-nav-stub-wrap">'
+      + '<button class="page-sidebar-nav-stub" :data-active="active" @click="$emit(\'primary\')">{{ primaryLabel }}</button>'
+      + '<button v-if="showPrimaryConfig" class="page-sidebar-nav-config-stub" @click="$emit(\'primaryConfig\')">config</button>'
+      // The real component hosts the task list + account row via slots.
+      + '<slot name="tasks" /><slot name="footer" />'
+      + '</div>',
   },
 }))
 
-vi.mock('@/views/hermes/ExpertView.vue', () => ({
+vi.mock('@/views/hermes/ExpertCatalogView.vue', () => ({
   default: {
-    props: ['embedded'],
-    template: '<section class="expert-view-stub" :data-embedded="embedded">Expert Surface</section>',
+    template: '<section class="expert-catalog-stub">Expert Surface</section>',
   },
 }))
 
@@ -293,6 +324,7 @@ describe('ChatPanel user-mode gateway state', () => {
     routeMock.query = {}
     profilesStoreMock.currentUser = null
     profilesStoreMock.activeProfileName = 'user_a'
+    profilesStoreMock.profiles = []
     routerPushMock.mockClear()
     routerReplaceMock.mockClear()
     routerResolveMock.mockClear()
@@ -430,7 +462,7 @@ describe('ChatPanel user-mode gateway state', () => {
 
     expect(wrapper.get('.page-sidebar-nav-stub').attributes('data-active')).toBe('expert')
     expect(wrapper.get('.chat-surface-host').text()).toContain('Expert Surface')
-    expect(wrapper.find('.expert-view-stub').attributes()).toHaveProperty('data-embedded')
+    expect(wrapper.find('.expert-catalog-stub').exists()).toBe(true)
     expect(wrapper.find('.message-list-stub').exists()).toBe(false)
     expect(wrapper.find('.chat-input-stub').exists()).toBe(false)
     expect(wrapper.text()).toContain('sidebar.expert')
@@ -455,7 +487,7 @@ describe('ChatPanel user-mode gateway state', () => {
     expect(wrapper.text()).toContain('jobs.title')
   })
 
-  it('renders the Feishu user card at the chat sidebar bottom with an icon-only settings action', async () => {
+  it('renders the Feishu user row and opens the account menu to reach settings', async () => {
     profilesStoreMock.currentUser = {
       name: '孙可',
       profile: 'feishu_g41a5b5g',
@@ -466,24 +498,100 @@ describe('ChatPanel user-mode gateway state', () => {
       global: {
         stubs: {
           RouterLink: true,
+          // Render the teleported UserMenu inline so it can be queried.
+          teleport: true,
         },
       },
     })
 
+    // The footer is one quiet row — avatar + name — not a bordered card, and
+    // matching the prototype it has no standalone settings gear: the whole row
+    // is the affordance and settings lives inside the account menu.
     const bottom = wrapper.get('.page-sidebar-bottom')
-    const userCard = bottom.get('.sidebar-user')
-    expect(userCard.text()).toContain('孙可')
-    // The redundant profile id is no longer rendered in the sidebar user card.
-    expect(userCard.text()).not.toContain('feishu_g41a5b5g')
-    expect(userCard.text()).toContain('sidebar.connected')
-    expect(userCard.get('img.user-avatar').attributes('src')).toBe('https://example.com/avatar.png')
-    expect(bottom.find('.page-sidebar-menu-btn').exists()).toBe(false)
+    expect(bottom.text()).toContain('孙可')
+    // The redundant profile id is not rendered in the sidebar footer.
+    expect(bottom.text()).not.toContain('feishu_g41a5b5g')
+    expect(bottom.get('.sidebar-user__avatar img').attributes('src')).toBe('https://example.com/avatar.png')
+    expect(bottom.find('.sidebar-user__settings').exists()).toBe(false)
 
-    const settingsButton = userCard.get('.card-settings-button')
-    expect(settingsButton.text().trim()).toBe('')
-    await settingsButton.trigger('click')
+    // Clicking the user row opens the UserMenu; its first item navigates to settings.
+    await bottom.get('.sidebar-user__trigger').trigger('click')
+    const menu = wrapper.get('.user-menu')
+    await menu.findAll('.user-menu__item')[0].trigger('click')
 
-    expect(routerPushMock).toHaveBeenCalledWith({ name: 'hermes.settings' })
+    // Settings opens as a surface inside the chat shell so the sidebar stays put.
+    expect(routerPushMock).toHaveBeenCalledWith({ name: 'hermes.chat', query: { surface: 'settings' } })
+  })
+
+  it('groups the task list by agent, newest agent first, and labels each group', async () => {
+    profilesStoreMock.profiles = [
+      { name: 'ops', displayLabel: '运维助手' },
+      { name: 'research' },
+    ]
+    chatStoreMock.sessions = [
+      { id: 'a', title: 'ops older', profile: 'ops', createdAt: 1, updatedAt: 10 },
+      { id: 'b', title: 'research newest', profile: 'research', createdAt: 1, updatedAt: 30 },
+      { id: 'c', title: 'ops newer', profile: 'ops', createdAt: 1, updatedAt: 20 },
+    ]
+
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+
+    const headers = wrapper.findAll('.session-agent-group')
+    expect(headers).toHaveLength(2)
+    // Group order follows each group's newest session, so the agent you just
+    // talked to sits on top.
+    expect(headers[0].text()).toContain('research')
+    expect(headers[1].text()).toContain('运维助手')
+    // The count is part of the header, like the workspace groups'.
+    expect(headers[1].text()).toContain('2')
+
+    // Rows stay in newest-first order inside their own group.
+    const titles = wrapper.findAll('.session-item-stub').map(r => r.text())
+    expect(titles).toEqual(['research newest', 'ops newer', 'ops older'])
+  })
+
+  it('shows no group header when every task belongs to one agent', () => {
+    profilesStoreMock.profiles = [{ name: 'ops', displayLabel: '运维助手' }]
+    chatStoreMock.sessions = [
+      { id: 'a', title: 'one', profile: 'ops', createdAt: 1, updatedAt: 2 },
+      { id: 'b', title: 'two', profile: 'ops', createdAt: 1, updatedAt: 1 },
+    ]
+
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+
+    // A header would be labelling the only group there is.
+    expect(wrapper.findAll('.session-agent-group')).toHaveLength(0)
+    expect(wrapper.findAll('.session-item-stub')).toHaveLength(2)
+  })
+
+  it('collapses one agent group without touching the others', async () => {
+    profilesStoreMock.profiles = [{ name: 'ops' }, { name: 'research' }]
+    chatStoreMock.sessions = [
+      { id: 'a', title: 'ops task', profile: 'ops', createdAt: 1, updatedAt: 10 },
+      { id: 'b', title: 'research task', profile: 'research', createdAt: 1, updatedAt: 30 },
+    ]
+
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+
+    await wrapper.get('[data-testid="session-agent-group-research"]').trigger('click')
+    const rows = wrapper.findAll('.session-item-stub')
+    expect(rows.find(r => r.text() === 'research task')!.isVisible()).toBe(false)
+    expect(rows.find(r => r.text() === 'ops task')!.isVisible()).toBe(true)
+  })
+
+  it('keeps an unknown agent\'s tasks in the list under its raw profile name', () => {
+    // A deleted agent, or a profile list that has not landed yet: dropping the
+    // group would drop the rows with it.
+    profilesStoreMock.profiles = [{ name: 'ops' }]
+    chatStoreMock.sessions = [
+      { id: 'a', title: 'ops task', profile: 'ops', createdAt: 1, updatedAt: 10 },
+      { id: 'b', title: 'orphan task', profile: 'gone_profile', createdAt: 1, updatedAt: 20 },
+    ]
+
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+
+    expect(wrapper.find('[data-testid="session-agent-group-gone_profile"]').text()).toContain('gone_profile')
+    expect(wrapper.findAll('.session-item-stub').map(r => r.text())).toContain('orphan task')
   })
 
   it('keeps the session profile in sidebar links and navigation', async () => {
@@ -553,6 +661,9 @@ describe('ChatPanel user-mode gateway state', () => {
       },
     })
 
+    // The profile filter lives in the 筛选 popover now (prototype: the task
+    // list header carries a single filter icon).
+    await wrapper.get('.session-filter-btn').trigger('click')
     wrapper.findComponent('.session-profile-filter').vm.$emit('update:value', '123')
     await flushPromises()
 
@@ -591,7 +702,10 @@ describe('ChatPanel user-mode gateway state', () => {
       agent: 'hermes',
       workspace: null,
     }))
-    expect(routerPushMock).toHaveBeenCalledWith(expect.objectContaining({
+    // The draft is created synchronously and we replace (not push) to its own
+    // route — the prototype's instant "new task" never leaves a history entry
+    // nor waits on a resume load.
+    expect(routerReplaceMock).toHaveBeenCalledWith(expect.objectContaining({
       name: 'hermes.session',
       params: { sessionId: 'new-session' },
       query: { profile: 'user_a' },
@@ -641,8 +755,210 @@ describe('ChatPanel user-mode gateway state', () => {
     expect(wrapper.find('.folder-picker-stub').exists()).toBe(false)
   })
 
+  it('groups workspace sessions and carries the selected group into a new chat', async () => {
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    appStoreMock.profileModelGroups = [{
+      profile: 'user_a',
+      groups: [{ provider: 'openai', label: 'OpenAI', models: ['gpt-4.1'] }],
+      default_provider: 'openai',
+      default: 'gpt-4.1',
+    }]
+    chatStoreMock.sessions = [
+      { id: 'a1', profile: 'user_a', title: 'A1', source: 'cli', workspace: 'project-a', messages: [], createdAt: 1, updatedAt: 3 },
+      { id: 'a2', profile: 'user_a', title: 'A2', source: 'cli', workspace: 'project-a', messages: [], createdAt: 1, updatedAt: 2 },
+      { id: 'plain', profile: 'user_a', title: 'Plain', source: 'cli', workspace: null, messages: [], createdAt: 1, updatedAt: 1 },
+    ]
+
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+    await wrapper.get('.session-filter-btn').trigger('click')
+    const project = wrapper.findAll('.workspace-group-item').find(button => button.text().includes('project-a'))
+    expect(project?.text()).toContain('2')
+
+    await project!.trigger('click')
+    await wrapper.get('.page-sidebar-nav-stub').trigger('click')
+    await flushPromises()
+
+    expect(chatStoreMock.newChat).toHaveBeenCalledWith(expect.objectContaining({
+      profile: 'user_a',
+      workspace: 'project-a',
+      source: 'cli',
+    }))
+  })
+
+  it('ignores legacy absolute workspace rows when grouping', async () => {
+    // Pre-feature rows hold the absolute host workspace root, not a user binding.
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    chatStoreMock.sessions = [
+      { id: 'l1', profile: 'user_a', title: 'L1', source: 'cli', workspace: '/Users/x/.hermes/profiles/user_a/workspace', messages: [], createdAt: 1, updatedAt: 3 },
+      { id: 'l2', profile: 'user_a', title: 'L2', source: 'cli', workspace: '/Users/x/.hermes/profiles/user_a/workspace', messages: [], createdAt: 1, updatedAt: 2 },
+    ]
+
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+    await wrapper.get('.session-filter-btn').trigger('click')
+
+    expect(wrapper.findAll('.workspace-group-item')).toHaveLength(0)
+  })
+
+  it('collapses and restores the workspace group list', async () => {
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    chatStoreMock.sessions = [
+      { id: 'a1', profile: 'user_a', title: 'A1', source: 'cli', workspace: 'project-a', messages: [], createdAt: 1, updatedAt: 3 },
+    ]
+
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+    await wrapper.get('.session-filter-btn').trigger('click')
+    const hiddenStyle = () => wrapper.findAll('.workspace-group-item')
+      .find(button => button.text().includes('project-a'))!
+      .attributes('style') || ''
+    const toggle = () => wrapper.get('.workspace-group-toggle')
+    expect(hiddenStyle()).not.toContain('display: none')
+    expect(toggle().attributes('aria-expanded')).toBe('true')
+
+    await toggle().trigger('click')
+    expect(hiddenStyle()).toContain('display: none')
+    expect(toggle().attributes('aria-expanded')).toBe('false')
+
+    await toggle().trigger('click')
+    expect(hiddenStyle()).not.toContain('display: none')
+  })
+
+  // The composer chip that used to carry these is gone; the workspace entry
+  // point is the row menu now, and the rules below are about that flow.
+  async function openWorkspaceFromRowMenu(wrapper: any) {
+    await wrapper.get('.session-item-menu-stub').trigger('click')
+    const row = wrapper.findAll('.session-menu__item').find((item: any) => item.text().includes('chat.setWorkspace'))
+    expect(row).toBeTruthy()
+    await row!.trigger('click')
+    await flushPromises()
+  }
+
+  it('does not borrow the sidebar filter folder for an unbound session', async () => {
+    // The picker states what THIS session is bound to and nothing else. It must not
+    // borrow the sidebar filter: an unbound session opened while a workspace filter is
+    // active would otherwise pre-fill a binding that does not exist — one blind OK and
+    // the user is bound to a folder never chosen.
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    chatStoreMock.sessions = [
+      { id: 'plain', profile: 'user_a', title: 'Plain', source: 'cli', workspace: null, messages: [], createdAt: 1, updatedAt: 1 },
+    ]
+    chatStoreMock.activeSession = chatStoreMock.sessions[0]
+
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true, teleport: true } } })
+    await wrapper.get('.session-filter-btn').trigger('click')
+    const project = wrapper.findAll('.workspace-group-item').find(button => button.text().includes('project-a'))
+    if (project) await project.trigger('click')
+    chatStoreMock.activeSession = chatStoreMock.sessions[0]
+    await flushPromises()
+
+    await openWorkspaceFromRowMenu(wrapper)
+
+    const input = wrapper.find('.workspace-modal input')
+    if (input.exists()) expect((input.element as HTMLInputElement).value).not.toContain('project-a')
+  })
+
+  it('offers the workspace entry point on a server-hydrated api_server session', async () => {
+    // The WebUI creates sessions as source:"cli" client-side, but the SERVER persists
+    // them as "api_server" — so this is the shape every session has after a refresh or
+    // when opened from history. The entry point must survive that round-trip.
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    chatStoreMock.sessions = [
+      { id: 'a1', profile: 'user_a', title: 'A1', source: 'api_server', workspace: null, messages: [], createdAt: 1, updatedAt: 3 },
+    ]
+    chatStoreMock.activeSession = chatStoreMock.sessions[0]
+
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true, teleport: true } } })
+    await wrapper.get('.session-item-menu-stub').trigger('click')
+
+    const labels = wrapper.findAll('.session-menu__item').map(item => item.text())
+    expect(labels.some(label => label.includes('chat.setWorkspace'))).toBe(true)
+  })
+
+  it('forks a new session instead of rebinding an api_server session that has messages', async () => {
+    // Same predicate gates the fork branch. If it regresses, this path falls through to
+    // an in-place rebind and the user gets the server's 409 instead of a new session.
+    const { setSessionWorkspace } = await import('@/api/hermes/sessions')
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    chatStoreMock.sessions = [
+      { id: 'a1', profile: 'user_a', title: 'A1', source: 'api_server', workspace: 'media-probe', messageCount: 3, messages: [], createdAt: 1, updatedAt: 3 },
+    ]
+    chatStoreMock.activeSession = chatStoreMock.sessions[0]
+
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true, teleport: true } } })
+    await openWorkspaceFromRowMenu(wrapper)
+
+    const confirm = wrapper.findAll('button').find(button => button.text().includes('common.confirm'))
+    if (confirm) {
+      await confirm.trigger('click')
+      await flushPromises()
+      expect(setSessionWorkspace).not.toHaveBeenCalled()
+    }
+  })
+
+  it('shows the workspace entry point on a server-hydrated api_server session', async () => {
+    // The WebUI creates sessions as source:"cli" client-side, but the SERVER persists
+    // them as "api_server" — so this is the shape every session has after a refresh or
+    // when opened from history. The entry point must survive that round-trip.
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    chatStoreMock.sessions = [
+      { id: 'a1', profile: 'user_a', title: 'A1', source: 'api_server', workspace: null, messages: [], createdAt: 1, updatedAt: 3 },
+    ]
+    chatStoreMock.activeSession = chatStoreMock.sessions[0]
+
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+
+    expect(wrapper.find('.composer-workspace-button').exists()).toBe(true)
+  })
+
+  it('shows the bound folder name on a server-hydrated api_server session', async () => {
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    chatStoreMock.sessions = [
+      { id: 'a1', profile: 'user_a', title: 'A1', source: 'api_server', workspace: 'media-probe', messages: [], createdAt: 1, updatedAt: 3 },
+    ]
+    chatStoreMock.activeSession = chatStoreMock.sessions[0]
+
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+
+    expect(wrapper.get('.composer-workspace-button').text()).toContain('media-probe')
+  })
+
+  it('forks a new session instead of rebinding an api_server session that has messages', async () => {
+    // Same predicate gates the fork branch. If it regresses, this path falls through to
+    // an in-place rebind and the user gets the server's 409 instead of a new session.
+    const { setSessionWorkspace } = await import('@/api/hermes/sessions')
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    chatStoreMock.sessions = [
+      { id: 'a1', profile: 'user_a', title: 'A1', source: 'api_server', workspace: 'media-probe', messageCount: 3, messages: [], createdAt: 1, updatedAt: 3 },
+    ]
+    chatStoreMock.activeSession = chatStoreMock.sessions[0]
+
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+    await wrapper.get('.composer-workspace-button').trigger('click')
+    await wrapper.get('.folder-picker-stub').trigger('click')
+    await wrapper.get('.n-modal-positive').trigger('click')
+    await flushPromises()
+
+    expect(chatStoreMock.newChat).toHaveBeenCalled()
+    expect(setSessionWorkspace).not.toHaveBeenCalled()
+  })
+
+  it('keeps the workspace entry point off coding-agent and global-agent sessions', async () => {
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    for (const source of ['coding_agent', 'global_agent']) {
+      chatStoreMock.sessions = [
+        { id: `s-${source}`, profile: 'user_a', title: source, source, workspace: null, messages: [], createdAt: 1, updatedAt: 3 },
+      ]
+      chatStoreMock.activeSession = chatStoreMock.sessions[0]
+
+      const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+
+      expect(wrapper.find('.composer-workspace-button').exists()).toBe(false)
+    }
+  })
+
   it('does not pair a custom selected model with an unrelated fallback provider for new chats', async () => {
-    isStoredSuperAdminMock.mockReturnValue(true)
+    // Prototype onNewTask creates the draft directly off the sidebar primary
+    // click (see handleNewChatPrimary) — there is no modal step to drive here,
+    // just the same default-model resolution the ordinary-chat path exercises.
     profilesStoreMock.profiles = [{ name: 'user_a' }]
     appStoreMock.modelGroups = [{
       provider: 'anthropic',
@@ -667,13 +983,25 @@ describe('ChatPanel user-mode gateway state', () => {
 
     await wrapper.get('.page-sidebar-nav-stub').trigger('click')
     await flushPromises()
-    await wrapper.findAll('.new-chat-actions .n-button').at(1)!.trigger('click')
-    await flushPromises()
 
     expect(chatStoreMock.newChat).toHaveBeenCalledWith(expect.objectContaining({
       provider: 'anthropic',
       model: 'claude-sonnet-4-6',
     }))
+  })
+
+  it('does not create a chat through an ambient default profile when authorization is unavailable', async () => {
+    profilesStoreMock.profiles = []
+
+    const wrapper = mount(ChatPanel, {
+      global: { stubs: { RouterLink: true } },
+    })
+
+    await wrapper.get('.page-sidebar-nav-stub').trigger('click')
+    await flushPromises()
+
+    expect(profilesStoreMock.fetchProfiles).toHaveBeenCalled()
+    expect(chatStoreMock.newChat).not.toHaveBeenCalled()
   })
 
   it('does not override MessageItem bubble colors in user mode', () => {
@@ -685,5 +1013,34 @@ describe('ChatPanel user-mode gateway state', () => {
     expect(source).not.toContain(':deep(.message-bubble)')
     expect(source).not.toContain(':deep(.message.user .message-bubble)')
     expect(source).not.toContain(':deep(.message.assistant .message-bubble)')
+  })
+
+  it('falls back to the initial glyph when the expert avatar image fails to load', async () => {
+    chatStoreMock.activeSession = {
+      id: 's-exp', title: '', source: 'cli', messages: [],
+      expertId: 'keep-resource-delivery', expertLabel: '资源投放专家', expertAvatar: '/gone.png',
+    }
+    chatStoreMock.activeSessionId = 's-exp'
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+
+    const img = wrapper.find('img.expert-session-avatar')
+    expect(img.exists()).toBe(true)
+    await img.trigger('error')
+    await nextTick()
+
+    expect(wrapper.find('img.expert-session-avatar').exists()).toBe(false)
+    const fallback = wrapper.find('.expert-session-avatar--fallback')
+    expect(fallback.exists()).toBe(true)
+    expect(fallback.text()).toBe('资')
+  })
+
+  it('renders no expert identity for a global-agent session even with stale expert metadata', () => {
+    chatStoreMock.activeSession = {
+      id: 's-ga', title: '', source: 'global_agent', messages: [],
+      expertId: 'keep-resource-delivery', expertLabel: '资源投放专家', expertAvatar: '/x.png',
+    }
+    chatStoreMock.activeSessionId = 's-ga'
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+    expect(wrapper.find('.expert-session-identity').exists()).toBe(false)
   })
 })

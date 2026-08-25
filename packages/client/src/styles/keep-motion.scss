@@ -1,0 +1,534 @@
+// ============================================================
+// KippiesWork motion primitives
+// ------------------------------------------------------------
+// Durations and easings are copied verbatim from the prototype
+// (KippiesWork v1.0.html). Keep DS §11 says "no decorative motion";
+// the sweep/shimmer/pulse family is a deliberate, documented
+// exception — they are generation-progress feedback, not decoration,
+// and every one of them degrades under prefers-reduced-motion.
+// ============================================================
+
+// ─── Press / hover ──────────────────────────────────────────
+// Keep DS §9.1: pressed = the original color + a #000 @ 20% overlay. NOT a
+// drop in opacity. The two look alike until the button sits on a light ground,
+// where lowering opacity blends it toward the background — it gets *lighter*
+// when pressed. An overlay is what reads as "pushed in".
+//
+// §9.1 says nothing about hover, but every clickable thing has to answer the
+// pointer or you can't tell controls from decoration. Hover uses the same
+// overlay at a third of the press depth (8%), so there is one mechanism at two
+// strengths rather than "hover recolors, press overlays".
+//
+// Dark mode overlays white — stacking black on #0D0D0D is invisible.
+
+button.ab {
+  position: relative;
+  overflow: hidden;
+  transition: opacity var(--motion-base) var(--ease-std);
+
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit; // pill corners follow the button, no restating
+    pointer-events: none;
+    background: #000;
+    opacity: 0;
+    transition: opacity 90ms var(--ease-std);
+  }
+
+  &:hover::after { opacity: 0.08; }
+  &:active::after { opacity: 0.2; }
+
+  // Disabled = opacity 0.4 overall (§9.1); it neither hovers nor presses.
+  &:disabled {
+    cursor: default;
+
+    &::after { opacity: 0 !important; }
+  }
+}
+
+.dark button.ab,
+[data-theme='dark'] button.ab {
+  &::after { background: #fff; }
+  &:hover::after { opacity: 0.1; }
+  &:active::after { opacity: 0.22; }
+}
+
+// Non-button carriers of `.ab` (spans, anchors) keep the plain press dim —
+// they can't take `overflow: hidden` without risking clipped children.
+.ab:not(button) {
+  transition: opacity var(--motion-base) var(--ease-std);
+
+  &:active {
+    opacity: 0.6;
+  }
+}
+
+// ─── Entrances ──────────────────────────────────────────────
+
+@keyframes kp-slidein {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+@keyframes kp-pop {
+  from { transform: translateY(-8px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+@keyframes kp-tabin {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes kp-fadein {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes kp-genin {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.tabfade { animation: kp-tabin 220ms var(--ease-out); }
+.fadein { animation: kp-fadein 220ms var(--ease-out); }
+.genin { animation: kp-genin 420ms var(--ease-out) both; }
+
+// ─── In-progress feedback ───────────────────────────────────
+
+@keyframes kp-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@keyframes kp-shim {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.pulse { animation: kp-pulse 1.4s var(--ease-std) infinite; }
+.shimmer { animation: kp-shim 1.3s var(--ease-std) infinite; }
+
+// A button's pending spinner — the only keyframes added purely for a *state*;
+// everything else here (skeleton shim, progress pulse) already existed.
+//
+// NOTE: reduced-motion does NOT switch this off (see the block at the bottom of
+// this file). It says "still running"; stopped, it becomes a dead icon. What
+// reduced-motion silences is decorative breathing — shim and pulse.
+@keyframes kp-spin {
+  to { transform: rotate(360deg); }
+}
+
+.spin { animation: kp-spin 900ms linear infinite; }
+
+// Sweep: a light band travels across the glyphs themselves (gradient
+// clipped to text), not an opacity breath on the whole block.
+//
+// Two things matter here:
+//   1. The gradient MUST repeat, and the offset must stay within one
+//      tile. With no-repeat, moving past the tile slides the gradient
+//      clean off the text — clipped to text there is then nothing left
+//      to paint and the text disappears outright. First and last stop
+//      are the same color, so the tiling seam is invisible.
+//   2. The band is only one step lighter than the ground
+//      (--fg-aux → --fg-secondary). More contrast reads as blinking.
+@keyframes kp-sweep {
+  from { background-position: 0% 0; }
+  to { background-position: -200% 0; }
+}
+
+.sweep {
+  background-image: linear-gradient(
+    100deg,
+    var(--fg-aux) 0%,
+    var(--fg-aux) 43%,
+    var(--fg-secondary) 50%,
+    var(--fg-aux) 57%,
+    var(--fg-aux) 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: kp-sweep 2.2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sweep {
+    animation: none;
+    background-image: none;
+    color: var(--fg-aux);
+    -webkit-text-fill-color: var(--fg-aux);
+  }
+}
+
+@keyframes kp-caret {
+  50% { opacity: 0; }
+}
+
+.gencaret {
+  display: inline-block;
+  width: 2px;
+  height: 14px;
+  background: var(--keep-green);
+  margin-left: 2px;
+  vertical-align: -2px;
+  animation: kp-caret 0.8s step-end infinite;
+}
+
+// ─── Block-level hover actions ──────────────────────────────
+// Tables, document cards: the copy/feedback affordance floats in at the
+// top-right on hover, rather than sitting there permanently.
+
+.blk {
+  position: relative;
+
+  > .blkact {
+    opacity: 0;
+    transition: opacity var(--motion-base) var(--ease-std);
+  }
+
+  &:hover > .blkact,
+  &:focus-within > .blkact {
+    opacity: 1;
+  }
+}
+
+// ─── Card lift ──────────────────────────────────────────────
+
+.lift {
+  transition: transform var(--motion-base) var(--ease-std);
+}
+
+div:hover > .lift {
+  transform: translateY(-3px);
+}
+
+// Row / card hover now lives with the other surface primitives in
+// global.scss, stated against --surface-* instead of the raw greys.
+
+// ─── Input aurora (the "beam") ──────────────────────────────
+// White fill + a gradient hairline that flows around the border. Nothing
+// glows outside the box — this is a traveling stroke, not a diffuse halo.
+//
+// Three layers, bottom to top:
+//   1. .beamfill  pure white ground (never tint the inside grey)
+//   2. .beamedge  1px neutral hairline — this alone is the rest state
+//   3. .beamring  1.5px flowing gradient stroke, lit on hover/focus only
+//
+// This is in tension with Keep DS §11 ("motion only where functional")
+// and is a deliberate exception: the input is the one element whose job
+// is to invite you to type.
+
+.beam {
+  position: relative;
+  isolation: isolate;
+
+  // Ground. An earlier version layered a black-alpha vertical gradient
+  // here for a "smoked glass" look and the whole box read as grey. The
+  // box earns its presence from the hairline and the shadow, not from a
+  // darkened fill. Content layers above must stay transparent or they
+  // cover this one.
+  .beamfill {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    z-index: 0;
+    pointer-events: none;
+    background: var(--bg);
+    overflow: hidden;
+  }
+
+  // Rest-state hairline. inset box-shadow rather than border: it takes no
+  // layout space and follows the border-radius for free.
+  .beamedge {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    z-index: 3;
+    pointer-events: none;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.07);
+  }
+
+  // Flowing gradient stroke, 1.5px, over the hairline. The whole aurora is
+  // laid out as one conic sweep; first and last stop are both #FFB7F5 so
+  // the seam does not show. One rotation = the colors travel once around
+  // the border, 5s per lap.
+  //
+  // MUST sit below the content layer (z 5). The content layer is
+  // position:relative and forms its own stacking context; with the ring
+  // above it, a popup menu opening upward gets sliced by this purple line.
+  .beamring {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    z-index: 4;
+    pointer-events: none;
+    padding: 1.5px;
+    overflow: hidden;
+    opacity: 0;
+    transition: opacity 380ms var(--ease-out);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+
+    i {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 175%;
+      aspect-ratio: 1;
+      background: conic-gradient(
+        from 0deg,
+        #ffb7f5,
+        #d274ff 9%,
+        #a273ff 18%,
+        #838fff 27%,
+        #8f9cff 36%,
+        #bed8ff 50%,
+        #8f9cff 64%,
+        #838fff 73%,
+        #a273ff 82%,
+        #d274ff 91%,
+        #ffb7f5
+      );
+      animation: kp-ringflow 5s linear infinite;
+      // Not lit means not animating — no compositing layer left running
+      // forever behind an invisible element.
+      animation-play-state: paused;
+    }
+  }
+
+  &:hover .beamring,
+  &:focus-within .beamring {
+    opacity: 1;
+  }
+
+  &:hover .beamring i,
+  &:focus-within .beamring i {
+    animation-play-state: running;
+  }
+}
+
+.dark .beam .beamedge,
+[data-theme='dark'] .beam .beamedge {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+// The translate must ride along with the rotation, or the disc flies off
+// on the first frame.
+@keyframes kp-ringflow {
+  from { transform: translate(-50%, -50%) rotate(0); }
+  to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .beam .beamring i { animation: none; }
+}
+
+// ─── Sidebar logo: two files, swapped by CSS ────────────────
+// Both images are in the DOM; the theme decides which one paints. Do NOT
+// replace this with "read the theme in JS and render one" — that draws the
+// default theme's file on frame one and swaps after, i.e. a flash of the light
+// logo in dark mode. See KwLogo.vue.
+
+.kwlogo-l,
+.kwlogo-d {
+  display: block;
+}
+
+.kwlogo-d {
+  display: none;
+}
+
+.dark .kwlogo-l,
+[data-theme='dark'] .kwlogo-l {
+  display: none;
+}
+
+.dark .kwlogo-d,
+[data-theme='dark'] .kwlogo-d {
+  display: block;
+}
+
+// ─── Home wordmark ──────────────────────────────────────────
+
+.warpfall {
+  background-image: var(--grad-brand);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.dark .warpfall,
+[data-theme='dark'] .warpfall {
+  background-image: var(--grad-brand-dark);
+}
+
+// Per-character wordmark entrance (split-text): each glyph rises from below
+// with a small overshoot, staggered 42ms (the delay is set inline, per glyph).
+//
+// --ease-pop is the only springy curve in the system (the nav icons use it
+// too). Do not add a second one — one interface should not have two different
+// "bounces".
+//
+// backface-visibility / will-change are deliberately absent: this is a
+// one-shot entrance, and adding them would ask the compositor for a layer per
+// glyph.
+@keyframes kp-splitin {
+  from {
+    opacity: 0;
+    transform: translateY(0.42em) scale(0.94);
+  }
+  60% { opacity: 1; }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.splitch { animation: kp-splitin 620ms var(--ease-pop) both; }
+
+// Reduced motion lands on the END state rather than zeroing the duration —
+// a 0s animation still renders the `from` frame in some engines, which flashes.
+@media (prefers-reduced-motion: reduce) {
+  .splitch {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+// ─── Canvas annotation pin ──────────────────────────────────
+// Circle with an 8px rounded tail at the lower left (not a sharp point).
+//
+// This used to carry a `0 3px 10px rgba(109,81,244,.4)` drop to float the pin
+// above the canvas. §7.1 forbids shadows, so it is two rings instead: the inner
+// white one separates the pin from a colored image, and the outer brand-purple
+// 40% one carries what the drop used to say — "this is a pin I placed".
+
+.notepin {
+  border-radius: 50% 50% 50% 8px;
+  box-shadow: 0 0 0 2px var(--white), 0 0 0 3px rgba(109, 81, 244, 0.4);
+}
+
+// The annotate-mode cursor is the marker itself; the hotspot sits on the
+// tail (2,28) so it lands exactly where the pin will be dropped. Same
+// path as .notepin.
+.notecursor,
+.notecursor * {
+  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='30' height='30' viewBox='0 0 30 30'><path d='M2 15A13 13 0 0 1 28 15A13 13 0 0 1 15 28L10 28A8 8 0 0 1 2 20Z' fill='%236D51F4' stroke='%23FFFFFF' stroke-width='2' stroke-linejoin='round'/></svg>") 2 28, crosshair;
+}
+
+// ─── Navigation icons ───────────────────────────────────────
+// One direction (up), one curve (--ease-pop), one distance. There used to be
+// a per-icon motion table — plus turns 90°, clock sweeps a revolution, drawer
+// slides in — on the theory that the motion would also explain the entry. Six
+// entries stacked in one column, six different actions: what you read is not
+// "each has character", it is "this column has no shared language". Telling
+// them apart is the icon *shape*'s job, not the motion's.
+//
+// The animated element is the inner icon, never `.navico` itself: the box
+// takes part in the sidebar's 300ms collapse transition, and a transform on
+// top of that fights the width animation.
+
+.navico {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+
+  > svg,
+  > .kp-icon-font {
+    transition: transform 200ms var(--ease-pop);
+  }
+}
+
+// Hover: the outline draws itself on. Every path carries `pathLength="1"`, so
+// offset 1 = fully covered by the gap (invisible) and offset 0 = fully drawn.
+// At rest it is 0 — an icon must always be whole.
+.navico svg path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+}
+
+.row:hover .navico svg path,
+.page-sidebar-tab:hover .navico svg path {
+  animation: kp-navdraw 620ms var(--ease-std);
+}
+
+// One pen can't start two strokes at once. The order is the path order:
+// body first, details after.
+.row:hover .navico svg path:nth-child(2),
+.page-sidebar-tab:hover .navico svg path:nth-child(2) { animation-delay: 110ms; }
+.row:hover .navico svg path:nth-child(3),
+.page-sidebar-tab:hover .navico svg path:nth-child(3) { animation-delay: 200ms; }
+.row:hover .navico svg path:nth-child(4),
+.page-sidebar-tab:hover .navico svg path:nth-child(4) { animation-delay: 260ms; }
+
+@keyframes kp-navdraw {
+  from { stroke-dashoffset: 1; }
+  to { stroke-dashoffset: 0; }
+}
+
+// Press: the whole icon compresses a little. Drawing says "it answered",
+// compressing says "it registered" — different moments, so they coexist.
+.row:active .navico,
+.page-sidebar-tab:active .navico {
+  transform: scale(0.94);
+  transition-duration: 90ms;
+}
+
+// Names still on the font fall back to a lift. This is the fallback, not a
+// second style — a glyph has no stroke to animate.
+.row:hover .navico > .kp-icon-font,
+.page-sidebar-tab:hover .navico > .kp-icon-font {
+  transform: translateY(-2px) scale(1.06);
+}
+
+// Entrance: the column floats up in sequence, 40ms apart. `both` holds the end
+// state, otherwise the final frame snaps back to the start. 6px against the
+// 2px hover — appearing should read larger than answering — but the direction
+// and curve are the same.
+.navin {
+  animation: kp-navrise 420ms var(--ease-pop) both;
+}
+
+@keyframes kp-navrise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+// Reduce-motion turns all of it off. Killing only transition/animation is not
+// enough — the hover transform survives and the icon jumps to the lifted
+// position with no easing, which is worse than the animation this query is
+// meant to avoid. The end states go too.
+@media (prefers-reduced-motion: reduce) {
+  .navico > svg,
+  .navico > .kp-icon-font {
+    transition: none !important;
+    animation: none !important;
+  }
+
+  .navin { animation: none !important; }
+
+  .row:hover .navico > .kp-icon-font,
+  .page-sidebar-tab:hover .navico > .kp-icon-font,
+  .row:active .navico,
+  .page-sidebar-tab:active .navico {
+    transform: none !important;
+  }
+
+  .navico svg path {
+    animation: none !important;
+    stroke-dashoffset: 0 !important;
+  }
+}

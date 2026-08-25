@@ -106,6 +106,37 @@ export interface ExpertsData {
   experts: ExpertInfo[]
 }
 
+export type WorkRecordPartitionStatus = 'available' | 'unavailable'
+
+export interface UserWorkRecord {
+  expert_id: string
+  mode: 'user'
+  window_days: number
+  partitions: {
+    sessions: { status: WorkRecordPartitionStatus; items: Array<{ id: string; title: string; last_active: number; status: 'active' | 'completed' }> }
+    jobs: { status: WorkRecordPartitionStatus; items: Array<{ id: string; name: string; schedule?: string; status?: string }> }
+    feedback: { status: WorkRecordPartitionStatus; items: Array<{ session_id: string; run_id: string; rating: 'up' | 'down'; reason: string | null; updated_at: number }> }
+  }
+}
+
+export interface MaintainerWorkRecord {
+  expert_id: string
+  mode: 'maintainer'
+  window_days: number
+  partitions: {
+    sessions: { status: WorkRecordPartitionStatus; count?: number; active?: number; completed?: number }
+    jobs: { status: WorkRecordPartitionStatus; count?: number; active?: number; paused?: number }
+    feedback: { status: WorkRecordPartitionStatus; count?: number; positive?: number; negative?: number; positive_rate?: number }
+  }
+}
+
+export type ExpertWorkRecord = UserWorkRecord | MaintainerWorkRecord
+
+export async function fetchExpertWorkRecord(expertId: string, view?: 'maintainer'): Promise<ExpertWorkRecord> {
+  const suffix = view ? '?view=maintainer' : ''
+  return request<ExpertWorkRecord>(`/api/hermes/experts/${encodeURIComponent(expertId)}/work-record${suffix}`)
+}
+
 /**
  * Fetch the expert catalog for the active (or given) profile.
  * Mirrors `fetchSkills(profile?)`.

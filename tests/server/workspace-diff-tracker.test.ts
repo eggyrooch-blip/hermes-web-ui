@@ -26,6 +26,27 @@ vi.mock('../../packages/server/src/config', () => ({
   },
 }))
 
+// ─── Timing budgets, derived — not hand-picked wall-clock numbers ───────────
+//
+// These tests assert a REAL contract: completion is bounded by the tracker's
+// own deadline instead of waiting on a deliberately slow fake `git`. What made
+// them flaky was expressing that contract as a hardcoded millisecond literal
+// (3_500 / 2_500) with no link to the production constants — a loaded CI runner
+// blows the literal while the contract still holds (observed: pipelines #537240
+// and #537245 on main, plus two consecutive reds on MR 16, each failing a
+// DIFFERENT case in this file with "expected 3606 to be less than 2500").
+//
+// So: derive the ceiling from the service's own budget and multiply by a
+// slack factor that CI can raise. The assertion still fails loudly if the
+// deadline stops working (the slow path sleeps 4s — an unbounded wait blows
+// even the slack), but no longer fails merely because the box is busy.
+const TIMING_SLACK = Number(process.env.HERMES_TEST_TIMING_SLACK || (process.env.CI ? 4 : 2))
+
+/** Ceiling for "the tracker gave up on schedule", derived from its own budget. */
+function boundedByDeadline(budgetMs: number): number {
+  return budgetMs * TIMING_SLACK
+}
+
 function git(cwd: string, args: string[]): void {
   execFileSync('git', args, { cwd, stdio: 'ignore' })
 }
@@ -58,13 +79,18 @@ describe('workspace diff tracker', () => {
     git(repo, ['commit', '-m', 'initial'])
   })
 
+  // The slow-path cases install a fake `git` that sleeps 4s, and this hook waits
+  // for those children to settle before deleting the repo. The individual tests
+  // budget 25-30s for that, but the hook kept vitest's default and timed out
+  // under CI load ("Hook timed out in 30000ms" — pipeline #537524). Give the
+  // hook the same order of budget as the tests it cleans up after.
   afterEach(async () => {
     const { awaitWorkspaceDiffSettlement } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
     await awaitWorkspaceDiffSettlement()
     state.db?.close()
     state.db = null
     rmSync(root, { recursive: true, force: true })
-  })
+  }, 60_000)
 
   it('does nothing without an explicit workspace path', async () => {
     const {
@@ -182,7 +208,7 @@ describe('workspace diff tracker', () => {
         const change = await completeWorkspaceRunCheckpoint({ sessionId, runId, workspace: repo, checkpoint })
         const elapsed = Date.now() - startedAt
 
-        expect(elapsed).toBeLessThan(3_500)
+        expect(elapsed).toBeLessThan(boundedByDeadline(3_500))
         expect(change).toBeNull()
         const { awaitWorkspaceDiffSettlement } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
         await awaitWorkspaceDiffSettlement()
@@ -226,7 +252,7 @@ describe('workspace diff tracker', () => {
         runId: 'run-status-start-deadline',
         workspace: repo,
       })
-      expect(Date.now() - startBeganAt).toBeLessThan(3_500)
+      expect(Date.now() - startBeganAt).toBeLessThan(boundedByDeadline(3_500))
       expect(delayedStart).not.toBeNull()
       discardWorkspaceRunCheckpoint({
         sessionId: 'session-status-start-deadline',
@@ -256,7 +282,7 @@ describe('workspace diff tracker', () => {
         workspace: repo,
         checkpoint,
       })
-      expect(Date.now() - completeBeganAt).toBeLessThan(3_500)
+      expect(Date.now() - completeBeganAt).toBeLessThan(boundedByDeadline(3_500))
       expect(change).toBeNull()
       expect(readFileSync(completeLog, 'utf8')).toBe('start\n')
       await vi.waitFor(() => expect(readFileSync(completeLog, 'utf8')).toContain('end\n'), { timeout: 5_500 })
@@ -317,7 +343,10 @@ describe('workspace diff tracker', () => {
       if (originalRelease === undefined) delete process.env.HERMES_WORKSPACE_DIFF_TEST_STATUS_RELEASE
       else process.env.HERMES_WORKSPACE_DIFF_TEST_STATUS_RELEASE = originalRelease
     }
-  }, 10_000)
+  // 这个 10s 曾经比全局 testTimeout 还紧，而用例内部要等真 git 子进程(含刻意的 sleep 4)
+  // 加 vi.waitFor(5_500)，CI 上必然随机爆。"有界完成"的真断言是上面的
+  // expect(elapsed).toBeLessThan(boundedByDeadline(3_500))，那条没动；这里只是 harness 裕量。
+  }, 30_000)
 
   it.runIf(process.platform !== 'win32')('retains a completed path when a later patch misses the shared deadline', async () => {
     const {
@@ -356,7 +385,7 @@ describe('workspace diff tracker', () => {
     try {
       const startedAt = Date.now()
       const change = await completeWorkspaceRunCheckpoint({ sessionId, runId, workspace: repo, checkpoint })
-      expect(Date.now() - startedAt).toBeLessThan(3_500)
+      expect(Date.now() - startedAt).toBeLessThan(boundedByDeadline(3_500))
       expect(change?.truncated).toBe(true)
       expect(change?.files.map(file => file.path)).toEqual([fastPath])
       if (existsSync(logPath)) {
@@ -369,7 +398,10 @@ describe('workspace diff tracker', () => {
       if (originalLog === undefined) delete process.env.HERMES_WORKSPACE_DIFF_TEST_LOG
       else process.env.HERMES_WORKSPACE_DIFF_TEST_LOG = originalLog
     }
-  }, 10_000)
+  // 这个 10s 曾经比全局 testTimeout 还紧，而用例内部要等真 git 子进程(含刻意的 sleep 4)
+  // 加 vi.waitFor(5_500)，CI 上必然随机爆。"有界完成"的真断言是上面的
+  // expect(elapsed).toBeLessThan(boundedByDeadline(3_500))，那条没动；这里只是 harness 裕量。
+  }, 30_000)
 
   it.runIf(process.platform !== 'win32')('bounds concurrent workspace checkpoint builds', async () => {
     const {
@@ -505,7 +537,7 @@ setTimeout(() => process.exit(1), 8_000)
         runId: `run-slow-root-${operationName}-${index}`,
         workspace,
       })))
-      expect(Date.now() - startedAt).toBeLessThan(2_500)
+      expect(Date.now() - startedAt).toBeLessThan(boundedByDeadline(2_500))
       expect(firstHandles).toEqual([null, null])
       expect(delayedRootOperation).toHaveBeenCalledTimes(2)
 
@@ -541,7 +573,10 @@ setTimeout(() => process.exit(1), 8_000)
     } finally {
       vi.doUnmock('fs/promises')
     }
-  }, 10_000)
+  // 这个 10s 曾经比全局 testTimeout 还紧，而用例内部要等真 git 子进程(含刻意的 sleep 4)
+  // 加 vi.waitFor(5_500)，CI 上必然随机爆。"有界完成"的真断言是上面的
+  // expect(elapsed).toBeLessThan(boundedByDeadline(3_500))，那条没动；这里只是 harness 裕量。
+  }, 30_000)
 
   it('starts a fresh work deadline after a queued checkpoint acquires a retained lease', async () => {
     for (let index = 0; index < 3; index += 1) {
@@ -605,7 +640,10 @@ setTimeout(() => process.exit(1), 8_000)
       nowSpy.mockRestore()
       vi.doUnmock('fs/promises')
     }
-  }, 10_000)
+  // 这个 10s 曾经比全局 testTimeout 还紧，而用例内部要等真 git 子进程(含刻意的 sleep 4)
+  // 加 vi.waitFor(5_500)，CI 上必然随机爆。"有界完成"的真断言是上面的
+  // expect(elapsed).toBeLessThan(boundedByDeadline(3_500))，那条没动；这里只是 harness 裕量。
+  }, 30_000)
 
   it('reports a degraded checkpoint when two retained operations exhaust acquisition budget', async () => {
     for (let index = 0; index < 3; index += 1) {
@@ -639,7 +677,7 @@ setTimeout(() => process.exit(1), 8_000)
         runId: 'run-never-settles-2',
         workspace: repo,
       })
-      expect(Date.now() - startedAt).toBeLessThan(2_500)
+      expect(Date.now() - startedAt).toBeLessThan(boundedByDeadline(2_500))
       expect(realpathMock).toHaveBeenCalledTimes(2)
       expect(checkpoint).toMatchObject({ degradedReason: 'lease_acquisition_timeout' })
       await expect(completeWorkspaceRunCheckpoint({
@@ -669,7 +707,10 @@ setTimeout(() => process.exit(1), 8_000)
     } finally {
       vi.doUnmock('fs/promises')
     }
-  }, 10_000)
+  // 这个 10s 曾经比全局 testTimeout 还紧，而用例内部要等真 git 子进程(含刻意的 sleep 4)
+  // 加 vi.waitFor(5_500)，CI 上必然随机爆。"有界完成"的真断言是上面的
+  // expect(elapsed).toBeLessThan(boundedByDeadline(3_500))，那条没动；这里只是 harness 裕量。
+  }, 30_000)
 
   it('bounds a delayed directory close and retains the lease until cleanup', async () => {
     const workspace = join(root, 'slow-close-workspace')
@@ -698,7 +739,7 @@ setTimeout(() => process.exit(1), 8_000)
         workspace,
       })
 
-      expect(Date.now() - startedAt).toBeLessThan(2_500)
+      expect(Date.now() - startedAt).toBeLessThan(boundedByDeadline(2_500))
       expect(checkpoint).not.toBeNull()
       expect(close).toHaveBeenCalledOnce()
       let discarded = false

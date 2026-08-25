@@ -88,7 +88,11 @@ describe('KanbanCreateForm', () => {
 
     await wrapper.findAll('.n-button-stub')[1].trigger('click')
 
-    expect(mockMessage.warning).toHaveBeenCalledWith('kanban.form.titleRequired')
+    // Validation now sits in the form, beside the field it is about, instead of
+    // in a toast. The point of the test is unchanged: it must be stated, and the
+    // submit must not go through.
+    expect(wrapper.find('[data-testid="kanban-create-error"]').text())
+      .toContain('kanban.form.titleRequired')
     expect(mockCreateTask).not.toHaveBeenCalled()
   })
 
@@ -111,7 +115,8 @@ describe('KanbanCreateForm', () => {
       assignee: 'alice',
       priority: 3,
     })
-    expect(mockMessage.success).toHaveBeenCalledWith('kanban.message.taskCreated')
+    // No success message: the new task appears on the board, and `created`
+    // below is what this test actually needs to prove.
     expect(wrapper.emitted('created')).toBeTruthy()
     expect(wrapper.emitted('close')).toBeTruthy()
   })

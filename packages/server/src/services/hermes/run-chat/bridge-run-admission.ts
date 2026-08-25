@@ -51,6 +51,7 @@ export function reserveBridgeRunAdmission(
   sessionMap: Map<string, SessionState>,
   data: BridgeRunAdmissionData,
   profile: string,
+  ownerId?: string | null,
 ): BridgeRunAdmission | null {
   const sessionId = data.session_id
   if (!sessionId) return null
@@ -74,6 +75,7 @@ export function reserveBridgeRunAdmission(
     createSessionAndBind(state, {
       id: sessionId,
       profile,
+      user_id: ownerId || null,
       source,
       model: data.model,
       provider: data.provider,

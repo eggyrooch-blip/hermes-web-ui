@@ -3,6 +3,7 @@ import type { VoiceDialogueEvent } from '@/utils/voiceDialogueEvents'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import VoiceTranscriptOverlay, { type VoiceDialogueStatus } from './VoiceTranscriptOverlay.vue'
+import KpIcon from '@/components/kippies/KpIcon.vue'
 
 const props = withDefaults(defineProps<{
   status: VoiceDialogueStatus
@@ -72,24 +73,9 @@ function cancel() {
         >
           <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
         </svg>
-        <svg
-          v-else
-          class="voice-dialogue-controls__icon"
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.8"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" />
-          <path d="M5 10v1a7 7 0 0 0 14 0v-1" />
-          <path d="M12 18v3" />
-          <path d="M9 21h6" />
-        </svg>
+        <!-- Keep glyph, matching the prototype's mic (the recording/stop and
+             cancel states keep their svgs — the prototype has no live state). -->
+        <KpIcon v-else name="line_microphone" :size="16" class="voice-dialogue-controls__icon" />
       </button>
 
       <button

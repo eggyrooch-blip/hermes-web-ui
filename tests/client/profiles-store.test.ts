@@ -65,7 +65,8 @@ describe('Profiles Store', () => {
     const result = await store.createProfile('new-profile', false)
 
     expect(result.success).toBe(true)
-    expect(mockProfilesApi.createProfile).toHaveBeenCalledWith('new-profile', false)
+    // Third arg is the optional displayLabel pass-through (undefined here).
+    expect(mockProfilesApi.createProfile).toHaveBeenCalledWith('new-profile', false, undefined)
     expect(store.profiles).toHaveLength(2)
   })
 
@@ -145,9 +146,9 @@ describe('Profiles Store', () => {
 
   it('switchProfile sets switching state', async () => {
     mockProfilesApi.switchProfile.mockResolvedValue(true)
-    mockProfilesApi.fetchProfiles.mockResolvedValue([])
 
     const store = useProfilesStore()
+    store.profiles = [{ name: 'dev', active: false, model: 'gpt-4', alias: '' }]
     const switchPromise = store.switchProfile('dev')
 
     expect(store.switching).toBe(true)
@@ -157,12 +158,13 @@ describe('Profiles Store', () => {
 
   it('switchProfile updates activeProfileName immediately', async () => {
     mockProfilesApi.switchProfile.mockResolvedValue(true)
-    mockProfilesApi.fetchProfiles.mockResolvedValue([
+    const profiles = [
       { name: 'default', active: false, model: 'gpt-4', alias: '' },
       { name: 'dev', active: true, model: 'gpt-4', alias: '' },
-    ])
+    ]
 
     const store = useProfilesStore()
+    store.profiles = profiles
     await store.switchProfile('dev')
 
     // activeProfileName should be updated immediately
@@ -178,6 +180,7 @@ describe('Profiles Store', () => {
     mockProfilesApi.switchProfile.mockResolvedValue(false)  // API failed
 
     const store = useProfilesStore()
+    store.profiles = [{ name: 'dev', active: false, model: 'gpt-4', alias: '' }]
     store.activeProfileName = initialName
     const result = await store.switchProfile('dev')
 
@@ -189,6 +192,18 @@ describe('Profiles Store', () => {
     expect(localStorage.getItem('hermes_active_profile_name')).toBe(initialName)
   })
 
+  it('switchProfile returns false without changing identity when the API throws', async () => {
+    localStorage.setItem('hermes_active_profile_name', 'default')
+    mockProfilesApi.switchProfile.mockRejectedValue(new Error('unavailable'))
+    const store = useProfilesStore()
+    store.profiles = [{ name: 'dev', active: false, model: 'gpt-4', alias: '' }]
+    store.activeProfileName = 'default'
+
+    expect(await store.switchProfile('dev')).toBe(false)
+    expect(store.activeProfileName).toBe('default')
+    expect(localStorage.getItem('hermes_active_profile_name')).toBe('default')
+  })
+
   it('switchProfile keeps activeProfileName even if fetchProfiles fails', async () => {
     const initialName = 'default'
     localStorage.setItem('hermes_active_profile_name', initialName)
@@ -197,6 +212,7 @@ describe('Profiles Store', () => {
     mockProfilesApi.fetchProfiles.mockRejectedValue(new Error('Network error'))
 
     const store = useProfilesStore()
+    store.profiles = [{ name: 'dev', active: false, model: 'gpt-4', alias: '' }]
     store.activeProfileName = initialName
     const result = await store.switchProfile('dev')
 
@@ -219,12 +235,28 @@ describe('Profiles Store', () => {
     ])
 
     const store = useProfilesStore()
+    store.profiles = [
+      { name: 'default', active: true, model: 'gpt-4', alias: '' },
+      { name: 'dev', active: false, model: 'gpt-4', alias: '' },
+    ]
     store.activeProfileName = initialName
     const result = await store.switchProfile('dev')
 
     expect(result).toBe(true)
     expect(store.activeProfileName).toBe('dev')
     expect(localStorage.getItem('hermes_active_profile_name')).toBe('dev')
+  })
+
+  it('rejects a profile absent from the current authorized list', async () => {
+    localStorage.setItem('hermes_active_profile_name', 'default')
+    const store = useProfilesStore()
+    store.activeProfileName = 'default'
+    store.profiles = [{ name: 'default', active: true, model: 'gpt-4', alias: '' }]
+
+    expect(await store.switchProfile('forged-profile')).toBe(false)
+    expect(mockProfilesApi.switchProfile).not.toHaveBeenCalled()
+    expect(store.activeProfileName).toBe('default')
+    expect(localStorage.getItem('hermes_active_profile_name')).toBe('default')
   })
 
   it('stores the Feishu bound user and selected profile for user-mode chrome', () => {

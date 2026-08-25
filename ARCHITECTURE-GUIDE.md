@@ -1,6 +1,20 @@
 ---
+
+> [!warning] 2026-08-12 数字员工定时执行入口为本地候选，尚未 ship
+> `digital-employee-scheduled-entry` 只在 persisted expert 与当前 catalog 一致的普通会话
+> 显示 `Schedule`，复用既有 JobFormModal 预填会话标题、当前 prompt、expert skills 与固定
+> Feishu delivery；plain/coding/global/stale-catalog 会话无入口。服务端在 Jobs broker 写入前
+> 回读可信 request principal/profile 与 session expert，剔除浏览器 owner/profile/source_app/
+> delivery，并用 opaque idempotency key；缺失、跨主体、expert 变化或 broker/mirror 依赖异常
+> 均失败关闭。另修复继承基线的 DB lookup 异常静默路径：现在在任何 state/transcript/dispatch
+> 前返回 requester-scoped `run.rejected`。focused 20、broker lifecycle 53、full 2826 passed /
+> 2 skipped、Playwright 2/2、typecheck/harness/build、SIM 8/8 均通过；正式 Fable T2 待完成。
+> 未 ship/push/merge/deploy、未连接生产或发员工消息，生产仍为 `7cb2d552d5ff`。
+> 2026-08-13 冲突整形将 ChatInput import 与 session-entry 组合，并统一沿用脱敏的
+> `Session authorization is unavailable`，不向客户端暴露 DB 异常；组合 focused 118/118、
+> typecheck/build 通过，仍未发布。
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-08-02
+updated: 2026-08-11
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
@@ -14,6 +28,169 @@ related:
 ---
 
 # hermes-web-ui 架构速查 — EKKO fork
+
+> [!warning] 2026-08-12 数字员工会话入口为本地候选，尚未 ship
+> `digital-employee-session-entry` 把目录卡主动作改为“和 TA 对话”并固定创建独立会话；
+> 会话 header/历史列表显示自己的员工 snapshot，已绑定会话的输入框员工选择器只读。
+> 首次普通 run 与 `/plan`/`/goal` command 都在 transcript、metadata 或 broker dispatch 前，
+> 用 socket trusted principal + profile 回读授权 expert catalog；客户端 label/avatar 不作证据，
+> bound expert、owner 或 catalog 不一致均失败关闭。Run Broker 只收到解析后的 expert ID，
+> 不新增模型调用、schema 或 fallback。Grok 首轮发现的同 profile 跨 principal
+> 队列注入 P0 已修在公共 socket 准入边界：入队前校验 profile + owner，出队
+> 重入二次校验，身份查询异常失败关闭。full 332/332 files、2817 passed / 2 skipped、
+> build、8/8 simulation 与双 principal 队列回归通过；Grok round-2 T2 PASS。生产仍为
+> `7cb2d552d5ff`。
+
+> [!warning] 2026-08-12 数字员工回答来源仅为本地候选，生产不变
+> F-task `digital-employee-source-view` 在最终回答下、反馈控件上展示已授权来源。WebUI 只消费
+> Run Broker 最终 `done` 顶层 `source_refs`；原始 allowlisted envelope 随 final assistant
+> 持久化，实时事件和每次 full/paginated hydration 都按当前可信 principal 重新授权。公共
+> web 只允许去 query/fragment 的 HTTPS；workspace 复用 profile workspace realpath 边界；
+> lark_doc 浏览器只收到 BFF open 路径，打开时再次经 multitenancy run-scoped user broker
+> 只读验证，撤权、identity 缺失或依赖不可用均 404/省略且不返回 label、locator 或内容。
+> warm socket resume 也不再直发内存中的 producer envelope：服务端以当前 socket principal
+> 重新授权后仅发 safe `open_path`；cold DB mapping 保留 envelope 只供服务端授权，授权异常
+> 映射为空且不回退原始 locator。
+>
+> output-only `done` 若同时携带非空 final text 和来源，会在统一终态边界生成一条 final
+> assistant，确保实时展示与刷新一致；tool/intermediate/无来源行不变。Grok 首轮发现的
+> 4 个恢复路径 P0 已按上述单一输出边界修复；targeted 58/58、单 worker full 336/336 files
+>（2829 passed / 2 skipped）与 build 通过，Grok round-2 T2 PASS（另独立复跑 159 tests）。未 ship/push/merge/deploy、
+> 未连接生产或发送员工消息，生产仍为
+
+> [!warning] 2026-08-12 数字员工工作履历仅为本地候选，生产不变
+
+> [!warning] 2026-08-13 数字员工工作履历 P1 已修，仅为本地候选，生产不变
+> F-task `digital-employee-work-record` 只聚合现有 sessions、Jobs 与 feedback，不新增事件表或
+> 模型总结。普通用户的 session 先按可信 profile/open_id 候选集过滤，再逐条复用 session
+> 授权；Jobs 复用现有当前用户列表，feedback 只从这些已授权 session 读取。session SQLite
+> 不可用时该分区明确 unavailable，不再返回 available empty。maintainer view
+> 必须由 expert registry 实时证明当前 principal 是唯一 owner；其 30 天汇总对最多 2,000 条
+> session 按每个 profile/user route 重新解析 owner，只统计 owner subject 精确匹配的记录，
+> Jobs 也按这些已复核 route 分别复用普通列表授权并去重；任一 Jobs route 不可用即整个分区
+> unavailable。返回计数/比例而不返回 ID、姓名、prompt 或 reason；不存在无主体约束的 feedback
+> 聚合入口，任何分区故障不伪造 0，也不回退 shared/admin 身份。
+>
+> focused 3 files / 85 tests、single-worker full 334 files（2828 passed / 2 skipped）、typecheck、
+> build 与 SIM 7 通过；正式 T2 异家族审阅待完成。未 ship/push/merge/deploy、未连接生产或
+> 发送员工消息；生产仍为
+> [!warning] 2026-08-13 本地候选 — 人工接续 P1 收口
+> 终态 handoff 重复创建返回 409；owner inbox 只返回 registry 当前仍绑定本人的行，单行 owner
+> 漂移被省略，registry 不可用仍失败关闭为 503。requester 的 open/assigned 行以 5 秒只读刷新
+> 获得人工回复，不新增 socket 协议；E2E mock 按 requester/owner/other 拒绝越权，并验证回复回到
+> 原会话且带人工标记。focused 21/21、Playwright 1/1、full 334 files（2829 passed / 2 skipped）、
+> typecheck/build 通过；独立复评、ship、合并和生产发布未执行。
+
+> [!danger] 2026-08-18 数字员工人工接续已按 sunke 要求整条撤回
+> 上面 `digital-employee-human-handoff`（`9da45ef2`）随 `webui-d67f1215` 上生产后，sunke 在同一张
+> 截图里连同 Work record 一起圈出「Human follow-ups」入口，判定不要。`webui-revert-human-handoff`
+> 把该提交整条撤回：前端入口/收件箱视图/store/api/router、服务端 controller/handoff-store、
+> feedback 侧的挂接、10 个 locale 的 `chat.handoff.*` 与其带来的测试全部移除。
+> `PageSidebarNav.vue` 手工摘除 6 处（`2168cc1f` 已把 `SINGLE_CONVERSATION_TABS` 换成
+> `isSingleConversationActive`，后者零改动）。
+> 留痕方式：**本文档是唯一保留的撤回记录**（只追加，不反向应用，因与 `2168cc1f` 冲突）；
+> 该功能自己的 change doc `docs/chat-chain-changes/2026-08-12-digital-employee-human-handoff.md`
+> 是 `9da45ef2` 新增的文件，随反向应用**整份删除**。
+> **数据库表未 drop** —— 已产生的 handoff 记录成为孤儿数据（表在、无代码读），清理需 sunke 另行拍板。
+> **附带修复**：`9da45ef2` 给 `tests/e2e/chat-streaming.spec.ts` 加的 61 行带进了语法错
+> （`Unexpected end of file @1070`），导致整个 e2e 套件跑不起来而 `playwright.yml` 的 CI 没拦住；
+> 撤回后该文件恢复可解析，e2e 套件复活。
+> [!warning] 2026-08-12 数字员工人工接续仅为本地候选，生产不变
+> F-task `digital-employee-human-handoff` 复用独立 feedback 与 session owner 边界：只有原用户
+> 自己的 down/unresolved 最终回答可幂等创建一条 handoff；expert registry 的唯一实时 owner
+> 才能查看 inbox、assign 并写入一条纯文本人工回复。状态机固定为
+> `open → assigned → answered → closed`，原用户只可把 open/assigned 取消；跨主体、非最终
+> run、owner 缺失/歧义、重复回答和调用方夹带身份字段均在读写前拒绝。人工回复不进入模型、
+> 工具或原用户 credential 路径。
+>
+> focused server/client 65、full 2827 passed / 2 skipped、Playwright 桌面/390px、build、
+> harness 与 SIM 8/8 通过；
+> 正式 T2 异家族审阅待完成。未 ship/push/merge/deploy、未连接生产或发送员工消息；生产仍为
+> `webui-7cb2d552@7cb2d552d5ff`。
+
+> [!warning] 2026-08-12 数字员工回答反馈仅为本地候选，生产不变
+> F-task `digital-employee-feedback` 在独立 worktree 新增与 message schema 解耦的
+> `message_feedback` 表和 GET/PUT/DELETE API。主键固定为 trusted principal + session +
+> authoritative run；principal、owner、expert 均由服务端可信上下文和 session 回读，缺失、
+> 歧义、跨主体、非最终回答或 tool/error/draft 行都在写入前失败关闭。可信 WebUI/API/Bridge
+> 会话创建路径会同步写入 owner，不增加 shared/core fallback 或模型调用。
+>
+> 客户端每个 session 只加载一次评价；只在每个 run 的最后一条已完成非空回答显示原生
+> 点赞/点踩控件，支持五个固定原因、改选、撤销、失败重试、键盘焦点和 390px 页面。
+> focused 9 files / 184 tests、Playwright 12/12、9/9 simulation、typecheck 和 build 通过；
+> 三个审查 P1（Bridge 最终完成原因、命令/Coding Agent owner、同 run 最新行判定）已补
+> SQLite/可信准入/组件回归；Bridge 只给真正 terminal final 写 `stop`，tool/error/intermediate
+> 不可评价，已有 ownerless session 不回填。Grok 首轮发现的 Broker 成功最终行
+> `finish_reason=null` P0 已在共享 terminal 边界修复：仅 current `run.completed`
+> 的最后非工具非空回答在落库前写 `stop`，失败/工具/草稿/过期 run 仍拒绝。
+> full 332/332 files、2819 passed / 2 skipped、build 和新增 Broker final 回归通过；
+> Grok round-2 T2 PASS。未 ship/push/merge/deploy、未连接生产或发送员工可见 canary；生产仍为
+> `webui-7cb2d552@7cb2d552d5ff`。
+> [!warning] 2026-08-13 本地候选 — 数字员工工作记录终态与停止状态
+> `MessageList` 只在真实 active/abort 状态显示 thinking avatar；完成/失败使用静态标记，避免
+> 历史终态继续呈现正在思考。停止与超时说明直接显示在工作记录卡片，不依赖展开技术详情。
+> 聚焦 13/13、full 332 files（2809 passed / 2 skipped）、typecheck 与 build 通过；独立复评、
+> ship、合并和生产发布均未执行。
+
+> [!warning] 2026-08-11 数字员工工作记录为本地候选，生产未发布
+> `digital-employee-work-progress` 只在 `MessageList` 用既有 run、tool、reauth、approval、
+> clarify、abort、queue 和 terminal message 状态派生一条紧凑工作记录；优先级固定，技术
+> 工具详情复用原面板并默认折叠，不保存时间线、不展示 reasoning、不新增 API/DB/event/
+> model call。所有 10 个 locale 已补文案；focused 19 passed、client typecheck、production
+> build 与 8/8 ftask simulation 通过。候选仍在独立 worktree，未 ship/push/deploy，生产
+> `webui-7cb2d552` 与员工界面均未变化。
+> [!danger] 2026-08-18 数字员工工作记录已按 sunke 要求整条撤回
+> 上面 `digital-employee-work-progress`（`4078418b`）随 `webui-d67f1215` 上了生产后，sunke
+> 判定不满意：一轮跑完，`Work record / Completed` 卡片仍留在对话里；对零工具调用的对话它退化成
+> 只有绿勾的空壳，零信息量。`webui-revert-work-record` 把该提交的三个代码路径
+> （`MessageList.vue`、10 个 locale 的 `chat.work*` 键、`message-list-streaming.test.ts`）
+> 原样反向应用，聊天区指示器回到 `4078418b^`：`Thinking + 计时`、工具面板直接摊开、跑完即消失。
+> 连带撤销：六种跑动状态文案（等待授权/确认/补充信息、停止中、排队、正在使用能力）与「技术详情」折叠。
+> 本文档不做反向应用（`2168cc1f` 已改同区域，实测冲突），保留上述两条历史记录作为决策留痕。
+> Expert 面板的 `expert.workRecord.*`（「我的工作记录」）同名不同物，零改动。
+> [!warning] 2026-08-13 智能体 × 数字员工冲突修复为本地候选
+> `agents-digital-employee-conflicts` 将 profile 切换收口到当前授权列表，未知或切换失败的
+> profile 在新会话/发送前失败关闭；`new=1` 消费后保留 profile query，避免 watcher 二次
+> reload 删除刚创建的本地会话。与 session-entry、scheduled-entry、human-handoff 四分支的
+> 只读组合树无冲突，组合 focused 118/118、typecheck、build 通过。语言覆盖未纳入；未 ship、
+> push、merge、deploy，生产未变。
+
+> [!success] 2026-08-11 production `7cb2d552d5ff` — 旧 SPA GitLab 入口兼容与连接器卡片收敛
+> zhaozhiguang 的旧页面不是 Token 已提交后失效，而是旧 JavaScript 把手动 Token 入口送进
+> 不存在的交互式 auth flow；即使新 bundle 已发布，内存中的旧 SPA 仍调用 `/start` 并收到
+> 400。根修复让 `POST /api/auth/skill-credentials/gitlab-personal/start` 返回同源当前连接器
+> 页；handoff 只有 `surface`、`tab`、`open_credential=gitlab-personal`，不含 profile、
+> open_id、token 或其它身份字段。当前页面加载可信连接器状态后自动打开个人 Token 表单，
+> 提交主体仍只由 verified session 决定；全局 GitLab 卡仍无员工操作按钮。
+>
+> 同一 squash commit `ebe5b9001578` 删除“关联技能”展示，并用既有 CSS Grid 把 7 张卡统一
+> 为 220px 高、同列等宽、按钮置底，说明不截断。MR !12 / pipeline 537238 的 policy、test、
+> leak 全绿；focused Vitest 63 passed、对应 Playwright 文件 6 passed、build/harness/simulation
+> 通过。protected tag `release-20260811-07` 发布后，WebUI 软链与 HEAD 均为
+> `/home/hermes/releases/webui-7cb2d552@7cb2d552d5ff`，multitenancy 保持
+> `95a754285e0c`；release executor 明确 `PROBES: 12 passed, 0 failed`，回滚包 outcome=SUCCESS。
+>
+> 生产登录态实测旧 `/start` 为 200，返回的 handoff 自动显示 Token 表单和空 Token 输入框，
+> 未读取或提交凭证。真实连接器页“关联技能”命中 0；当前 1229px viewport 下 7 卡均为
+> 308×220、卡内无溢出，有操作的按钮距底 15px；全局 GitLab 卡无按钮。四服务 active 且
+> NRestarts=0，WebUI/profile API/公网为 200，Run Broker 与 GitLab 写入口未鉴权均为 401，
+> 8655 未监听且本链路不依赖。两库 quick-check=`ok`，双身份 self=2/cross=0/ambiguous=0，
+> session mirror 31906/31906 非空，发布窗口四服务隔离/凭据/Traceback marker=0。
+> 未发送 Feishu 消息、未调用模型或工具；zhaozhiguang 仍为唯一 active user route、个人
+> GitLab credential=0，必须由他本人通过现已可用的表单提交，不能写成个人 Token 已绑定。
+
+> [!success] 2026-08-11 Meegle profile HOME 隔离已发布，未授权展示已闭环
+> `release-20260811-10` 部署 WebUI `25110602e0c1`：`skill-credentials.ts` 的共享
+> `meegleEnv(profileDir, ...)` 把 host config、device login 与 local status 全部固定到
+> `<profileDir>/home`，不再继承 service HOME，也不迁移或回退全局 `.meegle`。真实生产随后
+> 暴露 multitenancy reader 未识别 Meegle exit 1 + stdout `reason=no local token`，因此页面
+> 一度显示“检测失败”；WebUI 代码无需再改。
+>
+> `release-20260811-11` 保持 WebUI `25110602e0c1`，只把 multitenancy 升到
+> `deb4ed4bad6d`。executor 12/12 后，`sunke` 真实登录页显示“飞书项目 / 未认证 / 授权”，
+> 没有错误显示“已认证”或“检测失败”，也未点击授权。WebUI/profile/public=200，broker
+> 未鉴权=405/401，identity self=2/cross=0/ambiguous=0，session mirror 32047/32047，发布
+> 窗口 bad marker=0。
 
 > [!success] 2026-08-02 production `8550b0f2a4d6` — skill 读取隔离与 GitLab CI
 > skill 内容读取在允许根判定前解析 realpath；目标尚不存在时从最近存在祖先解析，
@@ -609,7 +786,7 @@ related:
 >
 > 2026-05-25 12:10 追加 kep-cli 生产 OAuth callback 修复：`kep-cli-oauth-prod-callback` worktree 修复 Credentials 页把 `kep-auth login` 的 `response_url=http://localhost:<port>` 原样暴露给远端浏览器的问题。WebUI 现在启动 profile-scoped `kep-auth` 后创建短期 session，把授权 URL 中的 `response_url` 改写到当前外部 origin 的 `/api/auth/kep-cli/callback/:sessionId`；Keep 授权回跳 WebUI 后，BFF 只按该 session 转发到同机已捕获的 `127.0.0.1/localhost` kep-auth listener，让 kep-auth 继续负责 token exchange 和 profile-local 保存。不开放通用 localhost proxy，不改变 Lark-cli/Keep-record/GitLab 流程。验证：RED/GREEN `tests/server/skill-credentials.test.ts`；server `tsc`；focused `tests/server/feishu-oauth.test.ts tests/client/credentials-view.test.ts tests/client/api.test.ts` 39 tests 通过。已合入 `main@8310b15` 并发布生产，生产验证见顶部发布块。
 
-> 2026-05-25 12:45 追加 SkillHub 统一内部凭证适配：`skillhub-unified-credentials` worktree 把 AiDock/SkillHub skill 安装与 Credentials 体系接起来，不要求上游 skill 包改格式。WebUI 新增 skill requirement classifier：Feishu/Lark 资源（`lark_cli`、`open.feishu.cn`、wiki/docx/sheets/bitable scopes 等）归到 `lark-cli`；Keep/AiDock/proxy.cms/SkillHub 资源（`kep-auth`、`KEP_PROFILE`、`proxy.cms.gotokeep.com`、`ark.gotokeep.com/aidock-cms`、`skill/zipfile` 等）归到 `kep-cli`；GitLab 和 Keep-record 保持既有 adapter。一个 skill 可同时要求多个凭证，Credentials 页把 `lark-cli` 与 `kep-cli` 归入「内部系统」组，并通过 `required_by` 显示哪些 skills 依赖该凭证。新增 `POST /api/hermes/skills/skillhub/install`，目标 profile 只来自 `getRequestProfile(ctx)`；服务端用当前 profile-local `kep-auth --profile <profile> --env online status/token` 获取 token，调用 AiDock zip API 时固定带 `Authorization: Bearer <token>` 与 `x-source: cli`，下载 URL、Bearer、signed URL 均不返回浏览器或写 manifest，安装响应也不回传 server/profile path。signed zip URL 只允许 `https` 且拒绝 localhost、内网和链路本地地址；包下载禁用自动 redirect，最多手动跟随 3 次且每一跳重新执行同一安全 URL 检查。zip 解包会拒绝路径逃逸、缺 `SKILL.md` 和压缩/解压超限包，安装到当前 profile `skills/<skill-code>/` 并写 `.hermes-skillhub.json` 的 checksum/source/profile/required_credentials 记录。Skills 列表同时识别 `.hub/lock.json` 与 `.hermes-skillhub.json`，避免新安装 skill 被误标为 local。验证：RED/GREEN `tests/server/skill-credentials.test.ts`、`tests/server/skills-controller.test.ts`、`tests/server/skillhub-installer.test.ts`、`tests/client/credentials-view.test.ts`；全量 `bun run test` 为 128 files / 831 passed / 2 skipped，`bun run build` passed。仍未合入、未 push、未发布生产。
+> 2026-05-25 12:45 追加 SkillHub 统一内部凭证适配：`skillhub-unified-credentials` worktree 把 AiDock/SkillHub skill 安装与 Credentials 体系接起来，不要求上游 skill 包改格式。WebUI 新增 skill requirement classifier：Feishu/Lark 资源（`lark_cli`、`open.feishu.cn`、wiki/docx/sheets/bitable scopes 等）归到 `lark-cli`；Keep/AiDock/proxy.cms/SkillHub 资源（`kep-auth`、`KEP_PROFILE`、`proxy.cms.example.com`、`ark.example.com/aidock-cms`、`skill/zipfile` 等）归到 `kep-cli`；GitLab 和 Keep-record 保持既有 adapter。一个 skill 可同时要求多个凭证，Credentials 页把 `lark-cli` 与 `kep-cli` 归入「内部系统」组，并通过 `required_by` 显示哪些 skills 依赖该凭证。新增 `POST /api/hermes/skills/skillhub/install`，目标 profile 只来自 `getRequestProfile(ctx)`；服务端用当前 profile-local `kep-auth --profile <profile> --env online status/token` 获取 token，调用 AiDock zip API 时固定带 `Authorization: Bearer <token>` 与 `x-source: cli`，下载 URL、Bearer、signed URL 均不返回浏览器或写 manifest，安装响应也不回传 server/profile path。signed zip URL 只允许 `https` 且拒绝 localhost、内网和链路本地地址；包下载禁用自动 redirect，最多手动跟随 3 次且每一跳重新执行同一安全 URL 检查。zip 解包会拒绝路径逃逸、缺 `SKILL.md` 和压缩/解压超限包，安装到当前 profile `skills/<skill-code>/` 并写 `.hermes-skillhub.json` 的 checksum/source/profile/required_credentials 记录。Skills 列表同时识别 `.hub/lock.json` 与 `.hermes-skillhub.json`，避免新安装 skill 被误标为 local。验证：RED/GREEN `tests/server/skill-credentials.test.ts`、`tests/server/skills-controller.test.ts`、`tests/server/skillhub-installer.test.ts`、`tests/client/credentials-view.test.ts`；全量 `bun run test` 为 128 files / 831 passed / 2 skipped，`bun run build` passed。仍未合入、未 push、未发布生产。
 >
 > 16:15 追加：业务确认 SkillHub skills 常态经由 `keep-login-skill`/`kep-cli` 凭证链路。分类器不再只靠 skill 正文命中 `keep-login`/`kep-auth`：安装 API 传入的 `source=hub/aidock-skillhub` 直接归 `kep-cli`，凭证扫描也会读取 `.hub/lock.json` 和 `.hermes-skillhub.json`，让 Hub 来源但正文没有内部鉴权字样的 skill 仍显示在 `kep-cli.required_by`。回归已覆盖该无 marker 场景；全量 `bun run test` 为 128 files / 835 passed / 2 skipped，`bun run build` passed。
 >
@@ -1349,10 +1526,19 @@ user_a  | ou_test_owner_a | feishu_user_a   | 1
 - Workspace checkpoint 的 baseline 必须用异步 I/O 完整采集后才启动真实 run；不能把同步扫描简单包进 timer，也不能让 run 与 baseline 并发，否则会漏记运行早期修改。Git 命令与非 Git 目录扫描必须保留硬超时/上限，diff 失败只能记录告警，不能把原本成功的 chat run 改成失败。
 - 删除 session 时，`messages`、`workspace_run_change_files`、`workspace_run_changes` 与 `sessions` 必须在同一 SQLite 事务内清理；任何一步失败都整体回滚，不能留下无法从 UI 到达的 patch 正文。
 
+### §8.10 智能体 × 数字员工组合边界（本地候选）
+> 2026-08-13 状态：**待考虑，不合并**。本机组合演示后 sunke 判断整体效果未达预期；保留分支、Grok 回执、SIM 与截图，不进入主线或生产，待明确恢复。
+
+- profile 切换只接受当前授权列表；未知/切换失败在新会话和发送前失败关闭。
+- 普通/高级新建聊天也只从已加载的授权 profile 列表选身份；列表为空时不使用 active、current-user 或 `default` 猜测身份，也不创建会话。
+- `new=1` 消费后保留 profile query，避免 watcher 二次 reload 删除本地新会话。
+- Grok 4.5 三轮受管终裁为 ship-with-debt。ChatPanel 空授权列表的 ambient/default 回退已删除；profile store 显式记录授权列表成功加载状态，API 抛错统一返回 `false`。ChatView 对冷启动授权深链先等待一次授权加载，成功后创建精确 profile 会话，失败或未授权才丢弃；详情页切换失败有直接组件回归。最新身份入口 50/50；覆盖 session-entry、scheduled-entry、human-handoff 的四分支组合树命令和证据写入 `docs/agents-digital-employee-combination-evidence.md`，任务树与组合树 typecheck/build 均通过；Chromium 3/3 已归档，语言未纳入，未发布。
+
 ---
 
 ## §9 后续 TODO（从计划文档 + 06 调研）
 
+- [x] **数字员工人工接续本地候选**：终态幂等、owner 漂移、requester 刷新和独立 `handoffActive` sidebar 已收口；组合 fixture 保留 live session list。focused 21/21、原 Playwright 1/1、full 2829 passed / 2 skipped；四任务组合 118/118、typecheck/build、Chromium 3/3 通过；未发布。
 - [ ] **Agent 唤醒可见性**：`正在唤醒 / 强制启动 / 重试 / 休眠` 需要 gateway 暴露真实状态，前端不能假装可用。
 - [ ] **profile sandbox ↔ runtime sandbox** 映射：当前 Web Files 看的是 `profiles/<profile>/workspace`，runtime container 的真实沙箱是另一个路径，需要双向同步或只读映射。
 - [ ] **Feishu channel parity**：飞书承接正式流量，web 侧和飞书侧的 profile runtime / 工具权限 / 记忆注入要一致。
@@ -1536,6 +1722,12 @@ CLAUDE.md 写过：dev 模式下"`hermes` CLI 必须在 `$PATH`"——确实，s
 
 ## Changelog
 
+- 2026-08-12：`workspace-session-binding` 复用 `sessions.workspace` 实现可选工作空间，不新增 Project/Workspace 表。普通 Hermes 会话可在首条消息前从 routed profile 的 `workspace/` 下选择现存目录；未选择仍持久化 `null`。侧栏按 `profile + workspace` 自然分组并显示计数，会话行与输入区显示目录名；已有消息后切换会创建新 session，避免旧上下文 cwd 漂移。BFF 只持久化规范化相对路径，folder API 不再向 chat plane 返回主机绝对路径；绝对越界、`..`、缺失目录、workspace-root symlink 与逃逸 symlink 均在 Run Broker fetch 前拒绝。当前正由 `workspace-session-binding-mr` 通过受保护分支 MR 门禁发布；生产未发布。
+- 2026-08-13：handoff sidebar 改用独立 `handoffActive` 扩展，不再占用共享 `ActiveSection` 枚举或固定 tab 索引；与 agents hub 的只读组合树无冲突，组合 focused 118/118、typecheck/build 通过，未发布。
+- 2026-08-12：本地候选 `digital-employee-feedback` 以 trusted principal + session + authoritative run 隔离评价，缺失、歧义、跨主体和非最终回答均失败关闭；focused 117、Playwright 12/12、SIM 9/9、typecheck/build 通过，未 ship/push/merge/deploy。
+- 2026-08-13：本地候选 `digital-employee-human-handoff` 收口终态幂等、owner 漂移和 requester 只读刷新；原有 trusted principal/session owner/registry 唯一 owner 失败关闭边界不变，人工回复不触发模型、工具或 credential。focused 21/21、Playwright 1/1、full 2829 passed / 2 skipped、typecheck/build 通过；独立复评、ship、合并、生产发布均未执行。
+- 2026-08-12：`digital-employee-human-handoff` 建立 `open → assigned → answered → closed` 人工接续；跨主体、非最终 run、owner 缺失/歧义和调用方夹带身份字段在读写前拒绝。focused server/client 65、full 2827 passed / 2 skipped、Playwright 桌面/390px、build、harness 与 SIM 8/8 通过；未 ship/push/merge/deploy。
+- 2026-08-13：本地候选 `agents-digital-employee-conflicts` 将 profile 切换收口到当前授权列表，未知/切换失败在新会话和发送前失败关闭；`new=1` 保留 profile query，避免 watcher 二次 reload。与 session-entry、scheduled-entry、human-handoff 的只读组合 focused 118/118、typecheck/build 通过；语言未纳入，未 ship/push/merge/deploy。
 - 2026-07-18：候选 `00bc2a0f` 收口最终异模型复审的三条 lifecycle finding：active sibling 存在时的 requester setup exception 只向来源 socket 发带原 `queue_id` 的 `run.rejected`，不广播 room terminal；HTTP 单删/批删先 abandon 并在 remote CLI await 前完成本地 session/message/两张 patch 表的 SQLite 级联；bridge error 在 workspace diff 与 usage/context await 完成前保持 exact ownership，随后按 fresh queue 单次释放/出队，finalization 异常也合并进可见失败。旧实现可判别回归为 focused 4 files / 139 passed；最终 hash-bound SIM 为 tracker 26/26、server lifecycle 192/192、client reconnect/replay 161/161、删除 6 selected tests passed。当前仍仅 ftask worktree，待 final full/build 与 fresh review，未 push、未合入 main、未发布生产。
 - 2026-07-18：候选 `b53418c0` 收口 session command 重放幂等性。原始 slash command 以 `queue_id` 作为稳定 `messages.client_id`，持久化结果以自身 `client_id` 贯通 `session.command.command_message_id`；恢复时 hydrated row 与 pending event 按该 ID 合并，只显示一次。generation lookup 失败时，即使后续 queued run 令错误事件 `terminal:false`，事件仍强制进入 pending replay；无法安全持久化结果时复用 `resume_event_id` 作为 `command_message_id`，直到逐 socket ACK。最终证据：直接影响的 2 个 server/store 文件 110/110，broker/bridge/coding-agent lifecycle SIM 189/189，client reconnect/replay SIM 158/158，full Vitest 320 files / 2596 passed / 2 skipped；当前仍仅 ftask worktree，未 push、未合入 main、未发布生产。
 - 2026-07-17：`webui-release-blockers` 将 workspace diff 的 Git、目录、文件与 patch 子进程改为异步 I/O；broker、bridge、coding-agent 均在 baseline 完成后才启动 run，并在 terminal event 前等待 diff，broker terminal 还会先完成 diff 再调用 `markCompleted`，避免 goal continuation 抢先污染旧 run 的 diff。Git 单子进程 5 秒保护与 workspace root Git 探测/`realpath`/`stat`、扫描/snapshot/HEAD/patch 共用的 1 秒绝对截止同时生效；Git 根超时作为独立结果传播，不能在最后一个 timer tick 再启动 filesystem fallback。扫描改用 `opendir` 流式读取且不新增目录项硬上限，昂贵 diff 全局并发为 2；超时目录 I/O eventual close，迟到 `realpath/stat/lstat/readFile`、Git HEAD/no-index patch 等待 settlement/临时目录清理，清理前都保留 lease。patch 按有效 UTF-8 字节前缀截断，CJK/emoji 不超预算且不产生坏码点。patch 写入与三条 await 后启动检查同时匹配 session rowid + 进程内 incarnation，避免同 ID 删除重建后复活旧 patch/run。`deleteSession()` 同事务清理 message、session、workspace summary/file rows；HTTP 删除在远端 Hermes 和本地 SQLite 前先同步 abandon 精确 row/incarnation；显式 abort 可单靠 linked signal 结束永久挂起的 goal evaluate。Socket 仅在 `socket.active` 时把 `connect_error` 视为可重试，resume 的当前 `isAborting` 不会被历史 `abort.completed` 覆盖。凭证重放只信服务端 parked metadata，predispatch 失败会恢复 auth card，接受后用稳定 `auth.resolved` 跨 tab/Global Agent relay 并按 socket ACK。最终 full Vitest 320 files / 2591 passed / 2 skipped（2593 total），client/server typecheck、build、harness、diff-check 通过；当前仅 ftask worktree，待新 hash 独立复审，未 push、未合入 main、未发布生产。

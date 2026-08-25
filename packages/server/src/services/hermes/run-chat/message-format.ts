@@ -117,6 +117,7 @@ export function handleMessage(messages: SessionMessage[], sid: string): any[] {
         if (m.runMarker) msg.runMarker = m.runMarker
         if (m.run_id) msg.run_id = m.run_id
         if (m.client_id) msg.client_id = m.client_id
+        if (m.source_refs?.length) msg.source_refs = m.source_refs
         // Convert Anthropic format content to OpenAI format
         if (m.role === 'assistant' && typeof m.content === 'string') {
           let contentToParse = m.content

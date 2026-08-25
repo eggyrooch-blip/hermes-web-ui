@@ -132,12 +132,18 @@ export async function updateSkillContent(category: string, skill: string, path: 
   return res.content
 }
 
-export async function fetchMemory(): Promise<MemoryData> {
-  return request<MemoryData>('/api/hermes/memory')
+// `profile` reads/writes ANOTHER agent's persona without switching the active
+// profile: the server resolves ?profile= through getRequestProfile and only
+// honours it for a profile this user owns, and api/client skips its own
+// X-Hermes-Profile override whenever the query carries a profile selector.
+export async function fetchMemory(profile?: string): Promise<MemoryData> {
+  const query = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+  return request<MemoryData>(`/api/hermes/memory${query}`)
 }
 
-export async function saveMemory(section: 'memory' | 'user' | 'soul', content: string): Promise<void> {
-  await request('/api/hermes/memory', {
+export async function saveMemory(section: 'memory' | 'user' | 'soul', content: string, profile?: string): Promise<void> {
+  const query = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+  await request(`/api/hermes/memory${query}`, {
     method: 'POST',
     body: JSON.stringify({ section, content }),
   })

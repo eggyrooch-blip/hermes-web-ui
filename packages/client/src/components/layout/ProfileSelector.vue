@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NButton, NInput, NModal, NSelect, NSpin, NTag, useMessage } from 'naive-ui'
+import { NButton, NInput, NModal, NSelect, NSpin, NTag } from 'naive-ui'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import {
   fetchProfileRuntimeStatusesWithMeta,
@@ -14,6 +14,7 @@ import { fetchAgentShares, grantAgentShare, revokeAgentShare, type AgentShare, t
 import ProfileAvatarView from '@/components/hermes/profiles/ProfileAvatar.vue'
 import ProfileCreateModal from '@/components/hermes/profiles/ProfileCreateModal.vue'
 import { useI18n } from 'vue-i18n'
+import { agentDisplayName } from '@/utils/hermes/agent-identity'
 import { isStoredSuperAdmin } from '@/api/client'
 import { safeShareAvatarUrl } from '@/utils/hermes/share-identity'
 
@@ -22,7 +23,8 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const message = useMessage()
+/** What a clone left behind — stripped credentials, disabled platforms. */
+const cloneGaps = ref('')
 const profilesStore = useProfilesStore()
 const isSuperAdmin = computed(() => isStoredSuperAdmin())
 
@@ -39,6 +41,20 @@ const editingProfile = ref<HermesProfile | null>(null)
 const avatarSaving = ref(false)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const shareModalVisible = ref(false)
+/**
+ * Failures live next to what they are about, not in a toast at the edge of the
+ * screen: the share and avatar dialogs each get one resident line, and the
+ * per-profile runtime actions are keyed by profile name — with one row per
+ * profile, a single shared string would attribute a failure to the wrong row.
+ */
+const shareError = ref('')
+const avatarError = ref('')
+const runtimeError = ref<Record<string, string>>({})
+
+function setRuntimeError(name: string, msg: string) {
+  runtimeError.value = { ...runtimeError.value, [name]: msg }
+}
+
 const shareLoading = ref(false)
 const shareSaving = ref(false)
 const shareProfile = ref<HermesProfile | null>(null)
@@ -137,10 +153,11 @@ async function loadShares() {
   if (!agentId) return
   shareLoading.value = true
   try {
+    shareError.value = ''
     shares.value = await fetchAgentShares(agentId)
   } catch (err: any) {
     shares.value = []
-    message.error(err?.message || t('profiles.share.loadFailed'))
+    shareError.value = err?.message || t('profiles.share.loadFailed')
   } finally {
     shareLoading.value = false
   }
@@ -163,9 +180,9 @@ async function handleGrantShare() {
     newGranteeQuery.value = ''
     newRole.value = 'viewer'
     await loadShares()
-    message.success(t('profiles.share.grantSuccess'))
+    // No success line: the new grant shows up in the list right below.
   } catch (err: any) {
-    message.error(err?.message || t('profiles.share.grantFailed'))
+    shareError.value = err?.message || t('profiles.share.grantFailed')
   } finally {
     shareSaving.value = false
   }
@@ -179,9 +196,11 @@ async function handleRevokeShare(share: AgentShare) {
     const key = shareKey(share)
     await revokeAgentShare(agentId, key)
     shares.value = shares.value.filter(item => shareKey(item) !== key)
-    message.success(t('profiles.share.revokeSuccess'))
+    // The row disappearing is the answer.
+    shareError.value = ''
   } catch (err: any) {
-    message.error(err?.message || t('profiles.share.revokeFailed'))
+    // The row is still there, so the line explains why it stayed.
+    shareError.value = err?.message || t('profiles.share.revokeFailed')
   } finally {
     shareSaving.value = false
   }
@@ -215,7 +234,7 @@ function shareAvatarUrl(share: AgentShare): string {
 }
 
 function profileDisplayLabel(profile: HermesProfile): string {
-  return profile.displayLabel || profile.name
+  return agentDisplayName(profile, t('agentsHub.unnamedGroup'))
 }
 
 function randomSeed() {
@@ -226,11 +245,13 @@ async function saveAvatar(avatar: ProfileAvatar) {
   if (!editingProfile.value) return
   avatarSaving.value = true
   try {
+    avatarError.value = ''
     await profilesStore.updateAvatar(editingProfile.value.name, avatar)
-    message.success(t('profiles.avatar.saveSuccess'))
+    // Closing the dialog, with the new avatar now on the row behind it, is the
+    // answer.
     showAvatarModal.value = false
   } catch (err: any) {
-    message.error(err?.message || t('profiles.avatar.saveFailed'))
+    avatarError.value = err?.message || t('profiles.avatar.saveFailed')
   } finally {
     avatarSaving.value = false
   }
@@ -244,11 +265,11 @@ async function handleResetAvatar() {
   if (!editingProfile.value) return
   avatarSaving.value = true
   try {
+    avatarError.value = ''
     await profilesStore.deleteAvatar(editingProfile.value.name)
-    message.success(t('profiles.avatar.resetSuccess'))
     showAvatarModal.value = false
   } catch (err: any) {
-    message.error(err?.message || t('profiles.avatar.resetFailed'))
+    avatarError.value = err?.message || t('profiles.avatar.resetFailed')
   } finally {
     avatarSaving.value = false
   }
@@ -264,11 +285,11 @@ async function handleAvatarFileChange(event: Event) {
   input.value = ''
   if (!file) return
   if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-    message.warning(t('profiles.avatar.invalidType'))
+    avatarError.value = t('profiles.avatar.invalidType')
     return
   }
   if (file.size > 1024 * 1024) {
-    message.warning(t('profiles.avatar.tooLarge'))
+    avatarError.value = t('profiles.avatar.tooLarge')
     return
   }
   const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -300,9 +321,10 @@ async function handleRestartGateway(name: string) {
         status.profile === name ? { ...status, gateway } : status
       ))
     }
-    message.success(t('profiles.runtime.gatewayRestarted', { name }))
+    // The status text on this row flips to 运行中 — that is the report.
+    setRuntimeError(name, '')
   } catch (err: any) {
-    message.error(err?.message || t('profiles.runtime.gatewayRestartFailed'))
+    setRuntimeError(name, err?.message || t('profiles.runtime.gatewayRestartFailed'))
   } finally {
     gatewayRestarting.value = { ...gatewayRestarting.value, [name]: false }
   }
@@ -315,9 +337,9 @@ async function handleRestartProfile(name: string) {
     runtimeStatuses.value = runtimeStatuses.value.map(item => (
       item.profile === name ? status : item
     ))
-    message.success(t('profiles.runtime.profileRestarted', { name }))
+    setRuntimeError(name, '')
   } catch (err: any) {
-    message.error(err?.message || t('profiles.runtime.profileRestartFailed'))
+    setRuntimeError(name, err?.message || t('profiles.runtime.profileRestartFailed'))
   } finally {
     profileRestarting.value = { ...profileRestarting.value, [name]: false }
   }
@@ -329,10 +351,11 @@ async function handleSwitchProfile(name: string) {
   try {
     const ok = await profilesStore.switchProfile(name)
     if (!ok) throw new Error(t('profiles.switchFailed'))
-    message.success(t('profiles.switchSuccess', { name }))
+    // The whole page reloads onto the new profile; a toast would be torn down
+    // mid-animation anyway.
     window.location.reload()
   } catch (err: any) {
-    message.error(err?.message || t('profiles.switchFailed'))
+    setRuntimeError(name, err?.message || t('profiles.switchFailed'))
   } finally {
     profileSwitching.value = { ...profileSwitching.value, [name]: false }
   }
@@ -347,6 +370,12 @@ onMounted(() => {
 
 <template>
   <div class="profile-selector">
+    <!-- What the clone did NOT bring over. Informational, not a failure, and
+         dismissible — the user needs it to know what to re-add. -->
+    <p v-if="cloneGaps" class="clone-gaps" data-testid="clone-gaps">
+      <span class="clone-gaps__text">{{ cloneGaps }}</span>
+      <button type="button" class="clone-gaps__close" :title="t('common.close')" @click="cloneGaps = ''">&times;</button>
+    </p>
     <div class="selector-label">{{ t('sidebar.profiles') }}</div>
     <div class="profile-display" data-testid="profile-selector-select" @click="openProfileModal">
       <ProfileAvatarView class="profile-avatar" :name="displayName" :avatar="activeProfile?.avatar" :size="24" />
@@ -387,12 +416,12 @@ onMounted(() => {
               <ProfileAvatarView class="profile-runtime-avatar" :name="profile.name" :avatar="profile.avatar" :size="34" />
               <div class="profile-runtime-info">
                 <div class="profile-runtime-name-row">
-                  <span class="profile-runtime-name">{{ profile.name }}</span>
+                  <span class="profile-runtime-name">{{ profileDisplayLabel(profile) }}</span>
                   <span v-if="profile.name === displayName" class="active-badge">{{ t('profiles.runtime.activeTag') }}</span>
                   <span v-if="profile.shareRole" class="shared-agent-badge">{{ profile.shareRole }}</span>
                 </div>
                 <div v-if="profileDisplayLabel(profile) !== profile.name" class="runtime-detail">
-                  {{ profileDisplayLabel(profile) }}
+                  {{ profile.name }}
                 </div>
                 <div v-if="isSuperAdmin" class="runtime-status-grid">
                   <div class="runtime-row compact">
@@ -438,8 +467,9 @@ onMounted(() => {
               <NButton
                 v-if="isSuperAdmin"
                 size="small"
-                type="primary"
                 :loading="gatewayRestarting[profile.name]"
+                :type="runtimeError[profile.name] ? 'error' : 'primary'"
+                :title="runtimeError[profile.name] || undefined"
                 @click="handleRestartGateway(profile.name)"
               >
                 {{ t('profiles.runtime.restartGateway') }}
@@ -447,17 +477,19 @@ onMounted(() => {
               <NButton
                 v-if="isSuperAdmin"
                 size="small"
-                type="primary"
                 :loading="profileRestarting[profile.name]"
+                :type="runtimeError[profile.name] ? 'error' : 'primary'"
+                :title="runtimeError[profile.name] || undefined"
                 @click="handleRestartProfile(profile.name)"
               >
                 {{ t('profiles.runtime.restartProfile') }}
               </NButton>
               <NButton
                 size="small"
-                type="primary"
                 :disabled="profile.name === displayName"
                 :loading="profileSwitching[profile.name]"
+                :type="runtimeError[profile.name] ? 'error' : 'primary'"
+                :title="runtimeError[profile.name] || undefined"
                 @click="handleSwitchProfile(profile.name)"
               >
                 {{ t('profiles.runtime.switchProfile') }}
@@ -472,6 +504,7 @@ onMounted(() => {
       v-if="showCreateProfileModal"
       :allow-clone="isSuperAdmin"
       @close="closeCreateProfileModal"
+      @clone-gaps="(summary: string) => (cloneGaps = summary)"
       @saved="handleCreateProfileSaved"
     />
 
@@ -484,6 +517,7 @@ onMounted(() => {
       <template #header>
         <div class="share-modal-title">{{ t('profiles.share.title') }}</div>
       </template>
+      <p v-if="shareError" class="profile-inline-error" data-testid="share-error">{{ shareError }}</p>
       <NSpin :show="shareLoading" size="small">
         <div class="share-list">
           <div v-if="shares.length === 0" class="share-empty">{{ t('profiles.share.empty') }}</div>
@@ -531,6 +565,7 @@ onMounted(() => {
       :bordered="false"
       :style="{ width: '420px', maxWidth: 'calc(100vw - 32px)' }"
     >
+      <p v-if="avatarError" class="profile-inline-error" data-testid="avatar-error">{{ avatarError }}</p>
       <div v-if="editingProfile" class="avatar-editor">
         <ProfileAvatarView :name="editingProfile.name" :avatar="editingProfile.avatar" :size="72" />
         <div class="avatar-editor-meta">
@@ -561,7 +596,49 @@ onMounted(() => {
 </template>
 
 <style scoped lang="scss">
+
 @use '@/styles/variables' as *;
+.clone-gaps {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--surface-2);
+  color: var(--fg-primary);
+  box-shadow: inset 0 0 0 0.5px var(--divider);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+  white-space: pre-line;
+}
+
+.clone-gaps__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.clone-gaps__close {
+  flex: 0 0 auto;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+
+// Resident rather than a toast: these belong to the dialog that is open, and a
+// line that expires on a timer can be gone before it has been read.
+.profile-inline-error {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
 
 .profile-selector {
   padding: 0 12px;

@@ -70,6 +70,8 @@ vi.mock('../../packages/server/src/services/hermes/model-context', () => ({
 }))
 vi.mock('../../packages/server/src/services/hermes/run-chat/workspace', () => ({
   ensureHermesRunWorkspace: vi.fn(async () => '/tmp/workspace'),
+  normalizeHermesSessionWorkspace: vi.fn(async (_profile: string, value?: string | null) => value || null),
+  normalizeStoredHermesSessionWorkspace: vi.fn(async (_profile: string, value?: string | null) => value || null),
 }))
 vi.mock('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker', () => ({
   startWorkspaceRunCheckpoint: tracker.start,
@@ -346,6 +348,38 @@ describe('BrokerRunController run lifecycle', () => {
     }))
     activeRun.resolve({ ok: true, status: 200, body: sseDone('run-live') })
     await running
+  })
+
+  it('reauthorizes private source refs before warm socket resume', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ refs: [{ id: '7:private', target: 'https://docs.example.com/private' }] }),
+    })))
+    const { controller, socket } = makeHarness()
+    const state = (controller as any).getOrCreateSession('s1', 'research')
+    state.messages = [{
+      id: 7,
+      session_id: 's1',
+      role: 'assistant',
+      content: 'final',
+      run_id: 'run-1',
+      timestamp: 1,
+      source_refs: [{ id: 'private', type: 'lark_doc', label: 'Policy', locator: 'doc-secret' }],
+    }]
+
+    await (controller as any).resumeSession(socket, 's1', 'research')
+
+    expect(socket.emit).toHaveBeenCalledWith('resumed', expect.objectContaining({
+      messages: [expect.objectContaining({
+        source_refs: [{
+          id: 'private',
+          type: 'lark_doc',
+          label: 'Policy',
+          open_path: '/api/hermes/sessions/source-refs/run-1/private/open',
+        }],
+      })],
+    }))
+    expect(JSON.stringify(socket.emit.mock.calls)).not.toContain('doc-secret')
   })
 
   it('does not let a delayed replay load overwrite or start beside a concurrently admitted live run', async () => {
@@ -1898,7 +1932,10 @@ describe('BrokerRunController run lifecycle', () => {
   it('fails visibly and clears working state when session identity setup throws', async () => {
     store.getSession
       // 1: fence at the socket run entry, 2: fence at handleRun entry,
-      // 3: handleRun's own row read. The identity setup read is the one that throws.
+      // 3: resolveRunExpert's row read, 4: post-await fence recheck (the row can
+      // be deleted/recreated while the expert catalog is awaited).
+      // The identity setup read is the one that throws.
+      .mockReturnValueOnce({ id: 's1', profile: 'research', workspace: '/tmp/workspace' })
       .mockReturnValueOnce({ id: 's1', profile: 'research', workspace: '/tmp/workspace' })
       .mockReturnValueOnce({ id: 's1', profile: 'research', workspace: '/tmp/workspace' })
       .mockReturnValueOnce({ id: 's1', profile: 'research', workspace: '/tmp/workspace' })
@@ -1918,23 +1955,23 @@ describe('BrokerRunController run lifecycle', () => {
     ]))
   })
 
-  it('clears working state when the first session lookup throws before broker setup', async () => {
-    // The DB is broken for the whole run, so every lookup throws - including the
-    // cross-profile fences, which must swallow their own failure and let the run path
-    // report the real error rather than deciding anything from a failed read.
+  it('fails closed before state admission when the session authorization lookup throws', async () => {
     store.getSession.mockImplementation(() => { throw new Error('initial lookup failed') })
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    const { controller, emitted, handlers } = makeHarness()
+    const { controller, emitted, handlers, socket } = makeHarness()
 
     await handlers.get('run')!({ input: 'first', session_id: 's1', queue_id: 'first' })
 
     const state = (controller as any).getSessionState('s1', 'research')
-    expect(state).toMatchObject({ isWorking: false, activeRunMarker: undefined, abortController: undefined })
+    expect(state).toBeUndefined()
     expect(fetchMock).not.toHaveBeenCalled()
-    expect(emitted).toEqual(expect.arrayContaining([
-      expect.objectContaining({ event: 'run.failed', payload: expect.objectContaining({ error: 'initial lookup failed' }) }),
-    ]))
+    expect(emitted).toEqual([])
+    expect(socket.emit).toHaveBeenCalledWith('run.rejected', expect.objectContaining({
+      session_id: 's1',
+      queue_id: 'first',
+      error: 'Session authorization is unavailable',
+    }))
   })
 
   it('fails safely when the broker handoff identity getter throws and starts the queued run', async () => {

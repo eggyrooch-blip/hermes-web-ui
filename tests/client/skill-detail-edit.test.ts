@@ -82,7 +82,7 @@ describe('SkillDetail editing', () => {
     })
     mockFetchSkillFiles.mockResolvedValue([
       {
-        path: '/Users/kite/.hermes/skills/misc/daily-writing/references/note.md',
+        path: '/Users/dev/.hermes/skills/misc/daily-writing/references/note.md',
         name: 'note.md',
         isDir: false,
       },

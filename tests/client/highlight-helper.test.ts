@@ -22,6 +22,7 @@ vi.mock('@/utils/clipboard', () => ({
 import {
   extractUnifiedDiffPayload,
   handleCodeBlockCopyClick,
+  COPY_FLASH_MS,
   inferStructuredLanguage,
   isUnifiedDiffContent,
   normalizeHighlightLanguage,
@@ -214,5 +215,77 @@ describe('highlight helper', () => {
     const copiedText = copyToClipboardMock.mock.lastCall?.[0] || ''
     expect(copiedText).toContain(' unchanged 4')
     expect(copiedText).not.toContain('unchanged lines')
+  })
+
+  // Copying is the one action with no visible result of its own, so the button
+  // that was pressed reports on itself instead of raising a toast.
+  describe('the copy button reports on itself', () => {
+    function renderButton() {
+      const container = document.createElement('div')
+      container.innerHTML = renderHighlightedCodeBlock('const a = 1', 'ts', 'Copy', {
+        copyOkLabel: 'Copied',
+        copyFailLabel: 'Copy failed',
+      })
+      document.body.appendChild(container)
+      const button = container.querySelector<HTMLElement>('[data-copy-code="true"]')!
+      return { container, button }
+    }
+
+    function clickOn(button: HTMLElement) {
+      const event = new MouseEvent('click', { bubbles: true, cancelable: true })
+      Object.defineProperty(event, 'target', { value: button })
+      return handleCodeBlockCopyClick(event)
+    }
+
+    it('swaps to the success label and restores the resting one', async () => {
+      vi.useFakeTimers()
+      try {
+        const { button } = renderButton()
+        copyToClipboardMock.mockResolvedValueOnce(true)
+
+        await clickOn(button)
+        expect(button.textContent).toBe('Copied')
+        expect(button.classList.contains('is-copy-ok')).toBe(true)
+
+        vi.advanceTimersByTime(COPY_FLASH_MS)
+        expect(button.textContent).toBe('Copy')
+        expect(button.classList.contains('is-copy-ok')).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('shows the failure label when the copy does not go through', async () => {
+      vi.useFakeTimers()
+      try {
+        const { button } = renderButton()
+        copyToClipboardMock.mockResolvedValueOnce(false)
+
+        await clickOn(button)
+        expect(button.textContent).toBe('Copy failed')
+        expect(button.classList.contains('is-copy-fail')).toBe(true)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('does not capture the outcome label as the resting text when clicked twice', async () => {
+      // The second click lands mid-flash. Reading the current text as "idle"
+      // would leave the button permanently claiming "Copied".
+      vi.useFakeTimers()
+      try {
+        const { button } = renderButton()
+        copyToClipboardMock.mockResolvedValue(true)
+
+        await clickOn(button)
+        vi.advanceTimersByTime(COPY_FLASH_MS / 4)
+        await clickOn(button)
+        vi.advanceTimersByTime(COPY_FLASH_MS)
+
+        expect(button.textContent).toBe('Copy')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 })

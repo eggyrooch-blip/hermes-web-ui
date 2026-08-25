@@ -223,6 +223,22 @@ function isChatPlaneKanbanTaskDetail(path: string, method: string): boolean {
   }
 }
 
+// 任务详情页的 log 这一跳。详情本体 (`GET /kanban/:id`) 和 block/assign/complete/unblock
+// 这些**写**动作早就放行了，唯独这个**读**没放 —— 是列举时漏掉，不是刻意收紧
+// （2026-08-13 由端点归属快照扫出）。控制器 `kanban.ts:823 taskLog()` 与详情同款守卫：
+// requireOpenId + requireOwnedTasks(..., openid)，非本人任务被拒（403），不从请求体取身份。
+// 沿用同一份 blocklist 卡 id 段，避免 `/kanban/artifact/log` 之类混进来。
+function isChatPlaneKanbanTaskLog(path: string, method: string): boolean {
+  if (method !== 'GET') return false
+  const match = path.match(/^\/api\/hermes\/kanban\/([^/]+)\/log$/)
+  if (!match) return false
+  try {
+    return !CHAT_PLANE_KANBAN_DETAIL_BLOCKLIST.has(decodeURIComponent(match[1]).toLowerCase())
+  } catch {
+    return false
+  }
+}
+
 function isChatPlaneKanbanTaskAction(path: string, method: string): boolean {
   if (method === 'POST' && (path === '/api/hermes/kanban/complete' || path === '/api/hermes/kanban/unblock')) return true
   if (method !== 'POST') return false
@@ -237,7 +253,10 @@ function isChatPlaneKanbanTaskAction(path: string, method: string): boolean {
 
 function forbiddenInChatPlane(ctx: Context): boolean {
   if (config.webPlane !== 'chat') return false
-  const path = ctx.path
+  // 路径必须先小写归一再比较：@koa/router 的 `sensitive` 默认 false（匹配不区分大小写），
+  // 闸若逐字比较就比 router 窄，`/API/HERMES/LOGS` 会绕过整张黑名单而路由照样命中。
+  // 铁律：**这道闸至少要和 router 一样宽**。详见 AGENTS.md「Local known gotchas」2026-08-14。
+  const path = ctx.path.toLowerCase()
   const method = ctx.method.toUpperCase()
 
   if (path === '/api/auth/status' || path === '/api/auth/me' || path === '/api/auth/feishu/logout' || path === '/health' || path === '/upload') return false
@@ -261,6 +280,7 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   if (path === '/api/hermes/kanban/assignees' && method === 'GET') return false
   if (path === '/api/hermes/kanban/dispatch' && method === 'POST') return false
   if (isChatPlaneKanbanTaskDetail(path, method)) return false
+  if (isChatPlaneKanbanTaskLog(path, method)) return false
   if (isChatPlaneKanbanTaskAction(path, method)) return false
   if (path === '/api/hermes/profiles' && (method === 'GET' || method === 'POST')) return false
   if (path === '/api/hermes/slash/commands' && method === 'GET') return false

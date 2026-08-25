@@ -60,6 +60,10 @@ export interface Job {
     thread_id: string | null
   } | null
   last_delivery_error: string | null
+  // Executor identity (M-0): agent_id is server-derived from the routing row of
+  // the profile the job lives in; expert_id is the creation-validated request.
+  agent_id?: string | null
+  expert_id?: string | null
 }
 
 export interface CreateJobRequest {
@@ -69,6 +73,14 @@ export interface CreateJobRequest {
   deliver?: string
   skills?: string[]
   repeat?: number
+  // Executor expert requested for scheduled runs. The broker validates the
+  // expert's audience at creation (fail-closed) and re-validates at wake.
+  expert_id?: string
+  source_session_id?: string
+  idempotency_key?: string
+  // Full model spec ("provider/model"). Omitted = follow the profile default.
+  // Single field on purpose: the chat-plane BFF strips `provider`/`base_url`.
+  model?: string
 }
 
 export interface UpdateJobRequest {
@@ -160,10 +172,20 @@ export async function getJob(jobId: string): Promise<Job> {
   return unwrap(await request<{ job: Job }>(`/api/hermes/jobs/${jobId}`))
 }
 
-export async function createJob(data: CreateJobRequest): Promise<Job> {
-  return unwrap(await request<{ job: Job }>('/api/hermes/jobs', {
+export async function createJob(data: CreateJobRequest, opts?: { profile?: string }): Promise<Job> {
+  // Executor targeting sends the selected agent profile BOTH as the explicit
+  // X-Hermes-Profile header (the trusted transport the BFF resolves) and as a
+  // ?profile= selector — the query's job is to make the generic active-profile
+  // header injector stand down so the explicit header survives the merge.
+  // Access is re-checked broker-side (owned-or-shared).
+  const profile = opts?.profile?.trim()
+  const path = profile
+    ? `/api/hermes/jobs?profile=${encodeURIComponent(profile)}`
+    : '/api/hermes/jobs'
+  return unwrap(await request<{ job: Job }>(path, {
     method: 'POST',
     body: JSON.stringify(data),
+    ...(profile ? { headers: { 'X-Hermes-Profile': profile } } : {}),
   }))
 }
 

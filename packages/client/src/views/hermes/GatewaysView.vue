@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
-import { NSpin, NButton, NTag, useMessage } from 'naive-ui'
+import { onMounted, ref } from 'vue'
+import { NSpin, NButton, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useGatewayStore } from '@/stores/hermes/gateways'
 
 const { t } = useI18n()
-const message = useMessage()
 const gatewayStore = useGatewayStore()
+/** Start / stop failure. Success is visible: the row flips its own state. */
+const paneError = ref('')
 
 onMounted(() => {
   gatewayStore.fetchStatus()
@@ -14,21 +15,18 @@ onMounted(() => {
 
 async function handleToggle(name: string, running: boolean) {
   try {
-    if (running) {
-      await gatewayStore.stop(name)
-      message.success(`${t('gateways.stopped')}: ${name}`)
-    } else {
-      await gatewayStore.start(name)
-      message.success(`${t('gateways.started')}: ${name}`)
-    }
+    // The row's own running/stopped state flips, which is the report.
+    if (running) await gatewayStore.stop(name)
+    else await gatewayStore.start(name)
   } catch (err: any) {
-    message.error(err.message)
+    paneError.value = err.message
   }
 }
 </script>
 
 <template>
   <div class="gateways-view">
+    <p v-if="paneError" class="pane-notice" data-testid="gateways-error">{{ paneError }}</p>
     <header class="page-header">
       <h2 class="header-title">{{ t('gateways.title') }}</h2>
     </header>
@@ -75,6 +73,15 @@ async function handleToggle(name: string, running: boolean) {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.pane-notice {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 
 .gateways-view {
   height: calc(100 * var(--vh));

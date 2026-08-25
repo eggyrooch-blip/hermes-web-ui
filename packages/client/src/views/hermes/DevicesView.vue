@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NButton, NDrawer, NDrawerContent, NInput, NModal, NPopconfirm, NSpin, NTag, useMessage } from 'naive-ui'
+import { NButton, NDrawer, NDrawerContent, NInput, NModal, NPopconfirm, NSpin, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { copyToClipboard } from '@/utils/clipboard'
 import {
@@ -22,8 +22,16 @@ import {
 } from '@/api/hermes/devices'
 
 const { t } = useI18n()
-const message = useMessage()
 
+/**
+ * Three resident carriers. Every success on this page is already visible — the
+ * device list refreshes, the row's status changes, the request joins the pending
+ * list — so only failures and validation need saying, and they say it next to
+ * the thing they are about.
+ */
+const pageError = ref('')
+const pairingError = ref('')
+const manualError = ref('')
 const loading = ref(false)
 const scanning = ref(false)
 const manualPairing = ref(false)
@@ -154,9 +162,10 @@ function safeDeviceUrl(value: string): string {
 async function loadDevices() {
   loading.value = true
   try {
+    pageError.value = ''
     state.value = await fetchLanDevices()
   } catch (err: any) {
-    message.error(err?.message || t('devices.loadFailed'))
+    pageError.value = err?.message || t('devices.loadFailed')
   } finally {
     loading.value = false
   }
@@ -165,9 +174,10 @@ async function loadDevices() {
 async function refreshDevices() {
   scanning.value = true
   try {
+    pageError.value = ''
     state.value = await scanLanDevices()
   } catch (err: any) {
-    message.error(err?.message || t('devices.scanFailed'))
+    pageError.value = err?.message || t('devices.scanFailed')
   } finally {
     scanning.value = false
   }
@@ -178,13 +188,12 @@ async function copyPairingLink() {
   try {
     const response = await fetchDevicePairingLink()
     const copied = await copyToClipboard(response.link)
-    if (copied) {
-      message.success(t('devices.pairingLinkCopied'))
-    } else {
-      message.error(t('devices.pairingLinkCopyFailed'))
-    }
+    // Silence on success: copying has no visible result, but the user initiated
+    // it and pasting verifies it. A FAILED copy has to be said, or they paste
+    // whatever the clipboard held before.
+    pageError.value = copied ? '' : t('devices.pairingLinkCopyFailed')
   } catch (err: any) {
-    message.error(err?.message || t('devices.pairingLinkCopyFailed'))
+    pageError.value = err?.message || t('devices.pairingLinkCopyFailed')
   } finally {
     copyingPairingLink.value = false
   }
@@ -193,6 +202,7 @@ async function copyPairingLink() {
 function openPairingCodeModal(device: LanDeviceInfo) {
   pendingPairingDevice.value = device
   pairingCodeInput.value = ''
+  pairingError.value = ''
   showPairingCodeModal.value = true
 }
 
@@ -213,20 +223,21 @@ async function confirmPairingRequest() {
 
   const pairingCode = pairingCodeInput.value.trim()
   if (!pairingCode) {
-    message.warning(t('devices.pairingCodeRequired'))
+    pairingError.value = t('devices.pairingCodeRequired')
     return
   }
 
+  pairingError.value = ''
   updatingDeviceId.value = device.id
   try {
     state.value = await requestDevicePairing(device.id, pairingCode)
     resetPairingCodeModal()
   } catch (err: any) {
     if (String(err?.message || '').includes('Duplicate pairing request')) {
-      message.warning(t('devices.duplicateRequest'))
+      pairingError.value = t('devices.duplicateRequest')
       return
     }
-    message.error(err?.message || t('devices.updateFailed'))
+    pairingError.value = err?.message || t('devices.updateFailed')
   } finally {
     updatingDeviceId.value = ''
   }
@@ -244,9 +255,10 @@ async function updateDevice(device: LanDeviceInfo, action: 'approve' | 'reject' 
       : action === 'deleteHistory'
       ? await deleteDeviceRequestHistory(device.id)
       : await unblockDevice(device.id)
+    // The row's own status changing is the report.
     state.value = next
   } catch (err: any) {
-    message.error(err?.message || t('devices.updateFailed'))
+    pageError.value = err?.message || t('devices.updateFailed')
   } finally {
     updatingDeviceId.value = ''
   }
@@ -255,16 +267,17 @@ async function updateDevice(device: LanDeviceInfo, action: 'approve' | 'reject' 
 async function requestManualPairing() {
   const url = manualPairingUrl.value.trim()
   if (!url) {
-    message.warning(t('devices.manualUrlRequired'))
+    manualError.value = t('devices.manualUrlRequired')
     return
   }
+  manualError.value = ''
   manualPairing.value = true
   try {
     state.value = await requestDevicePairingByUrl(url)
+    // The request joins the pending list, which is the report.
     manualPairingUrl.value = ''
-    message.success(t('devices.manualRequestSent'))
   } catch (err: any) {
-    message.error(err?.message || t('devices.manualRequestFailed'))
+    manualError.value = err?.message || t('devices.manualRequestFailed')
   } finally {
     manualPairing.value = false
   }
@@ -277,6 +290,8 @@ onMounted(() => {
 
 <template>
   <div class="devices-view">
+    <p v-if="pageError" class="devices-error" data-testid="devices-error">{{ pageError }}</p>
+    <p v-if="manualError" class="devices-error" data-testid="devices-manual-error">{{ manualError }}</p>
     <header class="page-header">
       <h2 class="header-title">{{ t('devices.title') }}</h2>
       <div class="header-actions">
@@ -438,6 +453,7 @@ onMounted(() => {
     <NModal v-model:show="showPairingCodeModal" :mask-closable="!pairingRequesting" @esc="closePairingCodeModal">
       <div class="pairing-code-dialog">
         <div class="pairing-code-title">{{ t('devices.pairingCodeTitle') }}</div>
+        <p v-if="pairingError" class="devices-error" data-testid="devices-pairing-error">{{ pairingError }}</p>
         <NInput
           v-model:value="pairingCodeInput"
           clearable
@@ -465,6 +481,15 @@ onMounted(() => {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.devices-error {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 
 .devices-view {
   height: 100%;

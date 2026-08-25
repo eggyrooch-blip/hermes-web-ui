@@ -20,9 +20,10 @@ async function loadController(env: Record<string, string | undefined> = {}) {
   return import('../../packages/server/src/controllers/hermes/gitlab-credential')
 }
 
-function mockCtx(user?: { openid?: string }) {
+function mockCtx(user?: { openid?: string }, query?: Record<string, unknown>) {
   return {
     state: user ? { user } : {},
+    query: query || {},
     request: {
       // 请求体故意塞满“敌意”字段：身份、别人的 profile、以及已废弃的到期日。
       // 它们一个都不许穿过 BFF。
@@ -89,5 +90,49 @@ describe('submitGitlabToken controller (credential WRITE path)', () => {
     expect(JSON.parse(init.body)).toEqual({ token: 'glpat-x', tier: 'read' })
     expect(ctx.status).toBe(200)
     expect(ctx.body).toEqual({ ok: true })
+  })
+
+  it('forwards the panel profile as X-Hermes-Profile — a hint, never authority', async () => {
+    fetchMock.mockResolvedValue({
+      status: 200,
+      text: async () => JSON.stringify({ ok: true, profile_scope: 'group' }),
+    })
+    const { submitGitlabToken } = await loadController()
+    const ctx = mockCtx({ openid: 'ou_alice' }, { profile: 'feishu_group_x' })
+    await submitGitlabToken(ctx)
+
+    const [, init] = fetchMock.mock.calls[0] as [string, any]
+    expect(init.headers['X-Hermes-Profile']).toBe('feishu_group_x')
+    // 身份权威不变：owner 仍由 verified session 盖章，body 身份字段仍全剥。
+    expect(init.headers['X-Hermes-Owner-Open-Id']).toBe('ou_alice')
+    expect(JSON.parse(init.body)).toEqual({ token: 'glpat-x', tier: 'read' })
+  })
+
+  it('without a profile query the header is absent — legacy calls byte-identical', async () => {
+    fetchMock.mockResolvedValue({
+      status: 200,
+      text: async () => JSON.stringify({ ok: true }),
+    })
+    const { submitGitlabToken } = await loadController()
+    const ctx = mockCtx({ openid: 'ou_alice' })
+    await submitGitlabToken(ctx)
+
+    const [, init] = fetchMock.mock.calls[0] as [string, any]
+    expect('X-Hermes-Profile' in init.headers).toBe(false)
+  })
+
+  it('a body profile_name never becomes the header — query is the only channel', async () => {
+    fetchMock.mockResolvedValue({
+      status: 200,
+      text: async () => JSON.stringify({ ok: true }),
+    })
+    const { submitGitlabToken } = await loadController()
+    // mockCtx 的 body 里本来就塞着 profile_name: 'someone-else'（敌意字段）
+    const ctx = mockCtx({ openid: 'ou_alice' })
+    await submitGitlabToken(ctx)
+
+    const [, init] = fetchMock.mock.calls[0] as [string, any]
+    expect(init.headers['X-Hermes-Profile']).toBeUndefined()
+    expect(JSON.parse(init.body)).toEqual({ token: 'glpat-x', tier: 'read' })
   })
 })

@@ -118,10 +118,28 @@ describe('router route metadata + auth gating', () => {
     localStorage.setItem('hermes_api_key', USER_TOKEN)
     const router = (await import('@/router')).default
 
-    await router.push('/hermes/usage')
+    await router.push('/hermes/apps')
     await router.isReady()
 
-    expect(router.currentRoute.value.name).toBe('hermes.usage')
+    expect(router.currentRoute.value.name).toBe('hermes.apps')
+  })
+
+  // 用量 / 记忆 / 看板 / 技能用量 became 设置 tabs, which render in the chat
+  // shell so the product has one sidebar. The old paths stay linkable.
+  it.each([
+    ['/hermes/usage', 'usage'],
+    ['/hermes/memory', 'memory'],
+    ['/hermes/kanban', 'kanban'],
+    ['/hermes/skills-usage', 'skillsUsage'],
+  ])('redirects %s to its settings tab', async (path, tab) => {
+    localStorage.setItem('hermes_api_key', USER_TOKEN)
+    const router = (await import('@/router')).default
+
+    await router.push(path)
+    await router.isReady()
+
+    expect(router.currentRoute.value.name).toBe('hermes.chat')
+    expect(router.currentRoute.value.query).toMatchObject({ surface: 'settings', tab })
   })
 
   it('allows Feishu OAuth cookie-mode users onto protected routes without a JS token', async () => {
@@ -298,8 +316,6 @@ describe('router route metadata + auth gating', () => {
   })
 
   it.each([
-    ['/hermes/plugins', 'hermes.plugins'],
-    ['/hermes/mcp', 'hermes.mcp'],
     ['/hermes/global-agent', 'hermes.globalAgent'],
   ])('lets a super-admin reach %s', async (path, routeName) => {
     localStorage.setItem('hermes_api_key', SUPER_ADMIN_TOKEN)
@@ -309,5 +325,23 @@ describe('router route metadata + auth gating', () => {
     await router.isReady()
 
     expect(router.currentRoute.value.name).toBe(routeName)
+  })
+
+  // These are 设置 tabs now, so a super-admin lands on the tab rather than a
+  // page of its own — but still reaches it, which is what this guards.
+  it.each([
+    ['/hermes/plugins', 'plugins'],
+    ['/hermes/mcp', 'mcp'],
+    ['/hermes/channels', 'channels'],
+    ['/hermes/models', 'providers'],
+  ])('lets a super-admin reach %s as a settings tab', async (path, tab) => {
+    localStorage.setItem('hermes_api_key', SUPER_ADMIN_TOKEN)
+    const router = (await import('@/router')).default
+
+    await router.push(path)
+    await router.isReady()
+
+    expect(router.currentRoute.value.name).toBe('hermes.chat')
+    expect(router.currentRoute.value.query).toMatchObject({ surface: 'settings', tab })
   })
 })

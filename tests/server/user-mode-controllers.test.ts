@@ -290,7 +290,7 @@ custom_providers:
 model:
   default: custom:litellm-sre/tencent-sonnet-4-6
   provider: custom:litellm-sre
-  base_url: https://litellm.sre.gotokeep.com/v1
+  base_url: https://litellm.sre.example.com/v1
 `)
     const { getAvailable } = await import('../../packages/server/src/controllers/hermes/models')
     const ctx = mockCtx({
@@ -323,7 +323,7 @@ model:
 model:
   default: custom:litellm-sre/tencent-sonnet-4-6
   provider: custom
-  base_url: https://litellm.sre.gotokeep.com/v1
+  base_url: https://litellm.sre.example.com/v1
 `)
     const { getAvailable } = await import('../../packages/server/src/controllers/hermes/models')
     const ctx = mockCtx({
@@ -352,10 +352,10 @@ model:
 model:
   default: custom:litellm-sre/tencent-sonnet-4-6
   provider: custom:litellm-sre
-  base_url: https://litellm.sre.gotokeep.com/v1
+  base_url: https://litellm.sre.example.com/v1
 custom_providers:
   - name: litellm-sre
-    base_url: https://litellm.sre.gotokeep.com/v1
+    base_url: https://litellm.sre.example.com/v1
     model: custom:litellm-sre/tencent-sonnet-4-6
     api_key: provider-secret
 `)
@@ -407,7 +407,7 @@ model:
 model:
   default: custom:litellm-sre/tencent-sonnet-4-5
   provider: custom:litellm-sre
-  base_url: https://litellm.sre.gotokeep.com/v1
+  base_url: https://litellm.sre.example.com/v1
 `)
     const { setConfigModel } = await import('../../packages/server/src/controllers/hermes/models')
     const ctx = mockCtx({
@@ -423,7 +423,7 @@ model:
     const groupConfig = readFileSync(join(baseDir, 'profiles', 'feishu_group_alpha', 'config.yaml'), 'utf-8')
     expect(groupConfig).toContain('default: custom:litellm-sre/tencent-sonnet-4-6')
     expect(groupConfig).toContain('provider: custom:litellm-sre')
-    expect(groupConfig).toContain('base_url: https://litellm.sre.gotokeep.com/v1')
+    expect(groupConfig).toContain('base_url: https://litellm.sre.example.com/v1')
     expect(groupConfig).not.toContain('provider-secret')
     expect(groupConfig).not.toContain('api_key')
     expect(readFileSync(join(baseDir, 'profiles', 'user_a', 'config.yaml'), 'utf-8')).toContain('default: profile-model')

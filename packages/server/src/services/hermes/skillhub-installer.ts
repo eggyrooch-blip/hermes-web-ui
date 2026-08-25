@@ -11,7 +11,7 @@ import { validateSkillName } from './hermes-cli'
 import { detectSkillCredentialRequirements } from './skill-credentials'
 
 const execFileAsync = promisify(execFile)
-const SKILLHUB_ZIPFILE_API = 'https://proxy.cms.gotokeep.com/api/aidock-webapp/internal/upload/v1/skill/zipfile'
+const SKILLHUB_ZIPFILE_API = 'https://proxy.cms.example.com/api/aidock-webapp/internal/upload/v1/skill/zipfile'
 const MAX_SKILLHUB_ZIP_BYTES = 50 * 1024 * 1024
 const MAX_SKILLHUB_EXTRACTED_BYTES = 100 * 1024 * 1024
 const MAX_SKILLHUB_DOWNLOAD_REDIRECTS = 3

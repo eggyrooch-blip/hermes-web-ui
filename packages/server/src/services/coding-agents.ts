@@ -99,6 +99,7 @@ export interface CodingAgentLaunchInput extends CodingAgentConfigScope {
   apiKey?: string
   apiMode?: ApiMode
   sessionId?: string
+  ownerId?: string | null
   agentSessionId?: string
   agentNativeSessionId?: string
   isolateSettings?: boolean
@@ -1728,6 +1729,7 @@ export async function startCodingAgentRun(
     provider: persistedProvider,
     model: launch.model,
     sessionId,
+    ownerId: resolvedInput.ownerId,
     agentNativeSessionId,
     nativeResume: Boolean(existingNativeSessionId),
     command: runtimeCommand,

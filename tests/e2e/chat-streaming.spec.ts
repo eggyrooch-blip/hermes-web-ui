@@ -74,6 +74,160 @@ test('sends a chat run and renders streamed Socket.IO response events', async ({
   expect(api.unexpectedRequests).toEqual([])
 })
 
+test('rates a completed answer and keeps the control usable on mobile', async ({ page }) => {
+  await authenticate(page, TEST_ACCESS_KEY, 'research')
+  const api = await mockHermesApi(page)
+  await mockChatSocket(page)
+  await page.goto('/#/hermes/chat')
+
+  await sendChatMessage(page, 'Draft a launch checklist')
+  const { run } = await waitForRun(page)
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('run.started', { event: 'run.started', session_id: sid, run_id: 'run-feedback' })
+    socket.__trigger('message.delta', { event: 'message.delta', session_id: sid, run_id: 'run-feedback', delta: 'Here is the completed checklist.' })
+    socket.__trigger('run.completed', {
+      event: 'run.completed', session_id: sid, run_id: 'run-feedback', output: 'Here is the completed checklist.',
+    })
+  }, run.session_id)
+
+  const up = page.locator('[data-feedback-rating="up"]')
+  const down = page.locator('[data-feedback-rating="down"]')
+  await expect(up).toBeVisible()
+  await expect(page.locator('.streaming-indicator')).toHaveCount(0)
+  await up.click()
+  await expect(up).toHaveAttribute('aria-pressed', 'true')
+  await down.click()
+  await expect(page.getByRole('button', { name: 'Inaccurate' })).toBeVisible()
+
+  const artifactDir = process.env.FTASK_ARTIFACT_DIR || 'test-results'
+  await page.locator('.header-sidebar-toggle').click()
+  await page.screenshot({ path: `${artifactDir}/digital-employee-feedback-desktop.png` })
+  await page.getByRole('button', { name: 'Inaccurate' }).click()
+  await expect(down).toHaveAttribute('aria-pressed', 'true')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.locator('.session-backdrop')).not.toHaveClass(/active/)
+  await expect(page.locator('.virtual-message-list-host')).toHaveCSS('opacity', '1')
+  await expect(page.locator('.feedback-control')).toBeVisible()
+  await page.screenshot({ path: `${artifactDir}/digital-employee-feedback-mobile.png` })
+
+  expect(api.requests.some(request => request.method === 'PUT' && request.pathname.endsWith('/runs/run-feedback/feedback'))).toBe(true)
+  expect(api.unexpectedRequests).toEqual([])
+})
+
+test('renders authorized answer sources above feedback on desktop and mobile', async ({ page }, testInfo) => {
+  await authenticate(page, TEST_ACCESS_KEY, 'research')
+  await page.addInitScript(() => {
+    ;(window as any).__PW_OPENED__ = []
+    window.open = ((url?: string | URL) => {
+      ;(window as any).__PW_OPENED__.push(String(url || ''))
+      return null
+    }) as typeof window.open
+  })
+  const api = await mockHermesApi(page)
+  await mockChatSocket(page)
+  await page.goto('/#/hermes/chat')
+
+  await sendChatMessage(page, 'Summarize the approved sources')
+  const { run } = await waitForRun(page)
+  await page.evaluate((sid) => {
+    const socket = (window as any).__PW_CHAT_SOCKET__.latest
+    socket.__trigger('run.started', { event: 'run.started', session_id: sid, run_id: 'run-sources' })
+    socket.__trigger('message.delta', { event: 'message.delta', session_id: sid, run_id: 'run-sources', delta: 'The answer uses two approved sources.' })
+    socket.__trigger('run.completed', {
+      event: 'run.completed',
+      session_id: sid,
+      run_id: 'run-sources',
+      output: 'The answer uses two approved sources.',
+      source_refs: [
+        { id: 'guide', type: 'web', label: 'Product guide', uri: 'https://docs.example.com/guide' },
+        { id: 'policy', type: 'lark_doc', label: 'Policy document', open_path: '/api/hermes/sessions/source-refs/run-sources/policy/open' },
+      ],
+    })
+  }, run.session_id)
+
+  const sources = page.locator('.source-refs')
+  await expect(sources).toContainText('Answer sources')
+  await expect(sources.getByRole('button')).toHaveCount(2)
+  await expect(sources.getByText('Product guide')).toBeVisible()
+  await expect(sources.getByText('Policy document')).toBeVisible()
+  await expect(page.locator('.feedback-control')).toBeVisible()
+  expect(await page.evaluate(() => {
+    const source = document.querySelector('.source-refs')
+    const feedback = document.querySelector('.feedback-control')
+    return Boolean(source && feedback && (source.compareDocumentPosition(feedback) & Node.DOCUMENT_POSITION_FOLLOWING))
+  })).toBe(true)
+
+  await sources.getByRole('button', { name: /Product guide/ }).click()
+  expect(await page.evaluate(() => (window as any).__PW_OPENED__)).toEqual(['https://docs.example.com/guide'])
+  const artifactDir = process.env.FTASK_ARTIFACT_DIR || testInfo.outputDir
+  await page.locator('.header-sidebar-toggle').click()
+  await page.screenshot({ path: `${artifactDir}/digital-employee-source-view-desktop.png`, animations: 'disabled' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await sources.evaluate((section) => {
+    const list = section.querySelector('.source-list') as HTMLElement
+    const widths = [...section.querySelectorAll('.source-chip')].map(element => (element as HTMLElement).offsetWidth)
+    return { widths, listWidth: list.offsetWidth, pageOverflow: document.documentElement.scrollWidth > window.innerWidth }
+  })).toEqual({ widths: [302, 302], listWidth: 302, pageOverflow: false })
+  await page.screenshot({ path: `${artifactDir}/digital-employee-source-view-mobile.png`, animations: 'disabled' })
+
+  expect(api.unexpectedRequests).toEqual([])
+})
+
+test('restores authorized answer sources from a resumed session', async ({ page }) => {
+  const sessionId = 'session-source-history'
+  await authenticate(page, TEST_ACCESS_KEY, 'research')
+  await page.addInitScript((sid) => {
+    ;(window as any).__PW_CHAT_SOCKET_RESUMES__ = {
+      [sid]: {
+        session_id: sid,
+        isWorking: false,
+        events: [],
+        messages: [{
+          id: 1,
+          session_id: sid,
+          role: 'assistant',
+          content: 'Persisted answer with one authorized source.',
+          timestamp: 4,
+          finish_reason: 'stop',
+          run_id: 'run-source-history',
+          source_refs: [{ id: 'guide', type: 'web', label: 'Restored guide', uri: 'https://docs.example.com/restored' }],
+        }],
+      },
+    }
+  }, sessionId)
+  const api = await mockHermesApi(page, { sessions: [{
+    id: sessionId,
+    profile: 'research',
+    source: 'api_server',
+    model: 'test-model',
+    title: 'Source history',
+    preview: 'Persisted answer with one authorized source.',
+    started_at: 1,
+    ended_at: 4,
+    last_active: 4,
+    message_count: 1,
+    tool_call_count: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    reasoning_tokens: 0,
+    billing_provider: 'test-provider',
+    estimated_cost_usd: 0,
+    actual_cost_usd: null,
+    cost_status: 'none',
+    workspace: null,
+  }] })
+  await mockChatSocket(page)
+
+  await page.goto('/#/hermes/chat')
+
+  await expect(page.getByText('Persisted answer with one authorized source.')).toBeVisible()
+  await expect(page.locator('.source-refs').getByText('Restored guide')).toBeVisible()
+  expect(api.unexpectedRequests).toEqual([])
+})
+
 test('uses the newly selected profile for the next chat-run socket after profile switch reload', async ({ page }) => {
   await authenticate(page, TEST_ACCESS_KEY, 'default')
   const api = await mockHermesApi(page, { initialProfileName: 'default' })

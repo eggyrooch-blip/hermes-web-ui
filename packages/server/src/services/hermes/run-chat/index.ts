@@ -449,7 +449,9 @@ export class ChatRunSocket {
     if (data.session_id && isBridgeRunSource(source) && isSessionCommand(data.input)) return
 
     if (isBridgeRunSource(source)) {
-      const bridgeAdmission = reserveBridgeRunAdmission(this.sessionMap, data, profile)
+      const socketUser = socket.data?.user as { openid?: string; id?: string | number } | undefined
+      const ownerId = String(socketUser?.openid || socketUser?.id || '').trim() || null
+      const bridgeAdmission = reserveBridgeRunAdmission(this.sessionMap, data, profile, ownerId)
       const ownsAdmission = () => !bridgeAdmission || ownsSessionRun(this.sessionMap, bridgeAdmission)
       let admissionAbortFinalizer: ((synced: boolean) => Promise<boolean>) | null = null
       if (bridgeAdmission) {

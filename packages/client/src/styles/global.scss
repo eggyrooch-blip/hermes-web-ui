@@ -1,4 +1,8 @@
+// keep-tokens must come first: variables.scss delegates every semantic
+// name to a Keep design system token defined there.
+@use 'keep-tokens';
 @use 'variables' as *;
+@use 'keep-motion';
 @use 'code-block';
 
 @font-face {
@@ -151,10 +155,24 @@ a {
   }
 }
 
+// Scrollbars: 8px track, thumb squeezed to 4px with a 2px transparent border
+// + background-clip.
+//
+// The color is black/white alpha rather than a fixed grey: a fixed #CCC
+// reads as a bright bar on a dark ground. At .13 it is nearly invisible
+// and only becomes explicit on hover — a scrollbar is background, not
+// content.
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   background: transparent;
+}
+
+// One step narrower against the 248px sidebar, where the standard thumb reads
+// heavier than the navigation text it sits beside.
+.sidescroll::-webkit-scrollbar,
+.page-sidebar-scroll::-webkit-scrollbar {
+  width: 6px;
 }
 
 ::-webkit-scrollbar-track,
@@ -163,11 +181,24 @@ a {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: $border-color;
-  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.13);
+  border-radius: var(--r-pill);
+  border: 2px solid transparent;
+  background-clip: content-box;
 
   &:hover {
-    background: $text-muted;
+    background: rgba(0, 0, 0, 0.26);
+    background-clip: content-box;
+  }
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  background-clip: content-box;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.3);
+    background-clip: content-box;
   }
 }
 
@@ -177,11 +208,100 @@ a {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: $border-color transparent;
+  scrollbar-color: rgba(0, 0, 0, 0.13) transparent;
+}
+
+.dark * {
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
 }
 
 ::selection {
   background: rgba(var(--accent-primary-rgb), 0.3);
+}
+
+// ─── KippiesWork surface primitives ─────────────────────────
+// Card / row hover, hairline row groups, icon weight, artifact islands.
+// One rule each, globally — every screen that reaches for one of these class
+// names gets the same answer, instead of restating the geometry per component.
+
+// A card is a clickable block, so it answers the pointer too. §7.1 gives it no
+// drop shadow, which leaves the other two levers from §7.2: a firmer border
+// and a lighter ground.
+.itemcard {
+  transition:
+    background var(--motion-base) var(--ease-std),
+    box-shadow var(--motion-base) var(--ease-std);
+
+  &:hover {
+    background: var(--surface-1) !important;
+    box-shadow: inset 0 0 0 0.5px var(--fg-disabled) !important;
+  }
+
+  &:active {
+    background: var(--surface-2) !important;
+  }
+}
+
+.row:hover {
+  background: var(--surface-3) !important;
+}
+
+// Catalog rows carry no frame at rest; the ground only surfaces on hover.
+.catrow:hover {
+  background: var(--surface-1);
+}
+
+// Corner actions that only surface on the hovered card. `opacity` rather than
+// `display` — toggling display makes the card jump a pixel.
+.cardact {
+  opacity: 0;
+  transition: opacity var(--motion-base) var(--ease-std);
+}
+
+.catrow:hover .cardact,
+.row:hover .cardact,
+.itemcard:hover .cardact,
+.cardact:focus-within {
+  opacity: 1;
+}
+
+// Separators belong *between* rows, never above the first one — the section
+// title already draws that line, and stacking both gives two hairlines 4px
+// apart. Group the rows and this cannot be written wrong.
+.rowgroup > * + * {
+  border-top: 0.5px solid var(--divider);
+}
+
+// kp-icon-font is a font: stroke weight is baked into the glyph, there is no
+// stroke-width to turn down. The one lever left is to outline the glyph in the
+// page color, eating a sliver off the stroke from outside. 0.35px is the
+// measured floor — below it nothing changes, above 0.5 the corners go soft.
+// Only valid for dark glyphs on --bg; white-on-dark (dark buttons, the send
+// key, a selected segment) must opt out via .onink or the halo *adds* weight.
+.kp-icon-font {
+  -webkit-text-stroke: 0.35px var(--bg);
+}
+
+// The opt-out, plus this app's dark-ground carriers wired up here rather than
+// sprinkling `.onink` through five components.
+.onink .kp-icon-font,
+.kp-btn--primary .kp-icon-font,
+.kp-btn--dark .kp-icon-font,
+.create-skill-btn .kp-icon-font,
+.send-button .kp-icon-font {
+  -webkit-text-stroke: 0;
+}
+
+// An artifact is the thing being shipped — its colors were fixed the moment it
+// was produced, and the recipient sees those. Switching the app to dark must
+// not restyle it, or you edit in dark and mail something else. `data-theme` on
+// the node opens a light island (the DS semantic colors are declared for
+// `:root, [data-theme='light']`); `color` has to be reset explicitly because
+// it inherits a *computed* value, so anything without its own color would stay
+// light grey on white paper.
+.artifact {
+  color-scheme: light;
+  color: var(--fg-primary);
 }
 
 // Shared page header

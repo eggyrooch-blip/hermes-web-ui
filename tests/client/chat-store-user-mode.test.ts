@@ -1543,6 +1543,12 @@ describe('chat store user-mode model selection', () => {
     store.newChat()
     const secondId = store.activeSession!.id
 
+    // newChat() itself skips the resume for a brand-new draft (nothing to
+    // load), so drive the resumes explicitly to exercise the stale-response
+    // guard: a plain switchSession does resume.
+    void store.switchSession(firstId)
+    void store.switchSession(secondId)
+
     callbacks.get(firstId)!({
       session_id: firstId,
       isWorking: false,
@@ -1620,6 +1626,55 @@ describe('chat store user-mode model selection', () => {
     expect(store.activeSession?.profile).toBe('tester')
     // Upstream rebaseline added a transport arg ('chat-run') to resumeSession.
     expect(resumeSessionMock).toHaveBeenCalledWith('session-2', expect.any(Function), 'tester', 'chat-run')
+  })
+
+  it('keeps an active client-only draft across loadSessions and never resumes it', async () => {
+    // 排障回归: sitting on 新建任务 (a client-only draft), a background
+    // loadSessions used to wholesale-replace sessions[], drop the draft, and
+    // steal focus to the most recent real session — the empty home silently
+    // flipped into a conversation. Resuming the draft was equally destructive:
+    // the server's failure response got injected as a message.
+    fetchSessionsMock.mockResolvedValue([
+      {
+        id: 'real-1',
+        source: 'api_server',
+        model: 'm',
+        title: 'real',
+        started_at: 100,
+        ended_at: null,
+        last_active: 100,
+        message_count: 3,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        profile: 'tester',
+      },
+    ])
+    const store = useChatStore()
+    const draft = store.newChat()
+
+    expect(draft.isLocalDraft).toBe(true)
+    // Creating a draft never resumes it (newChat passes skipResume itself).
+    expect(resumeSessionMock).not.toHaveBeenCalled()
+
+    await store.loadSessions('tester')
+
+    // Draft survives the wholesale replace, stays on top, stays active.
+    expect(store.sessions[0]?.id).toBe(draft.id)
+    expect(store.activeSessionId).toBe(draft.id)
+    expect(store.sessions.some(s => s.id === 'real-1')).toBe(true)
+    expect(resumeSessionMock).not.toHaveBeenCalled()
+
+    // First send makes it real; later refreshes may treat it normally.
+    store.sendMessage('hello world')
+    expect(store.activeSession?.isLocalDraft).toBe(false)
   })
 
   it('falls back to paginated messages when socket resume and summary totals are stale zero', async () => {

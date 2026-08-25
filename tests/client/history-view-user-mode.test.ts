@@ -101,6 +101,12 @@ vi.mock('@/components/hermes/chat/FolderPicker.vue', () => ({
   default: { template: '<div />' },
 }))
 
+// The run panel reaches for the download helper and the settings store, both of
+// which pull in api/client (which builds a router at import time).
+vi.mock('@/components/hermes/chat/RunPanel.vue', () => ({
+  default: { template: '<div class="run-panel-stub" />' },
+}))
+
 vi.mock('@/components/hermes/chat/HistoryMessageList.vue', () => ({
   default: {
     props: ['session'],

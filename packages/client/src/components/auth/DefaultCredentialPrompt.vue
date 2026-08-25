@@ -43,7 +43,9 @@ async function checkDefaultCredentials() {
     const user = await fetchCurrentUser();
     promptedUserId.value = user.id;
     const dismissed = sessionStorage.getItem(dismissalKey(user.id)) === "1";
-    show.value = !!user.requiresCredentialChange && !dismissed;
+    // debugger
+    show.value = !!user.requiresCredentialChange && !dismissed; // 线上
+    // show.value = false; // 本地
   } catch {
     show.value = false;
   } finally {

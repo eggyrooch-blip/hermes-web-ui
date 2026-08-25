@@ -7,6 +7,7 @@ import { SESSIONS_TABLE, MESSAGES_TABLE } from './schemas'
 import { normalizeMessageContentForStorageRole } from './message-content'
 import { deleteWorkspaceRunChangeRowsForSession } from './workspace-run-changes-store'
 import { clearSessionIncarnation, ensureSessionIncarnation, renewSessionIncarnation } from './session-incarnation'
+import { deleteFeedbackRowsForSession } from './feedback-store'
 
 // Re-export types for compatibility with sessions-db.ts consumers
 export interface HermesSessionRow {
@@ -64,6 +65,15 @@ export interface HermesMessageRow {
   reasoning_content?: string | null
   run_id: string
   client_id: string
+  source_refs: SourceRef[] | null
+}
+
+export interface SourceRef {
+  id: string
+  type: 'web' | 'workspace' | 'lark_doc' | 'other'
+  label: string
+  uri?: string
+  locator?: string
 }
 
 export interface HermesSessionSearchRow extends HermesSessionRow {
@@ -88,6 +98,16 @@ function parseToolCalls(value: unknown): any[] | null {
   try {
     const parsed = JSON.parse(value)
     return Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function parseSourceRefs(value: unknown): SourceRef[] | null {
+  if (value == null || value === '') return null
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value
+    return Array.isArray(parsed) ? parsed as SourceRef[] : null
   } catch {
     return null
   }
@@ -153,6 +173,7 @@ function mapMessageRow(row: Record<string, unknown>): HermesMessageRow {
     reasoning_content: row.reasoning_content != null ? String(row.reasoning_content) : null,
     run_id: String(row.run_id || ''),
     client_id: String(row.client_id || ''),
+    source_refs: parseSourceRefs(row.source_refs),
   }
 }
 
@@ -272,6 +293,7 @@ export function deleteSession(id: string): boolean {
   const db = getDb()!
   db.exec('BEGIN')
   try {
+    deleteFeedbackRowsForSession(db, id)
     deleteWorkspaceRunChangeRowsForSession(db, id)
     db.prepare(`DELETE FROM ${MESSAGES_TABLE} WHERE session_id = ?`).run(id)
     const result = db.prepare(`DELETE FROM ${SESSIONS_TABLE} WHERE id = ?`).run(id)
@@ -598,13 +620,14 @@ export function addMessage(msg: {
   reasoning_content?: string | null
   run_id?: string | null
   client_id?: string | null
+  source_refs?: SourceRef[] | null
 }): number | undefined {
   if (!isSqliteAvailable()) return undefined
   const db = getDb()!
   const toolCallsJson = msg.tool_calls ? JSON.stringify(msg.tool_calls) : null
   const result = db.prepare(
-    `INSERT INTO ${MESSAGES_TABLE} (session_id, role, content, display_role, display_content, tool_call_id, tool_calls, tool_name, timestamp, token_count, finish_reason, reasoning, reasoning_details, reasoning_content, run_id, client_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO ${MESSAGES_TABLE} (session_id, role, content, display_role, display_content, tool_call_id, tool_calls, tool_name, timestamp, token_count, finish_reason, reasoning, reasoning_details, reasoning_content, run_id, client_id, source_refs)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.session_id, msg.role, normalizeMessageContentForStorageRole(msg.role, msg.content),
     msg.display_role ?? null, msg.display_content ?? null,
@@ -612,7 +635,7 @@ export function addMessage(msg: {
     msg.timestamp ?? Math.floor(Date.now() / 1000),
     msg.token_count ?? null, msg.finish_reason ?? null,
     msg.reasoning ?? null, msg.reasoning_details ?? null,
-    msg.reasoning_content ?? null, msg.run_id ?? '', msg.client_id ?? '',
+    msg.reasoning_content ?? null, msg.run_id ?? '', msg.client_id ?? '', msg.source_refs?.length ? JSON.stringify(msg.source_refs) : null,
   )
   return result.lastInsertRowid as number
 }
@@ -634,12 +657,13 @@ export function addMessages(msgs: Array<{
   reasoning_content?: string | null
   run_id?: string | null
   client_id?: string | null
+  source_refs?: SourceRef[] | null
 }>): void {
   if (!isSqliteAvailable() || msgs.length === 0) return
   const db = getDb()!
   const insert = db.prepare(
-    `INSERT INTO ${MESSAGES_TABLE} (session_id, role, content, display_role, display_content, tool_call_id, tool_calls, tool_name, timestamp, token_count, finish_reason, reasoning, reasoning_details, reasoning_content, run_id, client_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO ${MESSAGES_TABLE} (session_id, role, content, display_role, display_content, tool_call_id, tool_calls, tool_name, timestamp, token_count, finish_reason, reasoning, reasoning_details, reasoning_content, run_id, client_id, source_refs)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   db.exec('BEGIN')
   try {
@@ -652,7 +676,7 @@ export function addMessages(msgs: Array<{
         msg.timestamp ?? Math.floor(Date.now() / 1000),
         msg.token_count ?? null, msg.finish_reason ?? null,
         msg.reasoning ?? null, msg.reasoning_details ?? null,
-        msg.reasoning_content ?? null, msg.run_id ?? '', msg.client_id ?? '',
+        msg.reasoning_content ?? null, msg.run_id ?? '', msg.client_id ?? '', msg.source_refs?.length ? JSON.stringify(msg.source_refs) : null,
       )
     }
     db.exec('COMMIT')
@@ -721,4 +745,7 @@ export function getSessionDetailPaginated(
     limit,
     hasMore: offset + messages.length < total,
   }
+}
+export function isSessionStorageAvailable(): boolean {
+  return isSqliteAvailable()
 }

@@ -22,8 +22,8 @@ export const useJobsStore = defineStore('jobs', () => {
     }
   }
 
-  async function createJob(data: CreateJobRequest): Promise<Job> {
-    const job = await jobsApi.createJob(data)
+  async function createJob(data: CreateJobRequest, opts?: { profile?: string }): Promise<Job> {
+    const job = await jobsApi.createJob(data, opts)
     jobs.value.unshift(job)
     return job
   }

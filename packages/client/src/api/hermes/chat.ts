@@ -116,6 +116,16 @@ export interface RunEvent {
   truncated?: boolean
   total_patch_bytes?: number
   files?: Array<Record<string, unknown>>
+  source_refs?: SourceRef[]
+}
+
+export interface SourceRef {
+  id: string
+  type: 'web' | 'workspace' | 'lark_doc' | 'other'
+  label: string
+  uri?: string
+  locator?: string
+  open_path?: string
 }
 
 export interface ResumeSessionPayload {

@@ -1,118 +1,124 @@
-// 黑白水墨 — Pure Ink
-// 纯黑白灰，无彩色
-// 支持 light / dark / comic 三主题
+// KippiesWork — app semantic layer
+//
+// These are the names the app's ~300 components already consume
+// (--bg-primary, --text-primary, …). They no longer carry values of
+// their own: every one delegates to a Keep design system token defined
+// in keep-tokens.scss. Restyling therefore happens in ONE place — change
+// a Keep token and every screen follows.
+//
+// Do not put raw hex here. If you need a color that has no Keep token,
+// that is a design question, not a code one.
+//
+// Themes: light (default) / dark (`.dark`) / comic (`.comic`).
 
 // ─── CSS Custom Properties ─────────────────────────────────────
 
 :root {
   // Backgrounds
-  --bg-primary: #fafafa;
-  --bg-secondary: #f0f0f0;
-  --bg-sidebar: #f5f5f5;
-  --bg-card: #ffffff;
-  --bg-card-hover: #fafafa;
-  --bg-input: #ffffff;
+  --bg-primary: var(--bg); // page ground — white, not a tinted grey
+  --bg-secondary: var(--bg-soft);
+  --bg-sidebar: var(--bg-softer);
+  --bg-card: var(--bg);
+  --bg-card-hover: var(--gray-fa);
+  --bg-input: var(--bg);
 
   // Borders
-  --border-color: #e0e0e0;
-  --border-light: #ebebeb;
+  --border-color: var(--divider);
+  --border-light: var(--divider);
 
   // Accent
-  --accent-primary: #333333;
-  --accent-hover: #1a1a1a;
-  --accent-muted: #888888;
+  // Primary actions are ink pills, not purple. Purple is an accent hue
+  // for classification (badges, selected rings, the home wordmark) —
+  // Keep DS §3.6 caps it at three hues per page.
+  --accent-primary: var(--gray-33);
+  --accent-hover: var(--gray-00);
+  --accent-muted: var(--fg-aux);
 
   // Text
-  --text-primary: #1a1a1a;
-  --text-secondary: #666666;
-  --text-muted: #999999;
+  --text-primary: var(--fg-primary);
+  --text-secondary: var(--fg-secondary);
+  --text-muted: var(--fg-aux);
 
   // Status
-  --success: #2e7d32;
-  --error: #c62828;
-  --warning: #f57f17;
+  // --warning is defined by keep-tokens (#FEC833); redefining it here
+  // would shadow the Keep value, so only the rgb companion lives here.
+  --success: var(--keep-green);
+  --error: var(--danger);
 
   // Message bubbles
-  --msg-user-bg: #f5f5f5;
-  --msg-assistant-bg: #f5f5f5;
-  --msg-system-border: #bdbdbd;
+  --msg-user-bg: var(--gray-f7);
+  --msg-assistant-bg: var(--gray-f7);
+  --msg-system-border: var(--gray-cc);
 
   // Code
-  --code-bg: #f4f4f4;
+  --code-bg: var(--gray-f7);
 
   // Utility
-  --text-on-accent: #ffffff;
-  --text-on-overlay: #ffffff;
-  --accent-info: #4a90d9;
+  --text-on-accent: var(--white);
+  --text-on-overlay: var(--white);
+  --accent-info: var(--hue-blue);
 
-  // RGB components (for rgba() usage)
+  // RGB components (for rgba() usage — CSS cannot decompose a var())
   --accent-primary-rgb: 51, 51, 51;
-  --accent-hover-rgb: 26, 26, 26;
-  --text-primary-rgb: 26, 26, 26;
+  --accent-hover-rgb: 0, 0, 0;
+  --text-primary-rgb: 51, 51, 51;
   --text-muted-rgb: 153, 153, 153;
-  --success-rgb: 46, 125, 50;
-  --error-rgb: 198, 40, 40;
-  --warning-rgb: 245, 127, 23;
-  --accent-info-rgb: 74, 144, 217;
+  --success-rgb: 36, 199, 137;
+  --error-rgb: 230, 58, 48;
+  --warning-rgb: 254, 200, 51;
+  --accent-info-rgb: 90, 135, 249;
 }
 
 .dark {
-  // Backgrounds
-  --bg-primary: #1a1a1a;
-  --bg-secondary: #252525;
-  --bg-sidebar: #202020;
-  --bg-card: #333333;
-  --bg-card-hover: #333333;
-  --bg-input: #2a2a2a;
+  // Backgrounds — the prototype lifts the DS dark ramp one step: content
+  // #0D0D0D, sidebar #1A1A1A (set in keep-tokens.scss). Cards stay on the
+  // ground with an inset divider ring, exactly like light mode.
+  --bg-primary: var(--bg);
+  --bg-secondary: var(--bg-soft);
+  --bg-sidebar: var(--bg-softer);
+  --bg-card: var(--bg);
+  --bg-card-hover: var(--surface-1);
+  --bg-input: var(--surface-2);
 
   // Borders
-  --border-color: #3a3a3a;
-  --border-light: #333333;
+  --border-color: var(--divider);
+  --border-light: var(--divider);
 
-  // Accent
-  --accent-primary: #e0e0e0;
-  --accent-hover: #f5f5f5;
-  --accent-muted: #888888;
+  // Accent — inverted: the ink pill becomes a light pill
+  --accent-primary: var(--white);
+  --accent-hover: var(--gray-cc);
+  --accent-muted: var(--fg-aux);
 
   // Text
-  --text-primary: #f0f0f0;
-  --text-secondary: #c0c0c0;
-  --text-muted: #888888;
+  --text-primary: var(--fg-primary);
+  --text-secondary: var(--fg-secondary);
+  --text-muted: var(--fg-aux);
 
-  // Status
-  --success: #66bb6a;
-  --error: #ef5350;
-  --warning: #ffb74d;
-
-  // Message bubbles
-  --msg-user-bg: #252525;
-  --msg-assistant-bg: #252525;
-  --msg-system-border: #555555;
+  // Message bubbles — light mode uses gray-f7 (surface-2); keep the same
+  // semantic step in dark.
+  --msg-user-bg: var(--surface-2);
+  --msg-assistant-bg: var(--surface-2);
+  --msg-system-border: var(--gray-66);
 
   // Code
-  --code-bg: #1e1e1e;
+  --code-bg: var(--surface-2);
 
   // Utility
-  --text-on-accent: #1a1a1a;
-  --text-on-overlay: #ffffff;
-  --accent-info: #6ba3d6;
+  --text-on-accent: var(--gray-00);
+  --text-on-overlay: var(--white);
 
   // RGB components
-  --accent-primary-rgb: 240, 240, 240;
-  --accent-hover-rgb: 245, 245, 245;
-  --text-primary-rgb: 240, 240, 240;
-  --text-muted-rgb: 136, 136, 136;
-  --success-rgb: 102, 187, 106;
-  --error-rgb: 239, 83, 80;
-  --warning-rgb: 255, 183, 77;
-  --accent-info-rgb: 107, 163, 214;
+  --accent-primary-rgb: 255, 255, 255;
+  --accent-hover-rgb: 204, 204, 204;
+  --text-primary-rgb: 204, 204, 204;
+  --text-muted-rgb: 102, 102, 102;
 }
 
 .comic {
   // Borders — bold comic outlines
-  --border-color: #1a1a1a;
-  --border-light: #555555;
-  --msg-system-border: #1a1a1a;
+  --border-color: var(--gray-00);
+  --border-light: var(--gray-66);
+  --msg-system-border: var(--gray-00);
 
   // Comic-specific
   --font-ui: 'Comic Neue', 'ZCOOL KuaiLe', 'Zen Maru Gothic', 'Gaegu', cursive, sans-serif;
@@ -122,9 +128,9 @@
 
 .dark.comic {
   // Borders — brighter outlines on dark
-  --border-color: #666666;
-  --border-light: #555555;
-  --msg-system-border: #888888;
+  --border-color: var(--gray-66);
+  --border-light: var(--gray-33);
+  --msg-system-border: var(--gray-99);
 
   --comic-shadow: 3px 3px 0px rgba(255, 255, 255, 0.08);
 }
@@ -167,21 +173,42 @@ $msg-system-border: var(--msg-system-border);
 // Code
 $code-bg: var(--code-bg);
 
-// Typography
-$font-ui: var(--font-ui, 'Inter', system-ui, -apple-system, sans-serif);
-$font-code: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+// Typography — --font-ui is only set by the comic theme; everywhere else
+// it falls through to the Keep CJK stack.
+$font-ui: var(--font-ui, var(--font-cn));
+$font-code: var(--font-mono);
 
 // Layout
-$sidebar-width: 240px;
+$sidebar-width: 248px; // KippiesWork rail, expanded
 $sidebar-collapsed-width: 64px;
 $header-height: 60px;
 $breakpoint-mobile: 768px;
 
-// Radius
-$radius-sm: 6px;
-$radius-md: 10px;
-$radius-lg: 14px;
+// Responsive breakpoints, named for what stops fitting rather than for a
+// device class (see the prototype's notes):
+//   1180 — two columns squeeze the board under 380px → collapse the rail
+//    900 — the 40px home gutter starts eating the text column → 16px
+//    820 — starter cards drop under 200px per column → two columns
+//    600 — → one column
+//    480 — hide usage count + mic in the input toolbar
+$breakpoint-rail: 1180px;
+$breakpoint-gutter: 900px;
+$breakpoint-starter-2: 820px;
+$breakpoint-starter-1: 600px;
+$breakpoint-toolrow: 480px;
+
+// A desktop product needs a floor. Below this the main column scrolls
+// horizontally instead of the components being crushed — 440 is the
+// narrowest the input can still fit one row of tools.
+$min-main-width: 440px;
+
+// Radius — Keep DS §8 plus the two desktop additions
+$radius-sm: var(--r-card-l); // 6px
+$radius-md: var(--r-ctl); // 8px
+$radius-lg: var(--r-card); // 12px
+$radius-pill: var(--r-pill);
 
 // Transition
-$transition-fast: 0.15s ease;
-$transition-normal: 0.25s ease;
+$transition-fast: var(--motion-fast) var(--ease-std);
+$transition-normal: var(--motion-base) var(--ease-std);
+$transition-page: var(--motion-page) var(--ease-std);

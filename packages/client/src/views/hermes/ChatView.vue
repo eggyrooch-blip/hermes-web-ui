@@ -6,7 +6,6 @@ import { useAppStore } from '@/stores/hermes/app'
 import { useChatStore } from '@/stores/hermes/chat'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useSettingsStore } from '@/stores/hermes/settings'
-import { isStoredSuperAdmin } from '@/api/client'
 
 const appStore = useAppStore()
 const chatStore = useChatStore()
@@ -25,7 +24,7 @@ const routeProfile = computed(() => {
   return typeof value === 'string' && value.trim() ? value : null
 })
 
-const productTitle = 'Hermes Studio'
+const productTitle = 'Kippies Work'
 const tabTitle = computed(() => {
   if (route.name !== 'hermes.session') return productTitle
   return chatStore.activeSession?.title?.trim() || productTitle
@@ -39,11 +38,13 @@ onUnmounted(() => {
   document.title = productTitle
 })
 
+// Default is "全部配置" (null) for every role: the sidebar no longer carries an
+// agent dropdown, so silently scoping the task list to the active profile
+// would hide tasks with no visible control explaining why. An explicit filter
+// (route ?profile=, or the 筛选 popover's select) still wins.
 function preferredSessionProfileFilter(): string | null {
   if (routeProfile.value) return routeProfile.value
-  if (chatStore.sessionProfileFilter) return chatStore.sessionProfileFilter
-  if (isStoredSuperAdmin()) return chatStore.sessionProfileFilter
-  return profilesStore.activeProfileName || null
+  return chatStore.sessionProfileFilter
 }
 
 function applyPreferredSessionProfileFilter(): string | null {
@@ -62,6 +63,36 @@ async function loadRouteSession() {
   }
 }
 
+let consumingNewChatRequest = false
+
+/**
+ * `?profile=X&new=1` is how the agents hub hands over: it switches the profile
+ * and routes here, and WE open the chat — after loadSessions, which replaces
+ * sessions[] wholesale and would otherwise drop a session created before
+ * navigation. The query is consumed so a refresh doesn't spawn another.
+ */
+async function consumeNewChatRequest() {
+  if (route.query.new !== '1' || consumingNewChatRequest) return
+  consumingNewChatRequest = true
+  try {
+    if (!profilesStore.profilesLoaded) {
+      await profilesStore.fetchProfiles()
+    }
+    const profile = routeProfile.value || profilesStore.activeProfileName || undefined
+    if (!profilesStore.profilesLoaded || !profile || !profilesStore.profiles.some(item => item.name === profile)) {
+      await router.replace({ name: 'hermes.chat' })
+      return
+    }
+    chatStore.newChat({ profile })
+    // Keep `profile` stable while consuming only `new`: the watcher keys on
+    // routeProfile, so clearing both would immediately reload the server list and
+    // delete this not-yet-persisted local session.
+    await router.replace({ name: 'hermes.chat', query: { profile } })
+  } finally {
+    consumingNewChatRequest = false
+  }
+}
+
 onMounted(async () => {
   chatStore.setRuntimeMode('default')
   appStore.loadModels()
@@ -72,6 +103,7 @@ onMounted(async () => {
     settingsStore.fetchSettings(),
   ])
   await loadRouteSession()
+  await consumeNewChatRequest()
 })
 
 watch([routeSessionId, routeProfile], async ([sessionId]) => {
@@ -79,19 +111,22 @@ watch([routeSessionId, routeProfile], async ([sessionId]) => {
   const profile = applyPreferredSessionProfileFilter()
   if (!sessionId) {
     await chatStore.loadSessions(profile)
+    await consumeNewChatRequest()
     return
   }
   if (chatStore.activeSessionId === sessionId && (!profile || chatStore.activeSession?.profile === profile)) return
 
-  const exists = chatStore.sessions.some(session => (
+  const target = chatStore.sessions.find(session => (
     session.id === sessionId && (!profile || session.profile === profile)
   ))
-  if (!exists) {
+  if (!target) {
     await loadRouteSession()
     return
   }
 
-  await chatStore.switchSession(sessionId)
+  // A client-only draft (新建任务) must not be resumed: the server doesn't
+  // know it and its failure response would be injected as a message.
+  await chatStore.switchSession(sessionId, null, target.isLocalDraft ? { skipResume: true } : undefined)
 })
 </script>
 

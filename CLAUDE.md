@@ -581,4 +581,5 @@ Test files live in `tests/client/` and `tests/server/`. Configuration is in root
 
 ## Known gotchas
 - 2026-06-23：WebUI chat-plane 上传图片会落在 routed profile 的 `workspace/uploads`；Run Broker `content` 不能把 ContentBlock 直接 JSON.stringify，否则 multitenancy AIAgent 只会看到普通 JSON 文本并让工具去错误目录按 basename 搜图。broker 当前用户消息必须提供 `/workspace/uploads/...` 语义的工具路径。
+- 2026-08-16：非超管 token 用户新建 agent 后列表里看不到——`create()` 原先只在 chat-plane（有 openid）时注册归属，web-plane 用户没有 `user_profiles` 行，而 `GET /api/hermes/profiles` 对非超管按 `allowedProfileNamesForUser` 过滤。任何"创建 profile"的新路径都必须给创建者写归属（web-plane `addUserProfile`，chat-plane `registerOwnedProfile`），否则创建成功但对本人不可见。
 <!-- /ftask:managed -->

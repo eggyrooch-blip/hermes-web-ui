@@ -56,6 +56,7 @@ function makeContext(state: any, commandResult: Record<string, unknown> = {
   const socket = {
     id: 'socket-1',
     connected: true,
+    data: { user: { id: 7, username: 'local', role: 'user' } },
     join: vi.fn(),
     emit: vi.fn(),
   }
@@ -78,6 +79,28 @@ describe('plan session command', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     getSessionMock.mockReturnValue({ id: 'session-1', profile: 'default', source: 'cli' })
+  })
+
+  it('creates command sessions with the trusted socket owner', async () => {
+    getSessionMock.mockReturnValue(null)
+    const state = { messages: [], isWorking: false, events: [], queue: [] }
+    const { bridge, nsp, runQueuedItem, sessionMap, socket } = makeContext(state)
+    socket.data.user = { id: 7, openid: 'ou_trusted', username: 'feishu', role: 'user' }
+    const { handleSessionCommand, parseSessionCommand } = await import('../../packages/server/src/services/hermes/run-chat/session-command')
+
+    await handleSessionCommand('session-1', parseSessionCommand('/title Trusted title')!, {
+      nsp: nsp as any,
+      socket: socket as any,
+      sessionMap,
+      bridge: bridge as any,
+      profile: 'default',
+      runQueuedItem,
+    })
+
+    expect(createSessionMock).toHaveBeenCalled()
+    for (const [created] of createSessionMock.mock.calls) {
+      expect(created).toEqual(expect.objectContaining({ user_id: 'ou_trusted' }))
+    }
   })
 
   it('queues running plan commands once without visible command echo', async () => {

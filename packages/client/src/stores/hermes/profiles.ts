@@ -30,6 +30,7 @@ export const useProfilesStore = defineStore('profiles', () => {
   const activeProfile = ref<HermesProfile | null>(null)
   const detailMap = ref<Record<string, HermesProfileDetail>>({})
   const loading = ref(false)
+  const profilesLoaded = ref(false)
   const switching = ref(false)
 
   function persistActiveSelection(profile: HermesProfile | null) {
@@ -50,10 +51,12 @@ export const useProfilesStore = defineStore('profiles', () => {
     }
   }
 
-  async function fetchProfiles() {
+  async function fetchProfiles(): Promise<void> {
     loading.value = true
+    profilesLoaded.value = false
     try {
       profiles.value = await profilesApi.fetchProfiles()
+      profilesLoaded.value = true
       const storedName = activeProfileName.value || localStorage.getItem(ACTIVE_PROFILE_STORAGE_KEY)
       let selected = profiles.value.find(p => p.name === storedName) ?? null
       if (!selected && profiles.value.length > 0) {
@@ -132,8 +135,8 @@ export const useProfilesStore = defineStore('profiles', () => {
     }
   }
 
-  async function createProfile(name: string, clone?: boolean) {
-    const res = await profilesApi.createProfile(name, clone)
+  async function createProfile(name: string, clone?: boolean, displayLabel?: string) {
+    const res = await profilesApi.createProfile(name, clone, displayLabel)
     if (res.success) await fetchProfiles()
     return res
   }
@@ -162,23 +165,19 @@ export const useProfilesStore = defineStore('profiles', () => {
     return ok
   }
 
-  async function switchProfile(name: string) {
+  async function switchProfile(name: string): Promise<boolean> {
+    const target = profiles.value.find(profile => profile.name === name)
+    if (!target) return false
     switching.value = true
     try {
-      const ok = await profilesApi.switchProfile(name)
+      const ok = await profilesApi.switchProfile(name).catch(() => false)
       if (ok) {
         profiles.value = profiles.value.map(profile => ({
           ...profile,
           active: profile.name === name,
         }))
-        activeProfile.value = profiles.value.find(profile => profile.name === name) ?? null
-        if (activeProfile.value) {
-          persistActiveSelection(activeProfile.value)
-        } else {
-          activeProfileName.value = name
-          localStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, name)
-          localStorage.removeItem(ACTIVE_AGENT_STORAGE_KEY)
-        }
+        activeProfile.value = target
+        persistActiveSelection(target)
         await useAppStore().reloadModels()
       }
       return ok
@@ -249,6 +248,7 @@ export const useProfilesStore = defineStore('profiles', () => {
     currentUser,
     detailMap,
     loading,
+    profilesLoaded,
     switching,
     fetchProfiles,
     fetchHermesProfiles,

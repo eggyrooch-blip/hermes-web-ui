@@ -15,6 +15,7 @@ interface MockHermesApiOptions {
   initialProfileName?: 'default' | 'research'
   sessions?: unknown[]
   experts?: unknown[]
+  expertWorkRecords?: Record<string, unknown>
 }
 
 const sampleModelGroup = {
@@ -96,6 +97,7 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
   const unexpectedRequests: MockedRequest[] = []
   const tokenValidationStatus = options.tokenValidationStatus ?? 200
   let activeProfileName = options.initialProfileName ?? 'research'
+  const feedback = new Map<string, Record<string, unknown>>()
 
   await page.route('**/*', async (route: Route) => {
     const request = route.request()
@@ -174,6 +176,42 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
     if (pathname === '/api/hermes/sessions/context-length') {
       await route.fulfill(jsonResponse({ context_length: 256000 }))
       return
+    }
+
+    const feedbackListMatch = pathname.match(/^\/api\/hermes\/sessions\/([^/]+)\/feedback$/)
+    if (feedbackListMatch && request.method() === 'GET') {
+      const sessionId = decodeURIComponent(feedbackListMatch[1])
+      await route.fulfill(jsonResponse({
+        feedback: [...feedback.values()].filter(row => row.session_id === sessionId),
+      }))
+      return
+    }
+
+    const feedbackMutationMatch = pathname.match(/^\/api\/hermes\/sessions\/([^/]+)\/runs\/([^/]+)\/feedback$/)
+    if (feedbackMutationMatch) {
+      const sessionId = decodeURIComponent(feedbackMutationMatch[1])
+      const runId = decodeURIComponent(feedbackMutationMatch[2])
+      const rowKey = `${sessionId}\n${runId}`
+      if (request.method() === 'DELETE') {
+        feedback.delete(rowKey)
+        await route.fulfill(jsonResponse({ ok: true, feedback: null }))
+        return
+      }
+      if (request.method() === 'PUT') {
+        const body = JSON.parse(request.postData() || '{}') as { rating?: string; reason?: string | null }
+        const row = {
+          session_id: sessionId,
+          run_id: runId,
+          expert_id: null,
+          rating: body.rating,
+          reason: body.reason ?? null,
+          created_at: 1,
+          updated_at: 1,
+        }
+        feedback.set(rowKey, row)
+        await route.fulfill(jsonResponse({ feedback: row }))
+        return
+      }
     }
 
     if (/^\/api\/hermes\/sessions\/[^/]+\/workspace-run-changes$/.test(pathname)) {
@@ -266,6 +304,17 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
       return
     }
 
+    const workRecordMatch = pathname.match(/^\/api\/hermes\/experts\/([^/]+)\/work-record$/)
+    if (workRecordMatch) {
+      const expertId = decodeURIComponent(workRecordMatch[1])
+      const mode = url.searchParams.get('view') === 'maintainer' ? 'maintainer' : 'user'
+      const record = options.expertWorkRecords?.[mode]
+      await route.fulfill(record
+        ? jsonResponse(record)
+        : jsonResponse({ error: 'not found', expert_id: expertId }, mode === 'maintainer' ? 404 : 200))
+      return
+    }
+
     if (pathname === '/api/hermes/write-gate/pending') {
       await route.fulfill(jsonResponse({
         records: [],
@@ -350,7 +399,16 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
     }
 
     if (pathname === '/api/hermes/jobs') {
-      await route.fulfill(jsonResponse({ jobs: [sampleJob] }))
+      if (request.method() === 'GET') {
+        await route.fulfill(jsonResponse({ jobs: [sampleJob] }))
+        return
+      }
+      if (request.method() === 'POST') {
+        const body = JSON.parse(request.postData() || '{}')
+        await route.fulfill(jsonResponse({ job: { ...sampleJob, ...body, id: 'job-scheduled', job_id: 'job-scheduled' } }))
+        return
+      }
+      await route.fulfill(jsonResponse({ error: 'Method not allowed' }, 405))
       return
     }
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NButton, NCheckbox, useMessage } from 'naive-ui'
+import { NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NButton, NCheckbox } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useKanbanStore } from '@/stores/hermes/kanban'
 import { withDefaultAssignee } from '@/utils/hermes/kanban-assignees'
@@ -13,7 +13,8 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const message = useMessage()
+/** Validation and create failure for this form. */
+const paneError = ref('')
 const kanbanStore = useKanbanStore()
 
 const title = ref('')
@@ -76,6 +77,10 @@ function buildSkillOptions(skills: SkillInfo[]): Array<{ label: string; value: s
 onMounted(async () => {
   skillsLoading.value = true
   try {
+    // NOTE: unscoped on purpose. Skills are per-profile, and the chat and
+    // automation composers scope theirs to the active profile — but a kanban
+    // task is assigned to a profile (see `assignee`), which is not necessarily
+    // the active one, so the right scope here is a product question.
     const data = await fetchSkills()
     skillOptions.value = buildSkillOptions(data.categories.flatMap(category => category.skills || []))
   } catch {
@@ -87,7 +92,7 @@ onMounted(async () => {
 
 async function handleSubmit() {
   if (!title.value.trim()) {
-    message.warning(t('kanban.form.titleRequired'))
+    paneError.value = t('kanban.form.titleRequired')
     return
   }
   saving.value = true
@@ -115,11 +120,11 @@ async function handleSubmit() {
       if (goalMaxTurns.value !== null) payload.goalMaxTurns = goalMaxTurns.value
     }
     await kanbanStore.createTask(payload)
-    message.success(t('kanban.message.taskCreated'))
+    // The new task appears on the board, which is the report.
     emit('created')
     emit('close')
   } catch (err: any) {
-    message.error(err.message)
+    paneError.value = err.message
   } finally {
     saving.value = false
   }
@@ -128,6 +133,7 @@ async function handleSubmit() {
 
 <template>
   <NModal :show="true" preset="dialog" :title="t('kanban.createTask')" style="width: 480px;" @close="emit('close')">
+    <p v-if="paneError" class="pane-notice" data-testid="kanban-create-error">{{ paneError }}</p>
     <NForm label-placement="top">
       <NFormItem :label="t('kanban.form.title')">
         <NInput v-model:value="title" :placeholder="t('kanban.form.titlePlaceholder')" />
@@ -202,6 +208,15 @@ async function handleSubmit() {
 </template>
 
 <style scoped lang="scss">
+.pane-notice {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 .advanced-row {
   display: flex;
   gap: 16px;

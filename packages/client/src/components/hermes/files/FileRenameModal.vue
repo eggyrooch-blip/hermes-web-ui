@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
-import { NModal, NInput, NButton, NSpace, useMessage } from 'naive-ui'
+import { NModal, NInput, NButton, NSpace } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { DEFAULT_EDITOR_SCOPE, useFilesStore } from '@/stores/hermes/files'
 import type { FileEntry } from '@/api/hermes/files'
 
 const { t } = useI18n()
-const message = useMessage()
 const filesStore = useFilesStore()
 
 const props = defineProps<{
@@ -21,6 +20,8 @@ const emit = defineEmits<{
   (e: 'update:show', value: boolean): void
 }>()
 
+/** Create / rename failure. Success closes the dialog and the entry appears in the list. */
+const paneError = ref('')
 const inputValue = ref('')
 const submitting = ref(false)
 
@@ -57,23 +58,20 @@ async function handleSubmit() {
     switch (props.mode) {
       case 'newFile':
         await filesStore.createFile(inputValue.value.trim())
-        message.success(t('files.created'))
         break
       case 'newFolder':
         await filesStore.createDir(inputValue.value.trim(), props.targetPath || undefined)
-        message.success(t('files.created'))
         break
       case 'rename':
         if (props.entry) {
           await filesStore.renameEntry(props.entry, inputValue.value.trim(), props.editorScope || DEFAULT_EDITOR_SCOPE)
-          message.success(t('files.renamed'))
         }
         break
     }
     emit('update:show', false)
   } catch (err: any) {
     const msg = props.mode === 'rename' ? t('files.renameFailed') : t('files.createFailed')
-    message.error(err.message || msg)
+    paneError.value = err.message || msg
   } finally {
     submitting.value = false
   }
@@ -82,6 +80,7 @@ async function handleSubmit() {
 
 <template>
   <NModal :show="props.show" preset="dialog" :title="title" @update:show="emit('update:show', false)" style="width: 400px;">
+    <p v-if="paneError" class="pane-notice" data-testid="file-rename-error">{{ paneError }}</p>
     <NInput
       v-model:value="inputValue"
       :placeholder="placeholder"
@@ -98,3 +97,14 @@ async function handleSubmit() {
     </template>
   </NModal>
 </template>
+
+<style scoped lang="scss">
+.pane-notice {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+</style>

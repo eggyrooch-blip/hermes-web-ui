@@ -1,6 +1,8 @@
 export const CHAT_INPUT_HEIGHT_MIN = 48
 export const CHAT_INPUT_HEIGHT_MAX = 400
-export const CHAT_INPUT_HEIGHT_DEFAULT = 100
+// 56 matches the prototype TaskInputBox's resting textarea height; the value
+// stays user-configurable in 设置 → 显示.
+export const CHAT_INPUT_HEIGHT_DEFAULT = 56
 export const CHAT_INPUT_HEIGHT_MOBILE_QUERY = '(max-width: 768px)'
 
 export function clampChatInputHeight(value: unknown): number {

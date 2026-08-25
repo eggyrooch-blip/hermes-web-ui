@@ -53,13 +53,14 @@ watch([routeSessionId, routeProfile], async ([sessionId]) => {
   }
   if (chatStore.activeSessionId === sessionId) return
 
-  const exists = chatStore.sessions.some(session => session.id === sessionId)
-  if (!exists) {
+  const target = chatStore.sessions.find(session => session.id === sessionId)
+  if (!target) {
     await loadRouteSession()
     return
   }
 
-  await chatStore.switchSession(sessionId)
+  // Client-only drafts must not be resumed (see ChatView's watcher).
+  await chatStore.switchSession(sessionId, null, target.isLocalDraft ? { skipResume: true } : undefined)
 })
 </script>
 

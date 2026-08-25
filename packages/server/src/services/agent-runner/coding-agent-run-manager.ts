@@ -67,6 +67,7 @@ export interface CodingAgentRunLaunch {
   provider: string
   model: string
   sessionId: string
+  ownerId?: string | null
   agentNativeSessionId?: string
   nativeResume?: boolean
   command: string
@@ -671,11 +672,12 @@ export class CodingAgentRunManager {
     createSession({
       id: run.launch.sessionId,
       profile: run.launch.profile,
-        source,
-        agent: run.launch.agentId === 'codex' ? 'codex' : 'claude',
-        agent_session_id: run.id,
-        agent_native_session_id: run.launch.agentNativeSessionId,
-        model: run.launch.model,
+      source,
+      user_id: run.launch.ownerId || null,
+      agent: run.launch.agentId === 'codex' ? 'codex' : 'claude',
+      agent_session_id: run.id,
+      agent_native_session_id: run.launch.agentNativeSessionId,
+      model: run.launch.model,
       provider: run.launch.provider,
       title: '',
       workspace: run.launch.workspaceDir,

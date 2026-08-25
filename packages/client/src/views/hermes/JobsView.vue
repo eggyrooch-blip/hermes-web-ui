@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
-import { NButton, NSpin, NTooltip } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import JobsPanel from '@/components/hermes/jobs/JobsPanel.vue'
 import JobRunHistory from '@/components/hermes/jobs/JobRunHistory.vue'
 import JobFormModal from '@/components/hermes/jobs/JobFormModal.vue'
+import KpPage from '@/components/kippies/KpPage.vue'
+import KpBtn from '@/components/kippies/KpBtn.vue'
+import KpIcon from '@/components/kippies/KpIcon.vue'
+import KpSegChip from '@/components/kippies/KpSegChip.vue'
 import { useJobsStore } from '@/stores/hermes/jobs'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 
@@ -19,8 +22,13 @@ const editingJob = ref<string | null>(null)
 const selectedJobId = ref<string | null>(null)
 const sortBy = ref<'time' | 'name'>('name')
 const sortAsc = ref(true)
+const filter = ref<'all' | 'enabled'>('all')
+const showSortMenu = ref(false)
 const activeProfileName = computed(() => profilesStore.activeProfileName || 'default')
 let profileWatchReady = false
+
+const allCount = computed(() => jobsStore.jobs.length)
+const enabledCount = computed(() => jobsStore.jobs.filter(job => job.enabled).length)
 
 const jobNameMap = computed(() => {
   const map: Record<string, string> = {}
@@ -94,62 +102,72 @@ function arrowIcon(field: 'time' | 'name'): string {
 </script>
 
 <template>
-  <div class="jobs-view" :class="{ 'is-embedded': props.embedded }">
-    <header class="page-header" :class="{ 'page-header--embedded': props.embedded }">
-      <h2 v-if="!props.embedded" class="header-title">{{ t('jobs.title') }}</h2>
-      <div class="header-actions">
-        <div class="sort-toggle">
-          <NTooltip>
-            <template #trigger>
-              <NButton
-                size="tiny"
-                :type="sortBy === 'name' ? 'primary' : 'default'"
-                @click="toggleSort('name')"
-              >
-                {{ t('jobs.sortByName') }} <span class="sort-arrow">{{ arrowIcon('name') }}</span>
-              </NButton>
-            </template>
-            {{ sortBy === 'name' ? (sortAsc ? t('jobs.sortAsc') : t('jobs.sortDesc')) : t('jobs.sortByNameHint') }}
-          </NTooltip>
-          <NTooltip>
-            <template #trigger>
-              <NButton
-                size="tiny"
-                :type="sortBy === 'time' ? 'primary' : 'default'"
-                @click="toggleSort('time')"
-              >
-                {{ t('jobs.sortByTime') }} <span class="sort-arrow">{{ arrowIcon('time') }}</span>
-              </NButton>
-            </template>
-            {{ sortBy === 'time' ? (sortAsc ? t('jobs.sortAsc') : t('jobs.sortDesc')) : t('jobs.sortByTimeHint') }}
-          </NTooltip>
-        </div>
-        <span class="sort-divider"></span>
-        <NButton type="primary" size="small" @click="openCreateModal">
-          <template #icon>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+  <!-- One frame for both entry points. The prototype shows the same full page
+       whether you reach it from the nav rail or open it standalone, so the
+       embedded surface must not shrink to a compact header. -->
+  <KpPage
+    wide
+    :class="{ 'is-embedded': props.embedded }"
+    :title="t('jobs.title')"
+    :sub="t('jobs.subtitle')"
+  >
+    <template #right>
+      <KpBtn
+        kind="dark"
+        icon="full_add"
+        icon-end="full_arrow_down"
+        data-testid="jobs-create"
+        @click="openCreateModal"
+      >
+        {{ t('jobs.createJob') }}
+      </KpBtn>
+    </template>
+
+    <div class="jobs-body">
+      <div class="jobs-filter">
+        <KpSegChip type="button" :on="filter === 'all'" :count="allCount" @click="filter = 'all'">
+          {{ t('jobs.filterAll') }}
+        </KpSegChip>
+        <KpSegChip type="button" :on="filter === 'enabled'" :count="enabledCount" @click="filter = 'enabled'">
+          {{ t('jobs.filterEnabled') }}
+        </KpSegChip>
+        <div class="jobs-filter__spacer" />
+        <div class="jobs-filter__sort">
+          <button
+            type="button"
+            class="filter-icon"
+            :class="{ 'is-active': showSortMenu }"
+            :title="t('jobs.sortBy')"
+            @click="showSortMenu = !showSortMenu"
+          >
+            <KpIcon name="line_screening" :size="15" />
+          </button>
+          <template v-if="showSortMenu">
+            <div class="sort-backdrop" @click="showSortMenu = false" />
+            <div class="sort-menu">
+              <button type="button" class="sort-menu__item" @click="toggleSort('name')">
+                <span>{{ t('jobs.sortByName') }}</span>
+                <span class="sort-menu__arrow">{{ arrowIcon('name') }}</span>
+              </button>
+              <button type="button" class="sort-menu__item" @click="toggleSort('time')">
+                <span>{{ t('jobs.sortByTime') }}</span>
+                <span class="sort-menu__arrow">{{ arrowIcon('time') }}</span>
+              </button>
+            </div>
           </template>
-          {{ t('jobs.createJob') }}
-        </NButton>
-      </div>
-    </header>
-
-    <div class="jobs-split">
-      <div class="jobs-top">
-        <NSpin :show="jobsStore.loading && jobsStore.jobs.length === 0">
-          <JobsPanel
-            :selected-job-id="selectedJobId"
-            :sort-by="sortBy"
-            :sort-asc="sortAsc"
-            @edit="openEditModal"
-            @select="handleSelectJob"
-          />
-        </NSpin>
+        </div>
       </div>
 
-      <div class="splitter" />
+      <JobsPanel
+        :selected-job-id="selectedJobId"
+        :sort-by="sortBy"
+        :sort-asc="sortAsc"
+        :filter="filter"
+        @edit="openEditModal"
+        @select="handleSelectJob"
+      />
 
-      <div class="jobs-bottom">
+      <div class="jobs-history">
         <JobRunHistory
           :selected-job-id="selectedJobId"
           :job-name-map="jobNameMap"
@@ -157,82 +175,105 @@ function arrowIcon(field: 'time' | 'name'): string {
         />
       </div>
     </div>
+  </KpPage>
 
-    <JobFormModal
-      v-if="showModal"
-      :job-id="editingJob"
-      @close="handleModalClose"
-      @saved="handleSave"
-    />
-  </div>
+  <JobFormModal
+    v-if="showModal"
+    :job-id="editingJob"
+    @close="handleModalClose"
+    @saved="handleSave"
+  />
 </template>
 
 <style scoped lang="scss">
-@use '@/styles/variables' as *;
-
-.jobs-view {
-  height: calc(100 * var(--vh));
+// Standalone body sits inside KpPage's centred column.
+.jobs-body {
   display: flex;
   flex-direction: column;
 }
 
-.jobs-view.is-embedded {
-  height: 100%;
+.jobs-history {
+  margin-top: 28px;
 }
 
-.page-header--embedded {
-  justify-content: flex-end;
-  padding-top: 12px;
-  padding-bottom: 12px;
-}
-
-.jobs-split {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.jobs-top {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px;
-  min-height: 120px;
-}
-
-.splitter {
-  height: 1px;
-  background: $border-light;
-  flex-shrink: 0;
-}
-
-.jobs-bottom {
-  flex: 1;
-  min-height: 120px;
-  overflow: hidden;
-}
-
-.header-actions {
+// Filter row — prototype AutoScreen: gap 4, margin-bottom 4.
+.jobs-filter {
   display: flex;
   align-items: center;
-  gap: 8px;
-}
-
-.sort-toggle {
-  display: flex;
   gap: 4px;
+  margin-bottom: 4px;
 }
 
-.sort-arrow {
-  margin-left: 4px;
-  font-size: 11px;
-  line-height: 1;
+.jobs-filter__spacer {
+  flex: 1;
 }
 
-.sort-divider {
-  width: 1px;
-  height: 16px;
-  background: $border-color;
-  flex-shrink: 0;
+.jobs-filter__sort {
+  position: relative;
+}
+
+.filter-icon {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: var(--r-ctl);
+  background: var(--bg);
+  box-shadow: inset 0 0 0 1px var(--divider);
+  color: var(--fg-secondary);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+
+  &.is-active {
+    color: var(--fg-primary);
+  }
+}
+
+.sort-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+.sort-menu {
+  position: absolute;
+  top: 38px;
+  right: 0;
+  z-index: 41;
+  min-width: 160px;
+  padding: 4px;
+  background: var(--bg);
+  border-radius: var(--r-card-l);
+  box-shadow: inset 0 0 0 0.5px var(--divider), var(--shadow-notification);
+}
+
+.sort-menu__item {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--r-card-s);
+  background: transparent;
+  color: var(--fg-primary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font: var(--w-regular) var(--t-13) / var(--lh-1) var(--font-cn);
+  cursor: pointer;
+
+  &:hover {
+    background: var(--gray-fa);
+  }
+}
+
+.sort-menu__arrow {
+  color: var(--fg-aux);
+  font-family: var(--font-data);
+}
+
+// Embedded (chat sidebar surface): compact, no big title.
+.kp-page.is-embedded {
+  height: 100%;
+  min-height: 0;
 }
 </style>

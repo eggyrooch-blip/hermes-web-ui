@@ -56,6 +56,7 @@ describe('handleCodingAgentRun', () => {
     }
     const sessionMap = new Map([['session-1', state]])
     const socket = {
+      data: { user: { id: 7, openid: 'ou_trusted' } },
       join: vi.fn(),
       emit: vi.fn(),
     }
@@ -76,6 +77,7 @@ describe('handleCodingAgentRun', () => {
     expect(managerMock.stop).toHaveBeenCalledWith('session-1', { reportClosed: false })
     expect(startCodingAgentRunMock).toHaveBeenCalledWith('codex', expect.objectContaining({
       sessionId: 'session-1',
+      ownerId: 'ou_trusted',
       mode: 'global',
       profile: 'default',
     }), state)

@@ -21,11 +21,16 @@ import { NButton, NInput } from "naive-ui";
 import VirtualMessageList from "./VirtualMessageList.vue";
 import MessageItem from "./MessageItem.vue";
 import { LIVE_CHAT_MAX_LOADED_MESSAGES, useChatStore } from "@/stores/hermes/chat";
+import { useFeedbackStore } from "@/stores/hermes/feedback";
 import { startSkillCredentialAuth, fetchSkillCredentials } from "@/api/skillCredentials";
-import thinkingImage from "@/assets/thinking.gif";
+import KpMascotFace from "@/components/kippies/KpMascotFace.vue";
+import KpSplitText from "@/components/kippies/KpSplitText.vue";
+import { useNet } from "@/composables/useNet";
 import { useToolTraceVisibility } from "@/composables/useToolTraceVisibility";
 
 const chatStore = useChatStore();
+const { online: netOnline } = useNet();
+const feedbackStore = useFeedbackStore();
 const { t } = useI18n();
 const { toolTraceVisible } = useToolTraceVisibility();
 const listRef = ref<InstanceType<typeof VirtualMessageList> | null>(null);
@@ -73,11 +78,20 @@ function stopThinkingTimer() {
 }
 
 const isThinkingIndicatorVisible = computed(() => chatStore.isRunActive || !!chatStore.abortState);
+// Reconnecting = a run is genuinely in flight AND we cannot reach the gateway.
+// Not merely "offline": with no run active there is nothing to reconnect for, and
+// the sidebar row already reports the network on its own.
+const isReconnecting = computed(() => chatStore.isRunActive && !netOnline.value);
 const formattedThinkingElapsed = computed(() => formatElapsed(thinkingElapsedMs.value));
-const thinkingAvatar = computed(() => {
+// Prototype: the run's face is the mascot, riding ON the status line — there is
+// no generic avatar tile any more. An expert session is the one exception: the
+// expert has a real face of its own, and that identity is data, not decoration.
+// Coding-agent runs are NOT experts (the picked expert does not drive them), so
+// they fall back to the mascot like any other run.
+const thinkingExpertAvatar = computed(() => {
   const session = chatStore.activeSession;
-  if (session?.source === "coding_agent") return thinkingImage;
-  return session?.expertAvatar || thinkingImage;
+  if (session?.source === "coding_agent") return "";
+  return session?.expertAvatar || "";
 });
 
 const currentToolCalls = computed(() => {
@@ -142,6 +156,21 @@ const displayMessages = computed(() => {
   });
 });
 
+const feedbackEligibleIds = computed(() => {
+  const finalIds = new Set<string>();
+  if (chatStore.activeSession?.source === "coding_agent") return finalIds;
+  const seenRuns = new Set<string>();
+  for (let index = displayMessages.value.length - 1; index >= 0; index -= 1) {
+    const message = displayMessages.value[index];
+    const runId = message.runId?.trim();
+    if (message.role !== "assistant" || !runId || seenRuns.has(runId)) continue;
+    seenRuns.add(runId);
+    if (!message.content?.trim() || message.isStreaming || message.systemType === "error") continue;
+    finalIds.add(message.id);
+  }
+  return finalIds;
+});
+
 const queuedMessages = computed(() => {
   const sid = chatStore.activeSessionId;
   if (!sid) return [];
@@ -201,10 +230,13 @@ async function handleReauth() {
     reauthInFlight.delete(sessionId);
   }
 }
+// Prototype thread padding: 32 above, 40 down each side, 40 at the floor. The
+// queued/prompt variants keep the gutters and only deepen the bottom so the
+// floating card clears the composer.
 const virtualListPadding = computed(() => {
-  if (queuedMessages.value.length > 0 && hasFloatingPrompt.value) return "20px 20px 380px";
-  if (queuedMessages.value.length > 0 || hasFloatingPrompt.value) return "20px 20px 260px";
-  return "20px";
+  if (queuedMessages.value.length > 0 && hasFloatingPrompt.value) return "32px 40px 380px";
+  if (queuedMessages.value.length > 0 || hasFloatingPrompt.value) return "32px 40px 260px";
+  return "32px 40px 40px";
 });
 
 const showHistoryArchiveLink = computed(() => {
@@ -316,6 +348,7 @@ watch(
   async (id, previousId) => {
     saveSessionScrollPosition(previousId);
     if (!id) return;
+    void Promise.resolve(feedbackStore.load(id)).catch(() => {});
     pendingInitialScrollSessionId.value = id;
     await nextTick();
     applyInitialSessionScroll(id);
@@ -457,9 +490,16 @@ defineExpose({
       @top-reach="handleTopReach"
     >
       <template #empty>
-        <div class="empty-state">
-          <img :src="emptyState.logo" :alt="emptyState.alt" class="empty-logo" />
-          <p>{{ emptyState.text }}</p>
+        <!-- A blank session is the product's home screen: wordmark, then the
+             suggested openers. The composer below is the third element of the
+             same block, so nothing else competes for the center. -->
+        <div class="empty-state homepad">
+          <div class="empty-home">
+            <KpSplitText class="empty-wordmark" />
+            <!-- Coding-agent sessions still say which agent is answering;
+                 that is session state, not decoration. -->
+            <p class="t-sub empty-hint">{{ emptyState.text }}</p>
+          </div>
         </div>
       </template>
       <template #before>
@@ -478,6 +518,8 @@ defineExpose({
       <template #item="{ message: msg }">
         <MessageItem
           :message="msg"
+          :session="chatStore.activeSession"
+          :feedback-eligible="feedbackEligibleIds.has(msg.id)"
           :highlight="chatStore.focusMessageId === msg.id"
         />
       </template>
@@ -485,14 +527,50 @@ defineExpose({
         <Transition name="fade">
         <div v-if="isThinkingIndicatorVisible" class="streaming-indicator">
           <div class="thinking-status">
-            <img
-              :src="thinkingAvatar"
-              alt=""
-              aria-hidden="true"
-              class="thinking-avatar"
-            >
+            <!--
+              The mascot rides ON this line instead of sitting above it as a
+              40px avatar tile: "已处理 N 秒" is the one thing here that is
+              actually changing, and putting the face beside it lands "it is
+              working" and "for how long" in the same place — one row instead of
+              two. The mascot IS the signature, so no name next to it.
+              Size 34, not 26: the ball only fills x 72..468 of the viewBox, so
+              its visible diameter is ≈ size × 0.685 — at 34 that is a 23px ball,
+              half a step taller than the 13px text, which is what makes it read
+              as the subject of the line rather than a bullet.
+            -->
+            <span class="thinking-avatar-slot">
+              <img
+                v-if="thinkingExpertAvatar"
+                :src="thinkingExpertAvatar"
+                alt=""
+                aria-hidden="true"
+                class="thinking-avatar"
+              >
+              <KpMascotFace
+                v-else
+                :size="34"
+                mode="idle"
+                flip
+                pad
+                :ground="false"
+                :nudge-y="-2"
+                :busy="!isReconnecting"
+              />
+            </span>
             <div class="thinking-status-copy">
-              <span class="thinking-status-label">{{ t("chat.thinkingInProgress") }}</span>
+              <!--
+                Offline mid-run, this says so. The run lives on the server and
+                streams over SSE, so a dropped network does not fail it — the
+                stream just stalls, and without this the indicator would go on
+                claiming "thinking" indefinitely. The elapsed clock keeps running
+                because the work genuinely is still out there.
+                The `sweep` shimmer comes off while reconnecting: shimmer means
+                "progress is arriving", and right now none is.
+              -->
+              <span
+                class="thinking-status-label"
+                :class="isReconnecting ? 'is-recon' : 'sweep'"
+              >{{ isReconnecting ? t("net.reconnecting") : t("chat.thinkingInProgress") }}</span>
               <span class="thinking-status-time">{{ formattedThinkingElapsed }}</span>
             </div>
           </div>
@@ -654,6 +732,31 @@ defineExpose({
           </div>
         </div>
         </Transition>
+        <!-- Queued messages live IN the flow as pending user bubbles — they
+             become real user messages when dequeued, so they preview exactly
+             where they will land. The prototype has no floating chrome over
+             the canvas (the old 消息队列 card is gone). -->
+        <div
+          v-for="(qm, index) in queuedMessages"
+          :key="`queued-${qm.id}`"
+          class="queued-message"
+        >
+          <div class="queued-bubble">{{ qm.content }}</div>
+          <div class="queued-meta">
+            <span class="queued-label">{{ t('chat.messageQueue') }} {{ index + 1 }}</span>
+            <button
+              type="button"
+              class="queued-remove"
+              :title="t('chat.removeQueuedMessage')"
+              @click="removeQueuedMessage(qm.id)"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
       </template>
     </VirtualMessageList>
     <button
@@ -1250,19 +1353,35 @@ defineExpose({
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
   color: $text-muted;
-  gap: 12px;
+}
 
-  .empty-logo {
-    width: 48px;
-    height: 48px;
-    opacity: 0.25;
-  }
+// 96px of headroom, pulling in to 56 once the 40px gutter starts eating the
+// text column.
+.homepad {
+  padding: 96px 40px 56px;
+}
 
-  p {
-    font-size: 14px;
+@media (max-width: $breakpoint-gutter) {
+  .homepad {
+    padding: 56px 16px 40px;
   }
+}
+
+.empty-home {
+  width: 100%;
+  max-width: 800px;
+  text-align: center;
+}
+
+// The wordmark is the only brand slot on the page; 32px below it puts the
+// whole block at 136.
+.empty-wordmark {
+  margin-bottom: 12px;
+}
+
+.empty-hint {
+  margin-bottom: 20px;
 }
 
 .history-loader {
@@ -1337,19 +1456,31 @@ defineExpose({
   box-sizing: border-box;
 }
 
+// Prototype: one 30px line — face, what it is doing, how long it has been at it.
 .thinking-status {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 4px;
   width: 100%;
   min-width: 0;
-  min-height: 40px;
+  min-height: 30px;
+}
+
+// The gap on the row is 4; the mascot's edge fades out rather than ending hard,
+// so 4 alone reads as touching the text. The extra 8 (12 total) lives HERE and
+// not on the mascot itself — `pad` already owns its margins to cancel the
+// viewBox's transparent margin, and writing margin there would overwrite it.
+.thinking-avatar-slot {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-right: 8px;
 }
 
 .thinking-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: $radius-md;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-card-s);
   object-fit: cover;
   flex-shrink: 0;
 
@@ -1365,57 +1496,32 @@ defineExpose({
   column-gap: 8px;
   row-gap: 2px;
   min-width: 0;
-  min-height: 20px;
 }
 
 .thinking-status-label {
   display: inline-flex;
   align-items: center;
-  color: transparent;
-  background: linear-gradient(105deg, $text-secondary 0%, $text-secondary 39%, #ffffff 48%, #ffffff 52%, $text-secondary 61%, $text-secondary 100%);
-  background-size: 300% 100%;
-  background-position: 0% 0;
-  -webkit-background-clip: text;
-  background-clip: text;
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 20px;
-  animation: thinking-label-shimmer 2.2s linear infinite;
-  backface-visibility: hidden;
-  contain: paint;
-  transform: translateZ(0);
-  will-change: background-position;
+  font-size: var(--t-13);
+  font-weight: var(--w-regular);
+  line-height: var(--lh-1);
+  color: var(--fg-secondary);
+}
 
-  .dark & {
-    background: linear-gradient(105deg, #f0f0f0 0%, #f0f0f0 37%, #2f3540 47%, #2f3540 53%, #f0f0f0 63%, #f0f0f0 100%);
-    background-size: 300% 100%;
-    background-position: 0% 0;
-    -webkit-background-clip: text;
-    background-clip: text;
-    filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.16));
-  }
+// Reconnecting: danger on the text only — no tinted ground. The run has not
+// failed, so this is a status, not an error block.
+.thinking-status-label.is-recon {
+  color: var(--danger);
 }
 
 .thinking-status-time {
   display: inline-flex;
   align-items: center;
-  margin-top: 2px;
-  color: $text-muted;
-  font-family: $font-code;
-  font-size: 13px;
+  color: var(--fg-aux);
+  font-family: var(--font-mono);
+  font-size: var(--t-13);
   font-variant-numeric: tabular-nums;
-  line-height: 20px;
+  line-height: var(--lh-1);
   min-width: 44px;
-}
-
-@keyframes thinking-label-shimmer {
-  0% {
-    background-position: 100% 0;
-  }
-
-  100% {
-    background-position: 0% 0;
-  }
 }
 
 .tool-calls-panel {
@@ -1441,28 +1547,25 @@ defineExpose({
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  font-size: 11px;
-  color: $text-secondary;
+  font-size: var(--t-12);
+  color: var(--fg-secondary);
   padding: 3px 8px;
-  background: rgba(0, 0, 0, 0.03);
-  border-radius: $radius-sm;
-
-  .dark & {
-    background: rgba(255, 255, 255, 0.06);
-  }
+  background: var(--gray-fa);
+  border-radius: var(--r-ctl);
+  box-shadow: inset 0 0 0 0.5px var(--divider);
 
   &.compression-item {
-    color: $text-muted;
-    font-size: 10px;
+    color: var(--fg-aux);
+    font-size: var(--t-10);
   }
 
   .tool-call-icon {
     flex-shrink: 0;
-    color: $text-muted;
+    color: var(--fg-aux);
   }
 
   .tool-call-name {
-    font-family: $font-code;
+    font-family: var(--font-mono);
     flex: 0 1 auto;
     min-width: 0;
     max-width: 34%;
@@ -1479,14 +1582,14 @@ defineExpose({
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: none;
-    color: $text-muted;
+    color: var(--fg-aux);
   }
 }
 
 .tool-call-spinner {
   width: 10px;
   height: 10px;
-  border: 1.5px solid $text-muted;
+  border: 1.5px solid var(--fg-aux);
   border-top-color: transparent;
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
@@ -1503,9 +1606,9 @@ defineExpose({
 }
 
 .tool-call-duration {
-  font-size: 10px;
-  color: $text-muted;
-  font-family: $font-code;
+  font-size: var(--t-10);
+  color: var(--fg-aux);
+  font-family: var(--font-mono);
   margin-left: 4px;
   flex-shrink: 0;
 }

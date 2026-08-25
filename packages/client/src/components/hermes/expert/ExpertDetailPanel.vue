@@ -7,6 +7,7 @@ import {
   isExpertRecentlyUpdated,
   type ExpertInfo,
 } from '@/api/hermes/experts'
+import ExpertWorkRecord from './ExpertWorkRecord.vue'
 
 const { t } = useI18n()
 
@@ -26,7 +27,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'activate', expert: ExpertInfo): void
-  (e: 'deactivate'): void
 }>()
 
 const displayTitle = computed(() => props.expert.title || props.expert.name)
@@ -98,22 +98,15 @@ watch(() => props.expert.id, () => {
       </div>
     </section>
 
+    <ExpertWorkRecord :expert-id="expert.id" />
+
     <footer class="detail-actions">
       <button
-        v-if="!active"
         class="action-primary"
         type="button"
         @click="emit('activate', expert)"
       >
-        {{ t('expert.detail.activate') }}
-      </button>
-      <button
-        v-else
-        class="action-secondary"
-        type="button"
-        @click="emit('deactivate')"
-      >
-        {{ t('expert.detail.deactivate') }}
+        {{ t('expert.detail.startChat') }}
       </button>
     </footer>
   </aside>

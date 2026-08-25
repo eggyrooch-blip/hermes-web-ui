@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { NModal, NUpload, NButton, useMessage } from 'naive-ui'
+import { NModal, NUpload, NButton } from 'naive-ui'
 import type { UploadFileInfo } from 'naive-ui'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useI18n } from 'vue-i18n'
@@ -11,8 +11,9 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+/** Validation and import failures, kept in the dialog. */
+const paneError = ref('')
 const profilesStore = useProfilesStore()
-const message = useMessage()
 
 const showModal = ref(true)
 const loading = ref(false)
@@ -29,7 +30,7 @@ function beforeUpload({ file }: { file: UploadFileInfo }) {
   const name = file.name?.toLowerCase() || ''
   const valid = ACCEPT_TYPES.some(ext => name.endsWith(ext))
   if (!valid) {
-    message.warning(t('profiles.importInvalidFile'))
+    paneError.value = t('profiles.importInvalidFile')
     return false
   }
   return true
@@ -37,7 +38,7 @@ function beforeUpload({ file }: { file: UploadFileInfo }) {
 
 async function handleSave() {
   if (!fileList.value.length) {
-    message.warning(t('profiles.importSelectFile'))
+    paneError.value = t('profiles.importSelectFile')
     return
   }
 
@@ -45,16 +46,13 @@ async function handleSave() {
   try {
     const file = fileList.value[0].file
     if (!file) {
-      message.error(t('profiles.importFailed'))
+      paneError.value = t('profiles.importFailed')
       return
     }
     const ok = await profilesStore.importProfile(file)
-    if (ok) {
-      message.success(t('profiles.importSuccess'))
-      emit('saved')
-    } else {
-      message.error(t('profiles.importFailed'))
-    }
+    // Success closes the dialog and the profile joins the list.
+    if (ok) emit('saved')
+    else paneError.value = t('profiles.importFailed')
   } finally {
     loading.value = false
   }
@@ -75,6 +73,7 @@ function handleClose() {
     :mask-closable="!loading"
     @after-leave="emit('close')"
   >
+    <p v-if="paneError" class="pane-notice" data-testid="profile-import-error">{{ paneError }}</p>
     <NUpload
       v-model:file-list="fileList"
       :max="1"
@@ -97,6 +96,16 @@ function handleClose() {
 </template>
 
 <style scoped lang="scss">
+.pane-notice {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+  white-space: pre-line;
+}
+
 .modal-footer {
   display: flex;
   justify-content: flex-end;

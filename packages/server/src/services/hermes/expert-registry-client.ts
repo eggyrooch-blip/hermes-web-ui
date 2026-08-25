@@ -87,8 +87,56 @@ interface ExpertRowDict {
   release_version?: unknown
   release_installed_at?: unknown
   use_count?: unknown
+  owner_open_ids?: unknown
+  active?: unknown
+  status?: unknown
   // The persona (`agent_md`) MUST NOT be surfaced; it is dropped here even if
   // the broker ever includes it.
+}
+
+export class ExpertOwnerResolutionError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ExpertOwnerResolutionError'
+  }
+}
+
+async function fetchExpertRows(opts: {
+  profileName: string
+  userKey?: string
+  timeoutMs?: number
+}): Promise<{ profileName: string; rows: ExpertRowDict[] }> {
+  if (!config.runBrokerUrl) {
+    throw new BrokerUnavailableError('HERMES_RUN_BROKER_URL is not configured', 503)
+  }
+  const params = new URLSearchParams({ profile_name: opts.profileName })
+  if (opts.userKey) params.set('user_key', opts.userKey)
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
+  let res: Response
+  try {
+    res = await fetch(`${config.runBrokerUrl}/api/run-broker/experts?${params.toString()}`, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    })
+  } catch (err: any) {
+    throw new BrokerUnavailableError(`expert broker request failed: ${err?.message || err}`, 503)
+  }
+  if (!res.ok) throw new BrokerUnavailableError(`expert broker returned HTTP ${res.status}`, res.status)
+  const body = await res.json().catch(() => null)
+  if (!Array.isArray(body?.experts)) {
+    throw new BrokerUnavailableError('expert broker returned no experts array', 502)
+  }
+  return {
+    // Absent stays absent: fabricating the requested profile here would make
+    // resolveRunExpert's catalog/profile binding check vacuous. A broker that
+    // does not echo its profile binding must fail the mismatch check upstream.
+    profileName: typeof body?.profile_name === 'string' && body.profile_name
+      ? String(body.profile_name)
+      : '',
+    rows: body.experts.filter((row: unknown) => row && typeof row === 'object') as ExpertRowDict[],
+  }
 }
 
 function strArray(raw: unknown): string[] | undefined {
@@ -163,33 +211,7 @@ export async function fetchExpertCatalog(opts: {
   userKey?: string
   timeoutMs?: number
 }): Promise<ExpertListResult> {
-  if (!config.runBrokerUrl) {
-    throw new BrokerUnavailableError('HERMES_RUN_BROKER_URL is not configured', 503)
-  }
-  const params = new URLSearchParams()
-  params.set('profile_name', opts.profileName)
-  if (opts.userKey) params.set('user_key', opts.userKey)
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
-
-  let res: Response
-  try {
-    res = await fetch(`${config.runBrokerUrl}/api/run-broker/experts?${params.toString()}`, {
-      method: 'GET',
-      headers,
-      signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-    })
-  } catch (err: any) {
-    throw new BrokerUnavailableError(`expert broker request failed: ${err?.message || err}`, 503)
-  }
-  if (!res.ok) {
-    throw new BrokerUnavailableError(`expert broker returned HTTP ${res.status}`, res.status)
-  }
-  const body = await res.json().catch(() => null)
-  const rows = body?.experts
-  if (!Array.isArray(rows)) {
-    throw new BrokerUnavailableError('expert broker returned no experts array', 502)
-  }
+  const { profileName, rows } = await fetchExpertRows(opts)
   const experts: ExpertEntry[] = []
   for (const r of rows as ExpertRowDict[]) {
     if (!r || typeof r !== 'object' || !r.id) continue
@@ -197,8 +219,33 @@ export async function fetchExpertCatalog(opts: {
   }
   return {
     experts,
-    profile_name: String(body?.profile_name || opts.profileName),
+    profile_name: profileName || undefined,
   }
+}
+
+export async function resolveExpertOwner(opts: {
+  profileName: string
+  userKey?: string
+  expertId: string
+  timeoutMs?: number
+}): Promise<{ subject: string }> {
+  let rows: ExpertRowDict[]
+  try {
+    rows = (await fetchExpertRows(opts)).rows
+  } catch (error) {
+    throw new ExpertOwnerResolutionError(error instanceof Error ? error.message : String(error))
+  }
+  const matches = rows.filter(row => String(row.id || '').trim() === opts.expertId.trim())
+  if (matches.length !== 1) throw new ExpertOwnerResolutionError('Expert owner is missing or ambiguous')
+  const row = matches[0]
+  if (row.active === false || String(row.status || '').trim().toLowerCase() === 'inactive') {
+    throw new ExpertOwnerResolutionError('Expert is inactive')
+  }
+  const owners = Array.isArray(row.owner_open_ids)
+    ? [...new Set(row.owner_open_ids.map(value => String(value).trim()).filter(Boolean))]
+    : []
+  if (owners.length !== 1) throw new ExpertOwnerResolutionError('Expert owner is missing or ambiguous')
+  return { subject: `feishu:${owners[0]}` }
 }
 
 /** Empty catalog — the broker-unavailable fail-safe (never fabricate experts). */

@@ -126,7 +126,7 @@ export interface CreateProfileResult {
   strippedConfigCredentials?: string[]
 }
 
-export async function createProfile(name: string, clone?: boolean): Promise<CreateProfileResult & { error?: string }> {
+export async function createProfile(name: string, clone?: boolean, displayLabel?: string): Promise<CreateProfileResult & { error?: string }> {
   try {
     const res = await request<{
       success: boolean
@@ -136,7 +136,9 @@ export async function createProfile(name: string, clone?: boolean): Promise<Crea
       error?: string
     }>('/api/hermes/profiles', {
       method: 'POST',
-      body: JSON.stringify({ name, clone }),
+      // displayLabel carries the human name (中文 OK) while `name` stays the
+      // ASCII identifier — same split group agents already use.
+      body: JSON.stringify({ name, clone, displayLabel }),
     })
     return {
       success: !!res.success,

@@ -43,7 +43,7 @@ const props = withDefaults(defineProps<{
   virtualized: true,
   estimatedItemHeight: 180,
   overscan: 8,
-  rowGap: 16,
+  rowGap: 24,
   padding: "20px",
   topThreshold: 120,
 });
@@ -478,7 +478,9 @@ defineExpose({
       @visible="syncViewport"
     >
       <template #before>
-        <slot v-if="messages.length > 0" name="before" />
+        <div v-if="messages.length > 0" class="virtual-col">
+          <slot name="before" />
+        </div>
       </template>
       <template #default="{ item, index, active }">
         <DynamicScrollerItem
@@ -492,7 +494,9 @@ defineExpose({
         </DynamicScrollerItem>
       </template>
       <template #after>
-        <slot v-if="messages.length > 0" name="after" />
+        <div v-if="messages.length > 0" class="virtual-col">
+          <slot name="after" />
+        </div>
       </template>
     </DynamicScroller>
     <div
@@ -502,7 +506,9 @@ defineExpose({
       @wheel.passive="handleWheel"
     >
       <div ref="contentRef" class="virtual-message-list-content">
-        <slot v-if="messages.length > 0" name="before" />
+        <div v-if="messages.length > 0" class="virtual-col">
+          <slot name="before" />
+        </div>
         <div
           v-for="(item, index) in messages"
           :key="messageKey(item)"
@@ -511,7 +517,9 @@ defineExpose({
         >
           <slot name="item" :message="item" />
         </div>
-        <slot v-if="messages.length > 0" name="after" />
+        <div v-if="messages.length > 0" class="virtual-col">
+          <slot name="after" />
+        </div>
       </div>
     </div>
     <div v-if="messages.length === 0 && $slots.empty" class="virtual-message-list-empty">
@@ -550,10 +558,24 @@ defineExpose({
   }
 }
 
-.virtual-row {
+// Prototype: the thread reads in a centered column, not edge-to-edge.
+// The before/after slots (history loader, 正在思考 indicator) need the same
+// column as the rows — carried only by `.virtual-row`, they sat against the
+// list's left gutter, ~300px left of the messages they belong with.
+//
+// 880, not 960: the prototype caps the thread at 960 and puts its `32px 40px
+// 40px` INSIDE that cap, so the messages themselves are 880 wide. Here the
+// gutters live on the scroll container instead, so the cap has to be the
+// post-gutter figure or the thread comes out 80px wider than the prototype's.
+.virtual-row,
+.virtual-col {
   box-sizing: border-box;
   min-width: 0;
-  max-width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+.virtual-row {
   padding-bottom: var(--virtual-row-gap);
 }
 

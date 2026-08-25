@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { NButton, NInput, NModal, NSelect, NTag, NSpin, useMessage, useDialog } from 'naive-ui'
+import { NButton, NInput, NModal, NSelect, NTag, NSpin, useDialog } from 'naive-ui'
 import type { HermesProfile, HermesProfileDetail } from '@/api/hermes/profiles'
 import { fetchAgentShares, grantAgentShare, revokeAgentShare, type AgentShare, type AgentShareGrantee, type AgentShareRole } from '@/api/hermes/agents'
 import { useProfilesStore } from '@/stores/hermes/profiles'
@@ -13,12 +13,18 @@ const emit = defineEmits<{}>()
 
 const { t } = useI18n()
 const profilesStore = useProfilesStore()
-const message = useMessage()
 const dialog = useDialog()
 
 const expanded = ref(false)
 const detailLoading = ref(false)
 const exporting = ref(false)
+/**
+ * Failures stay on the card / in the dialog they belong to. Every success here
+ * is already visible without being told: the page reloads onto the new profile,
+ * the card leaves the list, a file lands in Downloads, the share joins the list.
+ */
+const cardError = ref('')
+const shareError = ref('')
 const switching = ref(false)
 const detail = ref<HermesProfileDetail | null>(null)
 const shareModalVisible = ref(false)
@@ -68,11 +74,11 @@ async function performHermesSwitch() {
   try {
     const ok = await profilesStore.switchHermesProfile(props.profile.name)
     if (ok) {
-      message.success(t('profiles.switchSuccess', { name: props.profile.name }))
-      // Reload to refresh all profile-dependent data
+      // The page reloads onto the new profile; that IS the report, and a toast
+      // would be destroyed by the reload anyway.
       setTimeout(() => window.location.reload(), 500)
     } else {
-      message.error(t('profiles.switchFailed'))
+      cardError.value = t('profiles.switchFailed')
     }
   } finally {
     switching.value = false
@@ -87,11 +93,8 @@ function handleDelete() {
     negativeText: t('common.cancel'),
     onPositiveClick: async () => {
       const ok = await profilesStore.deleteProfile(props.profile.name)
-      if (ok) {
-        message.success(t('profiles.deleteSuccess'))
-      } else {
-        message.error(t('profiles.deleteFailed'))
-      }
+      // Success removes this card from the list — nothing left to report on.
+      if (!ok) cardError.value = t('profiles.deleteFailed')
     },
   })
 }
@@ -100,11 +103,8 @@ async function handleExport() {
   exporting.value = true
   try {
     const ok = await profilesStore.exportProfile(props.profile.name)
-    if (ok) {
-      message.success(t('profiles.exportSuccess'))
-    } else {
-      message.error(t('profiles.exportFailed'))
-    }
+    // Success drops a file in Downloads, which the browser announces itself.
+    if (!ok) cardError.value = t('profiles.exportFailed')
   } finally {
     exporting.value = false
   }
@@ -114,9 +114,10 @@ async function loadShares() {
   if (!props.profile.agentId) return
   shareLoading.value = true
   try {
+    shareError.value = ''
     shares.value = await fetchAgentShares(props.profile.agentId)
   } catch (err: any) {
-    message.error(err?.message || t('profiles.share.loadFailed'))
+    shareError.value = err?.message || t('profiles.share.loadFailed')
     shares.value = []
   } finally {
     shareLoading.value = false
@@ -139,9 +140,9 @@ async function handleGrantShare() {
     newGranteeQuery.value = ''
     newRole.value = 'viewer'
     await loadShares()
-    message.success(t('profiles.share.grantSuccess'))
+    // The new grant appears in the list right below.
   } catch (err: any) {
-    message.error(err?.message || t('profiles.share.grantFailed'))
+    shareError.value = err?.message || t('profiles.share.grantFailed')
   } finally {
     shareSaving.value = false
   }
@@ -154,9 +155,9 @@ async function handleRevokeShare(share: AgentShare) {
     const key = shareKey(share)
     await revokeAgentShare(props.profile.agentId, key)
     shares.value = shares.value.filter(item => shareKey(item) !== key)
-    message.success(t('profiles.share.revokeSuccess'))
+    // The row leaving the list is the report.
   } catch (err: any) {
-    message.error(err?.message || t('profiles.share.revokeFailed'))
+    shareError.value = err?.message || t('profiles.share.revokeFailed')
   } finally {
     shareSaving.value = false
   }
@@ -192,6 +193,7 @@ function shareAvatarUrl(share: AgentShare): string {
 
 <template>
   <div class="profile-card" :class="{ active: profile.active }">
+    <p v-if="cardError" class="card-error" data-testid="profile-card-error">{{ cardError }}</p>
     <div class="card-header">
       <div class="profile-title">
         <ProfileAvatar :name="profile.name" :avatar="profile.avatar" :size="28" />
@@ -291,6 +293,7 @@ function shareAvatarUrl(share: AgentShare): string {
       <template #header>
         <div class="share-modal-title">{{ t('profiles.share.title') }}</div>
       </template>
+      <p v-if="shareError" class="card-error" data-testid="profile-share-error">{{ shareError }}</p>
       <NSpin :show="shareLoading" size="small">
         <div class="share-list">
           <div v-if="shares.length === 0" class="share-empty">{{ t('profiles.share.empty') }}</div>
@@ -335,6 +338,15 @@ function shareAvatarUrl(share: AgentShare): string {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.card-error {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 
 .profile-card {
   background-color: $bg-card;

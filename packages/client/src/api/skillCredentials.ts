@@ -1,7 +1,7 @@
 import { request } from './client'
 
 export type SkillCredentialStatus = 'authenticated' | 'configured' | 'missing' | 'needs_auth' | 'unknown' | 'error'
-export type SkillCredentialActionKind = 'feishu_device_flow' | 'skill_flow' | 'qr_flow' | 'oauth_url' | 'manual'
+export type SkillCredentialActionKind = 'feishu_device_flow' | 'skill_flow' | 'qr_flow' | 'oauth_url' | 'manual' | 'retry'
 
 export interface SkillCredentialAction {
   kind: SkillCredentialActionKind
@@ -107,15 +107,24 @@ export interface GitlabTokenSubmitResult {
   ok: boolean
   /** user-facing rejection reason; never contains the submitted token */
   reason?: string
+  /** broker's user-facing error field (400 bodies); same no-token guarantee */
+  error?: string
   tier?: string
   expires_at?: number
   legacy_file_retired?: boolean
+  /** where the token actually landed: 'group' when a group owner bound the
+   *  panel's group profile, otherwise 'personal' */
+  profile_scope?: 'group' | 'personal'
+  /** user-facing landing note (e.g. 已绑定到本群 / 只有群主能为本群绑定) */
+  note?: string
 }
 
 /** Submit YOUR OWN GitLab token. The server derives whose vault to write from
- *  the verified session — no identity field is sent from the browser. */
-export function submitGitlabToken(payload: GitlabTokenSubmitPayload) {
-  return request<GitlabTokenSubmitResult>('/api/hermes/credentials/gitlab', {
+ *  the verified session — no identity field is sent from the browser. The
+ *  panel profile rides along as a query-only TARGET HINT (group-owner binds
+ *  land on the group profile); the broker decides whether to honour it. */
+export function submitGitlabToken(payload: GitlabTokenSubmitPayload, profile?: string) {
+  return request<GitlabTokenSubmitResult>(withProfile('/api/hermes/credentials/gitlab', profile), {
     method: 'POST',
     body: JSON.stringify(payload),
   })

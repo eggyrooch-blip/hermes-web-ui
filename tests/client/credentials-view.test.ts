@@ -3,11 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 
 const fetchSkillCredentialsMock = vi.hoisted(() => vi.fn())
+const submitGitlabTokenMock = vi.hoisted(() => vi.fn())
 const startSkillCredentialAuthMock = vi.hoisted(() => vi.fn())
 const completeSkillCredentialAuthMock = vi.hoisted(() => vi.fn())
 const pollFeishuUatSessionMock = vi.hoisted(() => vi.fn())
 const messageSuccessMock = vi.hoisted(() => vi.fn())
 const messageErrorMock = vi.hoisted(() => vi.fn())
+const messageWarningMock = vi.hoisted(() => vi.fn())
 const routeQuery = vi.hoisted(() => ({} as Record<string, string>))
 
 vi.mock('@/api/skillCredentials', () => ({
@@ -15,29 +17,54 @@ vi.mock('@/api/skillCredentials', () => ({
   fetchSkillCredentials: fetchSkillCredentialsMock,
   pollFeishuUatSession: pollFeishuUatSessionMock,
   startSkillCredentialAuth: startSkillCredentialAuthMock,
+  submitGitlabToken: submitGitlabTokenMock,
 }))
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
-    t: (key: string) => ({
-      'skillCredentials.groups.internalSystems': 'Internal systems',
-      'skillCredentials.groups.otherCredentials': 'Other credentials',
-      'sidebar.connectors': 'Connectors',
-    } as Record<string, string>)[key] || key,
+    t: (key: string, params?: Record<string, unknown>) => {
+      let out = ({
+        'market.title': 'Market',
+        'sidebar.connectors': 'Connectors',
+        'connectors.allConnectors': 'All connectors',
+        'connectors.internalSystems': 'Internal systems',
+        'connectors.otherCredentials': 'Other credentials',
+        'connectors.noMatch': 'No matching results',
+        'connectors.viewMore': '查看 {names}',
+        'connectors.viewMoreRest': '查看 {names}，以及另外 {rest} 个',
+      } as Record<string, string>)[key] || key
+      if (params) {
+        for (const [k, v] of Object.entries(params)) out = out.replace(`{${k}}`, String(v))
+      }
+      return out
+    },
   }),
 }))
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ query: routeQuery }),
+  useRoute: () => ({ name: 'hermes.connectors', query: routeQuery }),
+  // The market tab strip in the page head navigates between sections.
+  useRouter: () => ({ push: vi.fn() }),
 }))
 
-vi.mock('@/stores/hermes/profiles', () => ({
-  useProfilesStore: () => ({
-    activeProfileName: 'feishu_g41a5b5g',
-    profiles: [{ name: 'feishu_g41a5b5g' }],
-    fetchProfiles: vi.fn(),
-  }),
-}))
+// Reactive so tests can flip activeProfileName post-mount and fire the
+// component's requestedProfile watcher — the real profile-switch path.
+const profilesState = vi.hoisted(() => ({ current: null as any }))
+vi.mock('@/stores/hermes/profiles', async () => {
+  const { reactive } = await import('vue')
+  return {
+    useProfilesStore: () => {
+      if (!profilesState.current) {
+        profilesState.current = reactive({
+          activeProfileName: 'feishu_g41a5b5g',
+          profiles: [{ name: 'feishu_g41a5b5g' }],
+          fetchProfiles: vi.fn(),
+        })
+      }
+      return profilesState.current
+    },
+  }
+})
 
 vi.mock('naive-ui', async () => {
   const actual = await vi.importActual<any>('naive-ui')
@@ -46,6 +73,9 @@ vi.mock('naive-ui', async () => {
     useMessage: () => ({
       success: messageSuccessMock,
       error: messageErrorMock,
+      // 少一个 warning，"没启动任何流程"那条分支就会抛 TypeError 被自己的 catch 吞掉，
+      // 新断言看着绿其实走的是错误路径（codex 评审）。mock 必须覆盖组件用到的全部通道。
+      warning: messageWarningMock,
       info: vi.fn(),
     }),
     NButton: {
@@ -59,7 +89,7 @@ vi.mock('naive-ui', async () => {
     NModal: {
       props: ['show', 'title'],
       emits: ['update:show'],
-      template: '<div v-if="show" class="mock-modal"><slot /></div>',
+      template: '<div v-if="show" class="mock-modal"><slot /><slot name="footer" /></div>',
     },
   }
 })
@@ -69,6 +99,10 @@ describe('CredentialsView', () => {
     vi.clearAllMocks()
     try { localStorage.clear() } catch { /* jsdom localStorage */ }
     for (const key of Object.keys(routeQuery)) delete routeQuery[key]
+    // Fresh store instance per test: components from PREVIOUS tests stay mounted
+    // and share the reactive store — mutating a shared instance would fire their
+    // watchers too and let them steal this test's mockImplementationOnce queue.
+    profilesState.current = null
     fetchSkillCredentialsMock.mockResolvedValue({
       profile_name: 'feishu_user_a',
       credentials: [
@@ -151,16 +185,21 @@ describe('CredentialsView', () => {
     await wrapper.vm.$nextTick()
 
     expect(fetchSkillCredentialsMock).toHaveBeenCalledWith('feishu_g41a5b5g')
-    expect(wrapper.find('.header-title').text()).toBe('Connectors')
+    // The page is one market with three sections: the h1 names the market, the
+    // tab strip below it names the section.
+    expect(wrapper.find('.header-titles h1').text()).toBe('Market')
+    expect(wrapper.find('[data-testid="tabstrip-connectors"]').classes()).toContain('is-on')
     expect(wrapper.findAll('.credential-card')).toHaveLength(6)
-    expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('Internal systems')
-    expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('Lark-cli')
-    expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('飞书项目')
-    expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('Keep-record')
-    expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('kep-cli')
-    expect(wrapper.find('[data-credential-group="other-credentials"]').text()).toContain('Other credentials')
-    expect(wrapper.find('[data-credential-group="other-credentials"]').text()).not.toContain('Keep-record')
-    expect(wrapper.find('[data-credential-group="other-credentials"]').text()).toContain('GitLab')
+    // Prototype anatomy: connectors split into "内部系统" / "其他凭证" catalog groups.
+    const internalGroup = wrapper.find('[data-credential-group="internal"]')
+    expect(internalGroup.text()).toContain('Internal systems')
+    expect(internalGroup.text()).toContain('Lark-cli')
+    expect(internalGroup.text()).toContain('飞书项目')
+    expect(internalGroup.text()).toContain('Keep-record')
+    expect(internalGroup.text()).toContain('kep-cli')
+    const otherGroup = wrapper.find('[data-credential-group="other"]')
+    expect(otherGroup.text()).toContain('Other credentials')
+    expect(otherGroup.text()).toContain('GitLab')
     expect(wrapper.text()).toContain('Lark-cli')
     expect(wrapper.text()).toContain('已认证')
     expect(wrapper.text()).toContain('孙可')
@@ -172,9 +211,10 @@ describe('CredentialsView', () => {
     expect(wrapper.text()).toContain('飞书项目')
     expect(wrapper.text()).toContain('飞书项目需要授权后才能查询和更新工作项。')
     expect(wrapper.text()).not.toContain('MCP')
-    expect(wrapper.text()).toContain('wiki-helper')
-    expect(wrapper.text()).toContain('aidock-helper')
-    expect(wrapper.text()).toContain('keep-login-skill')
+    expect(wrapper.text()).not.toContain('关联技能')
+    expect(wrapper.text()).not.toContain('wiki-helper')
+    expect(wrapper.text()).not.toContain('aidock-helper')
+    expect(wrapper.text()).not.toContain('keep-login-skill')
     expect(wrapper.text()).toContain('GitLab')
     expect(wrapper.text()).toContain('Token 可读')
 
@@ -183,38 +223,24 @@ describe('CredentialsView', () => {
     expect(html).not.toContain('gitlab-secret-token')
   })
 
-  it('keeps legacy kep-cli credential rows grouped with internal systems', async () => {
-    fetchSkillCredentialsMock.mockResolvedValueOnce({
-      profile_name: 'feishu_g41a5b5g',
-      credentials: [
-        {
-          id: 'kep-cli',
-          title: 'kep-cli',
-          provider: 'keep',
-          installed: true,
-          status: 'needs_auth',
-          detail: 'legacy row',
-          action: { kind: 'oauth_url', label: '认证', env: 'online' },
-        },
-        {
-          id: 'gitlab',
-          title: 'GitLab',
-          provider: 'gitlab',
-          installed: true,
-          status: 'configured',
-          detail: 'materialized',
-          action: { kind: 'manual', label: '刷新' },
-        },
-      ],
-    })
+  it('renders every connector flat with no fold/expand behind a MoreLine', async () => {
+    const rows = Array.from({ length: 8 }, (_, i) => ({
+      id: `conn-${i + 1}`,
+      title: `连接器${i + 1}`,
+      provider: 'keep',
+      installed: true,
+      status: 'needs_auth',
+      detail: `第 ${i + 1} 个`,
+      action: { kind: 'oauth_url', label: '认证' },
+    }))
+    fetchSkillCredentialsMock.mockResolvedValue({ profile_name: 'feishu_g41a5b5g', credentials: rows })
     const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
     const wrapper = mount(CredentialsView)
     await new Promise(resolve => setTimeout(resolve, 0))
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.find('[data-credential-group="internal-systems"]').text()).toContain('kep-cli')
-    expect(wrapper.find('[data-credential-group="other-credentials"]').text()).not.toContain('kep-cli')
-    expect(wrapper.find('[data-credential-group="other-credentials"]').text()).toContain('GitLab')
+    expect(wrapper.findAll('.credential-card')).toHaveLength(8)
+    expect(wrapper.find('.more-line').exists()).toBe(false)
   })
 
   it('paints last-known status instantly from localStorage before the live refresh resolves', async () => {
@@ -247,12 +273,13 @@ describe('CredentialsView', () => {
 
   it('drops a superseded refresh so a late response cannot overwrite a newer one (load-seq guard)', async () => {
     // Two overlapping refreshes exercise the same loadSeq guard that protects a profile
-    // switch (the reactive route mock can't fire the watcher post-mount, so we drive the
-    // overlap via the refresh button — equivalent mechanism).
+    // switch. The standalone refresh button is gone (prototype head has search only),
+    // so the overlap is driven via the retry card's corner action — same loadCredentials
+    // fresh path.
     localStorage.clear()
     routeQuery.profile = 'feishu_g41a5b5g'
     const row = (status: string, label: string) => [
-      { id: 'kep-cli', title: 'kep-cli', provider: 'keep', installed: true, status, detail: label, action: { kind: 'oauth_url', label: 'x' } },
+      { id: 'kep-cli', title: 'kep-cli', provider: 'keep', installed: true, status, detail: label, action: { kind: 'retry', label: '重试' } },
     ]
     fetchSkillCredentialsMock.mockResolvedValueOnce({ profile_name: 'feishu_g41a5b5g', credentials: row('authenticated', 'INIT') })
     const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
@@ -263,7 +290,7 @@ describe('CredentialsView', () => {
     let resolveStale: () => void = () => {}
     fetchSkillCredentialsMock.mockImplementationOnce(() => new Promise(r => { resolveStale = () => r({ profile_name: 'feishu_g41a5b5g', credentials: row('missing', 'STALE-B') }) }))
     fetchSkillCredentialsMock.mockResolvedValueOnce({ profile_name: 'feishu_g41a5b5g', credentials: row('needs_auth', 'CURRENT-A') })
-    const btn = wrapper.find('.page-header button')
+    const btn = wrapper.find('[data-credential-action="kep-cli"]')
     await btn.trigger('click')  // refresh #1 (hangs) → loadSeq = N
     await btn.trigger('click')  // refresh #2 (resolves) → loadSeq = N+1 → applies CURRENT-A
     await new Promise(r => setTimeout(r, 0)); await wrapper.vm.$nextTick()
@@ -277,9 +304,10 @@ describe('CredentialsView', () => {
 
   it('a superseded load that FAILS does not show its error over the current panel', async () => {
     // The error channel must respect the same guard: an old failed load must not set
-    // error.value while a newer load (data still null, in-flight) is pending.
+    // error.value while a newer load (data still null, in-flight) is pending. With the
+    // refresh button gone, the second load is driven by the REAL trigger the guard
+    // exists for: a profile switch while the mount load is still in flight.
     localStorage.clear()
-    routeQuery.profile = 'feishu_g41a5b5g'
     const row = (status: string, label: string) => [
       { id: 'kep-cli', title: 'kep-cli', provider: 'keep', installed: true, status, detail: label, action: { kind: 'oauth_url', label: 'x' } },
     ]
@@ -289,10 +317,11 @@ describe('CredentialsView', () => {
     const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
     const wrapper = mount(CredentialsView)
     await wrapper.vm.$nextTick()  // load #1 in flight, data null
-    // load #2 (button) starts, hangs, then resolves CURRENT
+    // load #2 (profile switch) starts, hangs, then resolves CURRENT
     let resolveNew: () => void = () => {}
-    fetchSkillCredentialsMock.mockImplementationOnce(() => new Promise(res => { resolveNew = () => res({ profile_name: 'feishu_g41a5b5g', credentials: row('needs_auth', 'CURRENT-A') }) }))
-    await wrapper.find('.page-header button').trigger('click')  // load #2 in flight, loadSeq bumped
+    fetchSkillCredentialsMock.mockImplementationOnce(() => new Promise(res => { resolveNew = () => res({ profile_name: 'feishu_user_b', credentials: row('needs_auth', 'CURRENT-A') }) }))
+    profilesState.current.activeProfileName = 'feishu_user_b'  // fires the watcher → load #2, loadSeq bumped
+    await wrapper.vm.$nextTick()
     rejectInit()  // stale load #1 fails while data is still null and #2 is pending
     await new Promise(r => setTimeout(r, 0)); await wrapper.vm.$nextTick()
     resolveNew()  // current load resolves
@@ -303,17 +332,23 @@ describe('CredentialsView', () => {
     localStorage.clear()
   })
 
-  it('manual refresh button requests FRESH status (bypasses the broker cache)', async () => {
+  it('the retry card corner requests FRESH status (bypasses the broker cache)', async () => {
     localStorage.clear()
+    fetchSkillCredentialsMock.mockResolvedValue({
+      profile_name: 'feishu_g41a5b5g',
+      credentials: [
+        { id: 'kep-cli', title: 'kep-cli', provider: 'keep', installed: true, status: 'error', detail: '暂时不可用', action: { kind: 'retry', label: '重试' } },
+      ],
+    })
     const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
     const wrapper = mount(CredentialsView)
     await new Promise(resolve => setTimeout(resolve, 0))
     await wrapper.vm.$nextTick()
-    // Initial mount load is cached (single-arg); the manual refresh must be fresh.
+    // Initial mount load is cached (single-arg); the manual retry must be fresh.
     expect(fetchSkillCredentialsMock).toHaveBeenLastCalledWith('feishu_g41a5b5g')
     fetchSkillCredentialsMock.mockClear()
 
-    await wrapper.find('.page-header button').trigger('click')
+    await wrapper.find('[data-credential-action="kep-cli"]').trigger('click')
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(fetchSkillCredentialsMock).toHaveBeenCalledWith('feishu_g41a5b5g', { fresh: true })
@@ -342,14 +377,14 @@ describe('CredentialsView', () => {
     expect(fetchSkillCredentialsMock).toHaveBeenCalledWith('feishu_g41a5b5g')
   })
 
-  it('keeps dense required-skill lists from stretching sibling credential cards', async () => {
+  it('does not render associated skills on credential cards', async () => {
     const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
     const wrapper = mount(CredentialsView)
     await new Promise(resolve => setTimeout(resolve, 0))
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.find('.credentials-grid').classes()).toContain('credentials-grid-compact')
-    expect(wrapper.find('.credential-required').classes()).toContain('credential-required-scroll')
+    expect(wrapper.find('.credential-required').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('关联技能')
   })
 
   it('starts the selected skill credential action from the page', async () => {
@@ -558,7 +593,10 @@ describe('CredentialsView', () => {
       await vi.advanceTimersByTimeAsync(2_500)
       await wrapper.vm.$nextTick()
 
-      expect(messageErrorMock).toHaveBeenCalledWith('授权会话已过期')
+      // Reported on the credential's own card now, not in a toast — but the
+      // point of the test is unchanged: it must be SAID, and lark-cli must not
+      // be marked authenticated on the way.
+      expect(wrapper.find('[data-testid="credential-notice"]').text()).toContain('授权会话已过期')
       expect(fetchSkillCredentialsMock).toHaveBeenCalledTimes(1)
       expect(authWindow.close).not.toHaveBeenCalled()
     } finally {
@@ -605,7 +643,7 @@ describe('CredentialsView', () => {
       await vi.advanceTimersByTimeAsync(2_500)
       await wrapper.vm.$nextTick()
 
-      expect(messageErrorMock).toHaveBeenCalledWith('授权会话不存在')
+      expect(wrapper.find('[data-testid="credential-notice"]').text()).toContain('授权会话不存在')
       expect(fetchSkillCredentialsMock).toHaveBeenCalledTimes(1)
       expect(authWindow.close).not.toHaveBeenCalled()
     } finally {
@@ -724,7 +762,8 @@ describe('CredentialsView', () => {
     // interactive auth flow (GitLab has none).
     const personal = wrapper.find('[data-credential-action="gitlab-personal"]')
     expect(personal.exists()).toBe(true)
-    expect(personal.text()).toContain('绑定我的 GitLab')
+    // 原型 CornerBtn 是图标钮，动作文案走 title/aria-label。
+    expect(personal.attributes('title')).toBe('绑定我的 GitLab')
     await personal.trigger('click')
     await wrapper.vm.$nextTick()
 
@@ -733,6 +772,131 @@ describe('CredentialsView', () => {
     // modal chrome, which NModal teleports out of the wrapper.
     const html = wrapper.html() + document.body.innerHTML
     expect(html).toContain('gitlab-form')
+  })
+
+  it('opens the token form for the personal GitLab card even when action.kind drifted', async () => {
+    // ligaofeng 2026-08-06：点「绑定我的 GitLab」只弹一句「认证流程已启动」，卡片纹丝
+    // 不动。只要 kind 不是 'manual'（降级卡、旧缓存、reader 改字段都能造成），旧判据就
+    // 静默失效、按钮掉进 startCredential —— 而 GitLab 压根没有交互式流程可启动。
+    fetchSkillCredentialsMock.mockResolvedValue({
+      profile: 'feishu_g41a5b5g',
+      credentials: [
+        {
+          id: 'gitlab-personal',
+          title: 'GitLab（我的）',
+          provider: 'gitlab',
+          installed: true,
+          status: 'needs_auth',
+          detail: '绑定后 hermes 用你本人的权限操作仓库；不绑就一直用全局那个。',
+          action: { kind: 'oauth_url', label: '绑定我的 GitLab' },
+        },
+      ],
+    })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-credential-action="gitlab-personal"]').trigger('click')
+    await wrapper.vm.$nextTick()
+
+    expect(startSkillCredentialAuthMock).not.toHaveBeenCalled()
+    expect(wrapper.html() + document.body.innerHTML).toContain('gitlab-form')
+  })
+
+  it('opens the personal GitLab token form requested by a stale-client handoff URL', async () => {
+    routeQuery.open_credential = 'gitlab-personal'
+    fetchSkillCredentialsMock.mockResolvedValue({
+      profile: 'feishu_g41a5b5g',
+      credentials: [
+        {
+          id: 'gitlab-personal',
+          title: 'GitLab（我的）',
+          provider: 'gitlab',
+          installed: true,
+          status: 'needs_auth',
+          detail: '绑定后使用本人权限。',
+          action: { kind: 'manual', label: '绑定我的 GitLab' },
+        },
+      ],
+    })
+
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    expect(startSkillCredentialAuthMock).not.toHaveBeenCalled()
+    expect(wrapper.html() + document.body.innerHTML).toContain('gitlab-form')
+  })
+
+  it('never reports success when the start response started nothing', async () => {
+    // 服务端现在对无流程连接器回 400，这条是客户端侧的防线：万一又有人回一个
+    // 200 空操作，也不许弹绿色「认证流程已启动」——那正是 ligaofeng 看到的假成功。
+    fetchSkillCredentialsMock.mockResolvedValue({
+      profile_name: 'feishu_user_a',
+      credentials: [
+        {
+          id: 'kep-cli-online',
+          title: 'kep-cli online',
+          provider: 'keep',
+          installed: true,
+          status: 'needs_auth',
+          detail: '需要认证',
+          action: { kind: 'oauth_url', label: '认证', env: 'online' },
+        },
+      ],
+    })
+    startSkillCredentialAuthMock.mockResolvedValue({ id: 'kep-cli-online', action: { kind: 'manual', label: '' } })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-credential-action="kep-cli-online"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    // The original point stands: a start that started nothing must not read as
+    // success. There is no toast channel to check any more, so it is asserted on
+    // the card — a notice IS shown, and it is the neutral/informational tone,
+    // not a swallowed error and not a success.
+    const notice = wrapper.find('[data-testid="credential-notice"]')
+    expect(notice.exists()).toBe(true)
+    expect(notice.classes()).toContain('is-info')
+    expect(notice.classes()).not.toContain('is-error')
+  })
+
+  it('refreshes instead of starting anything when the broker-down card says 重试', async () => {
+    // broker 挂掉 → failSafeResult 把每一行变成 status:error + 「重试」。那颗按钮是
+    // "再读一次状态"，不是启动认证；GitLab 行更不能被劫持去开 token 表单（codex 评审）。
+    fetchSkillCredentialsMock.mockResolvedValue({
+      profile_name: 'feishu_user_a',
+      credentials: [
+        {
+          id: 'gitlab',
+          title: 'GitLab（全局）',
+          provider: 'gitlab',
+          installed: false,
+          status: 'error',
+          detail: '凭证状态服务暂时不可用',
+          action: { kind: 'retry', label: '重试' },
+        },
+      ],
+    })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+    const callsBefore = fetchSkillCredentialsMock.mock.calls.length
+
+    await wrapper.find('[data-credential-action="gitlab"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    expect(startSkillCredentialAuthMock).not.toHaveBeenCalled()
+    expect(wrapper.html() + document.body.innerHTML).not.toContain('gitlab-form')
+    expect(fetchSkillCredentialsMock.mock.calls.length).toBeGreaterThan(callsBefore)
   })
 
   it('renders a button whenever an action exists — even if its label went missing', async () => {
@@ -770,6 +934,105 @@ describe('CredentialsView', () => {
     expect(wrapper.find('[data-credential-action="gitlab"]').exists()).toBe(false)
     const labelless = wrapper.find('[data-credential-action="kep-cli-online"]')
     expect(labelless.exists()).toBe(true)
-    expect(labelless.text()).toBe('连接')
+    // 图标钮没有可见文案，兜底提示落在 title/aria-label 上。
+    expect(labelless.attributes('title')).toBe('连接')
+  })
+
+  it('gitlab bind sends the panel profile as a target hint and repaints FRESH', async () => {
+    fetchSkillCredentialsMock.mockResolvedValue({
+      profile_name: 'feishu_g41a5b5g',
+      credentials: [
+        {
+          id: 'gitlab-personal',
+          title: 'GitLab（我的）',
+          provider: 'gitlab',
+          installed: true,
+          status: 'needs_auth',
+          detail: '群主绑定后，本群所有会话都会用群主的权限操作仓库；不绑就一直用全局那个。',
+          action: { kind: 'manual', label: '群主绑定 GitLab' },
+        },
+      ],
+    })
+    submitGitlabTokenMock.mockResolvedValue({
+      ok: true,
+      stored: true,
+      profile_scope: 'group',
+      note: '已绑定到本群：本群所有会话都会使用此 token。',
+    })
+
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-credential-action="gitlab-personal"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    await wrapper.find('.mock-modal input').setValue('glpat-group-token')
+    const submit = wrapper.findAll('.mock-modal button').find(b => b.text().includes('提交'))
+    expect(submit).toBeTruthy()
+    await submit!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // 面板 profile 作为目标提示随请求带出；身份仍由服务端 session 盖章。
+    expect(submitGitlabTokenMock).toHaveBeenCalledWith(
+      { tier: 'read', token: 'glpat-group-token' },
+      'feishu_g41a5b5g',
+    )
+    // 落点说明来自 broker 回执，原样展示给绑定人 —— 现在长在卡片上而不是弹一下就没。
+    expect(wrapper.find('[data-testid="credential-notice"]').text())
+      .toContain('已绑定到本群：本群所有会话都会使用此 token。')
+    // 成功后的刷新必须 fresh —— 否则短 TTL 缓存把绑定前的状态刷回来，绑定看起来失败。
+    const lastFetch = fetchSkillCredentialsMock.mock.calls.at(-1)
+    expect(lastFetch?.[1]).toEqual({ fresh: true })
+  })
+
+  it('gitlab bind sends the panel profile as a target hint and repaints FRESH', async () => {
+    fetchSkillCredentialsMock.mockResolvedValue({
+      profile_name: 'feishu_g41a5b5g',
+      credentials: [
+        {
+          id: 'gitlab-personal',
+          title: 'GitLab（我的）',
+          provider: 'gitlab',
+          installed: true,
+          status: 'needs_auth',
+          detail: '群主绑定后，本群所有会话都会用群主的权限操作仓库；不绑就一直用全局那个。',
+          action: { kind: 'manual', label: '群主绑定 GitLab' },
+        },
+      ],
+    })
+    submitGitlabTokenMock.mockResolvedValue({
+      ok: true,
+      stored: true,
+      profile_scope: 'group',
+      note: '已绑定到本群：本群所有会话都会使用此 token。',
+    })
+
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-credential-action="gitlab-personal"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    await wrapper.find('.mock-modal input').setValue('glpat-group-token')
+    const submit = wrapper.findAll('.mock-modal button').find(b => b.text().includes('提交'))
+    expect(submit).toBeTruthy()
+    await submit!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // 面板 profile 作为目标提示随请求带出；身份仍由服务端 session 盖章。
+    expect(submitGitlabTokenMock).toHaveBeenCalledWith(
+      { tier: 'read', token: 'glpat-group-token' },
+      'feishu_g41a5b5g',
+    )
+    // 落点说明来自 broker 回执，原样提示给绑定人 —— 落在卡片自己的 notice 行上，
+    // 不是全局 toast:回执讲的是这张卡的落点，答案就该长在被点的那张卡上。
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="credential-notice"]').text())
+      .toContain('已绑定到本群：本群所有会话都会使用此 token。')
+    // 成功后的刷新必须 fresh —— 否则短 TTL 缓存把绑定前的状态刷回来，绑定看起来失败。
+    const lastFetch = fetchSkillCredentialsMock.mock.calls.at(-1)
+    expect(lastFetch?.[1]).toEqual({ fresh: true })
   })
 })

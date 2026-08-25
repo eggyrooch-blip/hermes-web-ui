@@ -69,6 +69,8 @@ constraint directly.
 
 ## Local known gotchas
 
+- 2026-08-14: 技能相关写操作的软链守卫 `refuseSymlinkedSkillsPath()` 只 lstat 目录是不够的 —— node 的 `writeFile`/`copyFile` 跟随软链，叶子文件（`.usage.json`、`config.yaml`、以及 SafeFileStore 的 `*.bak` 备份目的地）都会被穿过去改写（已实测复现）。且 lstat 与写入之间存在时间差，租户 agent 可并发改自己的 profile，不是纯理论风险。根治方向是在 SafeFileStore 层集中做「临时文件 + 原子 rename」并对读取用 O_NOFOLLOW，**不要靠继续往静态数组里加路径**。另：ZIP 导入种不下软链（解包只 writeFile，从不调 symlink）——别沿用这个错误前提。
+- 2026-08-14: chat plane 权限闸 `forbiddenInChatPlane()` 必须对路径**小写归一后**再比较。`@koa/router` 的 `sensitive` 默认 false（路由匹配不区分大小写），本仓 `new Router()` 都没传 options；闸若逐字比较，`/API/HERMES/LOGS` 就绕过整张黑名单（logs/config/gateways/profiles/coding-agents/auth/*）而路由照样命中。铁律：**这道闸至少要和 router 一样宽**。别反过来给 router 开 `sensitive: true` —— 那会改路由匹配行为、可能打断既有客户端。
 - 2026-07-19: Live assistant rows use temporary client IDs while hydrated rows use persisted IDs; merge the last unmatched assistant occurrence by stable `run_id` across the complete current transcript, including rows added while a refresh request is in flight, or refresh/reconnect can append the same answer twice.
 - 2026-07-17: Workspace diff checkpointing runs on the shared Node server; synchronous Git/filesystem work blocks every tenant, so Git, scanning, and file reads must remain asynchronous and bounded.
 - 2026-07-17: Session deletion owns messages and both workspace-change tables as one SQLite unit; independent cleanup can leave permanent patches or partial deletion after a later statement fails.

@@ -2,14 +2,17 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
-import { NAlert, NButton, NFormItem, NInput, NModal, NSelect, NSpin, useMessage } from 'naive-ui'
+import { NAlert, NButton, NFormItem, NInput, NModal, NSelect, NSpin } from 'naive-ui'
 import { completeSkillCredentialAuth, fetchSkillCredentials, pollFeishuUatSession, startSkillCredentialAuth } from '@/api/skillCredentials'
 import { submitGitlabToken } from '@/api/skillCredentials'
 import type { SkillCredentialEntry, SkillCredentialsResponse } from '@/api/skillCredentials'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { readCachedConnectorStatus, writeCachedConnectorStatus } from '@/utils/connector-status-cache'
+import KpAppIcon from '@/components/kippies/KpAppIcon.vue'
+import KpIcon from '@/components/kippies/KpIcon.vue'
+import KpCornerBtn from '@/components/kippies/KpCornerBtn.vue'
+import MarketTabs from '@/components/hermes/market/MarketTabs.vue'
 
-const message = useMessage()
 const { t } = useI18n()
 const route = useRoute()
 const profilesStore = useProfilesStore()
@@ -20,43 +23,6 @@ const props = withDefaults(defineProps<{
   embedded: false,
   preferActiveProfile: false,
 })
-/** 「关联技能」默认只露这么多，其余折进「+N」。
- *
- *  为什么是折叠而不是卡内滚动：嵌入态里内层滚动框会吃掉滚轮，外层滚不动、底部卡片
- *  够不着（见 .is-embedded 里那段注释）。那次的结论就是「真要压高度，走前 N 个 +
- *  展开」——本次照办。lark-cli 有 30+ 技能，不折叠会把整行撑成一根柱子。 */
-const SKILL_PREVIEW_COUNT = 6
-const expandedSkills = ref<Set<string>>(new Set())
-
-function visibleSkills(entry: SkillCredentialEntry): string[] {
-  const all = entry.required_by ?? []
-  if (expandedSkills.value.has(entry.id)) return all
-  return all.slice(0, SKILL_PREVIEW_COUNT)
-}
-
-function hiddenSkillCount(entry: SkillCredentialEntry): number {
-  const total = entry.required_by?.length ?? 0
-  return expandedSkills.value.has(entry.id) ? 0 : Math.max(0, total - SKILL_PREVIEW_COUNT)
-}
-
-/** 是否渲染那颗折叠按钮。
- *
- *  条件挂在「这张卡的技能数真的超过预览上限」而不是「它在 expandedSkills 里」：
- *  刷新后技能数掉到 ≤6 的卡，id 仍留在展开集合里，只看展开态会渲染出一颗
- *  什么都收不了的「收起」（codex 评审）。 */
-function isSkillListFoldable(entry: SkillCredentialEntry): boolean {
-  return (entry.required_by?.length ?? 0) > SKILL_PREVIEW_COUNT
-}
-
-function toggleSkills(entry: SkillCredentialEntry) {
-  // 重新赋值而不是原地 add/delete。Vue 3 的 ref(Set) 其实能追踪原地改动（codex
-  // 指出我原先的注释说错了），这里仍然整只换掉，图的是「每次 toggle 产生一个新
-  // 引用」这条更好推理的性质，代价是一个几十元素的浅拷贝。
-  const next = new Set(expandedSkills.value)
-  next.has(entry.id) ? next.delete(entry.id) : next.add(entry.id)
-  expandedSkills.value = next
-}
-
 const loading = ref(false)
 const startingId = ref('')
 const completingId = ref('')
@@ -89,20 +55,66 @@ let loadSeq = 0
 
 const credentials = computed(() => data.value?.credentials || [])
 const routeProfile = computed(() => typeof route.query.profile === 'string' ? route.query.profile.trim() : '')
+const requestedCredentialId = computed(() => typeof route.query.open_credential === 'string' ? route.query.open_credential.trim() : '')
 const requestedProfile = computed(() => {
   const activeProfile = profilesStore.activeProfileName || ''
   return props.preferActiveProfile ? activeProfile : routeProfile.value || activeProfile
 })
 let profileWatchReady = false
-const internalCredentialIds = new Set(['lark-cli', 'feishu-project', 'keep-record', 'kep-cli-online', 'kep-cli-pre', 'kep-cli', 'keep-cli'])
-const credentialGroups = computed(() => {
-  const internal = credentials.value.filter(entry => internalCredentialIds.has(entry.id))
-  const other = credentials.value.filter(entry => !internalCredentialIds.has(entry.id))
-  return [
-    internal.length ? { id: 'internal-systems', title: t('skillCredentials.groups.internalSystems'), entries: internal } : null,
-    other.length ? { id: 'other-credentials', title: t('skillCredentials.groups.otherCredentials'), entries: other } : null,
-  ].filter(Boolean) as Array<{ id: string; title: string; entries: SkillCredentialEntry[] }>
+const searchQuery = ref('')
+
+const visibleCredentials = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return credentials.value
+  return credentials.value.filter(entry =>
+    `${entry.title} ${entry.provider} ${entry.detail ?? ''}`.toLowerCase().includes(q))
 })
+
+// Split into category sections. A section with no entries is dropped entirely
+// rather than rendered empty (e.g. searching "gitlab" hides the "内部系统" head).
+const credentialGroups = computed(() => {
+  const groups = [
+    { key: 'internal', titleKey: 'connectors.internalSystems', entries: visibleCredentials.value.filter(isInternalSystem) },
+    { key: 'other', titleKey: 'connectors.otherCredentials', entries: visibleCredentials.value.filter(entry => !isInternalSystem(entry)) },
+  ]
+  return groups.filter(group => group.entries.length > 0)
+})
+
+// Prototype AppIcon language: white tile, COLORED glyph. Real broker rows carry
+// no icon/colour, so map known providers to Keep glyphs and hash ids into the
+// prototype's hue palette for a stable per-connector tint.
+const PROVIDER_GLYPHS: Record<string, string> = {
+  lark: 'line_comment',
+  'feishu-project': 'line_list',
+  gitlab: 'line_compilations',
+  keep: 'full_data',
+}
+const HUE_PALETTE = [
+  'var(--hue-blue)',
+  'var(--hue-orange)',
+  'var(--hue-green)',
+  'var(--hue-red)',
+  'var(--hue-purple)',
+  'var(--hue-cyan)',
+  'var(--hue-yellow)',
+  'var(--hue-grass)',
+]
+function entryGlyph(entry: SkillCredentialEntry) {
+  return PROVIDER_GLYPHS[entry.provider]
+}
+function entryHue(entry: SkillCredentialEntry) {
+  let hash = 0
+  for (const ch of entry.id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
+  return HUE_PALETTE[hash % HUE_PALETTE.length]
+}
+
+// Category split: internal Keep/Lark-side systems vs. everything else (currently
+// just GitLab). Keyed on `provider`, matching the existing GitLab check below —
+// an unrecognized future provider falls through to "其他凭证" rather than vanishing.
+const INTERNAL_SYSTEM_PROVIDERS = new Set(['lark', 'feishu-project', 'keep'])
+function isInternalSystem(entry: SkillCredentialEntry) {
+  return INTERNAL_SYSTEM_PROVIDERS.has(entry.provider)
+}
 
 function statusLabel(status: SkillCredentialEntry['status']) {
   if (status === 'authenticated') return '已认证'
@@ -228,7 +240,7 @@ async function pollCredentialAfterOAuth(id: string, token: number, sessionId = '
           if (credentialAuthSucceeded(id)) closeAuthWindow(token)
           return
         }
-        message.error(session.error || 'Lark-cli 授权未完成，请重试')
+        setCredentialNotice(id, session.error || 'Lark-cli 授权未完成，请重试', 'error')
         return
       }
       await refreshCredentials(true)  // fresh: bypass the broker cache to see the new login
@@ -240,7 +252,7 @@ async function pollCredentialAfterOAuth(id: string, token: number, sessionId = '
     }
   } catch (err: any) {
     if (sessionId && id === 'lark-cli' && !pollAbort && token === attemptSeq) {
-      message.error(err?.message || 'Lark-cli 授权状态检查失败，请重试')
+      setCredentialNotice(id, err?.message || 'Lark-cli 授权状态检查失败，请重试', 'error')
     }
     // The manual refresh button remains available if a background poll fails.
   } finally {
@@ -250,7 +262,7 @@ async function pollCredentialAfterOAuth(id: string, token: number, sessionId = '
   }
 }
 
-const gitlabDialog = ref<{ title: string } | null>(null)
+const gitlabDialog = ref<{ id: string; title: string } | null>(null)
 /** GitLab 建 token 页要勾的 scope，与档位一一对应。文案里明写出来，否则员工在 GitLab
  *  那一长串 checkbox 里根本不知道该勾哪几个（sunke 2026-08-05 反馈：卡片没指引）。 */
 const GITLAB_TIER_SCOPES: Record<'read' | 'write', string[]> = {
@@ -270,6 +282,31 @@ const gitlabTokenUrl = computed(() => {
 const gitlabForm = ref({ tier: 'read' as 'read' | 'write', token: '' })
 const gitlabSubmitting = ref(false)
 const gitlabError = ref('')
+/** Failure inside the QR dialog, where the code being retried still is. */
+const qrError = ref('')
+
+/**
+ * Per-credential notice, shown on that credential's own card.
+ *
+ * Keyed by id because several cards can be mid-flow at once, and a single shared
+ * string would pin one card's device code or failure onto another.
+ *
+ * ⚠️ The device code case is the reason this must be RESIDENT. `user_code` is a
+ * string the user has to read and type into another device; putting it in a
+ * toast that dismisses itself after a couple of seconds means they have to
+ * restart the whole flow to see it again.
+ */
+const credentialNotice = ref<Record<string, { text: string; tone: 'error' | 'info' | 'code' }>>({})
+
+function setCredentialNotice(id: string, text: string, tone: 'error' | 'info' | 'code') {
+  credentialNotice.value = { ...credentialNotice.value, [id]: { text, tone } }
+}
+
+function clearCredentialNotice(id: string) {
+  const next = { ...credentialNotice.value }
+  delete next[id]
+  credentialNotice.value = next
+}
 
 /** Which entries open the personal-token form instead of an interactive auth flow.
  *
@@ -279,9 +316,34 @@ const gitlabError = ref('')
  * button doing nothing — which is the exact bug this card exists to fix.
  * The global row never reaches here: the broker sends no action for it and `coerceAction`
  * passes that absence through, so its button is never rendered in the first place.
+ *
+ * 判据只看 provider，不再叠 `action.kind === 'manual'`：kind 是一路 broker → 适配层
+ * 传下来的数据，任何一环漂了(降级卡、旧缓存、reader 改字段)这个条件就悄悄变假，按钮
+ * 掉进 startCredential，员工只看到一句「认证流程已启动」而没有表单。GitLab 根本没有
+ * 交互式流程，provider 就足够判。
  */
 function isGitlabTokenEntry(entry: SkillCredentialEntry) {
-  return entry.provider === 'gitlab' && entry.action?.kind === 'manual'
+  return entry.provider === 'gitlab'
+}
+
+/** 一颗按钮三种去处 —— 这里是唯一的分流点。
+ *
+ *  `retry` 排在最前：broker 挂掉时 failSafeResult 把每一行都变成这种卡，按钮语义是
+ *  "再读一次状态"，不是"启动认证"。以前它走 startCredential，服务端回一个空操作 200，
+ *  于是弹一句绿色「认证流程已启动」——什么都没启动。
+ *
+ *  判据用 kind 而不是 `status === 'error'`：真 error 态（broker 活着但某个 reader 挂了）
+ *  的 GitLab 个人卡仍然该能打开绑定表单，按 status 一刀切会把绑定入口一起堵死（codex 复评）。 */
+function onCredentialAction(entry: SkillCredentialEntry) {
+  if (entry.action?.kind === 'retry') {
+    void loadCredentials({ fresh: true })
+    return
+  }
+  if (isGitlabTokenEntry(entry)) {
+    openGitlabDialog(entry)
+    return
+  }
+  void startCredential(entry)
 }
 
 /** GitLab has no interactive auth flow — the employee supplies the token, so
@@ -300,27 +362,43 @@ function openGitlabDialog(entry: SkillCredentialEntry) {
   void loadGitlabBaseUrl()
   gitlabForm.value = { tier: 'read', token: '' }
   gitlabError.value = ''
-  gitlabDialog.value = { title: entry.title }
+  gitlabDialog.value = { id: entry.id, title: entry.title }
+}
+
+function openRequestedCredential() {
+  if (requestedCredentialId.value !== 'gitlab-personal') return
+  const entry = credentials.value.find(item => item.id === requestedCredentialId.value && isGitlabTokenEntry(item))
+  if (entry) openGitlabDialog(entry)
 }
 
 async function confirmGitlabToken() {
   gitlabSubmitting.value = true
   gitlabError.value = ''
+  // Captured up front: the dialog is closed before the note is set, and the
+  // note has to land on the card it belongs to.
+  const noteTargetId = gitlabDialog.value?.id || 'gitlab-personal'
   try {
+    // The panel profile rides along as a target hint: on a group profile the
+    // broker binds the GROUP (owner only) and says so in `note`.
     const res = await submitGitlabToken({
       tier: gitlabForm.value.tier,
       token: gitlabForm.value.token,
-    })
+    }, requestedProfile.value)
     if (!res?.ok) {
-      gitlabError.value = res?.reason || '保存失败，请稍后重试'
+      gitlabError.value = res?.reason || res?.error || '保存失败，请稍后重试'
       return
     }
     // Never keep the token in memory after a successful hand-off.
     gitlabForm.value.token = ''
     gitlabDialog.value = null
-    await loadCredentials()
+    // The server's own note about the bind (e.g. which identity it matched).
+    if (res.note) setCredentialNotice(noteTargetId, res.note, 'info')
+    // fresh: bypass the broker's short-TTL connector cache — without it the
+    // card repaints the pre-bind status and the bind reads as a failure
+    // (the 2026-08-14 zhaozhiguang report).
+    await loadCredentials({ fresh: true })
   } catch (err: any) {
-    gitlabError.value = err?.data?.reason || err?.message || '保存失败，请稍后重试'
+    gitlabError.value = err?.data?.reason || err?.data?.error || err?.message || '保存失败，请稍后重试'
   } finally {
     gitlabSubmitting.value = false
   }
@@ -361,15 +439,30 @@ async function startCredential(entry: SkillCredentialEntry) {
         window.location.assign(result.verification_uri)
       }
       void pollCredentialAfterOAuth(entry.id, attemptToken, result.session_id || '')
-      message.success(result.user_code ? `${entry.title}: ${result.user_code}` : `${entry.title} 认证流程已启动`)
+      // A device code has to stay on screen — it is something to read and type
+      // somewhere else. "Flow started" needs no notice: the card is already
+      // showing its polling state.
+      if (result.user_code) setCredentialNotice(entry.id, result.user_code, 'code')
       return
     }
-    message.success(result.user_code ? `${entry.title}: ${result.user_code}` : `${entry.title} 认证流程已启动`)
+    // 走到这里，响应里没有二维码、没有授权链接、也没有设备码 —— 什么都没启动。
+    // 以前这里照样弹绿色「认证流程已启动」，员工点一次绿一次、卡片纹丝不动
+    // (ligaofeng 2026-08-06 的 GitLab 绑定)。没启动就别报成功：刷新面板，如实说。
+    if (result.user_code) {
+      setCredentialNotice(entry.id, result.user_code, 'code')
+    } else {
+      setCredentialNotice(entry.id, t('skillCredentials.noInteractiveFlow', { name: entry.title }), 'info')
+    }
     await loadCredentials()
   } catch (err: any) {
-    message.error(err?.message || `${entry.title} 认证启动失败`)
+    setCredentialNotice(entry.id, err?.message || `${entry.title} 认证启动失败`, 'error')
+    // 降级卡的「重试」也走这条路：启动失败仍然要把面板重新读一遍，否则 broker 一恢复
+    // 员工也只能干看着一排「重试」。刷新失败不再叠一次报错。
+    await loadCredentials().catch(() => { /* 手动刷新按钮还在 */ })
   } finally {
-    startingId.value = ''
+    // 只清自己那次的 loading：catch 里多了一次 await，旧请求会活得比以前久，
+    // 无条件清空会把期间开始的新一次点击的 loading 提前抹掉（codex 评审）。
+    if (attemptToken === attemptSeq) startingId.value = ''
   }
 }
 
@@ -377,13 +470,19 @@ async function completeQrCredential() {
   if (!qrDialog.value) return
   const current = qrDialog.value
   completingId.value = current.id
+  qrError.value = ''
   try {
     const result = await completeSkillCredentialAuth(current.id, current.qrcodeId, requestedProfile.value)
-    message.success(result.account_hint ? `${current.title} 已认证：${result.account_hint}` : `${current.title} 已认证`)
+    // The QR dialog closes and the card repaints as authenticated, with the
+    // matched account in its own foot — so the success needs no line of its own.
+    // The matched identity is worth keeping visible though, since it is how the
+    // user checks they bound the account they meant to.
+    if (result.account_hint) setCredentialNotice(current.id, result.account_hint, 'info')
     qrDialog.value = null
     await loadCredentials({ fresh: true })
   } catch (err: any) {
-    message.error(err?.message || '还没有检测到扫码完成，请确认后再试')
+    // Stays in the QR dialog: the code is still on screen to try again with.
+    qrError.value = err?.message || '还没有检测到扫码完成，请确认后再试'
   } finally {
     completingId.value = ''
   }
@@ -416,6 +515,7 @@ onMounted(async () => {
   // the no-op fire when requestedProfile merely resolves to the same value).
   profileWatchReady = true
   await loadCredentials()
+  openRequestedCredential()
 })
 
 onUnmounted(() => {
@@ -433,6 +533,9 @@ watch(requestedProfile, async (profile, previous) => {
   attemptSeq += 1
   closeAuthWindow()
   oauthPollingId.value = ''
+  // 这里必须显式清：startCredential 的 finally 只清"自己那次"，而上面刚把 attemptSeq
+  // 顶掉了，被抛弃的那次回来时守卫不认它，loading 会永远转下去（codex 复评）。
+  startingId.value = ''
   // Drop the previous profile's data so loadCredentials paints the NEW profile's
   // last-known (via hydrateFromCache) instead of briefly showing the old profile's.
   data.value = null
@@ -442,77 +545,118 @@ watch(requestedProfile, async (profile, previous) => {
 
 <template>
   <div class="credentials-view" :class="{ 'is-embedded': props.embedded }">
-    <header class="page-header">
-      <h2 class="header-title">{{ t('sidebar.connectors') }}</h2>
-      <NButton size="small" quaternary :loading="loading" @click="() => loadCredentials({ fresh: true })">刷新</NButton>
-    </header>
-
-    <NSpin :show="loading && !data">
-      <div v-if="error" class="credentials-error">{{ error }}</div>
-      <div v-else class="credentials-sections">
-        <section v-for="group in credentialGroups" :key="group.id" class="credential-section" :data-credential-group="group.id">
-          <h3 class="credential-section-title">{{ group.title }}</h3>
-          <div class="credentials-grid credentials-grid-compact">
-            <article
-              v-for="entry in group.entries"
-              :key="entry.id"
-              class="credential-card"
-              :class="statusClass(entry.status)"
-            >
-              <div class="credential-main">
-                <div class="credential-icon" aria-hidden="true">{{ entry.title.slice(0, 1) }}</div>
-                <div class="credential-copy">
-                  <div class="credential-title-row">
-                    <h3>{{ entry.title }}</h3>
-                    <span class="credential-status">{{ statusLabel(entry.status) }}</span>
-                  </div>
-                  <div class="credential-meta">
-                    <span>{{ entry.provider }}</span>
-                    <span v-if="entry.default_identity">{{ entry.default_identity }}</span>
-                    <span v-if="entry.account_hint">{{ entry.account_hint }}</span>
-                  </div>
-                  <p v-if="entry.detail" class="credential-detail">{{ entry.detail }}</p>
-                  <div v-if="entry.required_by?.length" class="credential-required credential-required-scroll">
-                    <span class="required-label">关联技能</span>
-                    <span v-for="skill in visibleSkills(entry)" :key="skill" class="required-skill">{{ skill }}</span>
-                    <button
-                      v-if="isSkillListFoldable(entry)"
-                      type="button"
-                      class="required-skill required-skill-toggle"
-                      :aria-expanded="expandedSkills.has(entry.id)"
-                      :aria-label="expandedSkills.has(entry.id)
-                        ? `收起 ${entry.title} 的关联技能`
-                        : `展开 ${entry.title} 剩余 ${hiddenSkillCount(entry)} 个关联技能`"
-                      @click="toggleSkills(entry)"
-                    >
-                      {{ hiddenSkillCount(entry) ? `+${hiddenSkillCount(entry)}` : '收起' }}
-                    </button>
-                  </div>
-                  <code v-if="entry.action?.command" class="credential-command">{{ entry.action.command }}</code>
-                </div>
-              </div>
-              <!-- 没有 action 的条目是纯陈述卡（如「GitLab（全局）」：管理员运维，员工点了
-                   也改不了），给按钮等于骗人。判据是 action 本身在不在 —— 不再看 label 是否
-                   为空：那个暗号分不清「没有操作」和「有操作但忘了填标签」，后者会静默变成
-                   一张点不动的卡。broker 侧对无操作送 null，适配层 coerceAction 如实返回
-                   undefined。 -->
-              <NButton
-                v-if="entry.action"
-                size="small"
-                :loading="startingId === entry.id"
-                :disabled="entry.status === 'missing'"
-                :data-credential-action="entry.id"
-                @click="isGitlabTokenEntry(entry) ? openGitlabDialog(entry) : startCredential(entry)"
-              >
-                <!-- 兜底只管文案，不当渲染开关：渲不渲染由上面的 v-if="entry.action" 决定。
-                     有 action 却缺 label 是数据问题，宁可显示「连接」也别渲染一颗空白按钮。 -->
-                {{ entry.action.label || '连接' }}
-              </NButton>
-            </article>
+    <div class="credentials-scroll">
+      <div class="credentials-inner">
+        <!-- Prototype market head: title block left, search pill right (no other actions).
+             NOT `.page-header` — global.scss owns that name and leaks a 21px/20px padding
+             plus a full-width border-bottom into it; the prototype head has neither. -->
+        <header class="market-head">
+          <div class="header-titles">
+            <h1 class="t-h1">{{ t('market.title') }}</h1>
           </div>
-        </section>
+          <label class="header-search">
+            <KpIcon name="line_search" :size="14" />
+            <input
+              v-model="searchQuery"
+              class="header-search__input"
+              type="text"
+              :placeholder="t('connectors.searchPlaceholder')"
+            />
+          </label>
+        </header>
+
+        <MarketTabs active="connectors" />
+        <!-- The section's own line, below the strip: the h1 names the market,
+             this names the section you are looking at. -->
+        <p class="t-sub-multi market-sub">{{ t('connectors.subtitle') }}</p>
+
+        <NSpin :show="loading && !data">
+          <div v-if="error" class="credentials-error">{{ error }}</div>
+          <template v-else>
+            <div v-if="data && visibleCredentials.length === 0" class="credentials-empty t-sub">
+              {{ t('connectors.noMatch') }}
+            </div>
+            <template v-else>
+              <!-- Prototype CatalogGroup: one section per category, ItemCard grid. -->
+              <section
+                v-for="group in credentialGroups"
+                :key="group.key"
+                class="catalog-group"
+                :data-credential-group="group.key"
+              >
+                <div class="catalog-group__head">
+                  <span class="catalog-group__title">{{ t(group.titleKey) }}</span>
+                </div>
+                <div class="credentials-grid">
+                  <article
+                    v-for="entry in group.entries"
+                    :key="entry.id"
+                    class="credential-card"
+                    :class="statusClass(entry.status)"
+                  >
+                    <div class="credential-card__head">
+                      <KpAppIcon
+                        :icon="entryGlyph(entry)"
+                        :mark="entry.title.slice(0, 1)"
+                        :color="entryHue(entry)"
+                        :size="40"
+                      />
+                      <span class="credential-card__name" :title="entry.title">{{ entry.title }}</span>
+                      <!-- 没有 action 的条目是纯陈述卡（如「GitLab（全局）」：管理员运维，员工点了
+                           也改不了），给按钮等于骗人。判据是 action 本身在不在 —— 不再看 label 是否
+                           为空：那个暗号分不清「没有操作」和「有操作但忘了填标签」，后者会静默变成
+                           一张点不动的卡。broker 侧对无操作送 null，适配层 coerceAction 如实返回
+                           undefined。 -->
+                      <!-- 原型 CornerBtn：30px 发丝圆钮，图标承担动作，文案走 title/aria-label。
+                           兜底只管文案，不当渲染开关：有 action 却缺 label 是数据问题，宁可提示
+                           「连接」也别渲染一颗无名按钮。 -->
+                      <KpCornerBtn
+                        v-if="entry.action"
+                        type="button"
+                        class="credential-card__corner"
+                        :class="{ 'is-loading': startingId === entry.id }"
+                        :icon="entry.action.kind === 'retry' ? 'line_reload' : 'line_add'"
+                        :data-loading="startingId === entry.id ? 'true' : undefined"
+                        :disabled="entry.status === 'missing'"
+                        :data-credential-action="entry.id"
+                        :title="entry.action.label || '连接'"
+                        @click="onCredentialAction(entry)"
+                      />
+                    </div>
+                    <p class="credential-card__desc">{{ entry.detail || entry.provider }}</p>
+                    <code v-if="entry.action?.command" class="credential-command">{{ entry.action.command }}</code>
+                    <!-- Resident, per card. A device code especially must not
+                         expire on a timer: it is meant to be read and typed
+                         somewhere else. -->
+                    <div
+                      v-if="credentialNotice[entry.id]"
+                      class="credential-notice"
+                      :class="`is-${credentialNotice[entry.id].tone}`"
+                      data-testid="credential-notice"
+                    >
+                      <span class="credential-notice__text">{{ credentialNotice[entry.id].text }}</span>
+                      <button
+                        type="button"
+                        class="credential-notice__close"
+                        :title="t('common.close')"
+                        @click.stop="clearCredentialNotice(entry.id)"
+                      >&times;</button>
+                    </div>
+                    <div class="credential-card__foot">
+                      <span class="credential-status">{{ statusLabel(entry.status) }}</span>
+                      <template v-if="entry.account_hint || entry.default_identity">
+                        <span class="credential-card__sep" />
+                        <span class="credential-card__meta">{{ entry.account_hint || entry.default_identity }}</span>
+                      </template>
+                    </div>
+                  </article>
+                </div>
+              </section>
+            </template>
+          </template>
+        </NSpin>
       </div>
-    </NSpin>
+    </div>
 
     <NModal
       :show="!!gitlabDialog"
@@ -600,6 +744,7 @@ watch(requestedProfile, async (profile, previous) => {
       @update:show="value => { if (!value) closeQrDialog() }"
     >
       <div v-if="qrDialog" class="qr-auth">
+        <p v-if="qrError" class="credential-notice is-error" data-testid="qr-error">{{ qrError }}</p>
         <img :src="qrDialog.qrcodeUrl" alt="Keep 扫码登录二维码" class="qr-image" />
         <p class="qr-copy">请使用 Keep App 扫描二维码完成登录。</p>
         <a :href="qrDialog.qrcodeUrl" target="_blank" rel="noreferrer" class="qr-link">二维码图片链接</a>
@@ -615,6 +760,56 @@ watch(requestedProfile, async (profile, previous) => {
 
 <style scoped lang="scss">
 @use "@/styles/variables" as *;
+.credential-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-radius: var(--r-ctl);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
+.credential-notice.is-error {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.credential-notice.is-info {
+  background: var(--surface-2);
+  color: var(--fg-primary);
+  box-shadow: inset 0 0 0 0.5px var(--divider);
+}
+
+/* A device code is data to be transcribed, so it gets the mono face and enough
+   letter-spacing to tell 0 from O. */
+.credential-notice.is-code {
+  background: var(--surface-2);
+  color: var(--fg-title);
+  box-shadow: inset 0 0 0 0.5px var(--divider);
+  font-family: var(--font-mono);
+  font-size: var(--t-14);
+  letter-spacing: 0.08em;
+  user-select: all;
+}
+
+.credential-notice__text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+}
+
+.credential-notice__close {
+  flex: 0 0 auto;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
 
 .credentials-view {
   height: calc(100 * var(--vh));
@@ -624,192 +819,245 @@ watch(requestedProfile, async (profile, previous) => {
   &.is-embedded {
     height: 100%;
     min-height: 0;
-    // Embedded in the expert panel the parent is overflow:hidden, so without
-    // this the content simply overflows out of view and the bottom rows
-    // (GitLab among them) are unreachable — measured 1004px of content in a
-    // 628px box. Pre-existing; confirmed by A/B against a build without the
-    // GitLab form.
-    overflow-y: auto;
-
-    // 面板自己能滚之后，卡片内那个限高滚动框就成了滚轮陷阱：光标停在页面正中的
-    // 「关联技能」标签上，10 格滚轮全被内层吃掉，外层停在 0，底部 GitLab 够不着。
-    // 嵌入态取消它，整页一条连续滚动。只作用于嵌入态 —— 独立页 /hermes/connectors
-    // 的布局不在本次范围内，保持原样。
-    // 代价：技能多的卡片会变高。真要压高度，走「前 N 个 + 展开」，别再放回嵌套滚动。
-    .credential-required-scroll {
-      max-height: none;
-      overflow-y: visible;
-    }
   }
 }
 
-.page-header {
+// KpPage frame: centered 1040 column, 48/40/64. The scroll wrapper reserves a
+// stable gutter so the centered column doesn't shift when the scrollbar shows.
+// (Also what keeps the bottom rows reachable in the embedded expert panel —
+// the parent there is overflow:hidden.)
+.credentials-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.credentials-inner {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 48px 40px 64px;
+}
+
+// Prototype market head: title block + search pill on one row, 28 below.
+.market-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 16px;
+  margin-bottom: 24px;
 }
 
-.credentials-sections {
+.header-titles {
+  min-width: 0;
+}
+
+// Section line under the tab strip: same measure as KpPage's own sub.
+.market-sub {
+  margin-bottom: 24px;
+  max-width: 560px;
+}
+
+// Keep search pill, same as the other market sections' heads.
+// surface-2, not gray-f7: same value in light, but the surface token follows dark mode.
+.header-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 220px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--fg-aux);
+  flex: 0 0 auto;
+}
+
+.header-search__input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg-primary);
+  font: var(--w-regular) var(--t-13) / var(--lh-1) var(--font-cn);
+
+  &::placeholder {
+    color: var(--fg-aux);
+  }
+}
+
+// Prototype empty state: centered quiet line.
+.credentials-empty {
+  padding: 48px 0;
+  text-align: center;
+}
+
+// Prototype CatalogGroup: 16/1 semibold title on a 1px rule, grid 16 below.
+.catalog-group {
+  margin-bottom: 28px;
+}
+
+.catalog-group__head {
   display: flex;
-  flex-direction: column;
-  gap: 22px;
-  padding: 20px;
+  align-items: baseline;
+  gap: 8px;
+  padding-bottom: 12px;
+  margin-bottom: 4px;
+  border-bottom: 0.5px solid var(--divider);
 }
 
-.credential-section-title {
-  margin: 0 0 10px;
-  color: $text-primary;
-  font-size: 14px;
-  font-weight: 650;
+.catalog-group__title {
+  color: var(--fg-title);
+  font: var(--w-semibold) var(--t-16) / var(--lh-1) var(--font-cn);
 }
 
 .credentials-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  gap: 20px;
+  margin-top: 16px;
 }
 
-// 同一行的卡片等高（grid 默认 stretch）。之前是 align-items: start，每张卡各自
-// 按内容长，技能多的那张（lark-cli 30+ 个）就成了一根柱子，旁边两张矮一截。
-// 折叠了技能之后高度差已经很小，stretch 把剩下的差抹平。
-.credentials-grid-compact {
-  align-items: stretch;
-}
-
+// Prototype ItemCard: flat column, 20 padding, 1px inset ring, no drop shadow.
 .credential-card {
   display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  min-height: 132px;
-  padding: 14px;
-  border: 1px solid $border-color;
-  border-radius: $radius-md;
-  background: $bg-secondary;
+  flex-direction: column;
+  padding: 20px;
+  border-radius: var(--r-card);
+  background: var(--bg);
+  box-shadow: inset 0 0 0 0.5px var(--divider);
+  transition: background var(--motion-base) var(--ease-std);
+
+  // Prototype .catrow:hover — surface-1, theme-aware.
+  &:hover {
+    background: var(--surface-1);
+  }
 }
 
-.credential-main {
-  min-width: 0;
-  display: flex;
-  gap: 12px;
-}
-
-.credential-icon {
-  width: 34px;
-  height: 34px;
+.credential-card__head {
   display: flex;
   align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  border-radius: $radius-sm;
-  background: rgba(var(--accent-primary-rgb), 0.1);
-  color: $accent-primary;
-  font-weight: 700;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
-.credential-copy {
+.credential-card__name {
+  flex: 1;
   min-width: 0;
+  color: var(--fg-title);
+  font: var(--w-medium) var(--t-16) / 1.6 var(--font-cn);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.credential-title-row {
+// Prototype CornerBtn: 30px hairline circle, 14px glyph, no fill.
+// Feedback is the prototype's `button.ab` press language — active dims to .6 —
+// with no hover fill (the mock's corner button has none).
+.credential-card__corner {
+  transition: opacity var(--motion-base) var(--ease-std);
+
+  &:active:not(:disabled) {
+    opacity: 0.6;
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  // `:deep` because the glyph now lives inside KpCornerBtn — a plain `i`
+  // selector carries this component's scope attribute and would not match it.
+  &.is-loading :deep(i) {
+    display: none;
+  }
+
+  &.is-loading::after {
+    content: '';
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1.5px solid var(--divider);
+    border-top-color: var(--fg-secondary);
+    animation: credential-spin 0.8s linear infinite;
+  }
+}
+
+@keyframes credential-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.credential-card__desc {
+  flex: 1;
+  margin: 0 0 16px;
+  color: var(--fg-secondary);
+  font: var(--w-regular) var(--t-13) / 1.6 var(--font-cn);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+// Card foot: AgentBadge-style status pill + hairline divider + account meta.
+// Prototype ItemCard foot wraps with an 8px row gap — a long account hint
+// next to the status pill overflows a 307px card otherwise.
+.credential-card__foot {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-
-  h3 {
-    margin: 0;
-    color: $text-primary;
-    font-size: 15px;
-    font-weight: 650;
-  }
+  row-gap: 8px;
+  min-width: 0;
 }
 
+// Prototype AgentBadge: 22px pill, 0 8px, 12/22 medium, surface-3 on gray tone.
 .credential-status {
-  padding: 2px 7px;
-  border-radius: 999px;
-  font-size: 12px;
-  line-height: 18px;
-  color: $text-secondary;
-  background: $bg-primary;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  color: var(--fg-secondary);
+  font: var(--w-medium) var(--t-12) / 22px var(--font-cn);
+  white-space: nowrap;
 }
 
 .status-authenticated .credential-status,
 .status-configured .credential-status {
-  color: #0f7a3a;
-  background: rgba(34, 197, 94, 0.12);
+  color: var(--action-press);
+  background: var(--keep-green-bg);
 }
 
 .status-needs-auth .credential-status,
 .status-unknown .credential-status,
 .status-error .credential-status {
-  color: #9a3412;
-  background: rgba(249, 115, 22, 0.12);
+  color: var(--warning);
+  background: var(--warning-bg);
 }
 
-.credential-meta {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 6px;
-  color: $text-secondary;
-  font-size: 12px;
+.credential-card__sep {
+  width: 1px;
+  height: 14px;
+  background: var(--divider);
+  flex: 0 0 auto;
 }
 
-.credential-detail {
-  margin: 9px 0 0;
-  color: $text-secondary;
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-.credential-required {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-  font-size: 12px;
-}
-
-// 独立页 /hermes/connectors 保持限高滚动（本次不动它）；嵌入态在上面的
-// `.is-embedded` 块里取消，理由见那里。
-.credential-required-scroll {
-  max-height: 188px;
-  overflow-y: auto;
-  padding-right: 3px;
-}
-
-.required-label {
-  color: $text-muted;
-}
-
-// button 自带 UA 样式（background: buttonface、自己的 padding/line-height），
-// 光靠 .required-skill 盖不干净，会比旁边的标签高出一点点。逐项归零（codex 评审）。
-.required-skill-toggle {
-  appearance: none;
-  background: none;
-  font: inherit;
-  line-height: inherit;
-  cursor: pointer;
-  color: $accent-primary;
-  border-style: dashed;
-}
-
-.required-skill {
-  max-width: 160px;
-  padding: 1px 6px;
-  border: 1px solid $border-color;
-  border-radius: $radius-sm;
+.credential-card__meta {
+  min-width: 0;
+  color: var(--fg-aux);
+  font: var(--w-regular) var(--t-12) / var(--lh-1) var(--font-cn);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: $text-secondary;
-  background: $bg-primary;
 }
 
 .gitlab-open-link {
   margin-left: 6px;
-  color: $accent-primary;
+  color: var(--keep-green);
   text-decoration: none;
   white-space: nowrap;
 }
@@ -820,10 +1068,10 @@ watch(requestedProfile, async (profile, previous) => {
 
 .gitlab-scope {
   margin-right: 4px;
-  padding: 0 4px;
-  border: 1px solid $border-color;
-  border-radius: $radius-sm;
-  font-size: 12px;
+  padding: 0 5px;
+  border-radius: var(--r-card-l);
+  box-shadow: inset 0 0 0 0.5px var(--divider);
+  font: var(--w-regular) var(--t-12) / 1.6 var(--font-mono);
 }
 
 .gitlab-tier-field {
@@ -832,30 +1080,31 @@ watch(requestedProfile, async (profile, previous) => {
 
 .gitlab-scope-hint {
   margin: 6px 0 0;
-  font-size: 12px;
-  color: $text-secondary;
+  font: var(--w-regular) var(--t-12) / 1.5 var(--font-cn);
+  color: var(--fg-secondary);
 }
 
 .credential-command {
   display: inline-block;
   max-width: 100%;
   margin-top: 8px;
-  padding: 5px 7px;
-  border-radius: $radius-sm;
+  padding: 5px 8px;
+  border-radius: var(--r-card-l);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: $text-primary;
-  background: $code-bg;
+  color: var(--fg-title);
+  background: var(--surface-1);
+  font: var(--w-regular) var(--t-12) / 1.5 var(--font-mono);
 }
 
 .credentials-error {
   margin: 20px;
   padding: 12px 14px;
-  border: 1px solid rgba(239, 68, 68, 0.25);
-  border-radius: $radius-md;
-  color: #b91c1c;
-  background: rgba(239, 68, 68, 0.08);
+  border-radius: var(--r-ctl);
+  box-shadow: inset 0 0 0 0.5px var(--danger);
+  color: var(--danger);
+  background: var(--danger-bg);
 }
 
 :deep(.qr-modal) {
@@ -873,20 +1122,20 @@ watch(requestedProfile, async (profile, previous) => {
   width: min(260px, 72vw);
   aspect-ratio: 1;
   object-fit: contain;
-  border: 1px solid $border-color;
-  border-radius: $radius-md;
-  background: #fff;
+  border-radius: var(--r-ctl);
+  box-shadow: inset 0 0 0 0.5px var(--divider);
+  background: var(--white);
 }
 
 .qr-copy {
   margin: 0;
-  color: $text-secondary;
-  font-size: 14px;
+  color: var(--fg-secondary);
+  font: var(--w-regular) var(--t-14) / 1.5 var(--font-cn);
 }
 
 .qr-link {
-  color: $accent-primary;
-  font-size: 13px;
+  color: var(--keep-green);
+  font-size: var(--t-13);
   text-decoration: none;
 }
 

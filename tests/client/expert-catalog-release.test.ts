@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
 const fetchExpertsMock = vi.hoisted(() => vi.fn())
+const newChatWithExpertMock = vi.hoisted(() => vi.fn())
+const routerPushMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/hermes/experts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/hermes/experts')>()
@@ -12,8 +14,13 @@ vi.mock('@/api/hermes/experts', async (importOriginal) => {
 vi.mock('@/stores/hermes/chat', () => ({
   useChatStore: () => ({
     activeExpertId: null,
-    setActiveExpert: vi.fn(),
+    newChatWithExpert: newChatWithExpertMock,
   }),
+}))
+
+vi.mock('vue-router', async (importOriginal) => ({
+  ...await importOriginal<typeof import('vue-router')>(),
+  useRouter: () => ({ push: routerPushMock }),
 }))
 
 vi.mock('@/stores/hermes/profiles', () => ({
@@ -39,8 +46,40 @@ import ExpertDetailPanel from '@/components/hermes/expert/ExpertDetailPanel.vue'
 describe('ExpertCatalogView release metadata', () => {
   beforeEach(() => {
     fetchExpertsMock.mockReset()
+    newChatWithExpertMock.mockReset()
+    routerPushMock.mockReset()
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-07-24T12:00:00Z'))
+  })
+
+  it('starts a new expert-bound session from the primary action', async () => {
+    const expert = { id: 'employee-x', name: 'Employee X' }
+    fetchExpertsMock.mockResolvedValue({ experts: [expert] })
+    newChatWithExpertMock.mockReturnValue({ id: 'session-x', profile: 'tester' })
+    const wrapper = mount(ExpertCatalogView, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          NInput: true,
+          NDrawer: { template: '<div><slot /></div>' },
+          NDrawerContent: { template: '<div><slot /></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    await wrapper.get('.expert-card').trigger('click')
+    await flushPromises()
+    document.querySelector<HTMLButtonElement>('.action-primary')?.click()
+    await flushPromises()
+
+    expect(newChatWithExpertMock).toHaveBeenCalledWith(expert)
+    expect(routerPushMock).toHaveBeenCalledWith({
+      name: 'hermes.session',
+      params: { sessionId: 'session-x' },
+      query: { profile: 'tester' },
+    })
+    wrapper.unmount()
   })
 
   afterEach(() => {

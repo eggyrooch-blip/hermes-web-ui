@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { NInput, NButton, NSpin, NEmpty, useMessage } from 'naive-ui'
+import { NInput, NButton, NSpin, NEmpty } from 'naive-ui'
 import { useModelsStore } from '@/stores/hermes/models'
 import { updateProvider } from '@/api/hermes/system'
 import { useI18n } from 'vue-i18n'
+import KpSectionTitle from '@/components/kippies/KpSectionTitle.vue'
 
 const { t } = useI18n()
 const modelsStore = useModelsStore()
-const message = useMessage()
 
 const savingKey = ref<string | null>(null)
+/** Validation and save failures for this pane, kept until the next attempt. */
+const paneError = ref('')
 const editKeys = ref<Record<string, string>>({})
 
 onMounted(() => {
@@ -34,16 +36,18 @@ function getEditKey(provider: string): string {
 async function handleSaveApiKey(providerKey: string) {
   const key = getEditKey(providerKey)
   if (!key.trim()) {
-    message.warning(t('settings.models.apiKeyPlaceholder'))
+    // Validation belongs beside the field, not at the edge of the screen.
+    paneError.value = t('settings.models.apiKeyPlaceholder')
     return
   }
   savingKey.value = providerKey
+  paneError.value = ''
   try {
     await updateProvider(providerKey, { api_key: key.trim() })
-    message.success(t('settings.models.saved'))
+    // The provider card repaints with the stored key, which is the report.
     await modelsStore.fetchProviders()
   } catch (e: any) {
-    message.error(e.message || t('settings.models.saveFailed'))
+    paneError.value = e.message || t('settings.models.saveFailed')
   } finally {
     savingKey.value = null
   }
@@ -52,12 +56,12 @@ async function handleSaveApiKey(providerKey: string) {
 async function handleSaveCustom(providerKey: string) {
   const key = getEditKey(providerKey)
   savingKey.value = providerKey
+  paneError.value = ''
   try {
     await updateProvider(providerKey, { api_key: key.trim() })
-    message.success(t('settings.models.saved'))
     await modelsStore.fetchProviders()
   } catch (e: any) {
-    message.error(e.message || t('settings.models.saveFailed'))
+    paneError.value = e.message || t('settings.models.saveFailed')
   } finally {
     savingKey.value = null
   }
@@ -66,6 +70,8 @@ async function handleSaveCustom(providerKey: string) {
 
 <template>
   <section class="settings-section">
+    <p v-if="paneError" class="settings-save-error" data-testid="model-settings-error">{{ paneError }}</p>
+    <KpSectionTitle>{{ t('settings.tabs.models') }}</KpSectionTitle>
     <NSpin :show="modelsStore.loading">
       <div v-if="modelsStore.providers.length === 0" class="empty-hint">
         <NEmpty :description="t('settings.models.noProviders')" />
@@ -129,21 +135,30 @@ async function handleSaveCustom(providerKey: string) {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.settings-save-error {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 
 .settings-section {
-  margin-top: 16px;
+  margin-top: 0;
 }
 
 .empty-hint {
   padding: 40px 0;
 }
 
+// Prototype card (usage summary): flat surface-2, r-card, 20px pad — no border.
 .provider-section {
-  border: 1px solid $border-color;
-  border-radius: $radius-md;
-  padding: 16px;
+  border-radius: var(--r-card);
+  padding: 20px;
   margin-bottom: 14px;
-  background: $bg-card;
+  background: var(--gray-f7);
 }
 
 .provider-header {
@@ -154,27 +169,19 @@ async function handleSaveCustom(providerKey: string) {
 }
 
 .provider-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: $text-primary;
+  font: var(--w-medium) var(--t-14) / var(--lh-1) var(--font-cn);
+  color: var(--fg-primary);
   margin: 0;
 }
 
+// Prototype tag: 22px neutral pill on surface-3, no hue coding.
 .type-badge {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-weight: 500;
-
-  &.builtin {
-    background: rgba(var(--accent-primary-rgb), 0.12);
-    color: $accent-primary;
-  }
-
-  &.custom {
-    background: rgba(var(--success-rgb), 0.12);
-    color: $success;
-  }
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  background: var(--gray-f2);
+  font: var(--w-medium) var(--t-12) / 22px var(--font-cn);
+  color: var(--fg-secondary);
 }
 
 .provider-fields {

@@ -87,9 +87,27 @@ export const MESSAGES_SCHEMA: Record<string, string> = {
   reasoning_content: 'TEXT',
   run_id: 'TEXT NOT NULL DEFAULT \'\'',
   client_id: 'TEXT NOT NULL DEFAULT \'\'',
+  source_refs: 'TEXT',
 }
 
 export const MESSAGES_INDEX = 'CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id)'
+
+export const MESSAGE_FEEDBACK_TABLE = 'message_feedback'
+
+export const MESSAGE_FEEDBACK_SCHEMA: Record<string, string> = {
+  principal_subject: 'TEXT NOT NULL',
+  session_id: 'TEXT NOT NULL',
+  run_id: 'TEXT NOT NULL',
+  expert_id: 'TEXT',
+  rating: 'TEXT NOT NULL',
+  reason: 'TEXT',
+  created_at: 'INTEGER NOT NULL',
+  updated_at: 'INTEGER NOT NULL',
+}
+
+export const MESSAGE_FEEDBACK_INDEXES = {
+  session: 'CREATE INDEX IF NOT EXISTS idx_message_feedback_session ON message_feedback(session_id)',
+}
 
 // ============================================================================
 // Workspace Run Changes
@@ -544,6 +562,10 @@ export function initAllHermesTables(): void {
     syncTable(SESSIONS_TABLE, SESSIONS_SCHEMA)
     syncTable(MESSAGES_TABLE, MESSAGES_SCHEMA)
     db.exec(MESSAGES_INDEX)
+    syncTable(MESSAGE_FEEDBACK_TABLE, MESSAGE_FEEDBACK_SCHEMA, {
+      primaryKey: 'principal_subject, session_id, run_id',
+      indexes: MESSAGE_FEEDBACK_INDEXES,
+    })
     syncTable(WORKSPACE_RUN_CHANGES_TABLE, WORKSPACE_RUN_CHANGES_SCHEMA, {
       indexes: WORKSPACE_RUN_CHANGES_INDEXES,
     })

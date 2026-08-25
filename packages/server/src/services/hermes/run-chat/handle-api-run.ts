@@ -105,6 +105,8 @@ export async function handleApiRun(
   dequeueNextQueuedRun: (socket: Socket, sessionId: string, fallbackProfile?: string) => void,
 ) {
   const { input, session_id, model, provider, instructions } = data
+  const socketUser = socket.data?.user as { openid?: string; id?: string | number } | undefined
+  const sessionOwnerId = String(socketUser?.openid || socketUser?.id || '').trim() || null
 
   // Build full instructions with system prompt + workspace context
   let fullInstructions = instructions
@@ -182,7 +184,7 @@ export async function handleApiRun(
       if (!getSession(session_id)) {
         const previewText = extractTextForPreview(input)
         const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
-        createSession({ id: session_id, profile, source: sessionSource, model, provider, title: preview, workspace: data.workspace || undefined })
+        createSession({ id: session_id, profile, source: sessionSource, user_id: sessionOwnerId, model, provider, title: preview, workspace: data.workspace || undefined })
       }
 
       const messageId = addMessage({
@@ -206,7 +208,7 @@ export async function handleApiRun(
       if (!getSession(session_id)) {
         const previewText = extractTextForPreview(input)
         const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
-        createSession({ id: session_id, profile, source: sessionSource, model, provider, title: preview, workspace: data.workspace || undefined })
+        createSession({ id: session_id, profile, source: sessionSource, user_id: sessionOwnerId, model, provider, title: preview, workspace: data.workspace || undefined })
       }
       const messageId = addMessage({
         session_id,

@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from 'vue'
-import { NModal, NButton, NSpin, useMessage } from 'naive-ui'
+import { NModal, NButton, NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { startNousLogin, pollNousLogin } from '@/api/hermes/nous-auth'
 import { copyToClipboard } from '@/utils/clipboard'
 
 const { t } = useI18n()
 const emit = defineEmits<{ close: []; success: [] }>()
-const message = useMessage()
 
 const showModal = ref(true)
 const status = ref<'idle' | 'loading' | 'waiting' | 'approved' | 'expired' | 'error'>('idle')
@@ -42,7 +41,6 @@ async function startLogin() {
     } catch {
       errorMessage.value = msg
     }
-    message.error(errorMessage.value)
   }
 }
 
@@ -55,7 +53,6 @@ function startPolling() {
         startPolling()
       } else if (result.status === 'approved') {
         status.value = 'approved'
-        message.success(t('models.nousApproved'))
         setTimeout(() => {
           showModal.value = false
           setTimeout(() => emit('success'), 200)
@@ -90,8 +87,9 @@ function handleClose() {
 
 async function copyCode() {
   const ok = await copyToClipboard(userCode.value)
-  if (ok) message.success(t('models.nousCopyCode'))
-  else message.error(t('models.nousCopyCode') + ' ✗')
+  // Silent on success; a failed copy must be said, or they paste whatever
+  // the clipboard held before into the provider's page.
+  if (!ok) errorMessage.value = t('chat.copyFailed')
 }
 
 function openLink() {

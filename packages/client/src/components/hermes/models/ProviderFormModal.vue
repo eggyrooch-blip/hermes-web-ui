@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, watch, computed, onMounted, nextTick } from 'vue'
-import { NModal, NForm, NFormItem, NInput, NInputNumber, NButton, NSelect, NRadioGroup, NRadioButton, useMessage, useDialog } from 'naive-ui'
+import { NModal, NForm, NFormItem, NInput, NInputNumber, NButton, NSelect, NRadioGroup, NRadioButton, useDialog } from 'naive-ui'
 import { useModelsStore } from '@/stores/hermes/models'
 import { useI18n } from 'vue-i18n'
+import { useAction } from '@/components/kippies/useAction'
 import CodexLoginModal from './CodexLoginModal.vue'
 import NousLoginModal from './NousLoginModal.vue'
 import CopilotLoginModal from './CopilotLoginModal.vue'
@@ -21,12 +22,45 @@ const emit = defineEmits<{
 }>()
 
 const modelsStore = useModelsStore()
-const message = useMessage()
 const dialog = useDialog()
 
 const showModal = ref(true)
 const loading = ref(false)
 const fetchingModels = ref(false)
+/**
+ * Validation and whole-form failures, shown in the dialog itself.
+ *
+ * These used to be toasts. Validation especially has no business in one: it says
+ * "this field is not filled in" from the bottom of the screen, while the field
+ * it means is right here — and it vanishes on a timer, so you can lose it before
+ * you have finished reading. It sits above the form until the next attempt.
+ */
+const formError = ref('')
+const [fetchState, runFetch] = useAction()
+const [saveState, runSave] = useAction()
+
+/**
+ * The button carries the state; the form line carries the reason. Rethrowing is
+ * what puts the button in `fail` — swallowing here would leave it looking as if
+ * the press had worked.
+ *
+ * The early returns inside these (a blank field, or an OAuth provider that opens
+ * its own dialog instead) resolve normally, so the button goes quiet rather than
+ * red: nothing failed, it just did not submit.
+ */
+function reportInto<T>(work: () => Promise<T>): () => Promise<T> {
+  return async () => {
+    try {
+      return await work()
+    } catch (err: any) {
+      formError.value = err?.message ?? String(err)
+      throw err
+    }
+  }
+}
+
+const fetchModelsAction = reportInto(fetchModels)
+const handleSaveAction = reportInto(handleSave)
 const showCodexLogin = ref(false)
 const showNousLogin = ref(false)
 const showCopilotLogin = ref(false)
@@ -193,9 +227,10 @@ onMounted(() => {
 async function fetchModels() {
   const { base_url } = formData.value
   if (!base_url.trim()) {
-    message.warning(t('models.enterBaseUrl'))
+    formError.value = t('models.enterBaseUrl')
     return
   }
+  formError.value = ''
 
   fetchingModels.value = true
   try {
@@ -220,9 +255,8 @@ async function fetchModels() {
     if (modelOptions.value.length > 0 && !formData.value.model) {
       formData.value.model = modelOptions.value[0].value
     }
-    message.success(t('models.foundModels', { count: modelOptions.value.length }))
-  } catch (e: any) {
-    message.error(t('models.fetchFailed') + ': ' + e.message)
+    // No success line: the model dropdown filling up, with the first one
+    // selected, is the result — a count in a toast says less than the list does.
   } finally {
     fetchingModels.value = false
   }
@@ -230,7 +264,7 @@ async function fetchModels() {
 
 async function handleSave() {
   if (providerType.value === 'preset' && !selectedPreset.value) {
-    message.warning(t('models.selectProviderRequired'))
+    formError.value = t('models.selectProviderRequired')
     return
   }
 
@@ -268,18 +302,19 @@ async function handleSave() {
   }
 
   if (!formData.value.base_url.trim()) {
-    message.warning(t('models.baseUrlRequired'))
+    formError.value = t('models.baseUrlRequired')
     return
   }
   if (!formData.value.api_key.trim() && !isCliproxyApi.value && !isXaiOAuth.value && !isClaudeOAuth.value && !isGeminiOAuth.value) {
-    message.warning(t('models.apiKeyRequired'))
+    formError.value = t('models.apiKeyRequired')
     return
   }
   if (!formData.value.model) {
-    message.warning(t('models.modelRequired'))
+    formError.value = t('models.modelRequired')
     return
   }
 
+  formError.value = ''
   loading.value = true
   try {
     const contextLength = formData.value.context_length ?? undefined
@@ -303,10 +338,8 @@ async function handleSave() {
       context_length: contextLength,
       providerKey,
     })
-    message.success(t('models.providerAdded'))
+    // Closing the dialog is the answer; there is no button left to say `ok` on.
     emit('saved')
-  } catch (e: any) {
-    message.error(e.message)
   } finally {
     loading.value = false
   }
@@ -314,37 +347,31 @@ async function handleSave() {
 
 async function handleCodexSuccess() {
   showCodexLogin.value = false
-  message.success(t('models.providerAdded'))
   emit('saved')
 }
 
 async function handleNousSuccess() {
   showNousLogin.value = false
-  message.success(t('models.providerAdded'))
   emit('saved')
 }
 
 async function handleCopilotSuccess() {
   showCopilotLogin.value = false
-  message.success(t('models.providerAdded'))
   emit('saved')
 }
 
 async function handleXaiSuccess() {
   showXaiLogin.value = false
-  message.success(t('models.providerAdded'))
   emit('saved')
 }
 
 async function handleAnthropicSuccess() {
   showAnthropicLogin.value = false
-  message.success(t('models.providerAdded'))
   emit('saved')
 }
 
 async function handleGeminiSuccess() {
   showGeminiLogin.value = false
-  message.success(t('models.providerAdded'))
   emit('saved')
 }
 
@@ -373,10 +400,10 @@ async function triggerCopilotAdd() {
         onPositiveClick: async () => {
           try {
             await enableCopilot()
-            message.success(t('models.providerAdded'))
             emit('saved')
           } catch (e: any) {
-            message.error(e?.message ?? String(e))
+            // The confirm dialog is gone by now, so this lands on the form.
+            formError.value = e?.message ?? String(e)
           }
         },
         onNegativeClick: () => {
@@ -391,7 +418,7 @@ async function triggerCopilotAdd() {
       showCopilotLogin.value = true
     }
   } catch (e: any) {
-    message.error(e?.message ?? String(e))
+    formError.value = e?.message ?? String(e)
     selectedPreset.value = null
   } finally {
     copilotChecking.value = false
@@ -435,6 +462,11 @@ function handleClose() {
     @after-leave="emit('close')"
   >
     <NForm label-placement="top">
+      <!-- Resident until the next attempt: the field it refers to is right
+           here, and a line that expires on a timer can be missed. -->
+      <p v-if="formError" class="provider-form__error" data-testid="provider-form-error">
+        {{ formError }}
+      </p>
       <NFormItem :label="t('models.providerType')">
         <div style="display: flex; gap: 12px">
           <NButton
@@ -513,8 +545,9 @@ function handleClose() {
           />
           <NButton
             v-if="canFetchProviderCatalog"
-            :loading="fetchingModels"
-            @click="fetchModels"
+            :type="fetchState === 'fail' ? 'error' : undefined"
+            :loading="fetchingModels || fetchState === 'pending'"
+            @click="runFetch({ run: fetchModelsAction, noOk: true })"
           >
             {{ t('common.fetch') }}
           </NButton>
@@ -535,7 +568,11 @@ function handleClose() {
     <template #footer>
       <div class="modal-footer">
         <NButton @click="handleClose">{{ t('common.cancel') }}</NButton>
-        <NButton type="primary" :loading="loading" @click="handleSave">
+        <NButton
+          :type="saveState === 'fail' ? 'error' : 'primary'"
+          :loading="loading || saveState === 'pending'"
+          @click="runSave({ run: handleSaveAction, noOk: true })"
+        >
           {{ t('common.add') }}
         </NButton>
       </div>
@@ -580,6 +617,15 @@ function handleClose() {
 </template>
 
 <style scoped lang="scss">
+.provider-form__error {
+  margin: 0 0 16px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 .fun-provider-hint {
   margin-top: 6px;
   font-size: 12px;

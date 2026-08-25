@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NAlert, NButton, NDrawer, NDrawerContent, NPopconfirm, NProgress, NSpin, NTag, useMessage } from 'naive-ui'
+import { NAlert, NButton, NDrawer, NDrawerContent, NPopconfirm, NProgress, NSpin, NTag } from 'naive-ui'
 import {
   activateRuntimeVersion,
   activateWebUiVersion,
@@ -24,9 +24,11 @@ const props = defineProps<{ show: boolean }>()
 const emit = defineEmits<{ (event: 'update:show', value: boolean): void }>()
 
 const { t } = useI18n()
-const message = useMessage()
 
 const status = ref<RuntimeVersionStatus | null>(null)
+/** Failure of whichever version action was pressed. Successes show up in the
+ *  job list or the refreshed version table. */
+const paneError = ref('')
 const jobs = ref<VersionDownloadJob[]>([])
 const loading = ref(false)
 const actionLoading = ref<Record<string, boolean>>({})
@@ -164,7 +166,7 @@ async function runAction(key: string, action: () => Promise<void>) {
   try {
     await action()
   } catch (err) {
-    message.error(err instanceof Error ? err.message : String(err))
+    paneError.value = err instanceof Error ? err.message : String(err)
   } finally {
     setActionLoading(key, false)
   }
@@ -198,7 +200,6 @@ async function startRuntimeDownload(version: string, source: VersionDownloadSour
   await runAction(`download-runtime-${source}-${version}`, async () => {
     const response = await downloadRuntimeVersion(version, source)
     jobs.value = [response.job, ...jobs.value.filter(job => job.id !== response.job.id)]
-    message.success(t('runtimeVersions.downloadStarted'))
     startPolling()
   })
 }
@@ -207,7 +208,6 @@ async function startWebUiDownload(version: string, source: VersionDownloadSource
   await runAction(`download-webui-${source}-${version}`, async () => {
     const response = await downloadWebUiVersion(version, source)
     jobs.value = [response.job, ...jobs.value.filter(job => job.id !== response.job.id)]
-    message.success(t('runtimeVersions.downloadStarted'))
     startPolling()
   })
 }
@@ -215,7 +215,6 @@ async function startWebUiDownload(version: string, source: VersionDownloadSource
 async function useRuntime(version: string) {
   await runAction(`activate-runtime-${version}`, async () => {
     await activateRuntimeVersion(version)
-    message.success(t('runtimeVersions.activateSuccess'))
     await loadAll()
   })
 }
@@ -223,7 +222,6 @@ async function useRuntime(version: string) {
 async function removeRuntime(version: string) {
   await runAction(`delete-runtime-${version}`, async () => {
     await deleteRuntimeVersion(version)
-    message.success(t('runtimeVersions.deleteRuntimeSuccess'))
     await loadAll()
   })
 }
@@ -231,7 +229,6 @@ async function removeRuntime(version: string) {
 async function useWebUi(version: string) {
   await runAction(`activate-webui-${version}`, async () => {
     await activateWebUiVersion(version)
-    message.success(t('runtimeVersions.activateSuccess'))
     await loadAll()
   })
 }
@@ -239,7 +236,6 @@ async function useWebUi(version: string) {
 async function removeWebUi(version: string) {
   await runAction(`delete-webui-${version}`, async () => {
     await deleteWebUiVersion(version)
-    message.success(t('runtimeVersions.deleteWebUiSuccess'))
     await loadAll()
   })
 }
@@ -252,6 +248,7 @@ async function removeWebUi(version: string) {
     :width="'min(860px, calc(100vw - 24px))'"
     @update:show="updateShow"
   >
+    <p v-if="paneError" class="pane-notice is-error" data-testid="version-error">{{ paneError }}</p>
     <NDrawerContent :title="t('runtimeVersions.title')" closable>
       <NSpin :show="loading">
         <div class="version-management">
@@ -451,6 +448,27 @@ async function removeWebUi(version: string) {
 </template>
 
 <style scoped lang="scss">
+.pane-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
+.pane-notice.is-error {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.pane-notice.is-info {
+  background: var(--surface-2);
+  color: var(--fg-primary);
+  box-shadow: inset 0 0 0 0.5px var(--divider);
+}
+
 .version-management {
   display: flex;
   flex-direction: column;

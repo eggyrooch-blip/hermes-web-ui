@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, reactive, ref } from 'vue'
-import { NButton, NDataTable, NForm, NFormItem, NInput, NModal, NPopconfirm, NSelect, NSpace, NTag, useMessage, type DataTableColumns } from 'naive-ui'
+import { NButton, NDataTable, NForm, NFormItem, NInput, NModal, NPopconfirm, NSelect, NSpace, NTag, type DataTableColumns } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import {
   createManagedUser,
@@ -11,10 +11,18 @@ import {
   type UserRole,
   type UserStatus,
 } from '@/api/auth'
+import KpSectionTitle from '@/components/kippies/KpSectionTitle.vue'
 
 const { t } = useI18n()
-const message = useMessage()
 
+/**
+ * Pane-level failures (loading the table, changing a status, deleting a row) and
+ * dialog-level ones (validation and the save itself) are kept apart: a
+ * validation line belongs beside the field it is about, not at the top of a
+ * table the user is not looking at.
+ */
+const paneError = ref('')
+const formError = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const users = ref<ManagedUser[]>([])
@@ -57,14 +65,16 @@ async function loadUsers() {
     const res = await fetchManagedUsers()
     users.value = res.users
     profiles.value = res.profiles
+    paneError.value = ''
   } catch (err: any) {
-    message.error(err.message || t('users.loadFailed'))
+    paneError.value = err.message || t('users.loadFailed')
   } finally {
     loading.value = false
   }
 }
 
 function openCreate() {
+  formError.value = ''
   resetForm()
   showModal.value = true
 }
@@ -81,19 +91,20 @@ function openEdit(user: ManagedUser) {
 
 async function submit() {
   if (form.username.trim().length < 2) {
-    message.error(t('login.usernameTooShort'))
+    formError.value = t('login.usernameTooShort')
     return
   }
   if (!editingUser.value && form.password.length < 6) {
-    message.error(t('login.passwordTooShort'))
+    formError.value = t('login.passwordTooShort')
     return
   }
   if (form.password && form.password.length < 6) {
-    message.error(t('login.passwordTooShort'))
+    formError.value = t('login.passwordTooShort')
     return
   }
 
   saving.value = true
+  formError.value = ''
   try {
     const payload = {
       username: form.username.trim(),
@@ -108,11 +119,11 @@ async function submit() {
       : await createManagedUser({ ...payload, password: form.password })
     users.value = res.users
     profiles.value = res.profiles
+    // Closing the dialog, with the row now in the table, is the report.
     showModal.value = false
     resetForm()
-    message.success(t('common.saved'))
   } catch (err: any) {
-    message.error(err.message || t('common.saveFailed'))
+    formError.value = err.message || t('common.saveFailed')
   } finally {
     saving.value = false
   }
@@ -124,9 +135,9 @@ async function setStatus(user: ManagedUser, status: UserStatus) {
     const res = await updateManagedUser(user.id, { status })
     users.value = res.users
     profiles.value = res.profiles
-    message.success(t('common.saved'))
+    // The row's status cell changing is the report.
   } catch (err: any) {
-    message.error(err.message || t('common.saveFailed'))
+    paneError.value = err.message || t('common.saveFailed')
   } finally {
     saving.value = false
   }
@@ -138,9 +149,9 @@ async function removeUser(user: ManagedUser) {
     const res = await deleteManagedUser(user.id)
     users.value = res.users
     profiles.value = res.profiles
-    message.success(t('common.saved'))
+    // The row leaving the table is the report.
   } catch (err: any) {
-    message.error(err.message || t('common.deleteFailed'))
+    paneError.value = err.message || t('common.deleteFailed')
   } finally {
     saving.value = false
   }
@@ -219,13 +230,13 @@ onMounted(loadUsers)
 
 <template>
   <div class="user-management">
-    <div class="toolbar">
-      <div>
-        <h3 class="section-title">{{ t('users.title') }}</h3>
-        <p class="section-desc">{{ t('users.description') }}</p>
-      </div>
-      <NButton type="primary" @click="openCreate">{{ t('users.create') }}</NButton>
-    </div>
+    <p v-if="paneError" class="ums-error" data-testid="users-pane-error">{{ paneError }}</p>
+    <KpSectionTitle :note="t('users.description')">
+      {{ t('users.title') }}
+      <template #action>
+        <NButton type="primary" @click="openCreate">{{ t('users.create') }}</NButton>
+      </template>
+    </KpSectionTitle>
 
     <NDataTable
       :columns="columns"
@@ -234,9 +245,11 @@ onMounted(loadUsers)
       :bordered="false"
       :single-line="false"
       size="small"
+      class="users-table"
     />
 
     <NModal v-model:show="showModal" preset="dialog" :title="editingUser ? t('users.edit') : t('users.create')">
+      <p v-if="formError" class="ums-error" data-testid="users-form-error">{{ formError }}</p>
       <NForm label-placement="top">
         <NFormItem :label="t('users.username')">
           <NInput v-model:value="form.username" :placeholder="t('login.usernamePlaceholder')" />
@@ -270,30 +283,34 @@ onMounted(loadUsers)
 
 <style scoped lang="scss">
 @use "@/styles/variables" as *;
+.ums-error {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 
 .user-management {
-  padding: 8px 0;
+  padding: 0;
 }
 
-.toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 16px;
+// Prototype table: thin r-card frame, surface-2 head with 12px medium
+// fg-aux labels, 13px cells split by divider hairlines.
+.users-table {
+  margin-top: 12px;
 }
 
-.section-title {
-  margin: 0 0 6px;
-  font-size: 16px;
-  font-weight: 600;
-  color: $text-primary;
+.users-table :deep(.n-data-table-th) {
+  background: var(--gray-f7);
+  font: var(--w-medium) var(--t-12) / var(--lh-1) var(--font-cn);
+  color: var(--fg-aux);
 }
 
-.section-desc {
-  margin: 0;
+.users-table :deep(.n-data-table-td) {
   font-size: 13px;
-  color: $text-muted;
 }
 
 :deep(.muted) {

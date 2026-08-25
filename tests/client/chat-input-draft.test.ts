@@ -33,6 +33,7 @@ vi.mock('vue-i18n', () => ({
 vi.mock('naive-ui', () => ({
   NButton: { template: '<button type="button" v-bind="$attrs"><slot /><slot name="icon" /></button>' },
   NTooltip: { template: '<div><slot name="trigger" /><slot /></div>' },
+  NPopover: { template: '<div class="n-popover-stub"><slot name="trigger" /><slot /></div>' },
   NSwitch: { template: '<button type="button"></button>' },
   NModal: { template: '<div><slot /><slot name="footer" /></div>' },
   NInputNumber: { template: '<input />' },
@@ -222,28 +223,9 @@ describe('ChatInput draft persistence', () => {
     expect(wrapper.find('.context-bar').exists()).toBe(false)
   })
 
-  it('hides reasoning effort selector for coding-agent sessions', async () => {
-    const wrapper = mountForSession('session-codex', {
-      source: 'coding_agent',
-      agent: 'codex',
-      codingAgentId: 'codex',
-    })
-    await nextTick()
-
-    expect(wrapper.find('.n-popselect-stub').exists()).toBe(false)
-    expect(wrapper.find('[data-value="high"]').exists()).toBe(false)
-  })
-
-  it('stores the selected reasoning effort for the active session', async () => {
-    const wrapper = mountForSession('session-reasoning')
-    const store = useChatStore()
-
-    await wrapper.get('[data-value="high"]').trigger('click')
-    await nextTick()
-
-    expect(store.sessions[0].reasoningEffort).toBe('high')
-    expect(localStorage.getItem('hermes:reasoning_effort:session-reasoning')).toBe('high')
-  })
+  // Reasoning effort moved out of ChatInput's tool row and into ChatPanel's
+  // model-selection modal (one pill → one menu → model + effort). The effort
+  // coverage now lives in chat-panel-reasoning-effort.test.ts.
 
   it('opens the skill picker from /skill and inserts the selected skill command', async () => {
     fetchSkillsMock.mockResolvedValue({
@@ -284,7 +266,10 @@ describe('ChatInput draft persistence', () => {
     const wrapper = mountForSession('session-height', {}, { chatInputHeight: 140 })
     await nextTick()
 
-    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 140px')
+    // Home-state wrapper renders configured height + 40 (prototype: 20px above
+    // the caret and 20px of floor before the tool row); the textarea itself
+    // still fills to the configured height.
+    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 180px')
 
     Object.defineProperty(wrapper.get('.input-wrapper').element, 'clientHeight', { value: 140, configurable: true })
     await wrapper.get('.resize-handle').trigger('mousedown', { clientY: 100 })
@@ -298,7 +283,7 @@ describe('ChatInput draft persistence', () => {
     settingsStore.display = { chat_input_height: 120 }
     await nextTick()
 
-    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 120px')
+    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 160px')
   })
 
   it('keeps mobile chat input auto-height instead of applying configured height', async () => {
@@ -322,7 +307,7 @@ describe('ChatInput draft persistence', () => {
     await nextTick()
 
     expect((textarea.element as HTMLTextAreaElement).value).toBe('voice transcript')
-    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 150px')
+    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 190px')
     expect((textarea.element as HTMLTextAreaElement).style.height).toBe('100%')
   })
 

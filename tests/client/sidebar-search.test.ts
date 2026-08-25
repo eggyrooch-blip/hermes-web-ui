@@ -146,7 +146,7 @@ describe('AppSidebar navigation', () => {
     vi.unstubAllGlobals()
   })
 
-  it('renders a local logo asset in the sidebar brand link', () => {
+  it('renders the KippiesWork wordmark in the sidebar brand link', () => {
     const wrapper = mount(AppSidebar, {
       global: {
         stubs: {
@@ -161,9 +161,23 @@ describe('AppSidebar navigation', () => {
 
     const logoLink = wrapper.find('.sidebar-logo')
     expect(logoLink.exists()).toBe(true)
-    expect(logoLink.text()).toContain('Hermes')
-    expect(logoLink.find('img').attributes('src')).toBe('/logo.png')
-    expect(logoLink.find('img').attributes('alt')).toBe('Hermes')
+    // The logo is the design's finished combination mark, shipped as FOUR
+    // bitmaps: mascot and wordmark are separate images (so the mascot can be
+    // resized without dragging the lettering with it), each with a light and a
+    // dark copy, since the ink is baked into the pixels. It replaced a merged
+    // SVG outline of the wordmark alone.
+    //
+    // All four are in the DOM on purpose: the theme swap is a CSS rule
+    // (`.kwlogo-l` / `.kwlogo-d`) rather than a JS pick, so the first frame is
+    // already right instead of flashing the light logo in dark mode.
+    const imgs = logoLink.findAll('img')
+    expect(imgs).toHaveLength(4)
+    expect(imgs.filter((i) => i.classes().includes('kwlogo-l'))).toHaveLength(2)
+    expect(imgs.filter((i) => i.classes().includes('kwlogo-d'))).toHaveLength(2)
+    // One accessible name for the whole logo, not four.
+    expect(imgs.filter((i) => i.attributes('alt'))).toHaveLength(1)
+    expect(imgs[0].attributes('alt')).toBe('KippiesWork')
+    expect(imgs.slice(1).every((i) => i.attributes('aria-hidden') === 'true')).toBe(true)
   })
 
   it('keeps page-sidebar-only actions out of the app sidebar', () => {
@@ -207,7 +221,7 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.find('.sidebar-return-tab').exists()).toBe(true)
   })
 
-  it('uses a folder icon for the files nav item', () => {
+  it('uses a Keep icon-font glyph for the files nav item', () => {
     const wrapper = mount(AppSidebar, {
       global: {
         stubs: {
@@ -225,7 +239,9 @@ describe('AppSidebar navigation', () => {
       .find(item => item.text().includes('sidebar.files'))
 
     expect(filesItem).toBeTruthy()
-    expect(filesItem?.findAll('path').map(path => path.attributes('d'))).toContain('M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z')
+    // Icons come from the Keep icon font (494 glyphs); the design system does
+    // not allow hand-rolled SVG or Unicode stand-ins for them.
+    expect(filesItem?.find('i.kp-icon-font').classes()).toContain('kp_ic_line_drawer')
   })
 
   it.each([
@@ -261,7 +277,7 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.findComponent({ name: 'ThemeSwitch' }).exists()).toBe(false)
   })
 
-  it('keeps plugin and MCP technical nav available for super-admins', () => {
+  it('no longer carries the pages that moved into 设置 tabs', async () => {
     localStorage.setItem('hermes_api_key', makeToken({ username: 'sunke', role: 'super_admin' }))
 
     const wrapper = mount(AppSidebar, {
@@ -272,19 +288,34 @@ describe('AppSidebar navigation', () => {
           LanguageSwitch: true,
           ThemeSwitch: true,
           NButton: true,
+          teleport: true,
         },
       },
     })
 
-    expect(wrapper.text()).toContain('sidebar.plugins')
-    expect(wrapper.text()).toContain('sidebar.mcp')
-    expect(wrapper.text()).toContain('sidebar.codingAgents')
-    expect(wrapper.text()).toContain('sidebar.devices')
+    // 2026-08-18: 看板/记忆/用量/技能用量 and the whole 群系统 group are tabs
+    // inside 设置 now, so the product has a single sidebar. Their old paths
+    // still resolve — the router redirects each one to its tab.
+    expect(wrapper.text()).not.toContain('sidebar.plugins')
+    expect(wrapper.text()).not.toContain('sidebar.mcp')
+    expect(wrapper.text()).not.toContain('sidebar.codingAgents')
+    expect(wrapper.text()).not.toContain('sidebar.devices')
+    expect(wrapper.text()).not.toContain('sidebar.kanban')
+    expect(wrapper.text()).not.toContain('sidebar.memory')
+    expect(wrapper.text()).not.toContain('sidebar.skillsUsage')
+
     expect(wrapper.text()).toContain('sidebar.files')
+    // Expert / skills / connectors are now sections behind one market entry,
+    // not three rail rows; automation stays a primary rail entry.
+    expect(wrapper.text()).toContain('sidebar.market')
+    expect(wrapper.text()).toContain('sidebar.marketHint')
+    expect(wrapper.text()).toContain('sidebar.jobs')
     expect(wrapper.text()).not.toContain('sidebar.expert')
-    expect(wrapper.text()).not.toContain('sidebar.jobs')
-    expect(wrapper.text()).toContain('sidebar.connectors')
-    expect(wrapper.findComponent({ name: 'ThemeSwitch' }).exists()).toBe(true)
+    // The theme control moved into the UserMenu (prototype): appearance is a
+    // KpThemeSeg row, plus language for super-admins, behind the account row.
+    await wrapper.get('[data-testid="app-sidebar-user-trigger"]').trigger('click')
+    expect(wrapper.findComponent({ name: 'KpThemeSeg' }).exists()).toBe(true)
+    expect(wrapper.text()).toContain('language.label')
   })
 
   it('renders the Feishu authenticated user card with the Feishu avatar', () => {
@@ -367,11 +398,15 @@ describe('AppSidebar navigation', () => {
           LanguageSwitch: true,
           ThemeSwitch: true,
           NButton: true,
+          // Sign-out now lives in the teleported UserMenu; stub the teleport
+          // so the menu renders in-tree for the wrapper to reach.
+          teleport: true,
         },
       },
     })
 
-    await wrapper.get('.card-logout-button').trigger('click')
+    await wrapper.get('[data-testid="app-sidebar-user-trigger"]').trigger('click')
+    await wrapper.get('[data-testid="user-menu-logout"]').trigger('click')
     await flushPromises()
 
     expect(fetchMock).toHaveBeenCalledWith('/api/auth/feishu/logout', expect.objectContaining({
@@ -383,7 +418,9 @@ describe('AppSidebar navigation', () => {
     expect(reloadMock).toHaveBeenCalledOnce()
   })
 
-  it('uses short group labels and keeps group folding active when collapsed', async () => {
+  it('keeps group folding active when collapsed', async () => {
+    // The folding groups are admin-only, so this needs a super-admin session.
+    localStorage.setItem('hermes_api_key', makeToken({ username: 'sunke', role: 'super_admin' }))
     mockAppStore.sidebarCollapsed = true
     const wrapper = mount(AppSidebar, {
       global: {
@@ -398,16 +435,20 @@ describe('AppSidebar navigation', () => {
     })
 
     expect(wrapper.classes()).toContain('collapsed')
-    expect(wrapper.findAll('.nav-group-label span').map(node => node.text())).toEqual([
-      'sidebar.groupAgentShort',
-      'sidebar.groupMonitoringShort',
-      'sidebar.groupSystemShort',
-    ])
 
-    const agentGroup = wrapper.findAll('.nav-group')[0]
-    expect(agentGroup.find('.nav-group-items').attributes('style')).toBeUndefined()
+    // One folding group left — operations. The market used to be a second
+    // fold; it is now a single flat entry whose three sections are tabs on the
+    // page it opens.
+    const toggles = wrapper.findAll('.nav-group-toggle')
+    expect(toggles.map(node => node.text())).toEqual(['sidebar.groupSystem'])
 
-    await agentGroup.find('.nav-group-label').trigger('click')
-    expect(agentGroup.find('.nav-group-items').attributes('style')).toContain('display: none')
+    // Folding stays functional while collapsed: the group is open by default
+    // and the toggle closes it. (The subgroup is hidden by CSS in the rail;
+    // the `open` class is the state the animation keys off.)
+    const opsGroup = wrapper.findAll('.nav-subgroup')[0]
+    expect(opsGroup.classes()).toContain('open')
+
+    await toggles[0].trigger('click')
+    expect(wrapper.findAll('.nav-subgroup')[0].classes()).not.toContain('open')
   })
 })

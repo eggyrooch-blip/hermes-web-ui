@@ -37,12 +37,13 @@ describe('bridge message run identity', () => {
     const target = state()
     const message = ensureOpenBridgeAssistantMessage(target, 'session-1', 'marker-1')
 
-    flushBridgePendingToDb(target, 'session-1', 'marker-1')
+    flushBridgePendingToDb(target, 'session-1', 'marker-1', 'stop')
 
     expect(message.run_id).toBe('run-1')
     expect(addMessageMock).toHaveBeenCalledWith(expect.objectContaining({
       role: 'assistant',
       run_id: 'run-1',
+      finish_reason: 'stop',
     }))
   })
 

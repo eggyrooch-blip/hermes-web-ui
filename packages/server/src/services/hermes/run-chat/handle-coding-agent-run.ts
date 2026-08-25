@@ -72,8 +72,11 @@ export async function handleCodingAgentRun(
     runId = undefined
   }
   if (!runId) {
+    const socketUser = socket.data?.user as { openid?: string; id?: string | number } | undefined
+    const ownerId = String(socketUser?.openid || socketUser?.id || '').trim() || null
     const started = await startCodingAgentRun(agentId, {
       sessionId,
+      ownerId,
       mode,
       profile,
       provider: launchProvider,

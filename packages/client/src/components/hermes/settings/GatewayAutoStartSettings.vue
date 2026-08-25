@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NSelect, NSwitch, useMessage } from 'naive-ui'
+import { NSelect, NSwitch } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import SettingRow from './SettingRow.vue'
+import KpSectionTitle from '@/components/kippies/KpSectionTitle.vue'
+import { useAutosave } from '@/composables/useAutosave'
 
 const settingsStore = useSettingsStore()
 const profilesStore = useProfilesStore()
-const message = useMessage()
 const { t } = useI18n()
+// Autosave: the control already shows the new value on success, and a refused
+// save puts it back rather than leaving the pane disagreeing with the server.
+const { error: saveError, run: autosave } = useAutosave()
 
 const enabled = computed(() => settingsStore.gatewayAutoStart.enabled !== false)
 const mode = computed(() => Array.isArray(settingsStore.gatewayAutoStart.include) ? 'include' : 'all')
@@ -39,13 +43,16 @@ function normalizeProfileList(raw: string[]): string[] {
 }
 
 async function save(values: Record<string, any>) {
-  try {
-    settingsStore.updateLocal('gatewayAutoStart', values)
-    await settingsStore.saveSection('gatewayAutoStart', values, { restart: false })
-    message.success(t('settings.saved'))
-  } catch {
-    message.error(t('settings.saveFailed'))
-  }
+  // The whole section is replaced, so the revert restores the snapshot rather
+  // than a per-key diff — `mergeGatewayAutoStart` means a partial put-back would
+  // not undo a list that was emptied.
+  const previous = { ...settingsStore.gatewayAutoStart }
+  await autosave({
+    apply: () => settingsStore.updateLocal('gatewayAutoStart', values),
+    revert: () => settingsStore.updateLocal('gatewayAutoStart', previous),
+    save: () => settingsStore.saveSection('gatewayAutoStart', values, { restart: false }),
+    failMessage: t('settings.saveFailed'),
+  })
 }
 
 function saveMode(value: string) {
@@ -66,8 +73,9 @@ function saveExclude(value: string[]) {
 
 <template>
   <section class="settings-section gateway-auto-start-settings">
-    <h3 class="section-title">{{ t('settings.gatewayAutoStart.title') }}</h3>
-    <p class="section-hint">{{ t('settings.gatewayAutoStart.description') }}</p>
+    <p v-if="saveError" class="settings-save-error" data-testid="settings-save-error">{{ saveError }}</p>
+    <!-- Prototype SectionTitle carries its description inline as a note. -->
+    <KpSectionTitle :note="t('settings.gatewayAutoStart.description')">{{ t('settings.gatewayAutoStart.title') }}</KpSectionTitle>
 
     <SettingRow :label="t('settings.gatewayAutoStart.enabled')" :hint="t('settings.gatewayAutoStart.enabledHint')">
       <NSwitch :value="enabled" @update:value="value => save({ enabled: value })" />
@@ -121,27 +129,22 @@ function saveExclude(value: string[]) {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.settings-save-error {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 
 .settings-section {
-  margin-top: 16px;
+  margin-top: 0;
 }
 
 .gateway-auto-start-settings {
-  padding-top: 16px;
-  border-top: 1px solid var(--border-color);
-}
-
-.section-title {
-  margin: 0 0 6px;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-color);
-}
-
-.section-hint {
-  margin: 0 0 12px;
-  color: var(--text-color-secondary);
-  font-size: 13px;
+  margin-top: 36px;
 }
 
 .input-md {

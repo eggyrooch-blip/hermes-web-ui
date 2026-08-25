@@ -33,7 +33,7 @@ import { filterBridgeToolCallMarkupDelta, flushPendingToolCallMarkup } from './b
 import { markAbortCompleted } from './abort'
 import { writeModelRunProfileToken } from './model-run-prompt'
 import type { AuthenticatedUser } from '../../../middleware/user-auth'
-import { ensureHermesRunWorkspace } from './workspace'
+import { ensureHermesRunWorkspace, normalizeHermesSessionWorkspace } from './workspace'
 import { completeWorkspaceRunCheckpoint, discardWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint, type WorkspaceRunCheckpointHandle, type WorkspaceRunDiffCompletion } from './workspace-diff-tracker'
 import { captureSessionRunOwnership, ownsSessionGeneration, ownsSessionRun, type SessionRunOwnership } from './session-run-ownership'
 import { finalizeBridgeAbort, registerBridgeAbortFinalizer, unregisterBridgeAbortFinalizer } from './bridge-abort-finalizer'
@@ -344,7 +344,9 @@ export async function handleBridgeRun(
     return
   }
 
-  const runOwnership = admittedRun || reserveBridgeRunAdmission(sessionMap, data, profile)
+  const socketUser = socket.data?.user as { openid?: string; id?: string | number } | undefined
+  const ownerId = String(socketUser?.openid || socketUser?.id || '').trim() || null
+  const runOwnership = admittedRun || reserveBridgeRunAdmission(sessionMap, data, profile, ownerId)
   if (!runOwnership) return
   const state = runOwnership.state
   const runMarker = runOwnership.runMarker
@@ -376,14 +378,22 @@ export async function handleBridgeRun(
     }
 
     const sessionRow = getSession(session_id)
+    // Same precedence as the broker path: the STORED binding wins, so a request
+    // workspace can only ever bind a session that has none — it can never move a
+    // session that is already bound. Changing an existing binding goes through
+    // POST sessions/:id/workspace, which refuses it once the session has messages.
+    const sessionWorkspace = await awaitWithAbortSignal(
+      normalizeHermesSessionWorkspace(profile, sessionRow?.workspace || data.workspace),
+      runOwnership.abortController.signal,
+    )
     workspace = await awaitWithAbortSignal(
-      ensureHermesRunWorkspace(profile, sessionRow?.workspace || data.workspace),
+      ensureHermesRunWorkspace(profile, sessionWorkspace),
       runOwnership.abortController.signal,
     )
     if (!ownsRun()) return
     diffWorkspace = explicitBridgeWorkspace(data.workspace) ? workspace : ''
-    if (runOwnership.createdSession || (sessionRow && !sessionRow.workspace)) {
-      updateSession(session_id, { workspace })
+    if (runOwnership.createdSession || (sessionRow && sessionRow.workspace !== sessionWorkspace)) {
+      updateSession(session_id, { workspace: sessionWorkspace })
     }
     const sessionModel = sessionRow?.model || ''
     const sessionProvider = sessionRow?.provider || ''
@@ -1509,7 +1519,7 @@ async function applyBridgeChunkAsync(
   // it (which the line below was doing implicitly) silently drops the
   // final characters of the assistant message.
   flushPendingToolMarkupToAssistant(state, runMarker, chunk.run_id, emit)
-  flushBridgePendingToDb(state, sessionId)
+  flushBridgePendingToDb(state, sessionId, runMarker, 'stop')
   state.bridgePendingToolCallMarkup = undefined
   updateSessionStats(sessionId)
   await delay(BRIDGE_USAGE_FLUSH_DELAY_MS)

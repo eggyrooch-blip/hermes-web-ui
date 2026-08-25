@@ -223,6 +223,7 @@ describe('coding agent run state', () => {
         mode: 'scoped',
         profile: 'default',
         sessionId: `chat-client-id-${Date.now()}`,
+        ownerId: 'ou_trusted',
         workspaceDir: process.cwd(),
       },
       state,
@@ -235,6 +236,7 @@ describe('coding agent run state', () => {
     expect(getSessionDetail(run.launch.sessionId)?.messages[0]).toEqual(expect.objectContaining({
       client_id: 'client-prompt-1',
     }))
+    expect(getSession(run.launch.sessionId)?.user_id).toBe('ou_trusted')
     manager.shutdown()
   })
 

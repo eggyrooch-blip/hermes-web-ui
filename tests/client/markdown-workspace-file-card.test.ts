@@ -41,7 +41,7 @@ describe('MarkdownRenderer workspace artifact file card', () => {
   it('renders an inline absolute workspace path as a display-path file card', () => {
     const wrapper = mount(MarkdownRenderer, {
       props: {
-        content: 'Open `/Users/kite/.hermes/profiles/sunke/workspace/reports/report.html` now.',
+        content: 'Open `/Users/dev/.hermes/profiles/sunke/workspace/reports/report.html` now.',
       },
     })
 
@@ -49,7 +49,7 @@ describe('MarkdownRenderer workspace artifact file card', () => {
     expect(card.exists()).toBe(true)
     expect(card.attributes('data-path')).toBe('/workspace/reports/report.html')
     expect(card.attributes('data-filename')).toBe('report.html')
-    expect(wrapper.text()).not.toContain('/Users/kite/.hermes')
+    expect(wrapper.text()).not.toContain('/Users/dev/.hermes')
   })
 
   it('renders an inline /workspace/ display path as a file card and escapes attributes', () => {
@@ -305,7 +305,7 @@ describe('MarkdownRenderer workspace artifact file card', () => {
   it('turns a raw MEDIA: workspace-artifact line into a clickable file card', () => {
     const wrapper = mount(MarkdownRenderer, {
       props: {
-        content: '文件已生成 ✅\n\nMEDIA:/Users/kite/.hermes/profiles/feishu_g41a5b5g/workspace/hermes-intro.html',
+        content: '文件已生成 ✅\n\nMEDIA:/Users/dev/.hermes/profiles/feishu_g41a5b5g/workspace/hermes-intro.html',
       },
     })
     const card = wrapper.find('.markdown-file-card')
@@ -390,7 +390,7 @@ describe('MarkdownRenderer workspace artifact file card', () => {
   })
 
   it('leaves a workspace MEDIA directive inside a fenced code block verbatim', () => {
-    const line = 'MEDIA:/Users/kite/.hermes/profiles/sunke/workspace/report.html'
+    const line = 'MEDIA:/Users/dev/.hermes/profiles/sunke/workspace/report.html'
     const wrapper = mount(MarkdownRenderer, {
       props: { content: ['~~~text', line, '~~~'].join('\n') },
     })

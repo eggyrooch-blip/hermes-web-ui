@@ -2,6 +2,7 @@ import type { Context } from 'koa'
 import { config } from '../../config'
 import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
 import { getRequestProfile, isChatPlaneRequest, type WebUser } from '../../services/request-context'
+import { getSession } from '../../db/hermes/session-store'
 
 function getUpstream(profile: string): string {
   const mgr = getGatewayManagerInstance()
@@ -42,6 +43,7 @@ function brokerHeaders(profile: string, ctx: Context): Record<string, string> {
     'Content-Type': 'application/json',
     'X-Hermes-Profile': profile,
     'X-Hermes-User-Key': userKey,
+    'X-Hermes-Owner-Open-Id': userKey,
   }
   if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
   return headers
@@ -120,7 +122,7 @@ async function brokerRequest(
   ctx: Context,
   brokerPath: string,
   method?: string,
-  options: { fallbackUnavailableJobList?: boolean } = {},
+  options: { fallbackUnavailableJobList?: boolean; body?: Record<string, unknown> } = {},
 ): Promise<void> {
   const profile = resolveProfile(ctx)
   if (!config.runBrokerUrl) {
@@ -139,7 +141,7 @@ async function brokerRequest(
   const requestMethod = method || ctx.req.method || ctx.method || 'GET'
   const normalizedPathForBody = brokerPath === '/api/run-broker/jobs' ? '/api/jobs' : brokerPath
   const body = ctx.req.method !== 'GET' && ctx.req.method !== 'HEAD'
-    ? JSON.stringify(normalizeChatPlaneJobBody(
+    ? JSON.stringify(options.body ?? normalizeChatPlaneJobBody(
       ctx,
       profile,
       normalizedPathForBody,
@@ -267,6 +269,33 @@ export async function list(ctx: Context) {
   await proxyRequest(ctx, '/api/jobs', undefined, { fallbackUnavailableJobList: true })
 }
 
+/** Reuse the ordinary list authorization without exposing prompts to callers. */
+export async function listJobsForWorkRecord(
+  ctx: Context,
+  trustedActor?: { openid: string; profile: string },
+): Promise<{ available: boolean; jobs: Record<string, unknown>[] }> {
+  const previousSearch = ctx.search
+  const previousUser = ctx.state?.user
+  try {
+    if (trustedActor) {
+      if (!previousUser) return { available: false, jobs: [] }
+      ctx.state.user = { ...previousUser, ...trustedActor }
+    }
+    ctx.search = '?include_disabled=true'
+    await list(ctx)
+    const body = ctx.body as { jobs?: unknown; gateway_unavailable?: unknown } | undefined
+    return {
+      available: ctx.status < 400 && body?.gateway_unavailable !== true && Array.isArray(body?.jobs),
+      jobs: Array.isArray(body?.jobs) ? body.jobs.filter(job => job && typeof job === 'object') as Record<string, unknown>[] : [],
+    }
+  } catch {
+    return { available: false, jobs: [] }
+  } finally {
+    ctx.search = previousSearch
+    if (trustedActor) ctx.state.user = previousUser
+  }
+}
+
 export async function wake(ctx: Context) {
   const profile = resolveProfile(ctx)
   if (shouldUseJobsBroker(ctx)) {
@@ -373,6 +402,60 @@ export async function get(ctx: Context) {
 }
 
 export async function create(ctx: Context) {
+  if (isChatPlaneRequest(ctx)) {
+    const raw = ctx.request.body
+    const body = raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? raw as Record<string, unknown>
+      : {}
+    // A scheduled-from-chat create is identified by its SOURCE SESSION, not by
+    // expert_id alone: M-0 executor creates carry expert_id too (the executor's
+    // expert) with no source session, and must keep the plain executor path.
+    const scheduled = ['source_session_id', 'idempotency_key'].some(key => key in body)
+    if (scheduled) {
+      if (!shouldUseJobsBroker(ctx)) {
+        ctx.status = 503
+        ctx.body = { error: { message: 'Scheduled expert jobs require jobs broker mode' } }
+        return
+      }
+
+      const profile = resolveProfile(ctx)
+      const owner = getChatPlaneOpenId(ctx)
+      const sourceSessionId = typeof body.source_session_id === 'string' ? body.source_session_id.trim() : ''
+      const requestedExpertId = typeof body.expert_id === 'string' ? body.expert_id.trim() : ''
+      const idempotencyKey = typeof body.idempotency_key === 'string' ? body.idempotency_key.trim() : ''
+      const session = sourceSessionId ? getSession(sourceSessionId) : null
+      if (
+        !owner
+        || !session
+        || session.user_id !== owner
+        || session.profile !== profile
+        || session.source === 'coding_agent'
+        || session.source === 'global_agent'
+        || !session.expert_id
+        || (requestedExpertId && requestedExpertId !== session.expert_id)
+      ) {
+        ctx.status = 403
+        ctx.body = { error: { message: 'Scheduled expert session is not available' } }
+        return
+      }
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/.test(idempotencyKey)) {
+        ctx.status = 400
+        ctx.body = { error: { message: 'Invalid scheduled expert idempotency key' } }
+        return
+      }
+
+      const authoritative = sanitizeChatPlaneBody(ctx, body) as Record<string, unknown>
+      for (const key of [
+        'owner_open_id', 'owner_profile', 'source_app', 'source_session_id',
+        'delivery_mode', 'deliver', 'expert_id', 'idempotency_key',
+      ]) delete authoritative[key]
+      authoritative.deliver = 'feishu'
+      authoritative.expert_id = session.expert_id
+      authoritative.idempotency_key = idempotencyKey
+      await brokerRequest(ctx, '/api/run-broker/jobs', undefined, { body: authoritative })
+      return
+    }
+  }
   if (shouldUseJobsBroker(ctx)) {
     await brokerRequest(ctx, '/api/run-broker/jobs')
     return

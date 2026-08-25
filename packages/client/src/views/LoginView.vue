@@ -1,5 +1,22 @@
+<script lang="ts">
+// api/client.ts routes every local-BFF 401 back to this view, so two 401s in
+// quick succession can leave a stale mount's probe in flight. This counter must
+// live in the plain <script> block — a `<script setup>` binding is re-created
+// per instance, so a newer mount could never invalidate an older one's verdict
+// and a late `false` would yank an already-recovered session into OAuth.
+let probeGeneration = 0;
+
+const SESSION_PROBE_TIMEOUT_MS = 4000;
+
+function claimProbeGeneration(): () => boolean {
+  const generation = ++probeGeneration;
+  return () => generation === probeGeneration;
+}
+</script>
+
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import { takeSignedOutReason } from "@/composables/useSignedOutReason";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { setApiKey, hasApiKey, setRuntimeMode } from "@/api/client";
@@ -32,9 +49,51 @@ function redirectToFeishu() {
   window.location.assign("/api/auth/feishu/login");
 }
 
+/**
+ * The hermes_feishu_session cookie is httpOnly, so the only way to know whether
+ * this browser is already signed in is to ask the server. Without this check
+ * every arrival at this view burned a full Feishu round-trip (never silent — it
+ * renders the 授权 page) even when the 30-day cookie was perfectly valid:
+ *   - the bare root URL `/` IS this view (public route, no session guard), so a
+ *     bookmark without a hash re-authed on every single visit;
+ *   - api/client.ts routes ANY local-BFF 401 to `{name:'login'}`, so one
+ *     transient 401 logged the user out for real.
+ * Both paths funnel through here, so one probe fixes both. Deliberately a raw
+ * relative fetch rather than api/client's `request()`: that helper's global 401
+ * handler redirects back to this same view.
+ */
+async function hasLiveFeishuSession(): Promise<boolean> {
+  // A hung BFF must not strand the user on a blank login shell — an unanswered
+  // probe has to time out into the OAuth fallback, same as a thrown one.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), SESSION_PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch("/api/auth/me", {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+      signal: abort.signal,
+    });
+    return res.ok;
+  } catch {
+    // Network failure/abort tells us nothing about the session — fall through
+    // to OAuth rather than stranding the user on a blank login page.
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 onMounted(async () => {
+  // Why the last session ended, if it ended on its own (401 / 403) rather than
+  // by signing out. Read before the first await so a slow status probe cannot
+  // swallow it, and read-once so it does not resurface on a later visit.
+  errorMsg.value = takeSignedOutReason();
+  // Claimed before the first await: a slow status request on an older mount
+  // must not outlive a newer one and drag an already-recovered session to OAuth.
+  const isCurrentProbe = claimProbeGeneration();
   try {
     const status = await fetchAuthStatus();
+    if (!isCurrentProbe()) return;
     setRuntimeMode(status.authMode, status.plane);
     if (status.authMode === "trusted-feishu") {
       loginMethod.value = "feishu";
@@ -42,8 +101,14 @@ onMounted(async () => {
       return;
     }
     if (status.authMode === "feishu-oauth-dev") {
-      // Wake Feishu immediately; never render the password form.
+      // Never render the password form in this mode.
       loginMethod.value = "feishu";
+      const live = await hasLiveFeishuSession();
+      if (!isCurrentProbe()) return;
+      if (live) {
+        router.replace("/hermes/chat");
+        return;
+      }
       redirectToFeishu();
       return;
     }

@@ -43,6 +43,14 @@ export async function submitGitlabToken(ctx: Context) {
     'Content-Type': 'application/json',
     'X-Hermes-Owner-Open-Id': openid,
   }
+  // The panel's profile is forwarded as a TARGET HINT only (group-owner binds
+  // land on the group profile). It carries zero authority: the broker resolves
+  // the owner from the verified header above and decides whether the hint is
+  // honoured. Query-only on purpose — body identity fields stay dropped.
+  const requestedProfile = String(
+    (Array.isArray(ctx.query?.profile) ? ctx.query.profile[0] : ctx.query?.profile) ?? '',
+  ).trim()
+  if (requestedProfile) headers['X-Hermes-Profile'] = requestedProfile
   if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
 
   // Only token material crosses this boundary. Any profile_name / open_id /

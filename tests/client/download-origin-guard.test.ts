@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // zhouyifei 2026-08-04: off-VPN DNS sent /api/hermes/download to the public Keep
-// WAF, which 302'd to www.gotokeep.com and answered 200 + ACAO. `res.ok` was true,
+// WAF, which 302'd to www.example.com and answered 200 + ACAO. `res.ok` was true,
 // so the client saved 118 KB of marketing HTML under the user's .xlsx name.
 // These tests pin the rule: bytes that did not come from Hermes never reach disk.
 //
@@ -47,7 +47,7 @@ function fakeResponse(init: FakeInit): Response {
 /** The exact shape of the incident: 302 to the marketing site, HTML, no disposition. */
 function hijackedResponse(): Response {
   return fakeResponse({
-    url: 'https://www.gotokeep.com/?path=x.xlsx',
+    url: 'https://www.example.com/?path=x.xlsx',
     redirected: true,
     headers: { 'Content-Type': 'text/html' },
     body: '<!DOCTYPE html><html lang="zh-Hans"><head><title>Keep</title>',
@@ -88,7 +88,7 @@ describe('isForeignResponse — same-origin backend (prod webui)', () => {
 
   it('flags a cross-origin response even without the redirected flag', () => {
     expect(
-      isForeignResponse(fakeResponse({ url: 'https://www.gotokeep.com/x' })),
+      isForeignResponse(fakeResponse({ url: 'https://www.example.com/x' })),
     ).toBe(true)
   })
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, ref, watch } from 'vue'
-import { NButton, NIcon, useMessage } from 'naive-ui'
+import { NButton, NIcon } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useFilesStore } from '@/stores/hermes/files'
 import { getFileDownloadUrl } from '@/api/hermes/files'
@@ -9,10 +9,11 @@ import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
 import { handleCodeBlockCopyClick, renderHighlightedCodeBlock } from '@/components/hermes/chat/highlight'
 
 const { t } = useI18n()
-const message = useMessage()
 const filesStore = useFilesStore()
 withDefaults(defineProps<{ showClose?: boolean }>(), { showClose: true })
 const activePane = ref<'file' | 'diff'>('file')
+/** Failures for this surface, kept until the next attempt. */
+const paneError = ref('')
 const diffPatch = ref('')
 const diffLoading = ref(false)
 const diffError = ref('')
@@ -118,11 +119,9 @@ const highlightedDiff = computed(() => {
 
 async function handlePreviewClick(event: MouseEvent) {
   const copyResult = await handleCodeBlockCopyClick(event)
-  if (copyResult) {
-    message.success(t('common.copied'))
-  } else if (copyResult === false) {
-    message.error(t('chat.copyFailed'))
-  }
+  // Copying has no visible result, but the user asked for it and pasting
+  // verifies it. Only a FAILED copy has to be said.
+  if (copyResult === false) paneError.value = t('chat.copyFailed')
 }
 
 const CloseIcon = () =>
@@ -135,6 +134,7 @@ const CloseIcon = () =>
 
 <template>
   <div class="file-preview" v-if="filesStore.previewFile">
+    <p v-if="paneError" class="pane-notice" data-testid="file-preview-error">{{ paneError }}</p>
     <div class="preview-header">
       <span class="preview-filename">{{ filesStore.previewFile.path }}</span>
       <div class="preview-actions">
@@ -241,6 +241,15 @@ const CloseIcon = () =>
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.pane-notice {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 
 .file-preview {
   display: flex;

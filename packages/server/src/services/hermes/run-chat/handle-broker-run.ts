@@ -11,7 +11,9 @@ import { getProfileDir } from '../hermes-profile'
 import { buildBrokerMessagesForSession, contentBlocksToBrokerText } from './content-blocks'
 import { readSseFrames } from './sse-utils'
 import type { ContentBlock, ResponseRunState, SessionMessage, SessionState } from './types'
-import { ensureHermesRunWorkspace } from './workspace'
+import type { SourceRef } from '../../../db/hermes/session-store'
+import { authorizeSourceRefs, normalizeSourceRefs } from '../source-refs'
+import { ensureHermesRunWorkspace, normalizeHermesSessionWorkspace } from './workspace'
 import { completeWorkspaceRunCheckpoint, discardWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint, type WorkspaceRunCheckpointHandle } from './workspace-diff-tracker'
 
 export { readSseFrames } from './sse-utils'
@@ -70,6 +72,7 @@ type BuildRunBrokerRequestOptions = {
   expertId?: string
   instructions?: string
   workspace?: string | null
+  workspacePath?: string | null
   messages?: SessionMessage[]
   profileDir?: string
   idempotencyKey?: string
@@ -103,6 +106,7 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
     expertId,
     instructions,
     workspace,
+    workspacePath = workspace,
     idempotencyKey,
     messages = [],
     buildInput,
@@ -125,8 +129,8 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
     skillRuntime?.instructions,
   ].filter(Boolean).join('\n')
 
-  if (workspace) {
-    const workspaceCtx = `[Current working directory: ${workspace}]`
+  if (workspacePath) {
+    const workspaceCtx = `[Current working directory: ${workspacePath}]`
     metadata.instructions = metadata.instructions
       ? `\n${workspaceCtx}\n${metadata.instructions}`
       : `\n${workspaceCtx}`
@@ -145,6 +149,7 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
     user_key: userKey,
     content,
     session_id: sessionId,
+    ...(workspace ? { workspace } : {}),
     ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
     delivery_mode: 'socket',
     credential_subject: userKey,
@@ -563,6 +568,7 @@ export function mapRunBrokerFrameForChat(
   }
 
   if (brokerKind === 'done' || brokerKind === 'run.completed') {
+    const sourceRefs = normalizeSourceRefs(parsed?.source_refs) as SourceRef[]
     return {
       type: 'terminal',
       event: 'run.completed',
@@ -572,6 +578,7 @@ export function mapRunBrokerFrameForChat(
         response_id: responseId,
         output: parsed?.text || payload.output,
         usage: payload.usage ?? parsed?.usage,
+        ...(sourceRefs?.length ? { source_refs: sourceRefs } : {}),
       },
     }
   }
@@ -630,6 +637,7 @@ export async function runBrokerSessionCommand(options: {
   socket: Socket
   profile: string
   agentId?: string
+  expertId?: string
   sessionId: string
   command: string
   signal?: AbortSignal
@@ -644,10 +652,12 @@ export async function runBrokerSessionCommand(options: {
       runBrokerKey: config.runBrokerKey,
       ownerOpenId,
       agentId: options.agentId,
+      expertId: options.expertId,
     }),
     body: JSON.stringify({
       profile_name: options.profile,
       ...(options.agentId ? { agent_id: options.agentId } : {}),
+      ...(options.expertId ? { expert_id: options.expertId } : {}),
       session_id: options.sessionId,
       command: options.command,
     }),
@@ -863,6 +873,7 @@ export async function handleBrokerRun(
   const ownerOpenId = (socket.data?.user?.openid as string | undefined)?.trim()
   const agentId = (socket.data?.agentId as string | undefined)?.trim()
   let workspace: string | null = null
+  let sessionWorkspace: string | null = null
   let workspaceDiffRunId = runMarker || ''
   let workspaceDiffCompleted = false
   let workspaceDiffCheckpoint: WorkspaceRunCheckpointHandle | null = null
@@ -948,11 +959,24 @@ export async function handleBrokerRun(
       rejectReplay()
       return
     }
+    // The STORED binding always wins; `data.workspace` can only ever bind a session
+    // that has none. Gating the payload on message_count looks tempting here and is
+    // wrong: the controller persists the first user message BEFORE dispatch
+    // (broker-controller.ts, "Write user message to local DB immediately"), so on a
+    // brand-new session's first turn the row already reads message_count=1 and the
+    // freshly picked workspace — which lives only in this payload — would be dropped.
+    sessionWorkspace = (!isReplay && session_id)
+      ? await normalizeHermesSessionWorkspace(profile, sessionRow?.workspace || data.workspace)
+      : null
     workspace = (!isReplay && session_id)
-      ? await ensureHermesRunWorkspace(profile, sessionRow?.workspace || data.workspace)
+      ? await ensureHermesRunWorkspace(profile, sessionWorkspace)
       : null
     if (abandonStaleRun()) return
-    if (session_id && sessionRow && !sessionRow.workspace && workspace) updateSession(session_id, { workspace })
+    // `sessionWorkspace` is forced to null on a replay (the binding is not
+    // re-resolved there), so writing it back would erase the session's workspace.
+    if (!isReplay && session_id && sessionRow && sessionRow.workspace !== sessionWorkspace) {
+      updateSession(session_id, { workspace: sessionWorkspace })
+    }
     workspaceDiffCheckpoint = session_id && workspace
       ? await startWorkspaceRunCheckpoint({ sessionId: session_id, workspace })
       : null
@@ -977,7 +1001,8 @@ export async function handleBrokerRun(
       model: runModel,
       provider: runProvider,
       instructions,
-      workspace,
+      workspace: sessionWorkspace,
+      workspacePath: workspace,
       messages: state?.messages || [],
       profileDir: getProfileDir(profile),
       idempotencyKey: runMarker ? `webui:${session_id || 'no-session'}:${runMarker}` : undefined,
@@ -1175,6 +1200,7 @@ export async function handleBrokerRun(
         const eventRunId = mapped.payload.run_id || mapped.payload.response_id
         if (eventRunId) runId = String(eventRunId)
         if (eventRunId) workspaceDiffRunId = String(eventRunId)
+        let clientSourceRefs: SourceRef[] = []
         if (session_id && runId) {
           const currentState = isCurrentRun() ? state : undefined
           if (currentState) {
@@ -1183,7 +1209,46 @@ export async function handleBrokerRun(
             for (const message of currentState.messages) {
               if (message.runMarker === runMarker) message.run_id = runId
             }
+            if (mapped.event === 'run.completed' && mapped.payload.source_refs?.length) {
+              let finalAssistant = [...currentState.messages].reverse().find(message => (
+                message.runMarker === runMarker
+                && message.role === 'assistant'
+                && !message.tool_calls?.length
+                && Boolean(message.content?.trim())
+              ))
+              const completedOutput = String(mapped.payload.output || finalText || '').trim()
+              if (!finalAssistant && completedOutput) {
+                finalAssistant = {
+                  id: currentState.messages.length + 1,
+                  session_id,
+                  runMarker,
+                  run_id: runId,
+                  role: 'assistant',
+                  content: completedOutput,
+                  timestamp: Math.floor(Date.now() / 1000),
+                }
+                currentState.messages.push(finalAssistant)
+              }
+              if (finalAssistant) {
+                finalAssistant.source_refs = mapped.payload.source_refs
+                const authorized = await authorizeSourceRefs({
+                  profile,
+                  ownerOpenId: ownerOpenId || '',
+                  messages: currentState.messages,
+                })
+                clientSourceRefs = authorized.get(String(finalAssistant.id)) || []
+              }
+            }
           }
+        }
+        if (mapped.event === 'run.completed' && isCurrentRun()) {
+          const finalMessage = [...(state?.messages || [])].reverse().find(message => (
+            message.runMarker === runMarker
+            && message.role === 'assistant'
+            && String(message.content || '').trim()
+            && !message.tool_calls?.length
+          ))
+          if (finalMessage && finalMessage.finish_reason == null) finalMessage.finish_reason = 'stop'
         }
         const output = mapped.payload.output || finalText
         await emitWorkspaceDiffCompleted()
@@ -1198,6 +1263,7 @@ export async function handleBrokerRun(
         const queueLen = queueLength()
         emit(mapped.event, {
           ...mapped.payload,
+          ...(mapped.event === 'run.completed' ? { source_refs: clientSourceRefs } : {}),
           output,
           queue_remaining: queueLen,
         })

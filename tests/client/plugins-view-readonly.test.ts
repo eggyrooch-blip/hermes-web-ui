@@ -68,16 +68,16 @@ describe('PluginsView read-only mode', () => {
         version: '1.0.0',
         description: 'Sample description',
         author: 'Hermes',
-        path: '/Users/kite/.claude/plugins/sample-plugin',
+        path: '/Users/dev/.claude/plugins/sample-plugin',
         providesTools: ['sample_tool'],
         providesHooks: [],
         requiresEnv: [],
       }],
       warnings: [],
       metadata: {
-        hermesAgentRoot: '/Users/kite/.hermes/hermes-agent',
+        hermesAgentRoot: '/Users/dev/.hermes/hermes-agent',
         pythonExecutable: '/usr/bin/python3',
-        cwd: '/Users/kite/code/hermes-web-ui',
+        cwd: '/Users/dev/code/hermes-web-ui',
         projectPluginsEnabled: true,
       },
     })
@@ -89,8 +89,8 @@ describe('PluginsView read-only mode', () => {
 
     expect(wrapper.text()).toContain('sample-plugin')
     expect(wrapper.text()).toContain('tools:1')
-    expect(wrapper.text()).not.toContain('/Users/kite/.claude/plugins/sample-plugin')
+    expect(wrapper.text()).not.toContain('/Users/dev/.claude/plugins/sample-plugin')
     expect(wrapper.text()).not.toContain('plugins.copyCommand')
-    expect(wrapper.text()).not.toContain('/Users/kite/.hermes/hermes-agent')
+    expect(wrapper.text()).not.toContain('/Users/dev/.hermes/hermes-agent')
   })
 })

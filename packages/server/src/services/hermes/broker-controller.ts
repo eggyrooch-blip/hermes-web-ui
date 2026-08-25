@@ -20,6 +20,7 @@ import {
   addMessage,
   updateSession,
   updateSessionStats,
+  type SourceRef,
 } from '../../db/hermes/session-store'
 import { getSessionDetailFromDb, getSessionDetailFromDbWithProfile } from '../../db/hermes/sessions-db'
 import { getModelContextLength } from './model-context'
@@ -62,6 +63,8 @@ import {
   type SessionGeneration,
 } from './run-chat/session-generation'
 import { acknowledgeResumeEvents, forgetResumeEventAcknowledgement } from './run-chat/pending-resume-events'
+import { fetchExpertCatalog } from './expert-registry-client'
+import { authorizeSourceRefs } from './source-refs'
 
 /**
  * Content block types for Anthropic-compatible message format
@@ -394,7 +397,12 @@ interface SessionMessage {
   reasoning?: string | null
   reasoning_details?: string | null
   reasoning_content?: string | null
+  source_refs?: SourceRef[] | null
 }
+
+// Cap per-session queued admissions: a flooded rowless id must not grow an
+// unbounded in-memory queue. 20 comfortably covers real typing-ahead bursts.
+const MAX_SESSION_QUEUE = 20
 
 interface QueuedRun {
   queue_id: string
@@ -409,6 +417,10 @@ interface QueuedRun {
   expert_avatar?: string
   goalContinuation?: boolean
   profile: string
+  // Principal that enqueued this item. Verified against the row owner AND the
+  // dispatch socket at dequeue: a foreign principal's queued input must never
+  // execute under the session owner's credentials.
+  principal?: string
 }
 
 interface SessionState {
@@ -436,6 +448,12 @@ interface ResponseRunState {
   responseId?: string
   insertedKeys: Set<string>
   toolCalls: Map<string, any>
+}
+
+interface AuthoritativeExpert {
+  id: string
+  label: string
+  avatar: string | null
 }
 
 function buildBrokerMessagesForSession(messages: SessionMessage[]): Array<Record<string, any>> {
@@ -591,7 +609,7 @@ export class BrokerRunController {
       // Before ANY state or transcript write: a socket may only drive a session row
       // owned by its own profile. This entry also guards the queue and session-command
       // branches below, which never reach handleRun's own fence.
-      if (this.rejectsCrossProfileSession(socket, data.session_id, profile, data.queue_id)) return
+      if (this.rejectsUnauthorizedSession(socket, data.session_id, profile, data.queue_id)) return
       const sessionCommand = config.webuiRunBroker && data.session_id && !data.__skipSessionCommand
         ? parseBrokerSessionCommand(data.input)
         : null
@@ -616,8 +634,18 @@ export class BrokerRunController {
           return
         }
         if (admittedState.isWorking) {
+          if (admittedState.queue.length >= MAX_SESSION_QUEUE) {
+            socket.emit('run.rejected', {
+              event: 'run.rejected',
+              session_id: data.session_id,
+              queue_id: data.queue_id,
+              error: 'Session queue is full',
+            })
+            return
+          }
           admittedState.queue.push({
             queue_id: data.queue_id || `queue_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+            principal: String(socket.data?.user?.openid || socket.data?.user?.id || '').trim() || undefined,
             input: data.input,
             source: data.source,
             model: data.model,
@@ -648,6 +676,7 @@ export class BrokerRunController {
 
     socket.on('cancel_queued_run', (data: { session_id?: string; queue_id?: string }) => {
       if (!data.session_id || !data.queue_id) return
+      if (this.rejectsUnauthorizedSession(socket, data.session_id, profile, data.queue_id, { requireExistingRow: true })) return
       const state = this.getSessionState(data.session_id, profile)
       if (!state?.queue.length) return
       const before = state.queue.length
@@ -664,6 +693,9 @@ export class BrokerRunController {
 
     socket.on('resume', async (data: { session_id?: string }) => {
       if (!data.session_id) return
+      // Same ownership fence as 'run': joining the room replays the transcript,
+      // so a same-profile foreign principal must be rejected before the join.
+      if (this.rejectsUnauthorizedSession(socket, data.session_id, profile, undefined, { requireExistingRow: true })) return
       const sid = data.session_id
       const room = this.sessionRoom(sid, profile)
       socket.join(room)
@@ -674,6 +706,7 @@ export class BrokerRunController {
       const sessionId = String(data.session_id || '').trim()
       const eventIds = new Set(Array.isArray(data.event_ids) ? data.event_ids.map(String) : [])
       if (!sessionId || eventIds.size === 0) return
+      if (this.rejectsUnauthorizedSession(socket, sessionId, profile, undefined, { requireExistingRow: true })) return
       const state = this.getSessionState(sessionId, profile)
       if (!state) return
       const pendingEvents = [
@@ -696,6 +729,7 @@ export class BrokerRunController {
 
     socket.on('abort', (data: { session_id?: string }) => {
       if (data.session_id) {
+        if (this.rejectsUnauthorizedSession(socket, data.session_id, profile, undefined, { requireExistingRow: true })) return
         void this.handleAbort(socket, data.session_id, profile)
       }
     })
@@ -704,6 +738,7 @@ export class BrokerRunController {
       const sessionId = String(data.session_id || '').trim()
       const clarifyId = String(data.clarify_id || '').trim()
       if (!sessionId || !clarifyId) return
+      if (this.rejectsUnauthorizedSession(socket, sessionId, profile, undefined, { requireExistingRow: true })) return
       try {
         await respondToBrokerClarify({
           socket,
@@ -737,6 +772,19 @@ export class BrokerRunController {
       const sessionId = String(data.session_id || '').trim()
       const runId = String(data.run_id || '').trim()
       if (!sessionId || !runId) return
+      if (this.rejectsUnauthorizedSession(socket, sessionId, profile, undefined, { requireExistingRow: true })) {
+        // Replay is a terminal client flow (an auth card waiting on an answer):
+        // it must also learn to stop retrying, not just that it was rejected.
+        this.emitReplayFailure(
+          socket,
+          sessionId,
+          runId,
+          profile,
+          'Session no longer exists',
+          'Replay failed because this session was deleted or replaced.',
+        )
+        return
+      }
       try {
         await this.handleReplay(socket, sessionId, runId, profile)
       } catch (err) {
@@ -775,6 +823,7 @@ export class BrokerRunController {
           }
           if (m.run_id) msg.run_id = m.run_id
           if (m.client_id) msg.client_id = m.client_id
+          if (m.source_refs?.length) msg.source_refs = m.source_refs
           // Convert Anthropic format content to OpenAI format
           // Check if content is a stringified array (Hermes Gateway behavior) - only for assistant messages
           if (m.role === 'assistant' && typeof m.content === 'string') {
@@ -919,9 +968,25 @@ export class BrokerRunController {
         .filter(event => !event.acknowledgedSocketIds?.has(socket.id))
         .map(({ id, event, data }) => ({ id, event, data })),
     ]
+    let authorizedSourceRefs = new Map<string, Array<SourceRef & { open_path?: string }>>()
+    if (state.messages.some(message => message.source_refs?.length)) {
+      try {
+        authorizedSourceRefs = await authorizeSourceRefs({
+          profile: this.profileKey(profile),
+          ownerOpenId: String(socket.data?.user?.openid || socket.data?.user?.id || '').trim(),
+          messages: state.messages,
+        })
+      } catch (err) {
+        logger.warn({ err, sid }, '[chat-run-socket] source ref authorization failed during resume')
+      }
+    }
+    const messages = state.messages.map(message => ({
+      ...message,
+      source_refs: authorizedSourceRefs.get(String(message.id)) || null,
+    }))
     socket.emit('resumed', {
       session_id: sid,
-      messages: state.messages,
+      messages,
       isWorking: state.isWorking,
       isAborting: state.isAborting || false,
       events: replayEvents,
@@ -993,37 +1058,114 @@ export class BrokerRunController {
    * Returns true when the caller must stop. An unknown id is allowed through: a
    * session's first message legitimately arrives before the row exists.
    */
-  private rejectsCrossProfileSession(
+  private rejectsUnauthorizedSession(
     socket: Socket,
     sessionId: string | undefined,
     profile: string,
     queueId?: string,
+    opts?: { requireExistingRow?: boolean },
   ): boolean {
     if (!sessionId) return false
     let row: ReturnType<typeof getSession>
     try {
       row = getSession(sessionId)
-    } catch {
-      // A broken lookup is not a verdict. Fall through and let the existing run
-      // paths surface the failure. This is deliberately fail-open AT THIS LAYER and
-      // is only safe because every write path re-reads the row before persisting
-      // (handleRun's existingSession read, persistCommandMessage's own getSession):
-      // a read that throws here throws there too, and the run dies before writing.
-      // If a write path ever stops re-reading, this branch must become fail-closed.
+    } catch (err) {
+      logger.warn({ err, sessionId }, '[chat-run-socket] session authorization lookup failed')
+      socket.emit('run.rejected', {
+        event: 'run.rejected',
+        session_id: sessionId,
+        queue_id: queueId,
+        error: 'Session authorization is unavailable',
+      })
+      return true
+    }
+    if (!row) {
+      // Control events (resume/abort/…) act on EXISTING work: admitting an
+      // unknown id would let a foreign principal join a rowless in-memory
+      // session during its owner's first-turn window. Only 'run' may create.
+      if (opts?.requireExistingRow) {
+        logger.warn({ sessionId }, '[chat-run-socket] rejected control event for unknown session row')
+        socket.emit('run.rejected', {
+          event: 'run.rejected',
+          session_id: sessionId,
+          queue_id: queueId,
+          error: 'Session is not available yet',
+        })
+        return true
+      }
       return false
     }
-    if (!row || row.profile === profile) return false
-    logger.warn(
-      { sessionId, sessionProfile: row.profile, socketProfile: profile },
-      '[chat-run-socket] rejected cross-profile session access',
-    )
+    const principal = String(socket.data?.user?.openid || socket.data?.user?.id || '').trim()
+    const owner = String(row.user_id || '').trim()
+    const profileMismatch = row.profile !== profile
+    const ownerMismatch = owner ? owner !== principal : Boolean(row.expert_id)
+    if (!profileMismatch && !ownerMismatch) return false
+    logger.warn({ sessionId, profileMismatch, ownerMismatch }, '[chat-run-socket] rejected unauthorized session access')
     socket.emit('run.rejected', {
       event: 'run.rejected',
       session_id: sessionId,
       queue_id: queueId,
-      error: 'Session belongs to a different profile',
+      error: profileMismatch ? 'Session belongs to a different profile' : 'Session ownership could not be verified',
     })
     return true
+  }
+
+  private async resolveRunExpert(
+    socket: Socket,
+    sessionId: string | undefined,
+    profile: string,
+    requestedExpertId: string | undefined,
+    source: ChatRunSource | undefined,
+  ): Promise<{ existingSession: ReturnType<typeof getSession>; expert?: AuthoritativeExpert }> {
+    const existingSession = sessionId ? getSession(sessionId) : null
+    const requestedId = String(requestedExpertId || '').trim()
+    const persistedId = String(existingSession?.expert_id || '').trim()
+
+    // Experts are a chat-plane concept: coding-agent AND global-agent runs must
+    // never resolve, persist, or dispatch an expert overlay.
+    const sourceKind = String(source || '')
+    const sessionKind = String(existingSession?.source || '')
+    if (sourceKind === 'coding_agent' || sessionKind === 'coding_agent'
+      || sourceKind === 'global_agent' || sessionKind === 'global_agent') {
+      if (requestedId || persistedId) throw new Error('Expert is not available for this session type')
+      return { existingSession }
+    }
+    if (persistedId && requestedId && persistedId !== requestedId) {
+      throw new Error('Session is already bound to a different expert')
+    }
+    const expertId = persistedId || requestedId
+    if (!expertId) return { existingSession }
+
+    const principal = String(socket.data?.user?.openid || socket.data?.user?.id || '').trim()
+    if (!principal) throw new Error('Trusted user identity is unavailable')
+    if (existingSession) {
+      if (!existingSession.user_id || existingSession.user_id !== principal) {
+        throw new Error('Session ownership could not be verified')
+      }
+      if (!persistedId) throw new Error('Choose a digital employee when starting a new session')
+    }
+
+    const catalog = await fetchExpertCatalog({ profileName: profile, userKey: principal })
+    if (catalog.profile_name !== profile) {
+      throw new Error('Expert catalog profile mismatch')
+    }
+    const matches = catalog.experts.filter((entry) => entry.id === expertId)
+    if (matches.length !== 1) throw new Error('Expert is unavailable for this profile')
+    const entry = matches[0]
+    return {
+      existingSession,
+      expert: persistedId
+        ? {
+            id: persistedId,
+            label: existingSession!.expert_label || persistedId,
+            avatar: existingSession!.expert_avatar || null,
+          }
+        : {
+            id: entry.id,
+            label: entry.title || entry.name || entry.id,
+            avatar: entry.avatar || null,
+          },
+    }
   }
 
   private async handleRun(
@@ -1035,7 +1177,7 @@ export class BrokerRunController {
     const { input, session_id, model, provider, instructions, expert_id } = data
     // Fence again here, not just at the socket entry: handleRun is also reached from
     // the queue drain and other internal callers that never pass through 'run'.
-    if (this.rejectsCrossProfileSession(socket, session_id, profile, data.queue_id)) return
+    if (this.rejectsUnauthorizedSession(socket, session_id, profile, data.queue_id)) return
 
     // Local marker used only to group in-memory messages for this streamed response.
     const runMarker = session_id
@@ -1054,16 +1196,118 @@ export class BrokerRunController {
 
     const now = Math.floor(Date.now() / 1000)
     let state: SessionState | undefined
-    try {
-      // Mark working immediately on run start, and append user message.
-      if (session_id) {
+    let authoritativeExpert: AuthoritativeExpert | undefined
+    // Reserve the session SYNCHRONOUSLY, before the catalog await below: two
+    // concurrent submits must never both observe an idle session (duplicate
+    // dispatch, activeRunMarker overwrite). The later one queues instead.
+    if (session_id) {
+      try {
         state = this.getOrCreateSession(session_id, profile)
-        state.isWorking = true
-        state.events = []
-        state.profile = profile
-        state.activeRunMarker = runMarker
-
-        const existingSession = getSession(session_id)
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err)
+        logger.warn({ err, sessionId: session_id }, '[chat-run-socket] rejected run before generation admission')
+        socket.emit('run.rejected', {
+          event: 'run.rejected',
+          session_id,
+          queue_id: data.queue_id,
+          error,
+        })
+        return
+      }
+      if (state.isWorking || state.activeRunMarker) {
+        if (state.queue.length >= MAX_SESSION_QUEUE) {
+          socket.emit('run.rejected', {
+            event: 'run.rejected',
+            session_id,
+            queue_id: data.queue_id,
+            error: 'Session queue is full',
+          })
+          return
+        }
+        state.queue.push({
+          queue_id: data.queue_id || `queue_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+          principal: String(socket.data?.user?.openid || socket.data?.user?.id || '').trim() || undefined,
+          input,
+          source: data.source,
+          model,
+          provider,
+          workspace: data.workspace,
+          instructions,
+          expert_id: data.expert_id,
+          expert_label: data.expert_label,
+          expert_avatar: data.expert_avatar,
+          profile,
+        })
+        state.goalEvaluationAbortController?.abort()
+        this.nsp.to(this.sessionRoom(session_id, profile)).emit('run.queued', {
+          event: 'run.queued',
+          session_id,
+          queue_length: state.queue.length,
+        })
+        return
+      }
+      state.isWorking = true
+      state.events = []
+      state.profile = profile
+      state.activeRunMarker = runMarker
+    }
+    // Captured at reservation time: a same-owner delete-and-recreate during the
+    // catalog await passes the owner fence but MUST NOT receive stale writes.
+    const reservedGeneration = session_id ? readSessionGeneration(session_id) : null
+    const releaseRunReservation = () => {
+      if (!session_id || !state) return
+      if (this.getSessionState(session_id, profile) !== state || state.activeRunMarker !== runMarker) return
+      // Same field set the pre-existing failure path clears — a partially
+      // released reservation leaves a stale abortController/runId behind.
+      state.isWorking = false
+      state.isAborting = false
+      state.abortController = undefined
+      state.runId = undefined
+      state.activeRunMarker = undefined
+      state.responseRun = undefined
+      state.profile = undefined
+      state.events = []
+    }
+    try {
+      let resolved: Awaited<ReturnType<typeof this.resolveRunExpert>>
+      try {
+        resolved = await this.resolveRunExpert(socket, session_id, profile, expert_id, data.source)
+      } catch (err) {
+        // Same rejection contract as before the reservation moved up: catalog
+        // failures reject the run, they do not surface as a failed run.
+        releaseRunReservation()
+        socket.emit('run.rejected', {
+          event: 'run.rejected',
+          session_id,
+          queue_id: data.queue_id,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        return
+      }
+      // The catalog await yielded: the session row may have been deleted,
+      // recreated, or repointed meanwhile — re-run the ownership fence before
+      // any write against the (possibly replacement) row.
+      if (session_id && this.rejectsUnauthorizedSession(socket, session_id, profile, data.queue_id)) {
+        releaseRunReservation()
+        return
+      }
+      // Only compare when the row EXISTED at reservation: a first turn legitimately
+      // creates the row during this window, so {null,null} → {rowId,inc} is the
+      // normal create path, not a recreate.
+      if (session_id && reservedGeneration && reservedGeneration.rowId != null
+        && !sessionGenerationsEqual(readSessionGeneration(session_id), reservedGeneration)) {
+        releaseRunReservation()
+        socket.emit('run.rejected', {
+          event: 'run.rejected',
+          session_id,
+          queue_id: data.queue_id,
+          error: 'Session was recreated during authorization',
+        })
+        return
+      }
+      const existingSession = resolved.existingSession
+      authoritativeExpert = resolved.expert
+      if (session_id && state) {
         if (!data.__hideUserMessage) {
           // Convert ContentBlock[] to string for storage
           const inputStr = contentBlocksToString(input)
@@ -1104,17 +1348,11 @@ export class BrokerRunController {
           })
         }
 
-        const cleanExpertId = typeof expert_id === 'string' ? expert_id.trim() : ''
-        const isCodingAgentRun = data.source === 'coding_agent' || existingSession?.source === 'coding_agent'
-        if (cleanExpertId && !isCodingAgentRun) {
+        if (authoritativeExpert && !existingSession?.expert_id) {
           updateSession(session_id, {
-            expert_id: cleanExpertId,
-            expert_label: typeof data.expert_label === 'string' && data.expert_label.trim()
-              ? data.expert_label.trim()
-              : cleanExpertId,
-            expert_avatar: typeof data.expert_avatar === 'string' && data.expert_avatar.trim()
-              ? data.expert_avatar.trim()
-              : null,
+            expert_id: authoritativeExpert.id,
+            expert_label: authoritativeExpert.label,
+            expert_avatar: authoritativeExpert.avatar,
           } as any)
         }
 
@@ -1159,7 +1397,7 @@ export class BrokerRunController {
         provider,
         workspace: data.workspace,
         instructions,
-        expert_id,
+        expert_id: authoritativeExpert?.id,
       }, profile, runMarker, emit)
       return
     }
@@ -1216,6 +1454,7 @@ export class BrokerRunController {
         reasoning: msg.reasoning ?? null,
         reasoning_details: msg.reasoning_details ?? null,
         reasoning_content: msg.reasoning_content ?? null,
+        source_refs: msg.source_refs ?? null,
         timestamp: msg.timestamp,
       })
       flushed++
@@ -1341,7 +1580,7 @@ export class BrokerRunController {
     // handleRun, and the queue drain calls this directly, so the socket entry fence
     // does not cover a queued command. Re-check at write time: the row may have been
     // created by another profile between enqueue and drain.
-    if (this.rejectsCrossProfileSession(socket, sessionId, profile, data.queue_id)) return true
+    if (this.rejectsUnauthorizedSession(socket, sessionId, profile, data.queue_id)) return true
     if (!state) {
       try {
         state = this.getOrCreateSession(sessionId, profile)
@@ -1368,13 +1607,25 @@ export class BrokerRunController {
     const commandAbortController = serialized ? new AbortController() : undefined
 
     if (serialized && (state.isWorking || state.activeRunMarker)) {
+      if (state.queue.length >= MAX_SESSION_QUEUE) {
+        socket.emit('run.rejected', {
+          event: 'run.rejected',
+          session_id: sessionId,
+          queue_id: data.queue_id,
+          error: 'Session queue is full',
+        })
+        return true
+      }
       state.queue.push({
         queue_id: data.queue_id || `queue_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+        principal: String(socket.data?.user?.openid || socket.data?.user?.id || '').trim() || undefined,
         input: data.input,
         source: data.source,
         model: data.model,
         provider: data.provider,
         instructions: data.instructions,
+        // Raw request id on purpose: the drain re-enters this handler, which
+        // re-resolves against the then-current catalog before any dispatch.
         expert_id: data.expert_id,
         expert_label: data.expert_label,
         expert_avatar: data.expert_avatar,
@@ -1396,6 +1647,54 @@ export class BrokerRunController {
       state.runId = commandMarker
       state.abortController = commandAbortController
       state.events = []
+    }
+
+    // Catalog resolution AFTER the synchronous reservation above: a second
+    // concurrent /plan-/goal must queue, never double-enter as idle.
+    const reservedCommandGeneration = readSessionGeneration(sessionId)
+    const releaseCommandReservation = () => {
+      if (!serialized || state!.activeRunMarker !== commandMarker) return
+      state!.isWorking = false
+      state!.isAborting = false
+      state!.abortController = undefined
+      state!.runId = undefined
+      state!.activeRunMarker = undefined
+      state!.responseRun = undefined
+      state!.profile = undefined
+      state!.events = []
+    }
+    let resolvedExpert: AuthoritativeExpert | undefined
+    let existingSession: ReturnType<typeof getSession>
+    try {
+      const resolved = await this.resolveRunExpert(socket, sessionId, profile, data.expert_id, data.source)
+      existingSession = resolved.existingSession
+      resolvedExpert = resolved.expert
+    } catch (err) {
+      releaseCommandReservation()
+      socket.emit('run.rejected', {
+        event: 'run.rejected',
+        session_id: sessionId,
+        queue_id: data.queue_id,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return true
+    }
+    // Row may have been deleted/recreated during the await — re-run the fence
+    // before any write against the replacement row.
+    if (this.rejectsUnauthorizedSession(socket, sessionId, profile, data.queue_id)) {
+      releaseCommandReservation()
+      return true
+    }
+    if (reservedCommandGeneration.rowId != null
+      && !sessionGenerationsEqual(readSessionGeneration(sessionId), reservedCommandGeneration)) {
+      releaseCommandReservation()
+      socket.emit('run.rejected', {
+        event: 'run.rejected',
+        session_id: sessionId,
+        queue_id: data.queue_id,
+        error: 'Session was recreated during authorization',
+      })
+      return true
     }
     const hasCommandToken = () => (
       this.getSessionState(sessionId, profile) === state
@@ -1429,6 +1728,22 @@ export class BrokerRunController {
     try {
       state.profile = profile
       socket.join(this.sessionRoom(sessionId, profile))
+      if (resolvedExpert && !existingSession) {
+        createSessionAndBind(state, {
+          id: sessionId,
+          profile,
+          agent: (socket.data?.agentId as string | undefined)?.trim(),
+          user_id: String(socket.data?.user?.openid || socket.data?.user?.id || '') || null,
+          model: data.model,
+          provider: data.provider,
+          title: parsed.raw.replace(/[\r\n]/g, ' ').slice(0, 100),
+        })
+        updateSession(sessionId, {
+          expert_id: resolvedExpert.id,
+          expert_label: resolvedExpert.label,
+          expert_avatar: resolvedExpert.avatar,
+        } as any)
+      }
       try {
         this.persistCommandMessage(sessionId, state, parsed.raw, data.queue_id)
       } finally {
@@ -1447,6 +1762,7 @@ export class BrokerRunController {
         agentId: (socket.data?.agentId as string | undefined)?.trim(),
         sessionId,
         command: parsed.raw,
+        expertId: resolvedExpert?.id,
         signal: commandAbortController?.signal,
       })
 
@@ -1501,7 +1817,7 @@ export class BrokerRunController {
           model: data.model,
           provider: data.provider,
           instructions: data.instructions,
-          expert_id: data.expert_id,
+          expert_id: resolvedExpert?.id,
           expert_label: data.expert_label,
           expert_avatar: data.expert_avatar,
         }, profile)
@@ -1807,11 +2123,49 @@ export class BrokerRunController {
     sessionId: string,
     fallbackProfile = 'default',
     expectedState?: SessionState,
-  ) {
+  ): boolean {
     const state = this.getSessionState(sessionId, fallbackProfile)
     if (!state?.queue.length || (expectedState && state !== expectedState) || state.isWorking || state.activeRunMarker) return false
 
-    const next = state.queue.shift()!
+    // Iterative drain on purpose: a flooded queue of rejected foreign items must
+    // never recurse (stack) — each discarded item just advances the loop.
+    let next: QueuedRun | undefined
+    while ((next = state.queue.shift())) {
+      // Foreign queued input must never execute under this socket's credentials:
+      // the enqueuer principal has to match both the row owner (if the row exists
+      // by now) and the socket the drain dispatches on. Fail closed: a user item
+      // with NO recorded principal on an owned session is discarded too — only
+      // system-generated goal continuations are exempt.
+      const itemPrincipal = String(next.principal || '').trim()
+      if (!next.goalContinuation) {
+        const socketPrincipal = String(socket.data?.user?.openid || socket.data?.user?.id || '').trim()
+        let rowOwner = ''
+        try {
+          rowOwner = String(getSession(sessionId)?.user_id || '').trim()
+        } catch {
+          rowOwner = ''
+        }
+        // Only a RECORDED foreign principal is grounds for discard. Items with
+        // no principal come from internal re-entry (goal continuation, command
+        // replay) and from socket paths that already passed the ownership fence
+        // before enqueueing — discarding those drops the owner's own work.
+        const mismatch = Boolean(itemPrincipal) && Boolean(
+          (rowOwner && itemPrincipal !== rowOwner) || (socketPrincipal && itemPrincipal !== socketPrincipal),
+        )
+        if (mismatch) {
+          logger.warn({ sessionId, queueId: next.queue_id }, '[chat-run-socket] discarded queued run from foreign principal')
+          this.nsp.to(this.sessionRoom(sessionId, fallbackProfile)).emit('run.rejected', {
+            event: 'run.rejected',
+            session_id: sessionId,
+            queue_id: next.queue_id,
+            error: 'Queued run principal does not match the session owner',
+          })
+          continue
+        }
+      }
+      break
+    }
+    if (!next) return false
     logger.info('[chat-run-socket] dequeuing queued run for session %s (remaining: %d)', sessionId, state.queue.length)
     this.nsp.to(this.sessionRoom(sessionId, fallbackProfile)).emit('run.queued', {
       event: 'run.queued',

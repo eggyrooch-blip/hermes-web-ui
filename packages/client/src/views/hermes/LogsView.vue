@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { NSelect, NButton, NSpin, useMessage } from 'naive-ui'
+import { NSelect, NButton, NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { fetchLogFiles, fetchLogs, type LogEntry } from '@/api/hermes/logs'
 
 const { t } = useI18n()
-const message = useMessage()
 const logFiles = ref<{ name: string; size: string; modified: string }[]>([])
+/** Failure loading a log. */
+const paneError = ref('')
 const selectedLog = ref('agent')
 const entries = ref<LogEntry[]>([])
 const loading = ref(false)
@@ -72,7 +73,7 @@ async function loadLogs() {
     })
     entries.value = data.filter((e): e is LogEntry => e !== null)
   } catch (e: any) {
-    message.error(e.message)
+    paneError.value = e.message
   } finally {
     loading.value = false
   }
@@ -86,6 +87,7 @@ onMounted(async () => {
 
 <template>
   <div class="logs-view">
+    <p v-if="paneError" class="pane-notice" data-testid="logs-error">{{ paneError }}</p>
     <header class="page-header">
       <h2 class="header-title">{{ t('logs.title') }}</h2>
       <div class="header-actions">
@@ -151,6 +153,15 @@ onMounted(async () => {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.pane-notice {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 
 .logs-view {
   height: calc(100 * var(--vh));

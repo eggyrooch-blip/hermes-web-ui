@@ -137,20 +137,25 @@ describe('GroupChatInput mentions', () => {
     })
     await nextTick()
 
-    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 132px')
+    // Wrapper renders configured height + the 40px field inset (20 above the
+    // caret, 20 of floor before the tool row) — the same formula the main
+    // composer uses, so the textarea itself still fills to the configured 132.
+    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 172px')
 
-    Object.defineProperty(wrapper.get('.input-wrapper').element, 'clientHeight', { value: 132, configurable: true })
+    Object.defineProperty(wrapper.get('.input-wrapper').element, 'clientHeight', { value: 172, configurable: true })
     await wrapper.get('.resize-handle').trigger('mousedown', { clientY: 100 })
     document.dispatchEvent(new MouseEvent('mousemove', { clientY: 70 }))
     document.dispatchEvent(new MouseEvent('mouseup'))
     await nextTick()
 
-    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 162px')
+    // Dragging up 30px grows the field to 162 — the inset is taken back off the
+    // measured wrapper first, so the first drag does not jump by 40.
+    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 202px')
 
     settingsStore.display = { chat_input_height: 118 }
     await nextTick()
 
-    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 118px')
+    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 158px')
   })
 
   it('keeps mobile group chat input auto-height instead of applying configured height', async () => {

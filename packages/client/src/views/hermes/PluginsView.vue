@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { NAlert, NButton, NEmpty, NInput, NSelect, NSpin, NTag, useMessage } from 'naive-ui'
+import { NAlert, NButton, NEmpty, NInput, NSelect, NSpin, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { fetchPlugins, type HermesPluginInfo, type HermesPluginsMetadata } from '@/api/hermes/plugins'
 import { useProfilesStore } from '@/stores/hermes/profiles'
@@ -8,8 +8,9 @@ import { copyToClipboard } from '@/utils/clipboard'
 import { isStoredSuperAdmin } from '@/api/client'
 
 const { t, te } = useI18n()
-const message = useMessage()
 const profilesStore = useProfilesStore()
+/** Failures for this surface, kept until the next attempt. */
+const paneError = ref('')
 const canManagePlugins = computed(() => isStoredSuperAdmin())
 
 const plugins = ref<HermesPluginInfo[]>([])
@@ -119,11 +120,7 @@ async function copyCommand(plugin: HermesPluginInfo) {
   const command = pluginCommand(plugin)
   if (!command) return
   const copied = await copyToClipboard(command)
-  if (copied) {
-    message.success(t('plugins.commandCopied'))
-  } else {
-    message.error(t('chat.copyFailed'))
-  }
+  if (!copied) paneError.value = t('chat.copyFailed')
 }
 
 watch(() => profilesStore.activeProfileName || 'default', () => {
@@ -136,6 +133,7 @@ watch(() => profilesStore.activeProfileName || 'default', () => {
 
 <template>
   <div class="plugins-view">
+    <p v-if="paneError" class="pane-notice" data-testid="plugins-error">{{ paneError }}</p>
     <header class="page-header">
       <h2 class="header-title">{{ t('plugins.title') }}</h2>
       <NButton size="small" quaternary :loading="loading" @click="loadPlugins">
@@ -255,6 +253,15 @@ watch(() => profilesStore.activeProfileName || 'default', () => {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.pane-notice {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 
 .plugins-view {
   height: calc(100 * var(--vh));

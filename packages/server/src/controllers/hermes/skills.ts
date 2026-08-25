@@ -318,7 +318,30 @@ async function skillReadAnchors(ctx: any): Promise<{ own: string; profilesRoot: 
 // exists today.
 async function refuseSymlinkedSkillsPath(ctx: any): Promise<boolean> {
   const profileDir = requestProfileDir(ctx)
-  for (const candidate of [join(profileDir, 'skills'), profileDir]) {
+  // 目录两级 + **本函数守卫的写操作真正会落笔的叶子文件**。
+  //
+  // 只看目录是不够的（2026-08-14 跨模型评审 P0，已实测复现）：writeFile 跟随叶子软链。
+  // 把 <skillsDir>/.usage.json 或 <profileDir>/config.yaml 做成指向别处的软链，
+  // pin_() 的 `writeFile(usagePath, ...)`（skills.ts:1160）与 toggle() 的 config 写回
+  // 就会**穿过软链**改写目标文件 —— 探针实测：目标文件内容被覆盖成 {"pinned": true}。
+  //
+  // ⚠️ 覆盖**不完整**，这是有意为之的中间态，别以为这道守卫已经把软链问题解决了：
+  //   - SafeFileStore 的 `*.bak` 备份目的地（copyFile 同样跟随软链）没盖到；
+  //   - importSkill / deleteSkill 的动态目录没盖到；
+  //   - lstat 与实际写入之间存在时间差，租户 agent 能并发改自己的 profile。
+  // 根治方向不是继续往这个数组里加路径，而是在 SafeFileStore 层做「临时文件 + 原子 rename」、
+  // 读取用 O_NOFOLLOW —— 见 slug `skills-write-symlink-hardening`。
+  // 注：ZIP 导入**种不下**软链（解包对每个非目录条目一律 writeFile，从不调 symlink），
+  // 租户可控的种链途径尚未定论（agent 自身的 shell 是另一条信任边界）。
+  // 这道守卫按纵深防御保留：便宜，且写入路径本就不该跟随软链。
+  const skillsDir = join(profileDir, 'skills')
+  const candidates = [
+    skillsDir,
+    profileDir,
+    join(skillsDir, '.usage.json'),
+    join(profileDir, 'config.yaml'),
+  ]
+  for (const candidate of candidates) {
     const info = await lstatOrNull(candidate)
     if (info?.isSymbolicLink()) {
       ctx.status = 403

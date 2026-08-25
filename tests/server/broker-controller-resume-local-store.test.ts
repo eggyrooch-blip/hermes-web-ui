@@ -9,6 +9,7 @@ const getSessionDetailFromDbWithProfileMock = vi.hoisted(() => vi.fn())
 const getCompressionSnapshotMock = vi.hoisted(() => vi.fn())
 const parseBrokerSessionCommandMock = vi.hoisted(() => vi.fn(() => null))
 const runBrokerSessionCommandMock = vi.hoisted(() => vi.fn())
+const fetchExpertCatalogMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSession: getSessionMock,
@@ -92,6 +93,10 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/handle-broker-run', 
   runBrokerSessionCommand: runBrokerSessionCommandMock,
 }))
 
+vi.mock('../../packages/server/src/services/hermes/expert-registry-client', () => ({
+  fetchExpertCatalog: fetchExpertCatalogMock,
+}))
+
 vi.mock('../../packages/server/src/services/hermes/model-context', () => ({
   getModelContextLength: vi.fn(() => 200000),
 }))
@@ -104,6 +109,14 @@ describe('BrokerRunController local session resume', () => {
     getSessionDetailFromDbWithProfileMock.mockResolvedValue(null)
     parseBrokerSessionCommandMock.mockReturnValue(null)
     runBrokerSessionCommandMock.mockReset()
+    fetchExpertCatalogMock.mockResolvedValue({
+      profile_name: 'research',
+      experts: [{
+        id: 'keep-resource-delivery',
+        name: '资源投放专家',
+        avatar: '/api/hermes/plugin-assets/keep-resource-delivery/expert.png',
+      }],
+    })
     updateSessionMock.mockReset()
     // Id-aware: the real store returns the row for the id asked for. A single fixed row
     // for every id makes every non-'local-session' case look cross-profile to the
@@ -173,6 +186,9 @@ describe('BrokerRunController local session resume', () => {
       action: 'plan',
       kickoff_prompt: 'expanded plan prompt',
     })
+    getSessionMock.mockImplementation((id: string) => (
+      id === 'session-expert-plan' ? null : { id, profile: 'research', source: 'cli' }
+    ))
     const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
     const controller = new BrokerRunController()
     const emit = vi.fn()
@@ -180,7 +196,7 @@ describe('BrokerRunController local session resume', () => {
     const handleRun = vi.spyOn(controller as any, 'handleRun').mockResolvedValue(undefined)
     const socket = {
       connected: true,
-      data: {},
+      data: { user: { openid: 'principal-a' } },
       emit: vi.fn(),
       join: vi.fn(),
     }
@@ -191,8 +207,6 @@ describe('BrokerRunController local session resume', () => {
       model: 'test-model',
       provider: 'test-provider',
       expert_id: 'keep-resource-delivery',
-      expert_label: '资源投放专家',
-      expert_avatar: '/api/hermes/plugin-assets/keep-resource-delivery/expert.png',
     }, 'research')
 
     expect(addMessageMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -204,8 +218,6 @@ describe('BrokerRunController local session resume', () => {
       input: 'expanded plan prompt',
       session_id: 'session-expert-plan',
       expert_id: 'keep-resource-delivery',
-      expert_label: '资源投放专家',
-      expert_avatar: '/api/hermes/plugin-assets/keep-resource-delivery/expert.png',
     }), 'research')
   })
 
@@ -234,16 +246,13 @@ describe('BrokerRunController local session resume', () => {
       source: 'coding_agent',
       model: 'codex',
       provider: 'codex',
-      expert_id: 'keep-resource-delivery',
-      expert_label: '资源投放专家',
-      expert_avatar: '/api/hermes/plugin-assets/keep-resource-delivery/expert.png',
     }, 'research')
 
     expect(handleRun).toHaveBeenCalledWith(socket, expect.objectContaining({
       input: 'expanded plan prompt',
       session_id: 'coding-plan-session',
       source: 'coding_agent',
-      expert_id: 'keep-resource-delivery',
+      expert_id: undefined,
     }), 'research')
   })
 
@@ -394,11 +403,9 @@ describe('BrokerRunController local session resume', () => {
     })
     ;(controller as any).dequeueNextQueuedRun({ connected: false, emit: vi.fn(), join: vi.fn(), data: {} }, 'queued-session', 'research')
 
-    expect(addMessageMock).toHaveBeenCalledWith(expect.objectContaining({
-      session_id: 'queued-session',
-      client_id: 'queued-client-1',
-      content: 'next prompt',
-    }))
+    await vi.waitFor(() => expect(addMessageMock).toHaveBeenCalledWith(expect.objectContaining({
+      session_id: 'queued-session', client_id: 'queued-client-1', content: 'next prompt',
+    })))
   })
 
   it('keeps the queued client message id when dequeuing after an abort', async () => {
@@ -436,10 +443,8 @@ describe('BrokerRunController local session resume', () => {
     )
     ;(controller as any).dequeueNextQueuedRun(socket, 'abort-session', 'research', state)
 
-    expect(addMessageMock).toHaveBeenCalledWith(expect.objectContaining({
-      session_id: 'abort-session',
-      client_id: 'queued-client-after-abort',
-      content: 'retry after abort',
-    }))
+    await vi.waitFor(() => expect(addMessageMock).toHaveBeenCalledWith(expect.objectContaining({
+      session_id: 'abort-session', client_id: 'queued-client-after-abort', content: 'retry after abort',
+    })))
   })
 })

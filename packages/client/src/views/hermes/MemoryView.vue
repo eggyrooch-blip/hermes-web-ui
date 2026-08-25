@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { NButton, useMessage } from 'naive-ui'
+import { NButton } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
 import { fetchMemory, saveMemory, type MemoryData } from '@/api/hermes/skills'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 
 const { t } = useI18n()
-const message = useMessage()
+/** Load and save failures for this page. */
+const paneError = ref('')
 const profilesStore = useProfilesStore()
 const loading = ref(false)
 const data = ref<MemoryData | null>(null)
@@ -26,7 +27,7 @@ async function loadMemory() {
     data.value = await fetchMemory()
   } catch (err: any) {
     console.error('Failed to load memory:', err)
-    message.error(t('memory.loadFailed'))
+    paneError.value = t('memory.loadFailed')
   } finally {
     loading.value = false
   }
@@ -50,9 +51,9 @@ async function handleSave() {
     await loadMemory()
     editingSection.value = null
     editContent.value = ''
-    message.success(t('common.saved'))
+    // Saved: the entry shows its stored text.
   } catch (err: any) {
-    message.error(`${t('common.saveFailed')}: ${err.message}`)
+    paneError.value = `${t('common.saveFailed')}: ${err.message}`
   } finally {
     saving.value = false
   }
@@ -79,6 +80,7 @@ const displaySoul = computed(() => (data.value?.soul || '').replace(/§/g, '\n\n
 
 <template>
   <div class="memory-view">
+    <p v-if="paneError" class="pane-notice" data-testid="memory-error">{{ paneError }}</p>
     <header class="page-header">
       <h2 class="header-title">{{ t('memory.title') }}</h2>
       <NButton size="small" quaternary @click="loadMemory">
@@ -240,6 +242,15 @@ const displaySoul = computed(() => (data.value?.soul || '').replace(/§/g, '\n\n
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.pane-notice {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 
 .memory-view {
   height: calc(100 * var(--vh));

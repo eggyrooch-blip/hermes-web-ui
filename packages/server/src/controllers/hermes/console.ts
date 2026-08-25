@@ -114,32 +114,32 @@ export async function reauthPending(ctx: Context): Promise<void> {
 
 // ── developer plane (requireConsoleUser, self-scoped) ─────────────────────
 
-/** The four ingest endpoints already public on hermes.gotokeep.com, described
+/** The four ingest endpoints already public on hermes.example.com, described
  *  for the developer so they know how to call each. Static — no secrets. */
 const API_CATALOG = [
   {
     name: '同步推送', method: 'POST', path: '/api/run-broker/ingest',
     auth: 'Bearer <你的 ingest key>',
     purpose: '把一段内容同步交给你的 agent 处理,一次请求拿最终结果(≤180s)。',
-    example: 'curl -X POST https://hermes.gotokeep.com/api/run-broker/ingest \\\n  -H "Authorization: Bearer hm-ingest-《你的key》" \\\n  -H "Content-Type: application/json" \\\n  -d \'{"content":"帮我分析这条工单:…"}\'',
+    example: 'curl -X POST https://hermes.example.com/api/run-broker/ingest \\\n  -H "Authorization: Bearer hm-ingest-《你的key》" \\\n  -H "Content-Type: application/json" \\\n  -d \'{"content":"帮我分析这条工单:…"}\'',
   },
   {
     name: '异步提交', method: 'POST', path: '/api/run-broker/ingest/async',
     auth: 'Bearer <你的 ingest key>',
     purpose: '长任务:提交后立刻返回 run_id + poll_url,不占连接。',
-    example: 'curl -X POST https://hermes.gotokeep.com/api/run-broker/ingest/async \\\n  -H "Authorization: Bearer hm-ingest-《你的key》" \\\n  -H "Content-Type: application/json" \\\n  -d \'{"content":"…"}\'',
+    example: 'curl -X POST https://hermes.example.com/api/run-broker/ingest/async \\\n  -H "Authorization: Bearer hm-ingest-《你的key》" \\\n  -H "Content-Type: application/json" \\\n  -d \'{"content":"…"}\'',
   },
   {
     name: '轮询结果', method: 'GET', path: '/api/run-broker/ingest/runs/{run_id}',
     auth: 'Bearer <你的 ingest key>',
     purpose: '拿异步任务结果。status ∈ pending/running/succeeded/needs_clarification/needs_approval/failed/timeout。',
-    example: 'curl https://hermes.gotokeep.com/api/run-broker/ingest/runs/ing_XXXX \\\n  -H "Authorization: Bearer hm-ingest-《你的key》"',
+    example: 'curl https://hermes.example.com/api/run-broker/ingest/runs/ing_XXXX \\\n  -H "Authorization: Bearer hm-ingest-《你的key》"',
   },
   {
     name: '列出我的 Agent', method: 'GET', path: '/api/run-broker/ingest/agents',
     auth: 'Bearer <你的 ingest key>',
     purpose: '列出这个 key(owner 模式)能调用的 agent。',
-    example: 'curl https://hermes.gotokeep.com/api/run-broker/ingest/agents \\\n  -H "Authorization: Bearer hm-ingest-《你的key》"',
+    example: 'curl https://hermes.example.com/api/run-broker/ingest/agents \\\n  -H "Authorization: Bearer hm-ingest-《你的key》"',
   },
 ]
 

@@ -1,23 +1,27 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { NBadge, NButton, NDrawer, NDrawerContent, NInput } from 'naive-ui'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
+import { NDrawer, NDrawerContent } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import SkillList from '@/components/hermes/skills/SkillList.vue'
+import KpIcon from '@/components/kippies/KpIcon.vue'
+import MarketTabs from '@/components/hermes/market/MarketTabs.vue'
+import KpPage from '@/components/kippies/KpPage.vue'
+import KpListSkeleton from '@/components/kippies/KpListSkeleton.vue'
+import KpFailState from '@/components/kippies/KpFailState.vue'
+import SkillMarketGrid from '@/components/hermes/skills/SkillMarketGrid.vue'
 import SkillDetail from '@/components/hermes/skills/SkillDetail.vue'
 import SkillImportModal from '@/components/hermes/skills/SkillImportModal.vue'
 import SkillExternalDirsModal from '@/components/hermes/skills/SkillExternalDirsModal.vue'
 import PendingWriteApprovals from '@/components/hermes/skills/PendingWriteApprovals.vue'
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
-import { fetchSkills, type SkillCategory, type SkillSource, type SkillInfo } from '@/api/hermes/skills'
+import { fetchSkills, type SkillCategory, type SkillInfo } from '@/api/hermes/skills'
 import { fetchPendingWrites } from '@/api/hermes/write-gate'
 import { isStoredSuperAdmin } from '@/api/client'
 import { useProfilesStore } from '@/stores/hermes/profiles'
-
-// `keepaihub` is a display-only merge of backend sources `hub` + `keephub`
-// (see SkillList.vue displaySource()). Not a real backend SkillSource.
-type SourceFilter = SkillSource | 'modified' | 'keepaihub'
+import { prefillComposer } from '@/composables/useComposerPrefill'
 
 const { t, locale } = useI18n()
+const router = useRouter()
 const profilesStore = useProfilesStore()
 const props = withDefaults(defineProps<{
   embedded?: boolean
@@ -27,23 +31,48 @@ const props = withDefaults(defineProps<{
 const categories = ref<SkillCategory[]>([])
 const archived = ref<SkillInfo[]>([])
 const loading = ref(false)
+// The load used to swallow its error into console.error, so a failed fetch was
+// indistinguishable from "you have no skills" — an empty grid with no way back.
+const loadFailed = ref(false)
 const selectedCategory = ref('')
 const selectedSkill = ref('')
 const searchQuery = ref('')
-const showSidebar = ref(true)
-const sourceFilter = ref<SourceFilter | null>(null)
 const recommendations = ref('')
+/** Post-import instruction: the gateway has to reload for it to take effect. */
+const importedNotice = ref('')
 const showImportModal = ref(false)
 const showExternalDirsModal = ref(false)
 const showWriteApprovalDrawer = ref(false)
+const showSkillDetail = ref(false)
 const pendingWriteCount = ref(0)
 const writeApprovalSupported = ref(true)
 const isSuperAdmin = computed(() => isStoredSuperAdmin())
 const showHostSkillActions = computed(() => isSuperAdmin.value)
 const activeProfileName = computed(() => profilesStore.activeProfileName || '')
-let mobileQuery: MediaQueryList | null = null
 let recommendationsRequestSeq = 0
 let profileWatchReady = false
+
+// 创建技能 split menu (prototype CreateSkillMenu): one dark pill in the head,
+// every acquisition/管理 entry lives in the popover instead of the header row.
+const createMenuOpen = ref(false)
+const createMenuRef = ref<HTMLElement>()
+
+function handleWindowPointerDown(e: MouseEvent) {
+  if (!createMenuOpen.value) return
+  if (createMenuRef.value && !createMenuRef.value.contains(e.target as Node)) {
+    createMenuOpen.value = false
+  }
+}
+
+onMounted(() => window.addEventListener('mousedown', handleWindowPointerDown))
+onBeforeUnmount(() => window.removeEventListener('mousedown', handleWindowPointerDown))
+
+function pickCreateMenu(action: 'import' | 'writeApprovals' | 'externalDirs') {
+  createMenuOpen.value = false
+  if (action === 'import') showImportModal.value = true
+  else if (action === 'writeApprovals') showWriteApprovalDrawer.value = true
+  else showExternalDirsModal.value = true
+}
 
 const recommendationsPath = computed(() => {
   return String(locale.value).startsWith('zh')
@@ -60,14 +89,7 @@ const selectedSkillData = computed(() => {
   return cat?.skills.find(s => s.name === selectedSkill.value) ?? null
 })
 
-function handleMobileChange(e: MediaQueryListEvent | MediaQueryList) {
-  showSidebar.value = !e.matches
-}
-
 onMounted(() => {
-  mobileQuery = window.matchMedia('(max-width: 768px)')
-  handleMobileChange(mobileQuery)
-  mobileQuery.addEventListener('change', handleMobileChange)
   void Promise.all([
     loadSkills(),
     loadPendingWriteCount(),
@@ -75,10 +97,6 @@ onMounted(() => {
     profileWatchReady = true
   })
   loadRecommendations()
-})
-
-onUnmounted(() => {
-  mobileQuery?.removeEventListener('change', handleMobileChange)
 })
 
 async function loadSkills() {
@@ -90,8 +108,13 @@ async function loadSkills() {
     const data = await fetchSkills(activeProfileName.value || undefined)
     categories.value = data.categories
     archived.value = data.archived
+    loadFailed.value = false
   } catch (err: any) {
     console.error('Failed to load skills:', err)
+    // Only claim failure on a cold first load. A refresh that fails while data
+    // is already on screen must not replace it with the failure page — the
+    // content you were reading is still valid.
+    loadFailed.value = categories.value.length === 0
   } finally {
     loading.value = false
   }
@@ -143,33 +166,39 @@ async function loadPendingWriteCount() {
   }
 }
 
-function toggleFilter(filter: SourceFilter) {
-  sourceFilter.value = sourceFilter.value === filter ? null : filter
-}
-
 function handleSelect(category: string, skill: string) {
-  if (selectedCategory.value === category && selectedSkill.value === skill) {
-    selectedCategory.value = ''
-    selectedSkill.value = ''
-    return
-  }
   selectedCategory.value = category
   selectedSkill.value = skill
-  if (window.innerWidth <= 768) {
-    showSidebar.value = false
-  }
+  showSkillDetail.value = true
+}
+
+// 用它开一个任务: open a fresh task with the skill's slash command staged.
+// `new: '1'` is the same fresh-draft signal the agents hub uses (ChatView
+// consumes it); the prefill watcher only fires while ChatInput is mounted,
+// and in surface mode it is not — navigate first, then stage the text.
+async function handleUse(_category: string, skill: string) {
+  await router.push({ name: 'hermes.chat', query: { new: '1' } })
+  await nextTick()
+  prefillComposer(`/${skill} `)
 }
 
 function handleSkillDeleted(category: string, skillName: string) {
   if (selectedCategory.value === category && selectedSkill.value === skillName) {
     selectedCategory.value = ''
     selectedSkill.value = ''
+    showSkillDetail.value = false
   }
   loadSkills()
 }
 
-function handleImported() {
+function handleImported(name: string) {
   showImportModal.value = false
+  // The reload hint is an INSTRUCTION, not a receipt — the skill will not take
+  // effect until the gateway reloads. The dialog that produced it is closing, so
+  // it lives here, resident, until dismissed.
+  importedNotice.value = name
+    ? `${t('skills.importSuccess')}: ${name} — ${t('skills.reloadHint')}`
+    : `${t('skills.importSuccess')} — ${t('skills.reloadHint')}`
   loadSkills()
 }
 
@@ -192,103 +221,89 @@ function handlePinToggled(name: string, pinned: boolean) {
 </script>
 
 <template>
-  <div class="skills-view" :class="{ 'is-embedded': props.embedded }">
-    <header class="page-header">
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <h2 class="header-title">{{ t('skills.title') }}</h2>
-        <button v-if="!showSidebar" class="sidebar-toggle" @click="showSidebar = true">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-        </button>
+  <KpPage wide class="skills-view" :class="{ 'is-embedded': props.embedded }">
+    <p v-if="importedNotice" class="skills-notice" data-testid="skills-import-notice">
+      <span class="skills-notice__text">{{ importedNotice }}</span>
+      <button
+        type="button"
+        class="skills-notice__close"
+        :title="t('common.close')"
+        @click="importedNotice = ''"
+      >&times;</button>
+    </p>
+    <!-- Prototype page head: title block left, search pill + the single dark
+         创建技能 split menu right. Nothing else lives in the header row. -->
+    <header class="skills-head">
+      <div class="skills-head__titles">
+        <h1 class="t-h1">{{ t('market.title') }}</h1>
       </div>
-      <div class="source-legend">
-        <button class="legend-item" :class="{ active: sourceFilter === 'builtin' }" @click="toggleFilter('builtin')">
-          <span class="legend-dot dot-builtin" />{{ t('skills.source.builtin') }}
-        </button>
-        <button class="legend-item" :class="{ active: sourceFilter === 'keepaihub' }" @click="toggleFilter('keepaihub')">
-          <span class="legend-dot dot-keepaihub" />{{ t('skills.source.keepaihub') }}
-        </button>
-        <button class="legend-item" :class="{ active: sourceFilter === 'local' }" @click="toggleFilter('local')">
-          <span class="legend-dot dot-local" />{{ t('skills.source.local') }}
-        </button>
-        <button class="legend-item" :class="{ active: sourceFilter === 'external' }" @click="toggleFilter('external')">
-          <span class="legend-dot dot-external" />{{ t('skills.source.external') }}
-        </button>
-        <button class="legend-item" :class="{ active: sourceFilter === 'modified' }" @click="toggleFilter('modified')">
-          <span class="modified-icon">✎</span>{{ t('skills.modified') }}
-        </button>
-      </div>
-      <div class="header-actions">
-        <!-- Standalone /hermes/skills route only. In the embedded expert panel
-             this entry lives in ExpertView's shared header (top-right). -->
-        <a
-          v-if="!props.embedded"
-          class="keephub-link"
-          href="https://ark.gotokeep.com/aidock-cms/admin/skills"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          {{ t('skills.keepHubLink') }}
-        </a>
-        <NButton
-          v-if="writeApprovalSupported"
-          class="header-action-btn"
-          size="small"
-          :title="t('skills.writeApprovalTitle')"
-          @click="showWriteApprovalDrawer = true"
-        >
-          <template #icon>
-            <NBadge :value="pendingWriteCount" :max="99" :show="pendingWriteCount > 0">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M9 11l3 3L22 4" />
-                <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-              </svg>
-            </NBadge>
-          </template>
-          <span class="header-action-label">
-            {{ t('skills.writeApprovalButton', { count: pendingWriteCount }) }}
-          </span>
-        </NButton>
-        <NButton
-          class="header-action-btn"
-          size="small"
-          :title="t('skills.import')"
-          @click="showImportModal = true"
-        >
-          <template #icon>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="17 8 12 3 7 8" />
-              <line x1="12" y1="3" x2="12" y2="15" />
-            </svg>
-          </template>
-          <span class="header-action-label">{{ t('skills.import') }}</span>
-        </NButton>
-        <NButton
-          v-if="showHostSkillActions"
-          class="header-action-btn"
-          size="small"
-          :title="t('skills.externalDirs.manage')"
-          @click="showExternalDirsModal = true"
-        >
-          <template #icon>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            </svg>
-          </template>
-          <span class="header-action-label">{{ t('skills.externalDirs.manage') }}</span>
-        </NButton>
-        <NInput
-          v-model:value="searchQuery"
-          :placeholder="t('skills.searchPlaceholder')"
-          size="small"
-          clearable
-          style="width: 130px"
-        />
+      <div class="skills-head__actions">
+        <label class="skills-search">
+          <KpIcon name="line_search" :size="14" />
+          <input
+            v-model="searchQuery"
+            class="skills-search__input"
+            type="text"
+            :placeholder="t('skills.searchPlaceholder')"
+          />
+        </label>
+        <div ref="createMenuRef" class="create-skill">
+          <button type="button" class="ab create-skill-btn" @click="createMenuOpen = !createMenuOpen">
+            <KpIcon name="full_add" :size="15" />
+            {{ t('skills.create') }}
+            <span class="create-skill-btn__rule" />
+            <KpIcon
+              name="line_arrow_right"
+              :size="12"
+              class="create-skill-btn__caret"
+              :class="{ 'is-open': createMenuOpen }"
+            />
+          </button>
+          <div v-if="createMenuOpen" class="create-skill-menu">
+            <button type="button" class="create-skill-menu__row" @click="pickCreateMenu('import')">
+              <KpIcon name="line_menu" :size="15" class="create-skill-menu__icon" />
+              <span class="t-sub">{{ t('skills.importTitle') }}</span>
+            </button>
+            <a
+              class="create-skill-menu__row keephub-link"
+              href="https://ark.example.com/aidock-cms/admin/skills"
+              target="_blank"
+              rel="noopener noreferrer"
+              @click="createMenuOpen = false"
+            >
+              <KpIcon name="full_arrow_up" :size="15" class="create-skill-menu__icon" />
+              <span class="t-sub">{{ t('skills.keepHubLink') }}</span>
+            </a>
+            <template v-if="writeApprovalSupported || showHostSkillActions">
+              <div class="create-skill-menu__divider" />
+              <button
+                v-if="writeApprovalSupported"
+                type="button"
+                class="create-skill-menu__row"
+                @click="pickCreateMenu('writeApprovals')"
+              >
+                <KpIcon name="line_check_circle" :size="15" class="create-skill-menu__icon" />
+                <span class="t-sub">{{ t('skills.writeApprovalButton', { count: pendingWriteCount }) }}</span>
+              </button>
+              <button
+                v-if="showHostSkillActions"
+                type="button"
+                class="create-skill-menu__row"
+                @click="pickCreateMenu('externalDirs')"
+              >
+                <KpIcon name="line_data_sources" :size="15" class="create-skill-menu__icon" />
+                <span class="t-sub">{{ t('skills.externalDirs.manage') }}</span>
+              </button>
+            </template>
+          </div>
+        </div>
       </div>
     </header>
+
+    <MarketTabs active="skills" />
+    <!-- The section's own line, below the strip: the h1 names the market, this
+         names the section you are looking at. -->
+    <p class="t-sub-multi market-sub">{{ t('skills.subtitle') }}</p>
 
     <SkillImportModal v-if="showImportModal" @close="showImportModal = false" @saved="handleImported" />
     <SkillExternalDirsModal v-if="showHostSkillActions && showExternalDirsModal"
@@ -307,58 +322,95 @@ function handlePinToggled(name: string, pinned: boolean) {
       </NDrawerContent>
     </NDrawer>
 
-    <div class="skills-content">
-      <div v-if="loading && categories.length === 0" class="skills-loading">{{ t('common.loading') }}</div>
-      <div v-else class="skills-layout">
-          <div class="mobile-backdrop" :class="{ active: showSidebar }" @click="showSidebar = false" />
-          <div v-if="showSidebar" class="skills-sidebar">
-            <SkillList
-              :categories="categories"
-              :archived="archived"
-              :selected-skill="selectedCategory && selectedSkill ? `${selectedCategory}/${selectedSkill}` : null"
-              :search-query="searchQuery"
-              :source-filter="sourceFilter"
-              @select="handleSelect"
-              @deleted="handleSkillDeleted"
-            />
-          </div>
-          <div class="skills-main">
-            <SkillDetail
-              v-if="selectedCategory && selectedSkill"
-              :category="selectedCategory"
-              :skill="selectedSkill"
-              :skill-name="selectedSkillData?.name || selectedSkill"
-              :patch-count="selectedSkillData?.patchCount"
-              :use-count="selectedSkillData?.useCount"
-              :view-count="selectedSkillData?.viewCount"
-              :pinned="selectedSkillData?.pinned"
-              :editable="selectedSkillData?.editable"
-              @pin-toggled="handlePinToggled"
-            />
-            <div v-else class="recommendations-panel">
-              <MarkdownRenderer v-if="recommendations" :content="recommendations" />
-              <div v-else class="empty-detail">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.2">
-                  <polygon points="12 2 2 7 12 12 22 7 12 2" />
-                  <polyline points="2 17 12 22 22 17" />
-                  <polyline points="2 12 12 17 22 12" />
-                </svg>
-                <span>{{ t('skills.noMatch') }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-    </div>
-  </div>
+    <!-- Skeleton, not the word "loading": the card wall's shape is already
+         known, so it can be drawn before the data lands. -->
+    <KpListSkeleton
+      v-if="loading && categories.length === 0"
+      variant="card"
+      grid
+      :rows="6"
+    />
+    <KpFailState
+      v-else-if="loadFailed"
+      :title="t('common.loadFailedTitle')"
+      :body="t('common.loadFailedBody')"
+      :retry-label="t('common.reload')"
+      :retry-fail-label="t('common.stillUnreachable')"
+      :on-retry="loadSkills"
+    />
+    <template v-else>
+      <SkillMarketGrid
+        :categories="categories"
+        :archived="archived"
+        :search-query="searchQuery"
+        @select="handleSelect"
+        @deleted="handleSkillDeleted"
+        @use="handleUse"
+      />
+
+      <!-- The community recommendation list keeps its place under the wall. -->
+      <section v-if="recommendations" class="skills-recommendations">
+        <MarkdownRenderer :content="recommendations" />
+      </section>
+    </template>
+
+    <NDrawer
+      v-model:show="showSkillDetail"
+      width="min(880px, calc(100vw - 32px))"
+      placement="right"
+    >
+      <NDrawerContent :native-scrollbar="false" closable>
+        <SkillDetail
+          v-if="selectedCategory && selectedSkill"
+          :category="selectedCategory"
+          :skill="selectedSkill"
+          :skill-name="selectedSkillData?.name || selectedSkill"
+          :patch-count="selectedSkillData?.patchCount"
+          :use-count="selectedSkillData?.useCount"
+          :view-count="selectedSkillData?.viewCount"
+          :pinned="selectedSkillData?.pinned"
+          :editable="selectedSkillData?.editable"
+          @pin-toggled="handlePinToggled"
+        />
+      </NDrawerContent>
+    </NDrawer>
+  </KpPage>
 </template>
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.skills-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--surface-2);
+  color: var(--fg-primary);
+  box-shadow: inset 0 0 0 0.5px var(--divider);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
+.skills-notice__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.skills-notice__close {
+  flex: 0 0 auto;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
 
 .skills-view {
   height: calc(100 * var(--vh));
-  display: flex;
-  flex-direction: column;
 
   &.is-embedded {
     height: 100%;
@@ -366,219 +418,166 @@ function handlePinToggled(name: string, pinned: boolean) {
   }
 }
 
-.source-legend {
+// Prototype market-shell head: flex-start row, gap 16, 24px underhang (the
+// same head geometry KpPage uses; this one is hand-rolled because the actions
+// slot needs a split menu).
+.skills-head {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: 1;
-  flex-wrap: wrap;
-  margin-left: 16px;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 24px;
 }
 
-.header-actions {
+.skills-head__titles {
+  flex: 1;
+  min-width: 0;
+}
+
+// Section line under the tab strip: same measure as KpPage's own sub.
+.market-sub {
+  margin-bottom: 24px;
+  max-width: 560px;
+}
+
+.skills-head__actions {
   display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+// Keep search pill — 220×36 like the prototype's plugin-tab search.
+.skills-search {
+  display: inline-flex;
   align-items: center;
   gap: 8px;
+  height: 36px;
+  padding: 0 12px;
+  width: 220px;
+  border-radius: var(--r-pill);
+  background: var(--gray-f7);
+  color: var(--fg-aux);
 }
 
-.keephub-link {
-  display: inline-flex;
-  align-items: center;
-  height: 28px;
-  padding: 0 2px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--accent-primary);
-  text-decoration: none;
-  white-space: nowrap;
-  transition: color $transition-fast;
-
-  &:hover {
-    color: var(--accent-hover);
-  }
-}
-
-.legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: $text-muted;
-  white-space: nowrap;
-  padding: 2px 6px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: none;
-  cursor: pointer;
-  transition: all $transition-fast;
-
-  &:hover {
-    color: $text-secondary;
-    background: rgba(var(--accent-primary-rgb), 0.04);
-  }
-
-  &.active {
-    color: $text-primary;
-    border-color: $border-color;
-    background: rgba(var(--accent-primary-rgb), 0.08);
-  }
-}
-
-.legend-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.legend-dot.dot-builtin { background: #888; }
-.legend-dot.dot-keepaihub { background: #13bf8c; }
-.legend-dot.dot-local { background: #66bb6a; }
-.legend-dot.dot-external { background: #f59e0b; }
-
-.modified-icon {
-  font-size: 11px;
-  color: $warning;
-  opacity: 0.7;
-}
-
-@media (max-width: $breakpoint-mobile) {
-  .source-legend {
-    display: none;
-  }
-
-  .header-action-label {
-    display: none;
-  }
-
-  .header-action-btn {
-    width: 30px;
-    padding: 0;
-
-    :deep(.n-button__content) {
-      justify-content: center;
-    }
-
-    :deep(.n-button__icon) {
-      margin: 0;
-    }
-  }
-}
-
-.search-input {
-  width: 100px;
-
-  @media (max-width: $breakpoint-mobile) {
-    width: 100%;
-  }
-}
-
-.skills-content {
+.skills-search__input {
   flex: 1;
-  overflow: hidden;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg-primary);
+  font: var(--w-regular) var(--t-13) / var(--lh-1) var(--font-cn);
+
+  &::placeholder {
+    color: var(--fg-aux);
+  }
+}
+
+.create-skill {
+  position: relative;
+}
+
+// Prototype CreateSkillMenu trigger: 34px ink pill with an inner rule
+// before the caret.
+.create-skill-btn {
+  height: 34px;
+  padding: 0 12px 0 16px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--gray-33);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font: var(--w-medium) var(--t-14) / var(--lh-1) var(--font-cn);
+  white-space: nowrap;
+}
+
+.create-skill-btn__rule {
+  width: 1px;
+  align-self: stretch;
+  background: rgba(255, 255, 255, 0.2);
+  margin: 0 2px;
+}
+
+.create-skill-btn__caret {
+  transform: rotate(90deg);
+  transition: transform var(--motion-fast) var(--ease-std);
+
+  &.is-open {
+    transform: rotate(-90deg);
+  }
+}
+
+.create-skill-menu {
+  position: absolute;
+  right: 0;
+  top: 40px;
+  min-width: 176px;
+  background: var(--bg);
+  border-radius: 12px;
+  padding: 6px;
+  box-shadow: var(--shadow-notification);
+  z-index: 30;
+}
+
+.create-skill-menu__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-primary);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+
+  &:hover {
+    background: var(--gray-f2);
+  }
+}
+
+.create-skill-menu__icon {
+  color: var(--fg-aux);
+}
+
+.create-skill-menu__divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--divider);
 }
 
 .skills-loading {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100%;
+  padding: 72px 0;
   font-size: 13px;
   color: $text-muted;
 }
 
-.skills-layout {
-  display: flex;
-  height: 100%;
-}
-
-.skills-sidebar {
-  width: 280px;
-  border-right: 1px solid $border-color;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  min-height: 0;
-}
-
-.skills-main {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px 20px;
-  min-width: 0;
-}
-
-.sidebar-toggle {
-  display: none;
-  border: none;
-  background: none;
-  cursor: pointer;
-  color: $text-secondary;
-  padding: 4px;
-  border-radius: $radius-sm;
-
-  &:hover {
-    background: rgba(var(--accent-primary-rgb), 0.06);
-  }
-}
-
-@media (max-width: $breakpoint-mobile) {
-  .sidebar-toggle {
-    display: flex;
-  }
-
-  .skills-sidebar {
-    position: absolute;
-    left: 0;
-    top: 0;
-    height: 100%;
-    z-index: 10;
-    background: $bg-card;
-    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
-  }
-
-  .skills-layout {
-    position: relative;
-  }
-
-  .mobile-backdrop {
-    display: block;
-    position: absolute;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.4);
-    z-index: 9;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity $transition-fast;
-
-    &.active {
-      opacity: 1;
-      pointer-events: auto;
-    }
-  }
-}
-
-.empty-detail {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  color: $text-muted;
-  font-size: 13px;
-}
-
-.recommendations-panel {
-  max-width: 920px;
-  margin: 0 auto;
-  padding: 4px 0 40px;
+.skills-recommendations {
+  margin-top: 48px;
+  padding-top: 32px;
+  border-top: 0.5px solid var(--divider);
 
   :deep(.markdown-body) {
     font-size: 14px;
     line-height: 1.7;
+  }
+}
+
+@media (max-width: $breakpoint-mobile) {
+  .skills-head {
+    flex-direction: column;
+  }
+
+  .skills-search {
+    width: 160px;
   }
 }
 </style>

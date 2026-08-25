@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { NAlert, NButton, NDescriptions, NDescriptionsItem, NSelect, NSpace, NTag, useMessage } from 'naive-ui'
+import { NAlert, NButton, NDescriptions, NDescriptionsItem, NSelect, NSpace, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import {
   fetchPreviewStatus,
@@ -15,8 +15,13 @@ import {
 } from '@/api/hermes/system'
 
 const { t } = useI18n()
-const message = useMessage()
 
+/**
+ * Outcomes for this pane. Toned because both kinds happen here: an action
+ * that failed, and a BACKGROUND action that finished — the latter has no
+ * control to report on, since nobody pressed anything at that moment.
+ */
+const paneNotice = ref<{ text: string; tone: 'error' | 'info' } | null>(null)
 const loading = ref(false)
 const tagsLoading = ref(false)
 const actionLoading = ref('')
@@ -106,16 +111,21 @@ async function runAction(action: string, fn: () => Promise<PreviewActionResponse
     const res = await fn()
     status.value = res
     if (res.success === false) {
-      message.warning(errorCodeMessage(res.code, res.message))
+      paneNotice.value = { text: errorCodeMessage(res.code, res.message), tone: 'error' }
       return
     }
+    // A finished action shows in the status block this just replaced; only an
+    // action that neither queued nor started needs a word of its own.
     if (!res.accepted && !res.active_action) {
-      message.success(t(successKey))
+      paneNotice.value = { text: t(successKey), tone: 'info' }
     }
   } catch (err: any) {
     applyErrorStatus(err)
     const payload = parseErrorPayload(err)
-    message.error(errorCodeMessage(payload?.code, payload?.message || err?.message))
+    paneNotice.value = {
+      text: errorCodeMessage(payload?.code, payload?.message || err?.message),
+      tone: 'error',
+    }
   } finally {
     actionLoading.value = ''
   }
@@ -142,7 +152,7 @@ function stopPolling() {
 
 function requireTag(): string | null {
   if (!selectedTag.value) {
-    message.warning(t('githubPreview.selectTag'))
+    paneNotice.value = { text: t('githubPreview.selectTag'), tone: 'error' }
     return null
   }
   return selectedTag.value
@@ -206,17 +216,23 @@ watch(
     lastHandledCompletion.value = completedAt
     const completedAction = status.value?.last_action || ''
     if (status.value?.last_action_success === false) {
-      message.error(errorCodeMessage(status.value.last_action_code, status.value.last_action_message))
+      paneNotice.value = {
+        text: errorCodeMessage(status.value.last_action_code, status.value.last_action_message),
+        tone: 'error',
+      }
       return
     }
+    // A background action finishing is worth stating: nobody pressed anything
+    // just now, so there is no control to read the outcome from.
     const successKey = actionSuccessKeys[completedAction]
-    if (successKey) message.success(t(successKey))
+    if (successKey) paneNotice.value = { text: t(successKey), tone: 'info' }
   },
 )
 </script>
 
 <template>
   <div class="github-preview-settings">
+    <p v-if="paneNotice" class="pane-notice" :class="`is-${paneNotice.tone}`" data-testid="github-preview-notice">{{ paneNotice.text }}</p>
     <div class="settings-section">
       <div class="control-row">
         <NSelect
@@ -305,6 +321,24 @@ watch(
 
 <style scoped lang="scss">
 @use "@/styles/variables" as *;
+.pane-notice {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
+.pane-notice.is-error {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.pane-notice.is-info {
+  background: var(--surface-2);
+  color: var(--fg-primary);
+  box-shadow: inset 0 0 0 0.5px var(--divider);
+}
+
 
 .github-preview-settings {
   width: 100%;

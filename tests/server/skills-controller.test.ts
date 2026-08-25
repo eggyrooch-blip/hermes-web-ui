@@ -1144,3 +1144,73 @@ describe('skills controller', () => {
     }
   })
 })
+
+describe('leaf-symlink confused deputy (pin/toggle 的写入路径)', () => {
+  // 2026-08-14 跨模型评审 P0，已实测复现：refuseSymlinkedSkillsPath 原来只 lstat
+  // profileDir 与 profileDir/skills 两级目录，**不看要写的叶子文件**。而 writeFile
+  // 跟随软链 —— 把 <skillsDir>/.usage.json 或 <profileDir>/config.yaml 做成指向别处的
+  // 软链，pin_() / toggle() 的写回就会穿过软链改写目标。
+  //
+  // 注：ZIP 导入种不下软链（解包只 writeFile，不调 symlink）；租户可控的种链途径未定论。
+  // 这道守卫按纵深防御保留。
+  it('拒绝 .usage.json 是软链的 pin 请求，且目标文件一个字节都不变', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'skills-leaf-symlink-'))
+    const profileDir = join(root, 'profile')
+    const skillsDir = join(profileDir, 'skills')
+    await mkdir(skillsDir, { recursive: true })
+    const victim = join(root, 'victim-secret.json')
+    const VICTIM_CONTENT = '{"secret":"do-not-touch"}\n'
+    await writeFile(victim, VICTIM_CONTENT, 'utf-8')
+    await symlink(victim, join(skillsDir, '.usage.json'))
+
+    mockGetProfileDir.mockReturnValue(profileDir)
+    mockGetHermesBaseDir.mockReturnValue(join(root, 'hermes-base'))
+
+    try {
+      const { pin_ } = await loadController()
+      const ctx: any = {
+        state: { profile: { name: 'tenant' } },
+        request: { body: { name: 'some-skill', pinned: true } },
+        status: 200,
+        body: null,
+      }
+      await pin_(ctx)
+
+      expect(ctx.status, 'pin 必须被守卫拒绝').toBe(403)
+      expect(await readFile(victim, 'utf-8'), '目标文件被穿过软链改写了').toBe(VICTIM_CONTENT)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('拒绝 config.yaml 是软链的 toggle 请求，且目标文件一个字节都不变', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'skills-leaf-symlink-cfg-'))
+    const profileDir = join(root, 'profile')
+    await mkdir(join(profileDir, 'skills'), { recursive: true })
+    const victim = join(root, 'other-profile-config.yaml')
+    const VICTIM_CONTENT = 'credentials:\n  token: do-not-leak\n'
+    await writeFile(victim, VICTIM_CONTENT, 'utf-8')
+    await symlink(victim, join(profileDir, 'config.yaml'))
+
+    mockGetProfileDir.mockReturnValue(profileDir)
+    mockGetHermesBaseDir.mockReturnValue(join(root, 'hermes-base'))
+    mockUpdateConfigYamlForProfile.mockClear()
+
+    try {
+      const { toggle } = await loadController()
+      const ctx: any = {
+        state: { profile: { name: 'tenant' } },
+        request: { body: { name: 'some-skill', enabled: false } },
+        status: 200,
+        body: null,
+      }
+      await toggle(ctx)
+
+      expect(ctx.status, 'toggle 必须被守卫拒绝').toBe(403)
+      expect(mockUpdateConfigYamlForProfile, '守卫应在写入前拦下，配置写回不该被调用').not.toHaveBeenCalled()
+      expect(await readFile(victim, 'utf-8'), '目标文件被穿过软链改写了').toBe(VICTIM_CONTENT)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

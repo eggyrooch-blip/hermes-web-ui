@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NButton, NSwitch, NTooltip } from 'naive-ui'
+import { NButton, NTooltip } from 'naive-ui'
+import KpIcon from '@/components/kippies/KpIcon.vue'
+import ComposerBox from '@/components/hermes/chat/ComposerBox.vue'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useSettingsStore } from '@/stores/hermes/settings'
-import { useToolTraceVisibility } from '@/composables/useToolTraceVisibility'
 import { buildMentionOptions, type MentionOption } from './mention-options'
 import type { Attachment } from '@/stores/hermes/chat'
 import { CHAT_INPUT_HEIGHT_MOBILE_QUERY, chatInputHeightStyle, clampChatInputHeight } from '@/utils/chat-input-height'
@@ -13,7 +14,6 @@ const { t } = useI18n()
 const emit = defineEmits<{ send: [content: string, attachments?: Attachment[]] }>()
 const store = useGroupChatStore()
 const settingsStore = useSettingsStore()
-const { toolTraceVisible, toggleToolTraceVisible } = useToolTraceVisibility()
 
 const inputText = ref('')
 const inputWrapperRef = ref<HTMLDivElement>()
@@ -24,19 +24,12 @@ const attachments = ref<Attachment[]>([])
 const isDragging = ref(false)
 const dragCounter = ref(0)
 const isComposing = ref(false)
-const autoPlaySpeech = ref(false)
-
+// Auto-play voice is set in 设置 → 显示 (same localStorage key); the composer
+// only has to hand the stored preference to the store on mount. It used to own
+// an inline switch here, which is why the two composers had different tool rows.
 onMounted(() => {
     const saved = localStorage.getItem('autoPlaySpeech')
-    if (saved !== null) {
-        autoPlaySpeech.value = saved === 'true'
-        store.setAutoPlaySpeech(autoPlaySpeech.value)
-    }
-})
-
-watch(autoPlaySpeech, (value) => {
-    localStorage.setItem('autoPlaySpeech', String(value))
-    store.setAutoPlaySpeech(value)
+    if (saved !== null) store.setAutoPlaySpeech(saved === 'true')
 })
 
 watch(() => settingsStore.display.chat_input_height, () => {
@@ -48,9 +41,18 @@ const textareaHeight = ref<number | null>(null)
 const isMobileInput = ref(false)
 let mobileInputQuery: MediaQueryList | null = null
 
-const inputWrapperStyle = computed(() =>
-    chatInputHeightStyle(settingsStore.display.chat_input_height, textareaHeight.value, isMobileInput.value),
-)
+// FIELD_INSET is the field section's own padding (20 above the caret, 20 of
+// floor before the tool row). The wrapper is border-box with a fixed inline
+// height, so the configured textarea height has to be grown by it — otherwise
+// 设置 → 显示 says 56 and the visible field is 16. Same formula as ChatInput.
+const FIELD_INSET = 40
+const inputWrapperStyle = computed(() => {
+    const style = chatInputHeightStyle(settingsStore.display.chat_input_height, textareaHeight.value, isMobileInput.value)
+    if (style.height) {
+        style.height = `${Number.parseInt(style.height, 10) + FIELD_INSET}px`
+    }
+    return style
+})
 const inputTextareaStyle = computed(() => (isMobileInput.value ? {} : { height: '100%' }))
 
 function syncMobileInputState() {
@@ -65,7 +67,11 @@ function startResize(e: MouseEvent) {
   if (isMobileInput.value) return
   const el = textareaRef.value
   if (!el) return
-  const startHeight = inputWrapperRef.value?.clientHeight || el.clientHeight
+  // Measured off the wrapper, so the inset has to come back off or the first
+  // drag jumps by FIELD_INSET.
+  const startHeight = inputWrapperRef.value?.clientHeight
+    ? inputWrapperRef.value.clientHeight - FIELD_INSET
+    : el.clientHeight
   const startY = e.clientY
 
   function onMouseMove(e: MouseEvent) {
@@ -393,39 +399,50 @@ function isImage(type: string): boolean {
 </script>
 
 <template>
-    <div class="chat-input-area">
+    <!-- Same box component as the main composer: frame, section order and insets
+         all live in ComposerBox. No `run` — group chat has no home state, so its
+         composer is always the primary one and takes the plain box. -->
+    <ComposerBox>
+
+        <!-- Tool row, same anatomy as the main composer: attach alone on the far
+             left, a spacer, then the send circle on the right. The auto-play and
+             tool-trace toggles that used to sit here are gone for the same reason
+             ChatInput dropped them — both live in 设置 → 显示 (DisplaySettings),
+             on the same localStorage key and the same composable, so nothing is
+             lost and the two composers no longer carry different tool rows. -->
         <div class="input-top-bar">
             <NTooltip trigger="hover">
                 <template #trigger>
-                    <NButton quaternary size="tiny" circle @click="handleAttachClick">
+                    <NButton class="attach-button" quaternary size="tiny" circle @click="handleAttachClick">
                         <template #icon>
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                            <!-- Prototype AddMenu is a plus, not a paperclip. -->
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                         </template>
                     </NButton>
                 </template>
                 {{ t('chat.attachFiles') }}
             </NTooltip>
-            <div class="auto-play-speech-switch">
-                <NTooltip trigger="hover">
-                    <template #trigger>
-                        <div class="switch-label">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                        </div>
+
+            <span class="tool-row-spacer" />
+
+            <div class="input-actions">
+                <!-- Same 32px icon-only circle as the main composer, with the
+                     Keep glyph rather than a hand-drawn plane. -->
+                <NButton
+                    class="send-button"
+                    size="small"
+                    type="primary"
+                    circle
+                    :disabled="!canSend"
+                    :aria-label="t('chat.send')"
+                    :title="t('chat.send')"
+                    @click="handleSend"
+                >
+                    <template #icon>
+                        <KpIcon name="full_send" :size="16" />
                     </template>
-                    {{ t('chat.autoPlaySpeech') }}
-                </NTooltip>
-                <NSwitch v-model:value="autoPlaySpeech" size="small" :round="false" />
+                </NButton>
             </div>
-            <NTooltip trigger="hover">
-                <template #trigger>
-                    <NButton quaternary size="tiny" class="tool-trace-toggle" :class="{ active: toolTraceVisible }" @click="toggleToolTraceVisible">
-                        <svg class="tool-trace-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M14.7 6.3a4.5 4.5 0 0 0-5.8 5.8L3.5 17.5a2.1 2.1 0 0 0 3 3l5.4-5.4a4.5 4.5 0 0 0 5.8-5.8l-3 3-3-3 3-3z"/>
-                        </svg>
-                    </NButton>
-                </template>
-                {{ toolTraceVisible ? t('chat.hideToolCalls') : t('chat.showToolCalls') }}
-            </NTooltip>
         </div>
         <div v-if="attachments.length > 0" class="attachment-previews">
             <div v-for="att in attachments" :key="att.id" class="attachment-preview" :class="{ image: isImage(att.type) }">
@@ -464,19 +481,8 @@ function isImage(type: string): boolean {
                 @input="handleInput"
                 @paste="handlePaste"
             />
-            <div class="input-actions">
-                <NButton
-                    size="small"
-                    type="primary"
-                    :disabled="!canSend"
-                    @click="handleSend"
-                >
-                    <template #icon>
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                    </template>
-                    {{ t('chat.send') }}
-                </NButton>
-            </div>
+            <!-- Send does NOT live in the field: like the main composer, it sits
+                 in the tool row above, so the field is only the caret. -->
         </div>
         <Transition name="dropdown-fade">
             <div
@@ -503,73 +509,33 @@ function isImage(type: string): boolean {
                 </div>
             </div>
         </Transition>
-    </div>
+    </ComposerBox>
 </template>
 
 <style scoped lang="scss">
 @use "@/styles/variables" as *;
 
-.chat-input-area {
-    padding: 12px 20px 16px;
-    border-top: 1px solid $border-color;
+// Box, section order and insets come from ComposerBox (shared with ChatInput).
+// Only the contents of the sections are styled here.
+
+
+// Attach is a 32px ghost circle, same weight as every other tool-row control.
+.attach-button {
     flex-shrink: 0;
+    width: 32px !important;
+    height: 32px !important;
 }
 
-.input-top-bar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 0 0 6px;
-}
-
-.auto-play-speech-switch {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding-left: 8px;
-    border-left: 1px solid $border-light;
-    margin-left: 4px;
-
-    .switch-label {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 16px;
-        height: 16px;
-        color: #999999;
-    }
-}
-
-.tool-trace-toggle {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: #999999;
-    width: 24px;
-    min-width: 24px;
-    height: 22px;
-    margin-left: -4px;
-    padding: 0;
-    background: transparent !important;
-
-    :deep(.n-button__state-border),
-    :deep(.n-button__border),
-    :deep(.n-button__ripple) {
-        display: none;
-    }
-
-    .tool-trace-icon {
-        display: block;
-        width: 16px;
-        height: 16px;
-    }
+// Pushes send to the right edge, leaving attach alone on the left.
+.tool-row-spacer {
+    flex: 1 1 auto;
+    min-width: 0;
 }
 
 .attachment-previews {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    padding: 0 0 10px;
 }
 
 .attachment-preview {
@@ -667,28 +633,8 @@ function isImage(type: string): boolean {
 
 .input-wrapper {
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     gap: 10px;
-    box-sizing: border-box;
-    background-color: $bg-input;
-    border: 1px solid $border-color;
-    border-radius: $radius-md;
-    padding: 10px 12px;
-    position: relative;
-    transition: border-color $transition-fast, background-color $transition-fast;
-
-    &:focus-within {
-        border-color: $accent-primary;
-    }
-
-    &.drag-over {
-        border-color: $accent-primary;
-        background-color: rgba($accent-primary, 0.08);
-    }
-
-    .dark & {
-        background-color: #333333;
-    }
 }
 
 .resize-handle {
@@ -714,8 +660,9 @@ function isImage(type: string): boolean {
     outline: none;
     color: $text-primary;
     font-family: $font-ui;
-    font-size: 14px;
-    line-height: 1.5;
+    // Same field type as the main composer: 16/1.6, not 14/1.5.
+    font-size: 16px;
+    line-height: 1.6;
     resize: none;
     max-height: 400px;
     min-height: 20px;
@@ -738,6 +685,64 @@ function isImage(type: string): boolean {
     gap: 6px;
     flex-shrink: 0;
     align-items: center;
+}
+
+// Compact round send (prototype: 32x32 pill), same rules as ChatInput's:
+// `canSend` drives the ground via :disabled — empty reads as the disabled look
+// (transparent ground, muted glyph), with content it fills with `--gray-33`, the
+// same ground as every other main button. See ChatInput's `.send-button` for why
+// it is neither green (green is the status colour) nor purple (purple is
+// selection), and for why the §9.1 hover/press overlay is written out rather
+// than borrowed from the global `.ab` class.
+.send-button {
+    width: 32px !important;
+    height: 32px !important;
+    min-width: 32px !important;
+    border-radius: 9999px !important;
+    background-color: var(--gray-33) !important;
+    color: #fff !important;
+    transition: background-color var(--motion-fast) var(--ease-std),
+        color var(--motion-fast) var(--ease-std);
+
+    :deep(.n-button__border),
+    :deep(.n-button__state-border) {
+        display: none;
+    }
+
+    &::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        pointer-events: none;
+        background: #000;
+        opacity: 0;
+        transition: opacity 90ms var(--ease-std);
+    }
+
+    // The glyph has to outrank the overlay, or pressing the key hides the icon.
+    :deep(.n-button__content) {
+        position: relative;
+        z-index: 1;
+    }
+
+    &:hover::after { opacity: 0.08; }
+    &:active::after { opacity: 0.2; }
+
+    &:disabled {
+        background-color: transparent !important;
+        color: var(--fg-disabled) !important;
+        opacity: 1 !important;
+
+        &::after { opacity: 0 !important; }
+    }
+
+    .dark &,
+    [data-theme='dark'] & {
+        &::after { background: #fff; }
+        &:hover::after { opacity: 0.1; }
+        &:active::after { opacity: 0.22; }
+    }
 }
 
 /* ── Custom mention dropdown (replaces NDropdown) ── */

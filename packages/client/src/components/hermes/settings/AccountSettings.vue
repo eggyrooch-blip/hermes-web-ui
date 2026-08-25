@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { NButton, NInput, NModal, NForm, NFormItem, NPopconfirm, useMessage } from "naive-ui";
+import { NButton, NInput, NModal, NForm, NFormItem, NPopconfirm } from "naive-ui";
 import { useI18n } from "vue-i18n";
 import { changePassword, changeUsername, fetchCurrentUser, fetchLockedIps, unlockSpecificIp, unlockAllIps, fetchMyAvatar, updateMyAvatar, resetMyAvatar } from "@/api/auth";
 import type { LockedIp, UserAvatar } from "@/api/auth";
 import ProfileAvatar from "@/components/hermes/profiles/ProfileAvatar.vue";
 import multiavatar from "@multiavatar/multiavatar";
+import KpSectionTitle from "@/components/kippies/KpSectionTitle.vue";
 
 const { t } = useI18n();
-const message = useMessage();
 
 const username = ref<string | null>(null);
 const loading = ref(false);
@@ -17,6 +17,21 @@ const loading = ref(false);
 const avatar = ref<UserAvatar | null>(null);
 const avatarFileInput = ref<HTMLInputElement | null>(null);
 const avatarSaving = ref(false);
+/**
+ * Three resident carriers, each next to what it is about.
+ *
+ * All the successes here are visible without being told: the avatar picture
+ * changes, the dialog closes, the unlocked row leaves the list. Failures and
+ * validation are what needs saying — and validation in particular has no
+ * business in a toast, since the field it refers to is right there and a timed
+ * message can expire before it is read.
+ *
+ * `credentialError` is shared by the password and username dialogs because only
+ * one of them is ever open.
+ */
+const avatarError = ref('');
+const credentialError = ref('');
+const locksError = ref('');
 
 function compressImage(file: File, maxBytes: number): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -49,16 +64,17 @@ async function handleAvatarUpload(event: Event) {
   const file = target.files?.[0]
   if (!file) return
   if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-    message.error(t('settings.userAvatar.invalidType'))
+    avatarError.value = t('settings.userAvatar.invalidType')
     target.value = ''
     return
   }
   if (file.size > 1024 * 1024) {
-    message.error(t('settings.userAvatar.tooLarge'))
+    avatarError.value = t('settings.userAvatar.tooLarge')
     target.value = ''
     return
   }
   avatarSaving.value = true
+  avatarError.value = ''
   try {
     let dataUrl: string
     if (file.size > 500 * 1024) {
@@ -72,10 +88,10 @@ async function handleAvatarUpload(event: Event) {
       })
     }
     await updateMyAvatar({ type: 'image', dataUrl })
+    // The picture on screen changing is the report.
     avatar.value = { type: 'image', dataUrl }
-    message.success(t('settings.userAvatar.saveSuccess'))
   } catch (err: any) {
-    message.error(err.message || t('settings.userAvatar.saveFailed'))
+    avatarError.value = err.message || t('settings.userAvatar.saveFailed')
   } finally {
     avatarSaving.value = false
     target.value = ''
@@ -84,6 +100,7 @@ async function handleAvatarUpload(event: Event) {
 
 async function handleRandomAvatar() {
   avatarSaving.value = true
+  avatarError.value = ''
   try {
     const randomPart = typeof crypto !== 'undefined' && 'randomUUID' in crypto
       ? crypto.randomUUID()
@@ -93,9 +110,8 @@ async function handleRandomAvatar() {
     const dataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svg)))
     await updateMyAvatar({ type: 'image', dataUrl, seed })
     avatar.value = { type: 'image', dataUrl, seed }
-    message.success(t('settings.userAvatar.saveSuccess'))
   } catch (err: any) {
-    message.error(err.message || t('settings.userAvatar.saveFailed'))
+    avatarError.value = err.message || t('settings.userAvatar.saveFailed')
   } finally {
     avatarSaving.value = false
   }
@@ -103,12 +119,12 @@ async function handleRandomAvatar() {
 
 async function handleResetAvatar() {
   avatarSaving.value = true
+  avatarError.value = ''
   try {
     await resetMyAvatar()
     avatar.value = { type: 'default', seed: username.value || 'default' }
-    message.success(t('settings.userAvatar.resetSuccess'))
   } catch (err: any) {
-    message.error(err.message || t('settings.userAvatar.resetFailed'))
+    avatarError.value = err.message || t('settings.userAvatar.resetFailed')
   } finally {
     avatarSaving.value = false
   }
@@ -138,23 +154,24 @@ onMounted(async () => {
 
 async function handleChangePassword() {
   if (newPasswordVal.value !== newPasswordConfirm.value) {
-    message.error(t("login.passwordMismatch"));
+    credentialError.value = t("login.passwordMismatch");
     return;
   }
   if (newPasswordVal.value.length < 6) {
-    message.error(t("login.passwordTooShort"));
+    credentialError.value = t("login.passwordTooShort");
     return;
   }
   loading.value = true;
+  credentialError.value = "";
   try {
     await changePassword(currentPasswordForPwd.value, newPasswordVal.value);
     showChangePasswordModal.value = false;
     currentPasswordForPwd.value = "";
     newPasswordVal.value = "";
     newPasswordConfirm.value = "";
-    message.success(t("login.passwordChanged"));
+    // The dialog closing is the report.
   } catch (err: any) {
-    message.error(err.message || t("common.saveFailed"));
+    credentialError.value = err.message || t("common.saveFailed");
   } finally {
     loading.value = false;
   }
@@ -162,25 +179,26 @@ async function handleChangePassword() {
 
 async function handleChangeUsername() {
   if (newUsernameVal.value.trim().length < 2) {
-    message.error(t("login.usernameTooShort"));
+    credentialError.value = t("login.usernameTooShort");
     return;
   }
   loading.value = true;
+  credentialError.value = "";
   try {
     await changeUsername(currentPasswordForName.value, newUsernameVal.value.trim());
     username.value = newUsernameVal.value.trim();
     showChangeUsernameModal.value = false;
     currentPasswordForName.value = "";
     newUsernameVal.value = "";
-    message.success(t("login.usernameChanged"));
   } catch (err: any) {
-    message.error(err.message || t("common.saveFailed"));
+    credentialError.value = err.message || t("common.saveFailed");
   } finally {
     loading.value = false;
   }
 }
 
 function openChangePasswordModal() {
+  credentialError.value = "";
   currentPasswordForPwd.value = "";
   newPasswordVal.value = "";
   newPasswordConfirm.value = "";
@@ -188,6 +206,7 @@ function openChangePasswordModal() {
 }
 
 function openChangeUsernameModal() {
+  credentialError.value = "";
   currentPasswordForName.value = "";
   newUsernameVal.value = "";
   showChangeUsernameModal.value = true;
@@ -209,21 +228,23 @@ async function loadLockedIps() {
 
 async function handleUnlockIp(ip: string) {
   try {
+    locksError.value = "";
     await unlockSpecificIp(ip);
-    message.success(t("settings.lockedIps.unlocked"));
+    // The row leaving the list is the report.
     await loadLockedIps();
   } catch (err: any) {
-    message.error(err.message || t("common.saveFailed"));
+    locksError.value = err.message || t("common.saveFailed");
   }
 }
 
 async function handleUnlockAll() {
   try {
-    const count = await unlockAllIps();
-    message.success(t("settings.lockedIps.allUnlocked", { count }));
+    locksError.value = "";
+    await unlockAllIps();
+    // The list emptying is the report.
     await loadLockedIps();
   } catch (err: any) {
-    message.error(err.message || t("common.saveFailed"));
+    locksError.value = err.message || t("common.saveFailed");
   }
 }
 
@@ -241,11 +262,10 @@ onMounted(() => { loadLockedIps(); });
 
 <template>
   <div class="account-settings">
-    <p class="section-desc">{{ t("login.setupDescription") }}</p>
-
     <!-- User Avatar -->
     <div class="avatar-section">
-      <h3 class="section-title">{{ t('settings.userAvatar.title') }}</h3>
+      <KpSectionTitle>{{ t('settings.userAvatar.title') }}</KpSectionTitle>
+      <p v-if="avatarError" class="settings-error" data-testid="avatar-error">{{ avatarError }}</p>
       <div class="avatar-row">
         <div class="avatar-display">
           <ProfileAvatar
@@ -273,8 +293,10 @@ onMounted(() => { loadLockedIps(); });
     </div>
 
     <div class="configured-section">
-      <div class="action-row">
-        <span class="action-label">{{ t("login.passwordLoginConfigured", { username }) }}</span>
+      <KpSectionTitle :note="t('login.setupDescription')">{{ t('settings.account.sectionCredentials') }}</KpSectionTitle>
+      <!-- Prototype Row anatomy: t-sub-medium title left, GhostBtn actions right. -->
+      <div class="setting-row catrow">
+        <span class="row-title">{{ t("login.passwordLoginConfigured", { username }) }}</span>
         <div class="action-buttons">
           <NButton @click="openChangePasswordModal">{{ t("login.changePassword") }}</NButton>
           <NButton @click="openChangeUsernameModal">{{ t("login.changeUsername") }}</NButton>
@@ -284,21 +306,24 @@ onMounted(() => { loadLockedIps(); });
 
     <!-- Locked IPs management -->
     <div class="locked-ips-section">
-      <h3 class="section-title">{{ t("settings.lockedIps.title") }}</h3>
-      <div class="action-row" style="margin-bottom: 12px;">
-        <span class="action-label">{{ t("settings.lockedIps.count", { count: lockedIps.length }) }}</span>
-        <div class="action-buttons">
-          <NButton size="small" :loading="loadingLocks" @click="loadLockedIps">{{ t("common.retry") }}</NButton>
-          <NPopconfirm v-if="lockedIps.length > 0" @positive-click="handleUnlockAll">
-            <template #trigger>
-              <NButton size="small" type="warning">{{ t("settings.lockedIps.unlockAll") }}</NButton>
-            </template>
-            {{ t("settings.lockedIps.unlockAllConfirm") }}
-          </NPopconfirm>
-        </div>
-      </div>
+      <KpSectionTitle :note="t('settings.lockedIps.count', { count: lockedIps.length })">
+        {{ t("settings.lockedIps.title") }}
+        <template #action>
+          <div class="action-buttons">
+            <NButton size="small" :loading="loadingLocks" @click="loadLockedIps">{{ t("common.retry") }}</NButton>
+            <NPopconfirm v-if="lockedIps.length > 0" @positive-click="handleUnlockAll">
+              <template #trigger>
+                <NButton size="small" type="warning">{{ t("settings.lockedIps.unlockAll") }}</NButton>
+              </template>
+              {{ t("settings.lockedIps.unlockAllConfirm") }}
+            </NPopconfirm>
+          </div>
+        </template>
+      </KpSectionTitle>
+      <p v-if="locksError" class="settings-error" data-testid="locks-error">{{ locksError }}</p>
       <div v-if="lockedIps.length > 0" class="locked-list">
-        <div v-for="lock in lockedIps" :key="lock.ip + lock.type" class="locked-item">
+        <!-- Rows, not bordered cards — sections are delimited by the title rule alone. -->
+        <div v-for="lock in lockedIps" :key="lock.ip + lock.type" class="setting-row catrow">
           <div class="locked-info">
             <span class="locked-ip">{{ lock.ip }}</span>
             <span class="locked-badge">{{ lockedIpTypeLabel(lock.type) }}</span>
@@ -312,6 +337,7 @@ onMounted(() => { loadLockedIps(); });
 
     <!-- Change password modal -->
     <NModal v-model:show="showChangePasswordModal" preset="dialog" :title="t('login.changePassword')">
+      <p v-if="credentialError" class="settings-error" data-testid="credential-error">{{ credentialError }}</p>
       <NForm label-placement="top">
         <NFormItem :label="t('login.currentPassword')">
           <NInput v-model:value="currentPasswordForPwd" type="password" show-password-on="click" :placeholder="t('login.currentPassword')" />
@@ -331,6 +357,7 @@ onMounted(() => { loadLockedIps(); });
 
     <!-- Change username modal -->
     <NModal v-model:show="showChangeUsernameModal" preset="dialog" :title="t('login.changeUsername')">
+      <p v-if="credentialError" class="settings-error" data-testid="credential-error">{{ credentialError }}</p>
       <NForm label-placement="top">
         <NFormItem :label="t('login.currentPassword')">
           <NInput v-model:value="currentPasswordForName" type="password" show-password-on="click" :placeholder="t('login.currentPassword')" />
@@ -349,28 +376,36 @@ onMounted(() => { loadLockedIps(); });
 
 <style scoped lang="scss">
 @use "@/styles/variables" as *;
+.settings-error {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
 
 .account-settings {
-  padding: 8px 0;
+  padding: 0;
 }
 
-.section-desc {
-  font-size: 13px;
-  color: $text-muted;
-  margin: 0 0 20px;
-  line-height: 1.6;
-}
-
-.action-row {
+// Prototype Row: 12px padding pulled back out with -12 margins so the hover
+// tint bleeds while content stays aligned with the section title above.
+.setting-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
+  padding: 12px 12px;
+  margin: 0 -12px;
+  border-radius: var(--r-ctl);
+  transition: background var(--motion-fast) var(--ease-std);
 }
 
-.action-label {
-  font-size: 14px;
-  color: $text-secondary;
+.row-title {
+  font: var(--w-medium) var(--t-14) / var(--lh-tight) var(--font-cn);
+  color: var(--fg-primary);
 }
 
 .action-buttons {
@@ -380,32 +415,12 @@ onMounted(() => { loadLockedIps(); });
 }
 
 .locked-ips-section {
-  margin-top: 32px;
-  padding-top: 20px;
-  border-top: 1px solid $border-color;
-}
-
-.section-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: $text-primary;
-  margin: 0 0 16px;
+  margin-top: 36px;
 }
 
 .locked-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-
-.locked-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  border: 1px solid $border-color;
-  border-radius: $radius-sm;
-  background: $bg-input;
 }
 
 .locked-info {
@@ -420,12 +435,14 @@ onMounted(() => { loadLockedIps(); });
   color: $text-primary;
 }
 
+// Prototype list tag: 22px neutral pill on surface-3.
 .locked-badge {
-  font-size: 11px;
-  padding: 2px 6px;
-  border-radius: 3px;
-  background: rgba($error, 0.1);
-  color: $error;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  background: var(--gray-f2);
+  font: var(--w-medium) var(--t-12) / 22px var(--font-cn);
+  color: var(--fg-secondary);
 }
 
 .locked-ttl {
@@ -434,15 +451,18 @@ onMounted(() => { loadLockedIps(); });
 }
 
 .empty-hint {
-  font-size: 13px;
-  color: $text-muted;
+  font: var(--w-regular) var(--t-12) / var(--lh-1) var(--font-cn);
+  color: var(--fg-disabled);
   margin: 0;
+  padding: 12px 0;
 }
 
 .avatar-section {
-  margin-bottom: 32px;
-  padding-bottom: 20px;
-  border-bottom: 1px solid $border-color;
+  margin-bottom: 36px;
+}
+
+.configured-section {
+  margin-bottom: 36px;
 }
 
 .avatar-row {

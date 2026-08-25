@@ -48,7 +48,7 @@ const VALID_STATES: ReadonlySet<string> = new Set<SkillCredentialState>([
   'authenticated', 'configured', 'missing', 'needs_auth', 'unknown', 'error',
 ])
 const VALID_ACTION_KINDS: ReadonlySet<string> = new Set<SkillCredentialActionKind>([
-  'feishu_device_flow', 'skill_flow', 'qr_flow', 'oauth_url', 'manual',
+  'feishu_device_flow', 'skill_flow', 'qr_flow', 'oauth_url', 'manual', 'retry',
 ])
 
 export class BrokerUnavailableError extends Error {
@@ -143,7 +143,10 @@ export function failSafeResult(profileName: string): SkillCredentialsResult {
       detail: '凭证状态服务暂时不可用，请稍后重试（未能确认登录状态）。',
       // 降级态的每一行都必须带 action 且 label 非空：客户端按 action 是否存在渲染按钮，
       // 这里若整个不给 action，broker 一挂面板就一颗按钮都没有，用户连重试都点不了。
-      action: { kind: 'manual' as SkillCredentialActionKind, label: '重试' },
+      // kind 用专门的 'retry' 而不是 'manual'：这颗按钮的语义是"再读一次状态"，不是
+      // "启动认证"。客户端据此分流；靠 status/label 反推会把真 error 态的 GitLab 个人卡
+      // 也判成重试、从此进不了绑定表单（codex 复评）。语义写进数据，不靠猜。
+      action: { kind: 'retry' as SkillCredentialActionKind, label: '重试' },
     })),
   }
 }

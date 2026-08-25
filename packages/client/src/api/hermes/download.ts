@@ -50,7 +50,7 @@ export function inferDownloadFileName(filePath: string, fileName?: string): stri
  * Construct a download URL with auth token as query parameter.
  * Token is passed via query param because <a> tags cannot set headers.
  */
-export function getDownloadUrl(filePath: string, fileName?: string): string {
+export function getDownloadUrl(filePath: string, fileName?: string, profile?: string): string {
   const base = getBaseUrlValue()
 
   // Remote-URL passthrough: AIGC image generation returns remote Tencent VOD/CDN
@@ -81,7 +81,10 @@ export function getDownloadUrl(filePath: string, fileName?: string): string {
   if (fileName) {
     params.set('name', inferDownloadFileName(decodedPath, fileName))
   }
-  const profileName = getActiveProfileName()
+  // An explicit profile targets another agent's workspace (the agent hub reads
+  // one agent while a different one is active). The server only honours a
+  // selector the caller owns, so this cannot widen access.
+  const profileName = profile || getActiveProfileName()
   if (profileName) params.set('profile', profileName)
   const token = getApiKey()
   if (token) params.set('token', token)
@@ -134,9 +137,9 @@ function isOwnDownloadUrl(url: string): boolean {
 /**
  * Do these bytes actually come from Hermes?
  *
- * zhouyifei 2026-08-04: off-VPN, public DNS resolved hermes.gotokeep.com to the
- * public Keep WAF, which 302'd the download to www.gotokeep.com and answered with
- * `Access-Control-Allow-Origin: https://hermes.gotokeep.com`. So `res.ok` was
+ * zhouyifei 2026-08-04: off-VPN, public DNS resolved hermes.example.com to the
+ * public Keep WAF, which 302'd the download to www.example.com and answered with
+ * `Access-Control-Allow-Origin: https://hermes.example.com`. So `res.ok` was
  * true and the client cheerfully saved 118 KB of marketing HTML under the user's
  * `.xlsx` name. `res.ok` only proves *someone* answered — never that Hermes did.
  * The incident trips all three tripwires below.
@@ -166,8 +169,8 @@ export function filenameFromContentDisposition(res: Response): string {
  * Download a file. Uses fetch to detect errors, then creates a blob URL
  * for the browser download. Throws with error message on failure.
  */
-export async function downloadFile(filePath: string, fileName?: string): Promise<void> {
-  const url = getDownloadUrl(filePath, fileName)
+export async function downloadFile(filePath: string, fileName?: string, profile?: string): Promise<void> {
+  const url = getDownloadUrl(filePath, fileName, profile)
   // Vet exactly what targets our own download route; genuine remote CDN/VOD
   // URLs are cross-origin by design and stay unguarded.
   const proxied = isOwnDownloadUrl(url)

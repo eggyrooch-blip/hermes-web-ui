@@ -44,6 +44,18 @@
         color: $text-primary;
         background: rgba(0, 0, 0, 0.05);
       }
+
+      /* The copy button says what happened on itself — copying has no visible
+         result of its own, so the control that was pressed is the only honest
+         place for the answer. Set by `flashCopyResult` in highlight.ts, which
+         also restores the resting label. */
+      &.is-copy-ok {
+        color: var(--keep-green);
+      }
+
+      &.is-copy-fail {
+        color: var(--danger);
+      }
     }
   }
 

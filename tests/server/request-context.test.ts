@@ -64,6 +64,124 @@ describe('chat plane access control', () => {
     }
   })
 
+  it('is not bypassable by path casing — the gate must be at least as wide as the router', async () => {
+    // 生产上活着的鉴权绕过（2026-08-14 由跨模型评审翻出并复验）：本闸逐字比较 ctx.path，
+    // 而 @koa/router 的 sensitive 默认 false（不区分大小写）。于是 /API/HERMES/LOGS
+    // 不命中兜底 startsWith('/api/hermes/') → 闸放行，路由却照样匹配到处理器。
+    // 受影响的是整张黑名单：logs / config / gateways / profiles / coding-agents / auth/*。
+    //
+    // 这条用例逐一枚举路径写法，断言"闸放行且 router 匹配"的组合数为 0。
+    // 同类穷举结论：只有大小写变体构成真绕过，其余写法 router 根本不匹配。
+    const Router = (await import('@koa/router')).default
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const variants = [
+      '/api/hermes/logs',
+      '/API/HERMES/LOGS',
+      '/api/hermes/LOGS',
+      '/Api/Hermes/Logs',
+      '/api/hermes/logs/',
+      '//api/hermes/logs',
+      '/api/hermes//logs',
+      '/api/hermes/%6cogs',
+      '/api/hermes/./logs',
+      '/api/hermes/x/../logs',
+      '/api/hermes/logs%20',
+      '/./api/hermes/logs',
+    ]
+    const bypasses: string[] = []
+    const observed = new Map<string, { gateAllowed: boolean; routerMatched: boolean }>()
+    for (const path of variants) {
+      const ctx = mockCtx(path, 'GET')
+      const next = vi.fn(async () => {})
+      await enforcePlaneAccess(ctx, next)
+      const gateAllowed = next.mock.calls.length === 1
+
+      const router = new Router()
+      let routerMatched = false
+      router.get('/api/hermes/logs', async () => { routerMatched = true })
+      try {
+        await router.routes()({ path, method: 'GET', params: {}, request: {} } as any, async () => {})
+      } catch { /* 畸形路径可能让 router 抛错，那也说明它没匹配 */ }
+
+      if (gateAllowed && routerMatched) bypasses.push(path)
+      observed.set(path, { gateAllowed, routerMatched })
+    }
+    expect(bypasses, `这些路径写法绕过了 chat plane 闸: ${bypasses.join(', ')}`).toEqual([])
+
+    // 光断言"绕过数为 0"是**空洞的**（跨模型评审 #p1）：万一 router 压根没跑、
+    // 或者哪天不再匹配大小写变体，上面那条也会绿，却没证明"闸严于 router"。
+    // 所以对这三条大小写路径正向钉死：router 确实匹配得上，而闸确实判 403。
+    for (const path of ['/api/hermes/logs', '/API/HERMES/LOGS', '/Api/Hermes/Logs']) {
+      const seen = observed.get(path)!
+      expect(seen.routerMatched, `${path}: router 必须匹配，否则这条用例没有判别力`).toBe(true)
+      expect(seen.gateAllowed, `${path}: 闸必须拒绝`).toBe(false)
+    }
+  })
+
+  it('keeps allowed endpoints allowed regardless of casing', async () => {
+    // 归一化是双向的：已放行端点的大小写变体也要与小写同判，
+    // 否则就制造出新的"看得见够不着"。
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    for (const path of ['/api/hermes/sessions', '/API/HERMES/SESSIONS', '/Api/Hermes/Sessions']) {
+      const ctx = mockCtx(path, 'GET')
+      const next = vi.fn(async () => {})
+      await enforcePlaneAccess(ctx, next)
+      expect(next, `${path} 应放行`).toHaveBeenCalledOnce()
+      expect(ctx.status, `${path} 应保持 200`).toBe(200)
+    }
+  })
+
+  it('lets a chat-plane employee read their own task log', async () => {
+    // 端点归属清单扫出的同类漏放行（本 slug 收敛后只剩这一条）。kanban/:id/log：详情本体和
+    // block/assign/complete/unblock 这些**写**动作都放行了，唯独这个**读**没放。
+    // taskLog() 与详情同款守卫：requireOpenId + requireOwnedTasks(..., openid)。
+    //
+    // skills/toggle 与 skills/pin 本来也在这一批，已**撤出**：它们是写入路径，
+    // 而技能写入的软链守卫还不完整（叶子 .bak 未覆盖、lstat 与写入之间有时间差），
+    // 根治要在 SafeFileStore 层做临时文件+原子 rename。等那条加固落地再放
+    // （sunke 2026-08-14 拍板拆分）。
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const mustBeAllowed: Array<[string, string]> = [
+      ['/api/hermes/kanban/task-123/log', 'GET'],
+    ]
+    for (const [path, method] of mustBeAllowed) {
+      const ctx = mockCtx(path, method)
+      const next = vi.fn(async () => {})
+      await enforcePlaneAccess(ctx, next)
+      expect(next, `${method} ${path} 应放行`).toHaveBeenCalledOnce()
+      expect(ctx.status, `${method} ${path} 应保持 200`).toBe(200)
+    }
+  })
+
+  it('does not widen the hole for the newly allowed endpoint', async () => {
+    // 同上：放行端点最怕顺手放宽一片。钉死动词、撤出的 skills 写操作、以及 kanban
+    // blocklist 里的保留段（别让 `/kanban/artifact/log` 这类混进来）。
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const mustStayBlocked: Array<[string, string]> = [
+      // 注意：`GET /api/hermes/skills/*` 本来就是放行的（读技能内容走
+      // `skills/{*path}` 那条 catch-all），所以这里不能拿 GET 当"应被拒"的负控制 ——
+      // 我一开始写错过一次，被这条用例自己抓住了。
+      // 撤出的两条：技能写入路径在加固落地前必须保持被拒。
+      ['/api/hermes/skills/toggle', 'PUT'],
+      ['/api/hermes/skills/pin', 'PUT'],
+      ['/api/hermes/skills/toggle', 'DELETE'],
+      ['/api/hermes/skills/pin', 'POST'],
+      ['/api/hermes/skills/external-dirs', 'PUT'],
+      ['/api/hermes/kanban/task-123/log', 'POST'],
+      ['/api/hermes/kanban/task-123/log/extra', 'GET'],
+      ['/api/hermes/kanban/artifact/log', 'GET'],
+      ['/api/hermes/kanban/diagnostics/log', 'GET'],
+      ['/api/hermes/kanban/diagnostics', 'GET'],
+    ]
+    for (const [path, method] of mustStayBlocked) {
+      const ctx = mockCtx(path, method)
+      const next = vi.fn(async () => {})
+      await enforcePlaneAccess(ctx, next)
+      expect(next, `${method} ${path} 不该被放行`).not.toHaveBeenCalled()
+      expect(ctx.status, `${method} ${path} 应为 403`).toBe(403)
+    }
+  })
+
   it('allows model list endpoints in chat plane', async () => {
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
     const ctx = mockCtx('/api/hermes/available-models')
@@ -148,7 +266,22 @@ describe('chat plane access control', () => {
     expect(downloadCtx.status).toBe(200)
   })
 
-  it('allows profile-local skill import and file edits while blocking other skill writes in chat plane', async () => {
+  it('allows profile-local skill import and file edits while skill writes stay blocked in chat plane', async () => {
+    // 历史：2026-08-13 我曾把 toggle/pin 从 403 翻成 200，理由是下面这段；
+    // 2026-08-14 又**翻了回来** —— 技能写入路径的软链守卫覆盖不完整
+    // （SafeFileStore 的 *.bak 备份目的地、importSkill/deleteSkill 动态目录未盖，
+    //  且 lstat 与写入之间存在时间差），放行要等 slug skills-write-symlink-hardening。
+    // 下面这段放行理由本身仍然成立，只是被安全前置条件挡住了，留档备查：
+    // slug chat-plane-missing-allowlist-entries）。原来的 403 不是"员工不该开关技能"这个
+    // 政策判断，而是 c66d5f44（webui-skill-import-chat-plane）的**不越界护栏** ——
+    // 那一轮只想放行 `skills/import` 一条，于是顺手把邻居钉成 403 以证明自己没放宽一片。
+    // 现在明确翻转它的理由：
+    //  - 控制器本身按 profile 隔离（skills.ts toggle() → updateConfigYamlForProfile(requestedProfile(ctx))，
+    //    pin_() → updatePinnedSkill(requestSkillsDir(ctx))），前置 refuseUnprovisionedProfile +
+    //    refuseSymlinkedSkillsPath，不从请求体取身份；
+    //  - 前端 SkillList.vue 的开关对 chat 面员工是**渲染出来的**（没有 super-admin 门），
+    //    点下去就是 403 —— 与 credentials/gitlab 同一个故事：功能对它的目标用户从未工作过；
+    //  - 员工已经能导入技能、能改技能文件，却不能启用它，这个组合不成立。
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
     const importCtx = mockCtx('/api/hermes/skills/import', 'POST')
     const editCtx = mockCtx('/api/hermes/skills/file', 'PUT')
@@ -164,6 +297,7 @@ describe('chat plane access control', () => {
     expect(next).toHaveBeenCalledTimes(2)
     expect(importCtx.status).toBe(200)
     expect(editCtx.status).toBe(200)
+    // toggle/pin 维持 403：见上方用例的说明，等 SafeFileStore 加固落地再放。
     expect(toggleCtx.status).toBe(403)
     expect(pinCtx.status).toBe(403)
   })
@@ -255,7 +389,11 @@ describe('chat plane access control', () => {
     await enforcePlaneAccess(logCtx, next)
     await enforcePlaneAccess(boardCreateCtx, next)
 
-    expect(next).toHaveBeenCalledTimes(9)
+    // 9→10：`GET /kanban/:id/log` 从 403 翻成 200（2026-08-13，
+    // slug chat-plane-missing-allowlist-entries）。详情本体和 block/assign/complete/unblock
+    // 这些**写**动作早就放行了，唯独详情页这个**读**没放，是列举时漏掉。
+    // taskLog() 与详情同款守卫：requireOpenId + requireOwnedTasks(..., openid)，非本人任务 404。
+    expect(next).toHaveBeenCalledTimes(10)
     expect(listCtx.status).toBe(200)
     expect(createCtx.status).toBe(200)
     expect(detailCtx.status).toBe(200)
@@ -268,7 +406,7 @@ describe('chat plane access control', () => {
     expect(eventsCtx.status).toBe(403)
     expect(commentCtx.status).toBe(403)
     expect(artifactCtx.status).toBe(403)
-    expect(logCtx.status).toBe(403)
+    expect(logCtx.status).toBe(200)
     expect(boardCreateCtx.status).toBe(403)
   })
 

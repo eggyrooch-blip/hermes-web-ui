@@ -21,9 +21,11 @@ describe('ChatPanel session model picker badges', () => {
 })
 
 describe('ChatPanel cross-family switch notice', () => {
-  it('toasts on the BFF decision instead of keeping its own memory-only once-per-session state', () => {
+  it('reports the BFF decision instead of keeping its own memory-only once-per-session state', () => {
     expect(SOURCE).toContain('if (res.familySwitchNotice)')
-    expect(SOURCE).toContain('message.info(t("chat.modelFamilySwitchNotice")')
+    // Shown on the panel's resident notice rather than a toast — the point of
+    // this test is where the DECISION comes from (the BFF), not the channel.
+    expect(SOURCE).toContain('setNotice(t("chat.modelFamilySwitchNotice"), "info")')
     // The decision and its one-shot marker live on the session row, so a
     // remount or a page reload cannot make the notice fire twice.
     expect(SOURCE).not.toContain('familySwitchNoticedSessions')

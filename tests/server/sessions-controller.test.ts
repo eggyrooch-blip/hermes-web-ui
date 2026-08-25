@@ -50,6 +50,10 @@ const getChatRunServerMock = vi.fn()
 const codingAgentRunManagerMock = vi.hoisted(() => ({
   stop: vi.fn(),
 }))
+const listFeedbackRowsMock = vi.fn()
+const upsertFeedbackMock = vi.fn()
+const deleteFeedbackRowMock = vi.fn()
+const hasFinalAnswerMock = vi.fn()
 
 vi.mock('../../packages/server/src/db/hermes/conversations-db', () => ({
   listConversationSummariesFromDb: listConversationSummariesFromDbMock,
@@ -167,6 +171,13 @@ vi.mock('../../packages/server/src/db/hermes/compression-snapshot', () => ({
   getCompressionSnapshot: getCompressionSnapshotMock,
 }))
 
+vi.mock('../../packages/server/src/db/hermes/feedback-store', () => ({
+  listFeedback: listFeedbackRowsMock,
+  upsertFeedback: upsertFeedbackMock,
+  deleteFeedback: deleteFeedbackRowMock,
+  hasFinalAnswer: hasFinalAnswerMock,
+}))
+
 vi.mock('../../packages/server/src/lib/context-compressor/export-compressor', () => ({
   ExportCompressor: class {
     async compress(messages: any[]) {
@@ -239,9 +250,77 @@ describe('session conversations controller', () => {
     getChatRunServerMock.mockReset()
     getChatRunServerMock.mockReturnValue(null)
     codingAgentRunManagerMock.stop.mockReset()
+    listFeedbackRowsMock.mockReset()
+    upsertFeedbackMock.mockReset()
+    deleteFeedbackRowMock.mockReset()
+    hasFinalAnswerMock.mockReset()
     delete process.env.HERMES_RUN_BROKER_URL
     delete process.env.HERMES_RUN_BROKER_KEY
     vi.unstubAllGlobals()
+  })
+
+  it('lists only the verified principal feedback for an owned session', async () => {
+    getSessionMock.mockReturnValue({ id: 'owned', profile: 'default', user_id: 'ou_a' })
+    listFeedbackRowsMock.mockReturnValue([{ run_id: 'run-1', rating: 'up', reason: null }])
+    const mod = await import('../../packages/server/src/controllers/hermes/feedback')
+    const ctx: any = { params: { sessionId: 'owned' }, state: { user: { id: 1, openid: 'ou_a', profile: 'default' } }, body: null }
+
+    await mod.listFeedback(ctx)
+
+    expect(listFeedbackRowsMock).toHaveBeenCalledWith('feishu:ou_a', 'owned')
+    expect(ctx.body).toEqual({ feedback: [{ run_id: 'run-1', rating: 'up', reason: null }] })
+  })
+
+  it('rejects principal B before reading or writing principal A feedback', async () => {
+    getSessionMock.mockReturnValue({ id: 'owned', profile: 'default', user_id: 'ou_a' })
+    const mod = await import('../../packages/server/src/controllers/hermes/feedback')
+    const ctx: any = { params: { sessionId: 'owned', runId: 'run-1' }, request: { body: { rating: 'up' } }, state: { user: { id: 2, openid: 'ou_b', profile: 'default' } }, body: null }
+
+    await mod.putFeedback(ctx)
+
+    expect(ctx.status).toBe(404)
+    expect(listFeedbackRowsMock).not.toHaveBeenCalled()
+    expect(upsertFeedbackMock).not.toHaveBeenCalled()
+    expect(hasFinalAnswerMock).not.toHaveBeenCalled()
+  })
+
+  it('validates the exact final run and stores only server-derived identity metadata', async () => {
+    getSessionMock.mockReturnValue({ id: 'owned', profile: 'default', user_id: 'ou_a', expert_id: 'expert-x' })
+    hasFinalAnswerMock.mockReturnValue(true)
+    upsertFeedbackMock.mockReturnValue({ run_id: 'run-1', rating: 'down', reason: 'inaccurate', expert_id: 'expert-x' })
+    const mod = await import('../../packages/server/src/controllers/hermes/feedback')
+    const ctx: any = {
+      params: { sessionId: 'owned', runId: 'run-1' },
+      request: { body: { rating: 'down', reason: 'inaccurate' } },
+      state: { user: { id: 1, openid: 'ou_a', profile: 'default' } },
+      body: null,
+    }
+
+    await mod.putFeedback(ctx)
+
+    expect(hasFinalAnswerMock).toHaveBeenCalledWith('owned', 'run-1')
+    expect(upsertFeedbackMock).toHaveBeenCalledWith({
+      principalSubject: 'feishu:ou_a', sessionId: 'owned', runId: 'run-1', expertId: 'expert-x', rating: 'down', reason: 'inaccurate',
+    })
+    expect(ctx.body).toMatchObject({ feedback: { rating: 'down', reason: 'inaccurate' } })
+  })
+
+  it('rejects invalid or tool-only runs and keeps DELETE idempotent', async () => {
+    getSessionMock.mockReturnValue({ id: 'owned', profile: 'default', user_id: 'ou_a' })
+    hasFinalAnswerMock.mockReturnValue(false)
+    const mod = await import('../../packages/server/src/controllers/hermes/feedback')
+    const ctx: any = { params: { sessionId: 'owned', runId: 'tool-only' }, state: { user: { id: 1, openid: 'ou_a', profile: 'default' } }, body: null }
+
+    await mod.deleteFeedback(ctx)
+    expect(ctx.status).toBe(404)
+    expect(deleteFeedbackRowMock).not.toHaveBeenCalled()
+
+    hasFinalAnswerMock.mockReturnValue(true)
+    ctx.status = undefined
+    await mod.deleteFeedback(ctx)
+    await mod.deleteFeedback(ctx)
+    expect(deleteFeedbackRowMock).toHaveBeenCalledTimes(2)
+    expect(ctx.body).toEqual({ ok: true, feedback: null })
   })
 
   function stubSharedAgentRole(role: 'viewer' | 'editor' | 'manager') {
@@ -656,9 +735,11 @@ describe('session conversations controller', () => {
     })
     await mod.rename(renameCtx)
 
+    mkdirSync('/tmp/hermes-test/owner_profile/workspace/project', { recursive: true })
+
     const workspaceCtx: any = sharedAgentCtx('ou_manager', {
       params: { id: 'teammate-session' },
-      request: { body: { workspace: '/tmp/project' } },
+      request: { body: { workspace: 'project' } },
     })
     await mod.setWorkspace(workspaceCtx)
 
@@ -669,15 +750,80 @@ describe('session conversations controller', () => {
     await mod.setModel(modelCtx)
 
     expect(localRenameSessionMock).toHaveBeenCalledWith('teammate-session', 'Reviewed')
-    expect(localUpdateSessionMock).toHaveBeenCalledWith('teammate-session', { workspace: '/tmp/project' })
+    expect(localUpdateSessionMock).toHaveBeenCalledWith('teammate-session', { workspace: 'project' })
     expect(localUpdateSessionMock).toHaveBeenCalledWith('teammate-session', {
       model: 'gpt-5.1',
       provider: 'openai',
-      workspace: '/tmp/hermes-test/owner_profile/workspace',
     })
     expect(renameCtx.body).toEqual({ ok: true })
-    expect(workspaceCtx.body).toEqual({ ok: true })
+    expect(workspaceCtx.body).toEqual({ ok: true, workspace: 'project' })
     expect(modelCtx.body).toEqual({ ok: true })
+  })
+
+  it('refuses to move the workspace of a session that already has messages', async () => {
+    stubSharedAgentRole('manager')
+    isChatPlaneRequestMock.mockReturnValue(true)
+    // The UI forks a new session instead of rebinding; the invariant is enforced
+    // here so any client — not just this UI — gets the same answer.
+    getSessionMock.mockReturnValue(sharedAgentSession({
+      id: 'teammate-session',
+      user_id: 'ou_manager',
+      workspace: 'project',
+      message_count: 3,
+    }))
+    mkdirSync('/tmp/hermes-test/owner_profile/workspace/other', { recursive: true })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = sharedAgentCtx('ou_manager', {
+      params: { id: 'teammate-session' },
+      request: { body: { workspace: 'other' } },
+    })
+    await mod.setWorkspace(ctx)
+
+    expect(ctx.status).toBe(409)
+    expect(localUpdateSessionMock).not.toHaveBeenCalled()
+  })
+
+  it('allows re-confirming the same workspace on a session with messages', async () => {
+    stubSharedAgentRole('manager')
+    isChatPlaneRequestMock.mockReturnValue(true)
+    getSessionMock.mockReturnValue(sharedAgentSession({
+      id: 'teammate-session',
+      user_id: 'ou_manager',
+      workspace: 'project',
+      message_count: 3,
+    }))
+    mkdirSync('/tmp/hermes-test/owner_profile/workspace/project', { recursive: true })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = sharedAgentCtx('ou_manager', {
+      params: { id: 'teammate-session' },
+      request: { body: { workspace: 'project' } },
+    })
+    await mod.setWorkspace(ctx)
+
+    expect(ctx.status).toBeUndefined()
+    expect(ctx.body).toEqual({ ok: true, workspace: 'project' })
+  })
+
+  it('keeps coding-agent workspaces on their existing absolute-path contract', async () => {
+    getSessionMock.mockReturnValue({
+      id: 'coding-session',
+      profile: 'default',
+      source: 'coding_agent',
+      agent: 'codex',
+    })
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'coding-session' },
+      request: { body: { workspace: '/tmp/coding-workspace' } },
+      body: null,
+    }
+
+    await mod.setWorkspace(ctx)
+
+    expect(localUpdateSessionMock).toHaveBeenCalledWith('coding-session', { workspace: '/tmp/coding-workspace' })
+    expect(ctx.body).toEqual({ ok: true, workspace: '/tmp/coding-workspace' })
   })
 
   it('lists workspace run changes for an accessible session without patch bodies', async () => {
@@ -1424,6 +1570,79 @@ describe('session conversations controller', () => {
     })
   })
 
+  it('omits a revoked private source during hydration without leaking its metadata', async () => {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    process.env.HERMES_RUN_BROKER_KEY = 'broker-key'
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ refs: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    localGetSessionDetailMock.mockReturnValue({
+      id: 'source-session',
+      profile: 'default',
+      messages: [{
+        id: 2,
+        session_id: 'source-session',
+        role: 'assistant',
+        content: 'final',
+        run_id: 'run-source',
+        source_refs: [{ id: 'private', type: 'lark_doc', label: 'Secret policy', locator: 'docPrivate' }],
+      }],
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'source-session' },
+      state: { user: { id: 1, openid: 'ou_reader', profile: 'default' } },
+      body: null,
+    }
+    await mod.get(ctx)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(ctx.body)).not.toContain('Secret policy')
+    expect(JSON.stringify(ctx.body)).not.toContain('docPrivate')
+    expect(ctx.body.session.messages[0].source_refs).toBeNull()
+  })
+
+  it('reauthorizes a private source on open and returns 404 after revocation', async () => {
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    process.env.HERMES_RUN_BROKER_KEY = 'broker-key'
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ refs: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    localGetSessionDetailMock.mockReturnValue({
+      id: 'source-session',
+      profile: 'default',
+      messages: [{
+        id: 2,
+        session_id: 'source-session',
+        role: 'assistant',
+        content: 'final',
+        run_id: 'run-source',
+        source_refs: [{ id: 'private', type: 'lark_doc', label: 'Secret policy', locator: 'docPrivate' }],
+      }],
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { runId: 'run-source', refId: 'private' },
+      query: { session_id: 'source-session' },
+      state: { user: { id: 1, openid: 'ou_reader', profile: 'default' } },
+      redirect: vi.fn(),
+      body: null,
+    }
+    await mod.openSourceRef(ctx)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(ctx.status).toBe(404)
+    expect(ctx.redirect).not.toHaveBeenCalled()
+    expect(JSON.stringify(ctx.body)).not.toContain('Secret policy')
+    expect(JSON.stringify(ctx.body)).not.toContain('docPrivate')
+  })
+
   it('returns expert metadata from paginated local conversation detail', async () => {
     localGetSessionDetailPaginatedMock.mockReturnValue({
       session: {
@@ -1741,10 +1960,30 @@ describe('session conversations controller', () => {
     expect(localUpdateSessionMock).toHaveBeenCalledWith('session-1', {
       model: 'grok-4',
       provider: 'xai',
-      workspace: '/tmp/hermes-test/default/workspace',
     })
     expect(bridgeSwitchSessionModelMock).not.toHaveBeenCalled()
     expect(ctx.body).toEqual({ ok: true })
+  })
+
+  it('binds a newly pre-created chat session to the trusted request owner', async () => {
+    getSessionMock.mockReturnValue(null)
+    isChatPlaneRequestMock.mockReturnValue(true)
+    getRequestProfileMock.mockReturnValue('profile-a')
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'new-session' },
+      request: { body: { model: 'gpt-5', provider: 'openai' } },
+      state: { user: { id: 7, openid: 'ou_a', profile: 'profile-a' } },
+      body: null,
+    }
+    await mod.setModel(ctx)
+
+    expect(localCreateSessionMock).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'new-session',
+      profile: 'profile-a',
+      user_id: 'ou_a',
+    }))
   })
 
   it('claims the cross-family switch notice atomically instead of trusting the pre-await read', async () => {
@@ -1769,7 +2008,6 @@ describe('session conversations controller', () => {
     expect(localUpdateSessionMock).toHaveBeenCalledWith('session-1', {
       model: 'gpt-5.5',
       provider: 'openai',
-      workspace: '/tmp/hermes-test/default/workspace',
     })
     expect(claimFamilySwitchNoticeMock).toHaveBeenCalledWith('session-1')
     expect(ctx.body).toEqual({ ok: true, family_switch_notice: true })
@@ -1830,7 +2068,6 @@ describe('session conversations controller', () => {
     expect(localUpdateSessionMock).toHaveBeenCalledWith('session-1', {
       model: 'glm-4.6',
       provider: 'zai',
-      workspace: '/tmp/hermes-test/default/workspace',
     })
     // Already-marked rows short-circuit before the claim — no pointless UPDATE.
     expect(claimFamilySwitchNoticeMock).not.toHaveBeenCalled()
@@ -1858,7 +2095,6 @@ describe('session conversations controller', () => {
     expect(localUpdateSessionMock).toHaveBeenCalledWith('session-1', {
       model: 'gpt-5.5',
       provider: 'openai',
-      workspace: '/tmp/hermes-test/default/workspace',
     })
     expect(claimFamilySwitchNoticeMock).not.toHaveBeenCalled()
     expect(ctx.body).toEqual({ ok: true })
@@ -1885,7 +2121,6 @@ describe('session conversations controller', () => {
     expect(localUpdateSessionMock).toHaveBeenCalledWith('session-1', {
       model: 'claude-opus-5',
       provider: 'anthropic',
-      workspace: '/tmp/hermes-test/default/workspace',
     })
     expect(claimFamilySwitchNoticeMock).not.toHaveBeenCalled()
     expect(ctx.body).toEqual({ ok: true })
@@ -1914,7 +2149,6 @@ describe('session conversations controller', () => {
     expect(localUpdateSessionMock).toHaveBeenCalledWith('session-1', {
       model: 'claude-sonnet-4-6',
       provider: 'claude-oauth',
-      workspace: '/tmp/hermes-test/travel/workspace',
     })
     expect(bridgeSwitchSessionModelMock).toHaveBeenCalledWith(
       'session-1',
@@ -2239,6 +2473,211 @@ describe('session conversations controller', () => {
 
       expect(localGetSessionDetailMock).toHaveBeenCalledWith('cli-123')
       expect(JSON.parse(ctx.body)).toMatchObject({ id: 'cli-123' })
+    })
+  })
+
+  describe('chat-plane owner rule on REST history', () => {
+    it('hides another principal owner-stamped session from the chat-plane list', async () => {
+      isChatPlaneRequestMock.mockReturnValue(true)
+      listUserProfilesMock.mockReturnValue([{ profile_name: 'research' }])
+      getRequestProfileMock.mockReturnValue('research')
+      localListSessionsMock.mockReturnValue([
+        { id: 'a-session', profile: 'research', source: 'cli', user_id: 'ou_a', title: 'A expert chat', last_active: 2, message_count: 1 },
+        { id: 'b-session', profile: 'research', source: 'cli', user_id: 'ou_b', title: 'B chat', last_active: 2, message_count: 1 },
+        { id: 'legacy-session', profile: 'research', source: 'cli', user_id: '', title: 'ownerless', last_active: 2, message_count: 1 },
+      ])
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const ctx: any = { query: {}, state: { user: { id: 2, role: 'user', openid: 'ou_b' } }, body: null }
+      await mod.listConversations(ctx)
+
+      const ids = ctx.body.sessions.map((row: any) => row.id)
+      expect(ids).toContain('b-session')
+      expect(ids).toContain('legacy-session')
+      expect(ids).not.toContain('a-session')
+    })
+
+    it('denies chat-plane message reads of another principal owner-stamped session', async () => {
+      isChatPlaneRequestMock.mockReturnValue(true)
+      localGetSessionDetailMock.mockReturnValue({
+        id: 'a-session', profile: 'research', user_id: 'ou_a', messages: [{ id: 1, role: 'user', content: 'secret' }],
+      })
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const ctx: any = { params: { id: 'a-session' }, query: {}, state: { user: { id: 2, role: 'user', openid: 'ou_b' } }, body: null }
+      await mod.getConversationMessages(ctx)
+
+      expect(ctx.status).toBe(403)
+      expect(JSON.stringify(ctx.body)).not.toContain('secret')
+    })
+
+    it('keeps admin-plane profile oversight for owner-stamped sessions', async () => {
+      isChatPlaneRequestMock.mockReturnValue(false)
+      localGetSessionDetailMock.mockReturnValue({
+        id: 'a-session', profile: 'research', user_id: 'ou_a', messages: [{ id: 1, role: 'user', content: 'hello' }],
+      })
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const ctx: any = { params: { id: 'a-session' }, query: {}, state: { user: { id: 1, role: 'super_admin', openid: 'ou_admin' } }, body: null }
+      await mod.getConversationMessages(ctx)
+
+      expect(ctx.status).not.toBe(403)
+      expect(ctx.body?.messages?.length ?? 0).toBeGreaterThan(0)
+    })
+
+    it('hides and denies dirty ownerless EXPERT rows on the chat plane', async () => {
+      isChatPlaneRequestMock.mockReturnValue(true)
+      listUserProfilesMock.mockReturnValue([{ profile_name: 'research' }])
+      getRequestProfileMock.mockReturnValue('research')
+      localListSessionsMock.mockReturnValue([
+        { id: 'dirty-expert', profile: 'research', source: 'cli', user_id: '', expert_id: 'keep-resource-delivery', title: 'dirty', last_active: 2, message_count: 1 },
+        { id: 'legacy-plain', profile: 'research', source: 'cli', user_id: '', expert_id: null, title: 'plain', last_active: 2, message_count: 1 },
+      ])
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const ctx: any = { query: {}, state: { user: { id: 2, role: 'user', openid: 'ou_b' } }, body: null }
+      await mod.listConversations(ctx)
+      const ids = ctx.body.sessions.map((row: any) => row.id)
+      expect(ids).toContain('legacy-plain')
+      expect(ids).not.toContain('dirty-expert')
+
+      localGetSessionDetailMock.mockReturnValue({
+        id: 'dirty-expert', profile: 'research', user_id: '', expert_id: 'keep-resource-delivery',
+        messages: [{ id: 1, role: 'user', content: 'secret' }],
+      })
+      const readCtx: any = { params: { id: 'dirty-expert' }, query: {}, state: { user: { id: 2, role: 'user', openid: 'ou_b' } }, body: null }
+      await mod.getConversationMessages(readCtx)
+      expect(readCtx.status).toBe(403)
+    })
+
+    it('denies import of another principal local session and writes nothing', async () => {
+      isChatPlaneRequestMock.mockReturnValue(true)
+      getRequestProfileMock.mockReturnValue('research')
+      listUserProfilesMock.mockReturnValue([{ profile_name: 'research' }])
+      localGetSessionDetailMock.mockReturnValue({
+        id: 'a-session', profile: 'research', user_id: 'ou_a', expert_id: 'keep-resource-delivery',
+        messages: [{ id: 1, role: 'user', content: 'secret' }],
+      })
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const ctx: any = { params: { id: 'a-session' }, query: {}, state: { user: { id: 2, role: 'user', openid: 'ou_b' } }, body: null }
+      await mod.importHermesSession(ctx)
+
+      expect(ctx.status).toBe(403)
+      expect(JSON.stringify(ctx.body)).not.toContain('secret')
+      expect(localCreateSessionMock).not.toHaveBeenCalled()
+      expect(localAddMessagesMock).not.toHaveBeenCalled()
+    })
+
+    it('denies import of another principal state row before persisting it', async () => {
+      isChatPlaneRequestMock.mockReturnValue(true)
+      getRequestProfileMock.mockReturnValue('research')
+      listUserProfilesMock.mockReturnValue([{ profile_name: 'research' }])
+      localGetSessionDetailMock.mockReturnValue(null)
+      getSessionDetailFromDbWithProfileMock.mockResolvedValue({
+        id: 'state-a', source: 'cli', user_id: 'ou_a', expert_id: 'keep-resource-delivery',
+        title: 'A private', messages: [{ id: 1, role: 'user', content: 'secret' }],
+      })
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const ctx: any = { params: { id: 'state-a' }, query: {}, state: { user: { id: 2, role: 'user', openid: 'ou_b' } }, body: null }
+      await mod.importHermesSession(ctx)
+
+      expect(ctx.status).toBe(403)
+      expect(JSON.stringify(ctx.body)).not.toContain('secret')
+      expect(localCreateSessionMock).not.toHaveBeenCalled()
+      expect(localAddMessagesMock).not.toHaveBeenCalled()
+    })
+
+    it('overlays the authoritative local owner onto ownership-free state summaries', async () => {
+      isChatPlaneRequestMock.mockReturnValue(true)
+      getRequestProfileMock.mockReturnValue('research')
+      listUserProfilesMock.mockReturnValue([{ profile_name: 'research' }])
+      // State summary has no ownership fields; the local row says it is A's expert session.
+      listSessionSummariesMock.mockResolvedValue([
+        { id: 'merged-session', source: 'cli', title: 'A private title', preview: 'A secret preview', last_active: 5 },
+      ])
+      localListSessionsMock.mockReturnValue([
+        { id: 'merged-session', profile: 'research', source: 'cli', user_id: 'ou_a', expert_id: 'keep-resource-delivery', title: 'A private title', last_active: 5, message_count: 1 },
+      ])
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const ctx: any = { query: {}, state: { user: { id: 2, role: 'user', openid: 'ou_b' } }, body: null }
+      await mod.listHermesSessions(ctx)
+
+      const ids = (ctx.body.sessions || []).map((row: any) => row.id)
+      expect(ids).not.toContain('merged-session')
+      expect(JSON.stringify(ctx.body)).not.toContain('A secret preview')
+    })
+
+    it('drops state content when the same id has conflicting state/local owners', async () => {
+      isChatPlaneRequestMock.mockReturnValue(true)
+      getRequestProfileMock.mockReturnValue('research')
+      listUserProfilesMock.mockReturnValue([{ profile_name: 'research' }])
+      listSessionSummariesMock.mockResolvedValue([
+        { id: 'conflict-session', source: 'cli', user_id: 'ou_a', title: 'A private title', preview: 'A secret preview', last_active: 5 },
+      ])
+      localListSessionsMock.mockReturnValue([
+        { id: 'conflict-session', profile: 'research', source: 'cli', user_id: 'ou_b', title: 'B local title', last_active: 5, message_count: 1 },
+      ])
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const ctx: any = { query: {}, state: { user: { id: 2, role: 'user', openid: 'ou_b' } }, body: null }
+      await mod.listHermesSessions(ctx)
+
+      expect(JSON.stringify(ctx.body)).not.toContain('A secret preview')
+      expect(JSON.stringify(ctx.body)).not.toContain('A private title')
+    })
+
+    it('does not let a blank local owner resurrect state ownership', async () => {
+      isChatPlaneRequestMock.mockReturnValue(true)
+      getRequestProfileMock.mockReturnValue('research')
+      listUserProfilesMock.mockReturnValue([{ profile_name: 'research' }])
+      listSessionSummariesMock.mockResolvedValue([
+        { id: 'blank-local', source: 'cli', user_id: 'ou_a', title: 'A title', preview: 'A secret preview', last_active: 5 },
+      ])
+      localListSessionsMock.mockReturnValue([
+        { id: 'blank-local', profile: 'research', source: 'cli', user_id: '', expert_id: 'keep-resource-delivery', title: '', last_active: 5, message_count: 1 },
+      ])
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const ctx: any = { query: {}, state: { user: { id: 2, role: 'user', openid: 'ou_b' } }, body: null }
+      await mod.listHermesSessions(ctx)
+
+      const ids = (ctx.body.sessions || []).map((row: any) => row.id)
+      expect(ids).not.toContain('blank-local')
+      expect(JSON.stringify(ctx.body)).not.toContain('A secret preview')
+    })
+
+    it('resolves owners by exact lookup so a narrow ?limit cannot bypass the fence', async () => {
+      isChatPlaneRequestMock.mockReturnValue(true)
+      getRequestProfileMock.mockReturnValue('research')
+      listUserProfilesMock.mockReturnValue([{ profile_name: 'research' }])
+      listSessionSummariesMock.mockResolvedValue([
+        { id: 'a-expert-session', source: 'cli', title: 'A title', preview: 'A secret preview', last_active: 1 },
+      ])
+      // limit=1 makes the listing return an unrelated newer row instead.
+      localListSessionsMock.mockReturnValue([
+        { id: 'unrelated-newer', profile: 'research', source: 'cli', user_id: 'ou_b', title: 'B', last_active: 9, message_count: 1 },
+      ])
+      getSessionMock.mockImplementation((id: string) => (
+        id === 'a-expert-session'
+          ? { id, profile: 'research', source: 'cli', user_id: 'ou_a', expert_id: 'keep-resource-delivery', title: 'A title' }
+          : null
+      ))
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const ctx: any = { query: { limit: '1' }, state: { user: { id: 2, role: 'user', openid: 'ou_b' } }, body: null }
+      await mod.listHermesSessions(ctx)
+
+      const ids = (ctx.body.sessions || []).map((row: any) => row.id)
+      expect(ids).not.toContain('a-expert-session')
+      expect(JSON.stringify(ctx.body)).not.toContain('A secret preview')
+    })
+
+    it('refuses import when the existing row belongs to another profile', async () => {
+      isChatPlaneRequestMock.mockReturnValue(true)
+      getRequestProfileMock.mockReturnValue('research')
+      listUserProfilesMock.mockReturnValue([{ profile_name: 'research' }, { profile_name: 'other' }])
+      localGetSessionDetailMock.mockReturnValue({
+        id: 'x-session', profile: 'other', user_id: 'ou_b', messages: [{ id: 1, role: 'user', content: 'secret' }],
+      })
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const ctx: any = { params: { id: 'x-session' }, query: {}, state: { user: { id: 2, role: 'user', openid: 'ou_b' } }, body: null }
+      await mod.importHermesSession(ctx)
+
+      expect(ctx.status).toBe(404)
+      expect(JSON.stringify(ctx.body)).not.toContain('secret')
     })
   })
 })

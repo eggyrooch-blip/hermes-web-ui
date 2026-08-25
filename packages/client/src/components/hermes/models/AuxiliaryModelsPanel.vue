@@ -1,17 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { NButton, NInput, NInputNumber, NModal, NSelect, NSpin, useMessage } from 'naive-ui'
+import { NButton, NInput, NInputNumber, NModal, NSelect, NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { fetchAuxiliaryModels, saveAuxiliaryModels, type AuxiliaryModelSettings, type AuxiliaryModelTask, type AuxiliaryModelsConfig } from '@/api/hermes/config'
 import { useModelsStore } from '@/stores/hermes/models'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 
 const { t } = useI18n()
-const message = useMessage()
 const modelsStore = useModelsStore()
 const profilesStore = useProfilesStore()
 
 const loading = ref(false)
+/** Load, validation and save failures for this panel. */
+const paneError = ref('')
 const saving = ref(false)
 const tasks = ref<AuxiliaryModelTask[]>([])
 const auxiliary = ref<AuxiliaryModelsConfig>({})
@@ -102,7 +103,7 @@ async function loadAuxiliaryModels() {
     tasks.value = data.tasks
     auxiliary.value = data.auxiliary
   } catch (e: any) {
-    message.error(e.message || t('models.auxiliaryLoadFailed'))
+    paneError.value = e.message || t('models.auxiliaryLoadFailed')
   } finally {
     loading.value = false
   }
@@ -172,7 +173,8 @@ async function saveTask() {
   try {
     settings = buildSettings()
   } catch (e: any) {
-    message.error(e.message)
+    // Validation from buildSettings — belongs beside the fields.
+    paneError.value = e.message
     return
   }
 
@@ -183,10 +185,10 @@ async function saveTask() {
     else delete next[editingTask.value.key]
     const saved = await saveAuxiliaryModels(next)
     auxiliary.value = saved.auxiliary
+    // The editor closes and the panel lists the saved assignment.
     showEditor.value = false
-    message.success(t('models.auxiliarySaved'))
   } catch (e: any) {
-    message.error(e.message || t('models.auxiliarySaveFailed'))
+    paneError.value = e.message || t('models.auxiliarySaveFailed')
   } finally {
     saving.value = false
   }
@@ -203,9 +205,8 @@ async function clearTask(task: AuxiliaryModelTask) {
     }
     const saved = await saveAuxiliaryModels(next)
     auxiliary.value = saved.auxiliary
-    message.success(t('models.auxiliarySaved'))
   } catch (e: any) {
-    message.error(e.message || t('models.auxiliarySaveFailed'))
+    paneError.value = e.message || t('models.auxiliarySaveFailed')
   } finally {
     saving.value = false
   }
@@ -234,6 +235,7 @@ watch(() => form.value.provider, (provider) => {
 
 <template>
   <section class="auxiliary-panel">
+    <p v-if="paneError" class="pane-notice is-error" data-testid="auxiliary-error">{{ paneError }}</p>
     <div class="auxiliary-header">
       <div>
         <h3>{{ t('models.auxiliaryTitle') }}</h3>
@@ -325,6 +327,27 @@ watch(() => form.value.provider, (provider) => {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
+.pane-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r-ctl);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
+.pane-notice.is-error {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.pane-notice.is-info {
+  background: var(--surface-2);
+  color: var(--fg-primary);
+  box-shadow: inset 0 0 0 0.5px var(--divider);
+}
+
 
 .auxiliary-panel {
   --auxiliary-table-min-width: 720px;

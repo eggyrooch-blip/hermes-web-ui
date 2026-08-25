@@ -133,8 +133,11 @@ export async function startRun(ctx: Context) {
       apiKey?: string
       apiMode?: any
     }
+    const user = ctx.state.user as { openid?: string; id?: string | number } | undefined
+    const ownerId = String(user?.openid || user?.id || '').trim() || null
     ctx.body = await startCodingAgentRun(ctx.params.id, {
       sessionId: String(body.sessionId || ''),
+      ownerId,
       mode: body.mode,
       profile: ctx.state.profile?.name || body.profile,
       provider: body.provider,

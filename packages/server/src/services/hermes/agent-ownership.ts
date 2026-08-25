@@ -253,12 +253,15 @@ export function resolveAccessibleProfileAgentId(openid: string, profileName: str
     return undefined
 }
 
-export function registerOwnedProfile(openid: string, profileName: string, upstreamProfile?: string): boolean {
+export function registerOwnedProfile(openid: string, profileName: string, upstreamProfile?: string, displayLabel?: string): boolean {
     if (!isNonEmptyString(openid) || !isNonEmptyString(profileName)) return false
 
     const normalizedOpenid = openid.trim()
     const normalizedProfileName = profileName.trim()
     const normalizedUpstream = isNonEmptyString(upstreamProfile) ? upstreamProfile.trim() : null
+    // The human-facing name (中文 OK). The profile name stays an ASCII
+    // identifier; display_label is what agent cards render.
+    const normalizedLabel = isNonEmptyString(displayLabel) ? displayLabel.trim() : normalizedProfileName
 
     for (const dbPath of candidateMultitenancyDbs()) {
         try {
@@ -280,7 +283,7 @@ export function registerOwnedProfile(openid: string, profileName: string, upstre
                 if (columns.has('owner_open_id')) values.set('owner_open_id', normalizedOpenid)
                 if (columns.has('kind')) values.set('kind', 'agent')
                 if (columns.has('provenance')) values.set('provenance', 'webui-agent')
-                if (columns.has('display_label')) values.set('display_label', normalizedProfileName)
+                if (columns.has('display_label')) values.set('display_label', normalizedLabel)
                 if (columns.has('upstream_profile')) values.set('upstream_profile', normalizedUpstream)
                 if (columns.has('agent_id')) values.set('agent_id', userId)
                 if (columns.has('synced_at')) values.set('synced_at', now)

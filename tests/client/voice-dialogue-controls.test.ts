@@ -80,6 +80,7 @@ vi.mock('naive-ui', () => ({
   NModal: { template: '<div><slot /><slot name="footer" /></div>' },
   NInputNumber: { template: '<input />' },
   NPopselect: { template: '<div><slot /></div>' },
+  NPopover: { template: '<div class="n-popover-stub"><slot name="trigger" /><slot /></div>' },
   useMessage: () => ({ error: vi.fn(), success: vi.fn() }),
 }))
 
@@ -398,7 +399,8 @@ describe('VoiceDialogueControls', () => {
     expect(wrapper.find('[data-testid="voice-record-toggle"]').exists()).toBe(true)
 
     await wrapper.get('textarea').setValue('typed hello')
-    await getButtonByText(wrapper, 'chat.send').trigger('click')
+    // Send is now an icon-only round button (prototype) — find it by class.
+    await wrapper.get('.send-button').trigger('click')
 
     expect(chatStore.sendMessage).toHaveBeenCalledWith('typed hello', undefined)
     expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('')

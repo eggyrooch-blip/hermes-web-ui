@@ -4231,6 +4231,53 @@
         }
       }
     },
+    "/api/hermes/experts/{expertId}/work-record": {
+      "get": {
+        "tags": [
+          "Experts"
+        ],
+        "summary": "Get work-record",
+        "description": "GET /api/hermes/experts/:expertId/work-record",
+        "operationId": "workRecord",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "expertId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "maintainer"
+              ]
+            }
+          }
+        ]
+      }
+    },
     "/api/hermes/files/copy": {
       "post": {
         "tags": [
@@ -4464,6 +4511,62 @@
             }
           }
         }
+      }
+    },
+    "/api/hermes/files/search": {
+      "get": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Get search",
+        "description": "GET /api/hermes/files/search",
+        "operationId": "getSearch",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "recent",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "enum": [
+                "1",
+                "true"
+              ]
+            }
+          }
+        ]
       }
     },
     "/api/hermes/files/stat": {
@@ -9197,25 +9300,7 @@
           "404": {
             "description": "Not found"
           }
-        },
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer"
-            }
-          },
-          {
-            "name": "source",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ]
+        }
       }
     },
     "/api/hermes/sessions/hermes/{id}": {
@@ -9336,6 +9421,58 @@
           },
           {
             "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/hermes/sessions/source-refs/{runId}/{refId}/open": {
+      "get": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Get open",
+        "description": "GET /api/hermes/sessions/source-refs/:runId/:refId/open",
+        "operationId": "openSourceRef",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "refId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
             "in": "query",
             "required": false,
             "schema": {

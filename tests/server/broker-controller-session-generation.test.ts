@@ -8,7 +8,7 @@ const dbState = vi.hoisted(() => ({ db: null as DatabaseSync | null, appHome: ''
 const tracker = vi.hoisted(() => ({ start: vi.fn(), complete: vi.fn(), discard: vi.fn() }))
 const remoteDelete = vi.hoisted(() => ({ inspect: vi.fn(), remove: vi.fn() }))
 const chatRun = vi.hoisted(() => ({ server: undefined as any }))
-const workspace = vi.hoisted(() => ({ ensure: vi.fn() }))
+const workspace = vi.hoisted(() => ({ ensure: vi.fn(), normalize: vi.fn() }))
 
 vi.mock('../../packages/server/src/db/index', () => ({
   getDb: () => dbState.db,
@@ -78,6 +78,8 @@ vi.mock('../../packages/server/src/db/hermes/users-store', () => ({
 vi.mock('../../packages/server/src/services/hermes/model-context', () => ({ getModelContextLength: vi.fn(() => 200000) }))
 vi.mock('../../packages/server/src/services/hermes/run-chat/workspace', () => ({
   ensureHermesRunWorkspace: workspace.ensure,
+  normalizeHermesSessionWorkspace: workspace.normalize,
+  normalizeStoredHermesSessionWorkspace: workspace.normalizeStored,
 }))
 vi.mock('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker', () => ({
   startWorkspaceRunCheckpoint: tracker.start,
@@ -290,6 +292,7 @@ describe('BrokerRunController session generation integration', () => {
     initAllHermesTables()
     createSession({ id: 'same-id', profile: 'research', workspace: '/tmp/workspace' })
     workspace.ensure.mockResolvedValue('/tmp/workspace')
+    workspace.normalize.mockImplementation(async (_profile: string, value?: string | null) => value || null)
     tracker.start.mockResolvedValue({ key: 'checkpoint' })
     tracker.complete.mockResolvedValue(null)
   })

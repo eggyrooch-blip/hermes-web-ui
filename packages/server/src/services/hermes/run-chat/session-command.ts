@@ -60,6 +60,11 @@ interface SessionCommandContext {
   commandReservation?: SessionCommandReservation
 }
 
+function commandSessionOwner(ctx: SessionCommandContext): string | null {
+  const user = ctx.socket.data?.user as { openid?: string; id?: string | number } | undefined
+  return String(user?.openid || user?.id || '').trim() || null
+}
+
 const COMMAND_ALIASES: Record<string, CommandName> = {
   usage: 'usage',
   status: 'status',
@@ -588,7 +593,14 @@ async function handleSessionCommandImpl(
       }
       const title = command.args.slice(0, 120)
       if (!getSession(sessionId)) {
-        createSession({ id: sessionId, profile: ctx.profile, source: 'cli', model: ctx.model, title })
+        createSession({
+          id: sessionId,
+          profile: ctx.profile,
+          source: 'cli',
+          user_id: commandSessionOwner(ctx),
+          model: ctx.model,
+          title,
+        })
       }
       const updated = renameSession(sessionId, title)
       emitCommand({
@@ -969,6 +981,7 @@ function ensureCommandSession(sessionId: string, ctx: SessionCommandContext) {
     id: sessionId,
     profile: ctx.profile,
     source: 'cli',
+    user_id: commandSessionOwner(ctx),
     model: ctx.model,
     title: 'Bridge command',
   })

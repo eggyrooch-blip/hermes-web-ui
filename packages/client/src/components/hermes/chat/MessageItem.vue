@@ -2,11 +2,13 @@
 import type { Message, ContentBlock, Session, WorkspaceDiffInlineFile } from "@/stores/hermes/chat";
 import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
-import { useMessage } from "naive-ui";
+import { useCopyFeedback } from "@/composables/useCopyFeedback";
 import { downloadFile, getDownloadUrl } from "@/api/hermes/download";
 import { copyToClipboard } from "@/utils/clipboard";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
-import { parseThinking, countThinkingChars } from "@/utils/thinking-parser";
+import FeedbackControl from "./FeedbackControl.vue";
+import SourceRefs from "./SourceRefs.vue";
+import { parseThinking } from "@/utils/thinking-parser";
 import { useChatStore } from "@/stores/hermes/chat";
 import { useFilesStore } from "@/stores/hermes/files";
 import { useSettingsStore } from "@/stores/hermes/settings";
@@ -20,7 +22,7 @@ import {
 import { useGlobalSpeech } from "@/composables/useSpeech";
 import { useVoiceSettings } from "@/composables/useVoiceSettings";
 import { speedToEdgeRate, hzToEdgePitch } from "@/utils/ttsHelpers";
-import { formatChatTimestamp } from "@/utils/chat-timestamp";
+import KpIcon from "@/components/kippies/KpIcon.vue";
 
 const TOOL_PAYLOAD_DISPLAY_LIMIT = 1000;
 const JSON_STRING_DISPLAY_LIMIT = 200;
@@ -30,14 +32,26 @@ const JSON_MAX_KEYS_PER_OBJECT = 50;
 const JSON_MAX_ITEMS_PER_ARRAY = 50;
 const JSON_TRUNCATED_KEY = "__truncated__";
 
-const props = defineProps<{ message: Message; highlight?: boolean; headingIdPrefix?: string; session?: Session | null }>();
+const props = defineProps<{
+  message: Message;
+  highlight?: boolean;
+  headingIdPrefix?: string;
+  session?: Session | null;
+  feedbackEligible?: boolean;
+}>();
 const { t } = useI18n();
-const toast = useMessage();
+// Copy feedback lands on the button that was pressed — copying changes nothing
+// on screen, so it is the one action that must say something, and a transcript
+// is exactly where a toast is furthest from the control you clicked.
+const copyFeedback = useCopyFeedback();
+/** A download that never started. The browser announces the ones that do. */
+const downloadError = ref("");
 const chatStore = useChatStore();
 const filesStore = useFilesStore();
 
 const isSystem = computed(() => props.message.role === "system");
 const isAgentError = computed(() => props.message.role === "assistant" && props.message.systemType === "error");
+const feedbackSessionId = computed(() => (props.session ?? chatStore.activeSession)?.id || "");
 
 const effectiveHeadingIdPrefix = computed(() => props.headingIdPrefix || `msg-${props.message.id}`);
 const isCommandMessage = computed(() => props.message.role === "command" || props.message.systemType === "command");
@@ -48,6 +62,15 @@ const isStatusCommand = computed(() =>
   && props.message.commandData?.type !== "goal"
 );
 const isWorkspaceDiffCommand = computed(() => isCommandMessage.value && props.message.commandAction === "workspace.diff");
+// Prototype has exactly two conversation voices: the user (right-side bubble)
+// and the agent (left-side plain text). A command the USER typed (echoed back
+// with role 'command', content starting with '/') therefore renders as an
+// ordinary user bubble; command RESPONSES render as a quiet gray status line
+// and system notices use the prototype's tinted danger block.
+const isUserCommand = computed(
+  () => isCommandMessage.value && (props.message.content || "").trimStart().startsWith("/"),
+);
+const displayRole = computed(() => (isUserCommand.value ? "user" : props.message.role));
 const statusItems = computed(() => {
   const data = props.message.commandData || {};
   return [
@@ -215,25 +238,10 @@ const previewUrl = ref<string | null>(null);
 const settingsStore = useSettingsStore();
 const speech = useGlobalSpeech();
 const voiceSettings = useVoiceSettings();
-// Agent (assistant) bubbles show the AGENT's own logo — per agent (Hermes / Codex /
-// Claude), matching the session list — never the user's own profile/Feishu avatar (which
-// in multitenancy made the agent wear the user's face). Same logic as
-// SessionListItem.sessionAgentLogo, keyed on the message's own session (props.session,
-// passed by history lists) and falling back to the active chat session.
-const agentLogo = computed(() => {
-  const session = props.session ?? chatStore.activeSession;
-  if (session?.source === "coding_agent") {
-    if (session.codingAgentId === "codex" || session.agent === "codex") {
-      return { label: "Codex", src: "/coding-agents/codex-openai.png" };
-    }
-    return { label: "Claude Code", src: "/coding-agents/claude-code.svg" };
-  }
-  if (session?.expertAvatar) {
-    return { label: session.expertLabel || session.expertId || "Expert", src: session.expertAvatar };
-  }
-  return { label: "Hermes", src: "/coding-agents/hermes.png" };
-});
-
+// NOTE: the assistant turn deliberately carries NO avatar of any kind (see the
+// template). Whatever replaces it must never fall back to the active PROFILE's
+// avatar: in multitenancy each user IS a profile, so that made the agent wear the
+// user's own Feishu photo — the "talking to yourself" bug this file used to guard.
 // Copy entire bubble content
 const copyableContent = computed(() => {
   if (props.message.role === 'tool') return null
@@ -245,12 +253,7 @@ const copyableContent = computed(() => {
 async function copyBubbleContent() {
   const text = copyableContent.value
   if (!text) return
-  const ok = await copyToClipboard(text)
-  if (ok) {
-    toast.success(t('chat.copiedBubble'))
-    return
-  }
-  toast.error(t('chat.copyFailed'))
+  await copyFeedback.run('bubble', () => copyToClipboard(text))
 }
 
 const parsedThinking = computed(() =>
@@ -269,12 +272,6 @@ const thinkingFullText = computed(() => {
   parts.push(...parsedThinking.value.segments);
   if (parsedThinking.value.pending) parts.push(parsedThinking.value.pending);
   return parts.join("\n\n");
-});
-
-const thinkingCharCount = computed(() => {
-  let count = countThinkingChars(parsedThinking.value);
-  if (props.message.reasoning) count += props.message.reasoning.length;
-  return count;
 });
 
 // 流式思考态：仍有未闭合 <think> 标签，或 reasoning 有内容但正文尚未开始。
@@ -339,7 +336,25 @@ function formatDuration(ms: number): string {
   return r === 0 ? `${m}m` : `${m}m ${r}s`;
 }
 
-const timeStr = computed(() => formatChatTimestamp(props.message.timestamp));
+// Prototype ThinkingDisclosure: the header IS the elapsed/total time (not a
+// "Thinking" label + a char count). Falls back to the plain label only before
+// any duration is known.
+const thinkingHeaderText = computed(() => {
+  const ms = thinkingDurationMs.value;
+  if (ms !== null && ms > 0) {
+    const duration = formatDuration(ms);
+    return thinkingStreamingNow.value
+      ? t('chat.thinkingProcessing', { duration })
+      : t('chat.thinkingElapsed', { duration });
+  }
+  return thinkingStreamingNow.value ? t('chat.thinkingInProgress') : t('chat.thinkingLabel');
+});
+
+// Prototype msgTime: toTimeString().slice(0, 8) — always HH:MM:SS.
+const timeStr = computed(() => {
+  const date = new Date(props.message.timestamp);
+  return Number.isNaN(date.getTime()) ? "" : date.toTimeString().slice(0, 8);
+});
 
 function isImage(type: string): boolean {
   return type.startsWith("image/");
@@ -386,9 +401,9 @@ function getFilePathFromContent(attName: string): string | null {
 function handleAttachmentDownload(att: { name: string; url: string; type: string }) {
   const filePath = getFilePathFromContent(att.name);
   if (filePath) {
-    toast.info(t("download.downloading"));
+    // A download that starts is announced by the browser itself.
     downloadFile(filePath, att.name).catch((err: Error) => {
-      toast.error(err.message || t("download.downloadFailed"));
+      downloadError.value = err.message || t("download.downloadFailed");
     });
     return;
   }
@@ -557,21 +572,16 @@ async function handleToolDetailClick(event: MouseEvent): Promise<void> {
 
   const source = button.closest<HTMLElement>("[data-copy-source]")?.dataset.copySource;
   if (source === "tool-args" && fullToolArgs.value) {
-    const ok = await copyTextToClipboard(fullToolArgs.value);
-    if (ok) toast.success(t("common.copied"));
-    else toast.error(t("chat.copyFailed"));
+    await copyFeedback.run("tool-args", () => copyTextToClipboard(fullToolArgs.value));
     return;
   }
   if (source === "tool-result" && fullToolResult.value) {
-    const ok = await copyTextToClipboard(fullToolResult.value);
-    if (ok) toast.success(t("common.copied"));
-    else toast.error(t("chat.copyFailed"));
+    await copyFeedback.run("tool-result", () => copyTextToClipboard(fullToolResult.value));
     return;
   }
 
-  const copyResult = await handleCodeBlockCopyClick(event);
-  if (copyResult) toast.success(t("common.copied"));
-  else if (copyResult === false) toast.error(t("chat.copyFailed"));
+  // Code blocks report on their own button (see flashCopyResult in highlight.ts).
+  await handleCodeBlockCopyClick(event);
 }
 
 const hasAttachments = computed(
@@ -796,7 +806,7 @@ onBeforeUnmount(() => {
   <div
     v-if="!isWorkspaceDiffCommand"
     class="message"
-    :class="[message.role, { highlight }]"
+    :class="[displayRole, { highlight }]"
     :id="`message-${message.id}`"
   >
     <template v-if="message.role === 'tool'">
@@ -859,20 +869,19 @@ onBeforeUnmount(() => {
     </template>
     <template v-else>
       <div class="msg-body">
-        <img
-          v-if="message.role === 'assistant'"
-          class="msg-avatar msg-agent-logo"
-          :src="agentLogo.src"
-          :alt="agentLogo.label"
-        >
+        <!-- No identity row above the answer. The prototype deleted it: that row
+             carried only the product's own name, and the user is already inside
+             the product — the signature is the mascot on the run's thinking line
+             (MessageList), which sits on the line that is actually changing
+             ("已处理 N 秒") instead of spending a whole row on a brand name. -->
         <div class="msg-content" :class="message.role">
           <div
             class="message-bubble"
             :class="{
               system: isSystem,
               'agent-error': isAgentError,
-              command: isCommandMessage,
-              'command-error': isCommandError,
+              command: isCommandMessage && !isUserCommand,
+              'command-error': isCommandError && !isUserCommand,
               'speech-playing': isPlayingThisMessage && !isPausedThisMessage,
             }"
           >
@@ -923,6 +932,7 @@ onBeforeUnmount(() => {
               :class="{ expanded: thinkingExpanded }"
             >
               <div class="thinking-header" @click="toggleThinking">
+                <span class="thinking-label">{{ thinkingHeaderText }}</span>
                 <svg
                   width="10"
                   height="10"
@@ -935,21 +945,8 @@ onBeforeUnmount(() => {
                 >
                   <polyline points="9 18 15 12 9 6" />
                 </svg>
-                <span class="thinking-icon">💭</span>
-                <span class="thinking-label">
-                  {{
-                    thinkingStreamingNow
-                      ? t('chat.thinkingInProgress')
-                      : t('chat.thinkingLabel')
-                  }}
-                </span>
-                <span v-if="thinkingDurationMs !== null && thinkingDurationMs > 0" class="thinking-meta">
-                  · {{ t('chat.thinkingDuration', { duration: formatDuration(thinkingDurationMs) }) }}
-                </span>
-                <span class="thinking-meta">
-                  · {{ t('chat.thinkingChars', { count: thinkingCharCount }) }}
-                </span>
               </div>
+              <div class="thinking-divider" aria-hidden="true"></div>
               <div v-if="thinkingExpanded" class="thinking-body">
                 <MarkdownRenderer :content="thinkingFullText" />
               </div>
@@ -984,7 +981,7 @@ onBeforeUnmount(() => {
                     <template v-else>
                       <div
                         class="msg-attachment-file"
-                        @click="file.path && downloadFile(file.path, file.name).catch(err => toast.error(err.message || t('download.downloadFailed')))"
+                        @click="file.path && downloadFile(file.path, file.name).catch(err => (downloadError = err.message || t('download.downloadFailed')))"
                         style="cursor: pointer;"
                         :title="t('download.downloadFile')"
                       >
@@ -1018,7 +1015,6 @@ onBeforeUnmount(() => {
               :content="message.content"
             />
             <div v-if="isStatusCommand" class="command-result command-status">
-              <span class="command-result-icon">/</span>
               <div class="command-status-grid">
                 <span
                   v-for="item in statusItems"
@@ -1030,8 +1026,11 @@ onBeforeUnmount(() => {
                 </span>
               </div>
             </div>
+            <!-- User-typed commands read as an ordinary user message; command
+                 responses are a quiet status line — no slash chip (prototype
+                 has no command vocabulary at all). -->
+            <MarkdownRenderer v-else-if="isUserCommand && message.content" :content="message.content" />
             <div v-else-if="isCommandMessage && message.content" class="command-result">
-              <span class="command-result-icon">/</span>
               <MarkdownRenderer :content="message.content" />
             </div>
 
@@ -1039,7 +1038,68 @@ onBeforeUnmount(() => {
               <span></span><span></span><span></span>
             </span>
           </div>
-          <div class="message-meta">
+          <!-- Prototype: only user and assistant messages carry a meta/action
+               row; command echoes and system notices have none. -->
+          <p v-if="downloadError" class="msg-download-error" data-testid="msg-download-error">
+            {{ downloadError }}
+          </p>
+          <!-- 来源引用 (digital-employee-source-view): sits ABOVE the action
+               row, like the prototype's citation strip — the refs belong to the
+               answer, not to the actions. -->
+          <SourceRefs
+            v-if="message.role === 'assistant' && !message.isStreaming && message.sourceRefs?.length && feedbackSessionId"
+            :refs="message.sourceRefs"
+            :session-id="feedbackSessionId"
+          />
+          <div v-if="displayRole === 'user' || displayRole === 'assistant'" class="message-meta">
+            <span v-if="displayRole === 'user'" class="message-time">{{ timeStr }}</span>
+            <!-- Prototype MsgActions order: 复制 first, then the role's own
+                 actions (user: 编辑; assistant: 有用/没用/分享). The inert
+                 placeholders match the prototype's IconBtns-without-onClick.
+                 Speech playback is a hermes extra and sits last. -->
+            <button
+              v-if="copyableContent"
+              class="copy-bubble-btn"
+              :class="{
+                'is-copy-ok': copyFeedback.state('bubble') === 'ok',
+                'is-copy-fail': copyFeedback.state('bubble') === 'fail',
+              }"
+              @click="copyBubbleContent"
+              :title="copyFeedback.state('bubble') === 'fail' ? t('chat.copyFailed') : t('chat.copyBubble')"
+            >
+              <!-- Becomes a tick for a beat: copying changes nothing else on
+                   screen, so the button is the only honest place to answer. -->
+              <svg v-if="copyFeedback.state('bubble') === 'ok'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M20 6 9 17l-5-5"/>
+              </svg>
+              <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+            </button>
+            <button
+              v-if="displayRole === 'user'"
+              class="msg-action-btn"
+              type="button"
+              :title="t('common.edit')"
+            >
+              <KpIcon name="line_edit" :size="16" />
+            </button>
+            <template v-if="message.role === 'assistant'">
+              <!-- 有用/没用 = the real thing, not the prototype's inert
+                   IconBtns: FeedbackControl carries the rating through to the
+                   feedback API and reads it back after a reload. It renders the
+                   same two KpIcons inline in this row. 分享 stays inert —
+                   there is nothing to persist it into yet. -->
+              <FeedbackControl
+                v-if="feedbackEligible && feedbackSessionId && message.runId"
+                :session-id="feedbackSessionId"
+                :run-id="message.runId"
+              />
+              <button class="msg-action-btn" type="button" :title="t('chat.msgShare')">
+                <KpIcon name="line_share" :size="16" />
+              </button>
+            </template>
             <button
               v-if="canPlaySpeech"
               class="speech-bubble-btn"
@@ -1047,26 +1107,14 @@ onBeforeUnmount(() => {
               @click="handleSpeechToggle"
               :title="isPlayingThisMessage ? (isPausedThisMessage ? t('chat.resumeSpeech') : t('chat.pauseSpeech')) : t('chat.playSpeech')"
             >
-              <svg v-if="!isPlayingThisMessage || isPausedThisMessage" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <svg v-if="!isPlayingThisMessage || isPausedThisMessage" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polygon points="5 3 19 12 5 21 5 3"/>
               </svg>
-              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <rect x="6" y="4" width="4" height="16"/>
                 <rect x="14" y="4" width="4" height="16"/>
               </svg>
             </button>
-            <button
-              v-if="copyableContent"
-              class="copy-bubble-btn"
-              @click="copyBubbleContent"
-              :title="t('chat.copyBubble')"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-              </svg>
-            </button>
-            <span class="message-time">{{ timeStr }}</span>
           </div>
         </div>
       </div>
@@ -1081,6 +1129,23 @@ onBeforeUnmount(() => {
 
 <style scoped lang="scss">
 @use "@/styles/variables" as *;
+.msg-download-error {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
+}
+
+.copy-bubble-btn.is-copy-ok {
+  color: var(--keep-green);
+}
+
+.copy-bubble-btn.is-copy-fail {
+  color: var(--danger);
+}
+
 
 .message {
   display: flex;
@@ -1093,7 +1158,7 @@ onBeforeUnmount(() => {
     align-items: flex-end;
 
     .msg-body {
-      max-width: 75%;
+      max-width: 80%;
       position: relative;
       z-index: 1;
     }
@@ -1102,9 +1167,12 @@ onBeforeUnmount(() => {
       align-items: flex-end;
     }
 
+    // Prototype user bubble: --gray-f2 fill, asymmetric radius (sharp
+    // bottom-right corner), 12/16 padding.
     .message-bubble {
-      background-color: $msg-user-bg;
-      border-radius: 10px;
+      background-color: var(--gray-f2);
+      border-radius: 16px 16px 2px 16px;
+      padding: 12px 16px;
     }
   }
 
@@ -1114,30 +1182,19 @@ onBeforeUnmount(() => {
     gap: 8px;
 
     .msg-body {
-      max-width: 80%;
+      max-width: 88%;
       position: relative;
       z-index: 1;
+      flex-direction: column;
     }
 
-    .msg-avatar {
-      width: 40px;
-      height: 40px;
-      flex-shrink: 0;
-      margin-top: 2px;
-    }
-
-    .msg-avatar.msg-agent-logo {
-      border-radius: 50%;
-      object-fit: contain;
-      background: #fff;
-      padding: 4px;
-      box-sizing: border-box;
-      border: 1px solid var(--border-light, rgba(0, 0, 0, 0.08));
-    }
-
-    .message-bubble {
-      background-color: $msg-assistant-bg;
-      border-radius: 10px;
+    // Prototype: assistant output is PLAIN TEXT — no fill, no border, no
+    // radius, no padding ("正文是纯文本，不套气泡"). Only the error variant
+    // keeps a box (below).
+    .message-bubble:not(.agent-error) {
+      background-color: transparent;
+      border-radius: 0;
+      padding: 0;
     }
 
     .message-bubble.agent-error {
@@ -1197,8 +1254,15 @@ onBeforeUnmount(() => {
 
 .message-bubble {
   padding: 10px 14px;
-  font-size: 14px;
-  line-height: 1.65;
+  // Prototype t-body-multi: chat copy runs at 16px with the reading leading.
+  font-size: var(--t-16);
+  line-height: var(--lh-read);
+
+  // .markdown-body pins 14px for other surfaces; chat copy follows the bubble.
+  :deep(.markdown-body) {
+    font-size: inherit;
+    line-height: inherit;
+  }
   word-break: break-word;
   overflow-wrap: anywhere;
   border-radius: 10px;
@@ -1207,25 +1271,45 @@ onBeforeUnmount(() => {
   position: relative;
   box-sizing: border-box;
 
+  // Prototype notice block (the RunScreen fail block): tinted card, 12px
+  // padding, --r-ctl radius, 14/1.6 danger text — no colored side stripe.
   &.system {
-    border-left: 3px solid $warning;
-    border-radius: $radius-sm;
-    max-width: 80%;
-    background-color: rgba(var(--warning-rgb), 0.06);
+    padding: 12px;
+    border-radius: var(--r-ctl);
+    background-color: var(--danger-bg);
+    color: var(--danger);
+    max-width: 88%;
+    font-size: var(--t-14);
+    line-height: 1.6;
+
+    :deep(.markdown-body) {
+      color: inherit;
+    }
   }
 
+  // Command RESPONSES are a quiet status line (ToolLine typography): no pill,
+  // no fill — the prototype has no command vocabulary, so machine acks read
+  // like tool output.
   &.command {
-    border-left: none;
-    border: 1px solid rgba(var(--accent-primary-rgb), 0.12);
-    background-color: rgba(var(--accent-primary-rgb), 0.04);
-    color: $text-secondary;
+    border: none;
+    background-color: transparent;
+    padding: 0;
     max-width: min(100%, 960px);
-    padding: 8px 10px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--fg-aux);
+
+    :deep(.markdown-body) {
+      color: inherit;
+    }
   }
 
+  // A failed command is the same notice block as a system error.
   &.command-error {
-    border-color: rgba(var(--warning-rgb), 0.28);
-    background-color: rgba(var(--warning-rgb), 0.06);
+    padding: 12px;
+    border-radius: var(--r-ctl);
+    background-color: var(--danger-bg);
+    color: var(--danger);
   }
 
   &.agent-error {
@@ -1301,22 +1385,6 @@ onBeforeUnmount(() => {
   color: $text-primary;
   font-family: $font-code;
   font-size: 11px;
-}
-
-.command-result-icon {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: rgba(var(--accent-primary-rgb), 0.1);
-  color: $accent-primary;
-  font-family: $font-code;
-  font-size: 12px;
-  line-height: 1;
-  margin-top: 2px;
 }
 
 @keyframes rainbow-glow {
@@ -1415,107 +1483,110 @@ onBeforeUnmount(() => {
 .thinking-block {
   margin-bottom: 8px;
   padding: 4px 0;
-  border-bottom: 1px dashed $border-light;
 
   .thinking-header {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    color: $text-muted;
+    gap: 4px;
+    font: var(--w-regular) var(--t-13) / 1.4 var(--font-cn);
+    color: var(--fg-secondary);
     cursor: pointer;
     padding: 2px 4px;
-    border-radius: $radius-sm;
+    border-radius: var(--r-card-s);
     user-select: none;
+    transition: background var(--motion-fast) var(--ease-std);
 
     &:hover {
-      background: rgba(0, 0, 0, 0.03);
+      background: var(--gray-fa);
     }
   }
 
   .thinking-chevron {
     flex-shrink: 0;
-    transition: transform 0.15s ease;
+    color: var(--fg-aux);
+    transition: transform var(--motion-fast) var(--ease-std);
 
     &.rotated {
       transform: rotate(90deg);
     }
   }
 
-  .thinking-icon {
-    font-size: 11px;
+  .thinking-label {
     flex-shrink: 0;
   }
 
-  .thinking-label {
-    font-weight: 500;
-    flex-shrink: 0;
+  // Prototype: a hairline divider directly under the time header.
+  .thinking-divider {
+    height: 1px;
+    margin: 8px 0 0;
+    background: var(--divider);
   }
 
   .thinking-meta {
-    color: $text-muted;
+    color: var(--fg-aux);
     font-variant-numeric: tabular-nums;
   }
 
   .thinking-body {
     margin-top: 6px;
-    padding: 6px 10px;
-    border-left: 2px solid $border-light;
-    font-size: 13px;
-    opacity: 0.85;
-    font-style: italic;
+    margin-left: 8px;
+    padding-left: 12px;
+    border-left: 0.5px solid var(--divider);
+    font-size: var(--t-13);
+    line-height: 1.6;
+    color: var(--fg-aux);
 
     :deep(p) { margin: 0.3em 0; }
   }
 }
 
+// Prototype: the meta row is always visible — time (user only) plus a row of
+// 28px transparent icon buttons, gap 4, tucked 4px under the bubble.
+// Prototype: the user meta row is a gap-4 wrapper (time + actions) sitting
+// 4px under the bubble; the action buttons themselves run at gap 2
+// (MsgActions). The time keeps the extra 2px so time→button reads as 4.
 .message-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
   margin-top: 4px;
-  padding: 0 4px;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-
-  .message:hover & {
-    opacity: 1;
-  }
-
-  // 移动端一直显示按钮
-  @media (max-width: 768px) {
-    opacity: 1;
-  }
 }
 
+.message-time {
+  margin-right: 2px;
+}
+
+// Assistant answers carry the standalone MsgActions row: marginTop 8.
+.message.assistant .message-meta {
+  margin-top: 8px;
+}
+
+// Prototype IconBtn (.ab): no hover tint at all — the only feedback is the
+// press dim (opacity .6 on :active).
 .copy-bubble-btn,
-.speech-bubble-btn {
+.speech-bubble-btn,
+.msg-action-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   border: none;
   background: transparent;
-  color: $text-muted;
+  color: var(--fg-aux);
   cursor: pointer;
-  border-radius: $radius-sm;
+  border-radius: 9999px;
   padding: 0;
-  transition: color 0.15s ease, background 0.15s ease;
+  transition: opacity var(--motion-base) var(--ease-std);
 
-  &:hover {
-    color: $text-secondary;
-    background: rgba(0, 0, 0, 0.06);
+  &:active {
+    opacity: 0.6;
   }
+}
 
-  .dark & {
-    color: #999999;
-
-    &:hover {
-      color: #cccccc;
-      background: rgba(255, 255, 255, 0.1);
-    }
-  }
+// 没用 = the praise glyph flipped, as in the prototype.
+.msg-action-flip {
+  transform: rotate(180deg);
 }
 
 .speech-bubble-btn {
@@ -1539,24 +1610,21 @@ onBeforeUnmount(() => {
   }
 }
 
+// Prototype t-meta (12/lh-tight) with the inline fg-disabled override.
 .message-time {
-  font-size: 11px;
-  color: $text-muted;
+  font: var(--w-regular) var(--t-12) / var(--lh-tight) var(--font-cn);
+  color: var(--fg-disabled);
   user-select: none;
-
-  .dark & {
-    color: #999999;
-  }
 }
 
 .tool-line {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
-  color: $text-muted;
+  font: var(--w-regular) var(--t-12) / 1.4 var(--font-cn);
+  color: var(--fg-secondary);
   padding: 2px 4px;
-  border-radius: $radius-sm;
+  border-radius: var(--r-card-s);
   min-width: 0;
   max-width: 100%;
   box-sizing: border-box;
@@ -1565,12 +1633,12 @@ onBeforeUnmount(() => {
     cursor: pointer;
 
     &:hover {
-      background: rgba(0, 0, 0, 0.03);
+      background: var(--gray-fa);
     }
   }
 
   .tool-name {
-    font-family: $font-code;
+    font-family: var(--font-mono);
     flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
@@ -1586,12 +1654,14 @@ onBeforeUnmount(() => {
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: min(400px, 100%);
+    color: var(--fg-aux);
   }
 }
 
 .tool-chevron {
   flex-shrink: 0;
-  transition: transform 0.15s ease;
+  color: var(--fg-aux);
+  transition: transform var(--motion-fast) var(--ease-std);
 
   &.rotated {
     transform: rotate(90deg);
@@ -1601,7 +1671,7 @@ onBeforeUnmount(() => {
 .tool-spinner {
   width: 10px;
   height: 10px;
-  border: 1.5px solid $text-muted;
+  border: 1.5px solid var(--fg-aux);
   border-top-color: transparent;
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
@@ -1609,11 +1679,11 @@ onBeforeUnmount(() => {
 }
 
 .tool-error-badge {
-  font-size: 9px;
-  color: $error;
-  background: rgba(var(--error-rgb), 0.08);
+  font-size: var(--t-9);
+  color: var(--danger);
+  background: var(--danger-bg);
   padding: 0 4px;
-  border-radius: 3px;
+  border-radius: var(--r-card-s);
   line-height: 14px;
   margin-left: 4px;
 }
@@ -1621,7 +1691,7 @@ onBeforeUnmount(() => {
 .tool-details {
   margin-left: 16px;
   margin-top: 2px;
-  border-left: 2px solid $border-light;
+  border-left: 0.5px solid var(--divider);
   padding-left: 10px;
 }
 
@@ -1630,9 +1700,9 @@ onBeforeUnmount(() => {
 }
 
 .tool-detail-label {
-  font-size: 10px;
-  font-weight: 600;
-  color: $text-muted;
+  font-size: var(--t-10);
+  font-weight: var(--w-semibold);
+  color: var(--fg-aux);
   text-transform: uppercase;
   letter-spacing: 0.3px;
   margin-bottom: 2px;
@@ -1644,7 +1714,7 @@ onBeforeUnmount(() => {
   }
 
   :deep(.code-header) {
-    background: rgba(0, 0, 0, 0.02);
+    background: var(--gray-fa);
   }
 
   :deep(code.hljs) {

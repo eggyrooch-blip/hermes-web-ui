@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from 'vue'
-import { NModal, NButton, NSpin, useMessage } from 'naive-ui'
+import { NModal, NButton, NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { startGeminiLogin, pollGeminiLogin } from '@/api/hermes/gemini-auth'
 import { copyToClipboard } from '@/utils/clipboard'
 
 const { t } = useI18n()
 const emit = defineEmits<{ close: []; success: [] }>()
-const message = useMessage()
 
 const showModal = ref(true)
 const status = ref<'idle' | 'loading' | 'waiting' | 'approved' | 'expired' | 'error'>('idle')
@@ -29,7 +28,6 @@ async function startLogin() {
   } catch (err: any) {
     status.value = 'error'
     errorMessage.value = err?.message || String(err)
-    message.error(errorMessage.value)
   }
 }
 
@@ -42,7 +40,6 @@ function startPolling() {
         startPolling()
       } else if (result.status === 'approved') {
         status.value = 'approved'
-        message.success(t('models.geminiApproved'))
         setTimeout(() => {
           showModal.value = false
           setTimeout(() => emit('success'), 200)
@@ -76,8 +73,9 @@ function openLink() {
 
 async function copyLink() {
   const ok = await copyToClipboard(authorizationUrl.value)
-  if (ok) message.success(t('common.copied'))
-  else message.error(t('chat.copyFailed'))
+  // Silent on success; a failed copy must be said, or they paste whatever
+  // the clipboard held before into the provider's page.
+  if (!ok) errorMessage.value = t('chat.copyFailed')
 }
 
 function retry() {

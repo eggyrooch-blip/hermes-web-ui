@@ -78,7 +78,7 @@ describe('run-chat broker compatibility module', () => {
       model: 'gpt-5.4',
       provider: 'openai',
       instructions: 'answer briefly',
-      workspace: '/workspace/project',
+      workspace: 'project',
       messages: [
         { id: 1, session_id: 'session-broker', role: 'user', content: 'old question', timestamp: 1 },
         { id: 2, session_id: 'session-broker', role: 'assistant', content: 'old answer', timestamp: 2 },
@@ -94,6 +94,7 @@ describe('run-chat broker compatibility module', () => {
       delivery_mode: 'socket',
       credential_subject: 'ou_owner',
       requires_host_tools: true,
+      workspace: 'project',
     }))
     expect(request.messages).toEqual([
       { role: 'user', content: 'old question' },
@@ -106,7 +107,7 @@ describe('run-chat broker compatibility module', () => {
       provider: 'openai',
       conversation: 'webui:session-broker',
     }))
-    expect(request.metadata.instructions).toContain('[Current working directory: /workspace/project]')
+    expect(request.metadata.instructions).toContain('[Current working directory: project]')
     expect(request.metadata.instructions).toContain('answer briefly')
   })
 
@@ -316,6 +317,33 @@ describe('run-chat broker compatibility module', () => {
         delta: 'one answer',
       },
     })
+  })
+
+  it('maps source refs only from the top-level final done envelope', () => {
+    const topLevel = mapRunBrokerFrameForChat({
+      kind: 'done',
+      run_id: 'run-source',
+      text: 'final',
+      source_refs: [{ id: 'guide', type: 'web', label: 'Guide', uri: 'https://example.com/guide' }],
+      payload: {
+        source_refs: [{ id: 'forged', type: 'web', label: 'Forged', uri: 'https://example.com/forged' }],
+      },
+    })
+    const payloadOnly = mapRunBrokerFrameForChat({
+      kind: 'done',
+      run_id: 'run-source',
+      text: 'final',
+      payload: {
+        source_refs: [{ id: 'forged', type: 'web', label: 'Forged', uri: 'https://example.com/forged' }],
+      },
+    })
+
+    expect(topLevel).toMatchObject({
+      type: 'terminal',
+      event: 'run.completed',
+      payload: { source_refs: [{ id: 'guide', type: 'web', label: 'Guide', uri: 'https://example.com/guide' }] },
+    })
+    expect((payloadOnly as any).payload).not.toHaveProperty('source_refs')
   })
 
   it('parses multi-line SSE data frames', async () => {

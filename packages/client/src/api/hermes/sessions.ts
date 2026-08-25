@@ -72,6 +72,7 @@ export interface HermesMessage {
   reasoning: string | null
   run_id?: string | null
   client_id?: string | null
+  source_refs?: import('./chat').SourceRef[] | null
 }
 
 export interface WorkspaceRunChangeFileSummary {
