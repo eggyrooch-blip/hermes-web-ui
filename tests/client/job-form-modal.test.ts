@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 
 const mockMessage = vi.hoisted(() => ({
   warning: vi.fn(),
   success: vi.fn(),
   error: vi.fn(),
-  info: vi.fn(),
 }))
 
 const mockSettingsStore = vi.hoisted(() => ({
@@ -33,22 +33,12 @@ const mockJobsStore = vi.hoisted(() => ({
 }))
 
 const mockProfilesStore = vi.hoisted(() => ({
-  profiles: [
-    { name: 'default', displayLabel: '默认智能体' },
-    { name: 'ops' },
-  ] as Array<Record<string, any>>,
-  activeProfileName: 'default',
+  profiles: [] as Array<Record<string, any>>,
   fetchProfiles: vi.fn(async () => {}),
-  switchProfile: vi.fn(async () => {}),
 }))
 
-const mockUploadFiles = vi.hoisted(() => vi.fn(async () => [{ name: 'brief.pdf', path: 'uploads/brief.pdf' }]))
-
 const mockAppStore = vi.hoisted(() => ({
-  modelGroups: [
-    { provider: 'openai', models: ['gpt-5', 'gpt-5-mini'] },
-    { provider: 'anthropic', models: ['claude-fable-5', 'gpt-5'] },
-  ] as Array<Record<string, any>>,
+  modelGroups: [] as Array<Record<string, any>>,
   profileModelGroups: [] as Array<Record<string, any>>,
   displayModelName: (model: string) => model,
   loadModels: vi.fn(async () => {}),
@@ -76,8 +66,6 @@ const mockFetchSkills = vi.hoisted(() => vi.fn(async () => ({
   archived: [],
 })))
 
-vi.mock('@/api/hermes/files', () => ({ uploadFiles: mockUploadFiles }))
-
 vi.mock('@/stores/hermes/settings', () => ({
   useSettingsStore: () => mockSettingsStore,
 }))
@@ -89,7 +77,6 @@ vi.mock('@/stores/hermes/jobs', () => ({
 vi.mock('@/stores/hermes/profiles', () => ({
   useProfilesStore: () => mockProfilesStore,
 }))
-
 
 vi.mock('@/stores/hermes/app', () => ({
   useAppStore: () => mockAppStore,
@@ -120,231 +107,114 @@ vi.mock('@/api/hermes/skills', () => ({
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string) => key,
-    locale: { value: 'zh-CN' },
   }),
 }))
 
 vi.mock('naive-ui', () => ({
+  NModal: defineComponent({
+    template: '<div class="n-modal-stub"><slot /><slot name="footer" /></div>',
+  }),
+  NForm: defineComponent({ template: '<form><slot /></form>' }),
+  NFormItem: defineComponent({ template: '<div><slot /></div>' }),
+  NInput: defineComponent({
+    props: { value: { type: String, required: false } },
+    emits: ['update:value'],
+    template: '<input class="n-input-stub" :value="value" @input="$emit(\'update:value\', $event.target.value)" />',
+  }),
+  NInputNumber: defineComponent({
+    props: { value: { required: false } },
+    emits: ['update:value'],
+    template: '<input class="n-input-number-stub" :value="value" type="number" @input="$emit(\'update:value\', Number($event.target.value))" />',
+  }),
+  NSelect: defineComponent({
+    props: { value: { required: false }, options: { type: Array, default: () => [] }, multiple: { type: Boolean, default: false } },
+    emits: ['update:value'],
+    template: '<select class="n-select-stub" :multiple="multiple" @change="$emit(\'update:value\', multiple ? Array.from($event.target.selectedOptions).map(option => option.value) : $event.target.value)"><template v-for="option in options"><optgroup v-if="option.children" :key="option.key" :label="option.label"><option v-for="child in option.children" :key="child.value" :value="child.value">{{ child.label }}</option></optgroup><option v-else :key="option.value" :value="option.value" :disabled="option.disabled">{{ option.label }}</option></template></select>',
+  }),
+  NButton: defineComponent({
+    emits: ['click'],
+    template: '<button class="n-button-stub" @click.prevent="$emit(\'click\')"><slot /></button>',
+  }),
   useMessage: () => mockMessage,
 }))
 
 import JobFormModal from '@/components/hermes/jobs/JobFormModal.vue'
 
-function mountModal() {
-  return mount(JobFormModal, {
-    props: { jobId: null },
-    global: { stubs: { teleport: true } },
-  })
-}
-
-describe('JobFormModal (prototype NewAutoDrawer)', () => {
+describe('JobFormModal deliver targets', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockSettingsStore.platforms = {}
     mockAppStore.modelGroups = []
     mockAppStore.profileModelGroups = []
-    mockProfilesStore.profiles = [
-      { name: 'default', displayLabel: '默认智能体' },
-      { name: 'ops' },
-    ]
-    mockProfilesStore.activeProfileName = 'default'
-    mockActiveProfileName.value = 'user_a'
   })
 
   it('loads platform settings when the store has not been hydrated', async () => {
-    mountModal()
+    mount(JobFormModal, {
+      props: { jobId: null },
+    })
+
     await flushPromises()
+
     expect(mockSettingsStore.fetchSettings).toHaveBeenCalledOnce()
   })
 
-  it('shows every supported platform channel in the deliver menu with configured state', async () => {
+  it('shows every supported platform channel in deliver target options', async () => {
     mockSettingsStore.platforms = {
       telegram: { token: 'telegram-token' },
       whatsapp: { enabled: false },
       qqbot: { extra: { app_id: 'qq-app', client_secret: 'qq-secret' } },
     }
-    const wrapper = mountModal()
+    const wrapper = mount(JobFormModal, {
+      props: { jobId: null },
+    })
+
     await flushPromises()
 
     expect(mockSettingsStore.fetchSettings).not.toHaveBeenCalled()
+    const labels = wrapper.find('[data-testid="job-deliver"] .n-select-stub').text()
+    expect(labels).toContain('Telegram')
+    expect(labels).toContain('Discord')
+    expect(labels).toContain('Slack')
+    expect(labels).toContain('WhatsApp')
+    expect(labels).toContain('Matrix')
+    expect(labels).toContain('WeChat')
+    expect(labels).toContain('WeCom')
+    expect(labels).toContain('Feishu')
+    expect(labels).toContain('DingTalk')
+    expect(labels).toContain('QQBot')
 
-    await wrapper.find('[data-testid="af-deliver"]').trigger('click')
-    for (const key of ['telegram', 'discord', 'slack', 'whatsapp', 'matrix', 'weixin', 'wecom', 'feishu', 'dingtalk', 'qqbot']) {
-      expect(wrapper.find(`[data-testid="af-deliver-${key}"]`).exists()).toBe(true)
-    }
-    expect(wrapper.find('[data-testid="af-deliver-telegram"]').attributes('disabled')).toBeUndefined()
-    expect(wrapper.find('[data-testid="af-deliver-qqbot"]').attributes('disabled')).toBeUndefined()
-    expect(wrapper.find('[data-testid="af-deliver-discord"]').attributes('disabled')).toBe('')
-    expect(wrapper.find('[data-testid="af-deliver-whatsapp"]').attributes('disabled')).toBe('')
+    const options = wrapper.find('[data-testid="job-deliver"] .n-select-stub').findAll('option')
+    const optionByValue = Object.fromEntries(options.map(option => [option.attributes('value'), option]))
+    expect(optionByValue.telegram.attributes('disabled')).toBeUndefined()
+    expect(optionByValue.qqbot.attributes('disabled')).toBeUndefined()
+    expect(optionByValue.discord.attributes('disabled')).toBe('')
+    expect(optionByValue.whatsapp.attributes('disabled')).toBe('')
   })
 
-  it('creates an interval job with attached skills (default 每 1 小时)', async () => {
+  it('submits selected skills when creating a job', async () => {
     mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
     mockJobsStore.createJob.mockResolvedValue({ id: 'job-1' })
-    const wrapper = mountModal()
+    const wrapper = mount(JobFormModal, {
+      props: { jobId: null },
+    })
+
     await flushPromises()
-
-    await wrapper.find('[data-testid="af-name"]').setValue('Daily research')
-    await wrapper.find('[data-testid="af-prompt"]').setValue('summarize updates')
-
-    // Attach two skills through the + menu (disabled skills are filtered out).
-    // The menu is two-level now, like the composer's AddMenu: level 1 is
-    // 添加文件 / 技能 ›, and the skill list is the flyout off the 技能 row.
-    await wrapper.find('[data-testid="af-add"]').trigger('click')
-    expect(wrapper.find('[data-testid="af-skill-planner"]').exists()).toBe(false)
-    await wrapper.find('[data-testid="af-add-skills"]').trigger('mouseenter')
-    expect(wrapper.find('[data-testid="af-skill-disabled-skill"]').exists()).toBe(false)
-    await wrapper.find('[data-testid="af-skill-planner"]').trigger('click')
-    await wrapper.find('[data-testid="af-add"]').trigger('click')
-    await wrapper.find('[data-testid="af-add-skills"]').trigger('mouseenter')
-    await wrapper.find('[data-testid="af-skill-reviewer"]').trigger('click')
-
-    await wrapper.find('[data-testid="af-create"]').trigger('click')
+    const inputs = wrapper.findAll('.n-input-stub')
+    await inputs[0].setValue('Daily research')
+    await inputs[1].setValue('0 9 * * *')
+    await inputs[2].setValue('summarize updates')
+    await wrapper.find('[data-testid="job-skills"] .n-select-stub').setValue(['planner', 'reviewer'])
+    await wrapper.findAll('.n-button-stub')[1].trigger('click')
     await flushPromises()
 
     expect(mockJobsStore.createJob).toHaveBeenCalledWith({
       name: 'Daily research',
-      schedule: '0 * * * *',
+      schedule: '0 9 * * *',
       prompt: 'summarize updates',
       deliver: 'origin',
       skills: ['planner', 'reviewer'],
       repeat: undefined,
     })
-  })
-
-  it('attaches a file through the + menu by uploading it and writing its workspace path into the prompt', async () => {
-    // A job carries no file field — prompt / skills / deliver is all it has — so
-    // the only honest "attach a file" is: upload now, reference the path the run
-    // broker hands to the tools.
-    const wrapper = mountModal()
-    await flushPromises()
-    await wrapper.find('[data-testid="af-prompt"]').setValue('read this')
-
-    await wrapper.find('[data-testid="af-add"]').trigger('click')
-    const fileRow = wrapper.find('[data-testid="af-add-file"]')
-    expect(fileRow.exists()).toBe(true)
-
-    // The row opens the OS picker; drive the change event the picker would fire.
-    const input = wrapper.find('input[type="file"]')
-    Object.defineProperty(input.element, 'files', {
-      value: [new File(['x'], 'brief.pdf')],
-      configurable: true,
-    })
-    await input.trigger('change')
-    await flushPromises()
-
-    expect(mockUploadFiles).toHaveBeenCalled()
-    expect((wrapper.find('[data-testid="af-prompt"]').element as HTMLTextAreaElement).value)
-      .toContain('/workspace/uploads/brief.pdf')
-  })
-
-  it('states where the job runs without pretending it is a picker', async () => {
-    // The composer's pill is a status statement; this one says the same thing in
-    // the same words, and the deliver TARGET moved out to its own form field.
-    const wrapper = mountModal()
-    await flushPromises()
-
-    const scope = wrapper.find('[data-testid="af-scope"]')
-    expect(scope.exists()).toBe(true)
-    expect(scope.element.tagName).toBe('SPAN')
-    // The deliver trigger is no longer inside the prompt box.
-    const box = wrapper.find('.chat-input-area')
-    expect(box.find('[data-testid="af-deliver"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="af-deliver"]').exists()).toBe(true)
-  })
-
-  it('sends a picked model on the create payload, with no follow-up update', async () => {
-    // Set the catalog HERE: beforeEach clears it, so relying on another test to
-    // have populated it makes this pass or fail by execution order.
-    mockAppStore.modelGroups = [
-      { provider: 'openai', models: ['gpt-5', 'gpt-5-mini'] },
-      { provider: 'anthropic', models: ['claude-fable-5', 'gpt-5'] },
-    ]
-    mockJobsStore.createJob.mockResolvedValue({ job_id: 'job-9' })
-    mockJobsStore.updateJob.mockResolvedValue({ job_id: 'job-9' })
-    const wrapper = mountModal()
-    await flushPromises()
-
-    await wrapper.find('[data-testid="af-name"]').setValue('Model job')
-    await wrapper.find('[data-testid="af-prompt"]').setValue('do work')
-
-    await wrapper.find('[data-testid="af-model"]').trigger('click')
-    // Provider-qualified: the same bare name under two providers is two
-    // DIFFERENT models, so both are offered — and a bare 'gpt-5' is a spec the
-    // run could not resolve at all.
-    expect(wrapper.find('[data-testid="af-model-openai/gpt-5"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="af-model-anthropic/gpt-5"]').exists()).toBe(true)
-    await wrapper.find('[data-testid="af-model-anthropic/claude-fable-5"]').trigger('click')
-    expect(wrapper.find('[data-testid="af-model"]').text()).toContain('claude-fable-5')
-
-    await wrapper.find('[data-testid="af-create"]').trigger('click')
-    await flushPromises()
-
-    // create accepts `model` — no follow-up update, and none is fired.
-    expect(mockJobsStore.createJob.mock.calls[0][0].model).toBe('anthropic/claude-fable-5')
-    expect(mockJobsStore.updateJob).not.toHaveBeenCalled()
-  })
-
-  it('defaults the executor pill to the caller and never switches the sidebar', async () => {
-    mockProfilesStore.profiles = [
-      { name: 'user_a', kind: 'user', displayLabel: 'sunke' },
-      { name: 'ops', kind: 'agent', agentId: 'agent-ops', displayLabel: 'ops' },
-    ]
-    const wrapper = mountModal()
-    await flushPromises()
-
-    // Defaults to the caller's own profile — the executor is REQUIRED, so there
-    // is nothing for a placeholder to mean.
-    expect(wrapper.find('[data-testid="af-agent"]').text()).toContain('sunke')
-
-    await wrapper.find('[data-testid="af-agent"]').trigger('click')
-    await wrapper.find('[data-testid="af-agent-ops"]').trigger('click')
-    await flushPromises()
-    // Picking an executor is a per-job choice carried on the request; switching
-    // the whole app's profile as a side effect is the bug this pins shut.
-    expect(mockProfilesStore.switchProfile).not.toHaveBeenCalled()
-    expect(wrapper.find('[data-testid="af-agent"]').text()).toContain('ops')
-  })
-
-  it('attaches a skill from the slash panel and clears the prompt', async () => {
-    const wrapper = mountModal()
-    await flushPromises()
-
-    await wrapper.find('[data-testid="af-prompt"]').setValue('/plan')
-    expect(wrapper.find('[data-testid="af-slash-planner"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="af-slash-reviewer"]').exists()).toBe(false)
-
-    await wrapper.find('[data-testid="af-slash-planner"]').trigger('click')
-    expect(wrapper.find('[data-testid="af-attach-planner"]').exists()).toBe(true)
-    expect((wrapper.find('[data-testid="af-prompt"]').element as HTMLTextAreaElement).value).toBe('')
-  })
-
-  it('builds a weekly cron and keeps 创建 disabled until a time is picked', async () => {
-    mockJobsStore.createJob.mockResolvedValue({ id: 'job-2' })
-    const wrapper = mountModal()
-    await flushPromises()
-
-    await wrapper.find('[data-testid="af-name"]').setValue('Weekly digest')
-    await wrapper.find('[data-testid="af-prompt"]').setValue('weekly summary')
-    await wrapper.find('[data-testid="af-trigger-type"]').setValue('weekly')
-
-    // No time yet — the primary button is disabled.
-    expect(wrapper.find('[data-testid="af-create"]').attributes('disabled')).toBe('')
-
-    await wrapper.find('[data-testid="af-time"]').trigger('click')
-    const cols = wrapper.findAll('.af-time-col')
-    await cols[0].findAll('.af-time-item')[9].trigger('click') // 09
-    await cols[1].findAll('.af-time-item')[30].trigger('click') // :30
-    await wrapper.find('[data-testid="af-weekday-3"]').trigger('click') // 周四
-
-    expect(wrapper.find('[data-testid="af-create"]').attributes('disabled')).toBeUndefined()
-    await wrapper.find('[data-testid="af-create"]').trigger('click')
-    await flushPromises()
-
-    expect(mockJobsStore.createJob).toHaveBeenCalledWith(expect.objectContaining({
-      name: 'Weekly digest',
-      schedule: '30 9 * * 4',
-    }))
   })
 
   const rosterProfiles = [
@@ -354,225 +224,426 @@ describe('JobFormModal (prototype NewAutoDrawer)', () => {
     { name: 'feishu_group_x', kind: 'group', displayLabel: 'KippiesWork讨论' },
   ]
 
-  // 执行者 (sunke 2026-08-17 ruling, re-wired onto the Keep sheet 2026-08-21):
-  // the executor AGENT is required and defaults to the caller's own profile;
-  // the EXPERT is optional and comes from the SELECTED agent's catalog. The
-  // controls are the sheet's context-bar pills, not the old NSelect form rows,
-  // so these assertions drive af-agent / af-expert / af-model.
-  async function openSheet() {
+  it('agent picker mirrors the Agents hub roster (mine + groups, shared excluded)', async () => {
     mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
+    mockProfilesStore.profiles = [...rosterProfiles]
     const wrapper = mount(JobFormModal, {
       props: { jobId: null },
-      global: { stubs: { teleport: true } },
     })
     await flushPromises()
-    return wrapper
-  }
 
-  async function fillRequiredAndCreate(wrapper: any) {
-    // Default trigger is 间隔触发 每 1 小时, so the schedule needs no input.
-    await wrapper.find('[data-testid="af-name"]').setValue('Daily research')
-    await wrapper.find('[data-testid="af-prompt"]').setValue('summarize updates')
-    await wrapper.find('[data-testid="af-create"]').trigger('click')
-    await flushPromises()
-  }
-
-  async function pickAgent(wrapper: any, profile: string) {
-    await wrapper.find('[data-testid="af-agent"]').trigger('click')
-    await wrapper.find(`[data-testid="af-agent-${profile}"]`).trigger('click')
-    await flushPromises()
-  }
-
-  async function pickExpert(wrapper: any, expertId: string) {
-    await wrapper.find('[data-testid="af-expert"]').trigger('click')
-    await wrapper.find(`[data-testid="af-expert-${expertId}"]`).trigger('click')
-    await flushPromises()
-  }
-
-  it('takes the 跟随默认 model label from i18n, not a hardcoded "Auto"', async () => {
-    mockAppStore.modelGroups = [{ provider: 'openai', models: ['gpt-5'] }]
-    const wrapper = mountModal()
-    await flushPromises()
-
-    // The chip's resting state and the menu's first row both mean "follow the
-    // profile default" — a literal 'Auto' there is invisible to all ten locales.
-    expect(wrapper.find('[data-testid="af-model"]').text()).toContain('jobs.modelFollowDefault')
-    await wrapper.find('[data-testid="af-model"]').trigger('click')
-    expect(wrapper.find('[data-testid="af-model-auto"]').text()).toContain('jobs.modelFollowDefault')
-    expect(wrapper.find('[data-testid="af-model"]').text()).not.toContain('Auto')
-  })
-
-  it('agent menu mirrors the Agents hub roster (mine + groups, shared excluded)', async () => {
-    mockProfilesStore.profiles = [...rosterProfiles]
-    const wrapper = await openSheet()
-
-    // The expert catalog preloads for the DEFAULT agent (= own profile),
+    // Expert catalog preloads for the DEFAULT agent (= own profile),
     // requested EXPLICITLY so a sidebar profile switch cannot retarget it.
     expect(mockFetchExperts).toHaveBeenCalledTimes(1)
     expect(mockFetchExperts).toHaveBeenCalledWith('user_a')
 
-    await wrapper.find('[data-testid="af-agent"]').trigger('click')
-    expect(wrapper.find('[data-testid="af-agent-user_a"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="af-agent-coder1"]').exists()).toBe(true)
-    // Group rows carry the Agents-page group NAME, never the raw ou_/oc_ id.
-    expect(wrapper.find('[data-testid="af-agent-feishu_group_x"]').text()).toContain('KippiesWork讨论')
-    // Shared-with-me stays out: the BFF profile resolver only honors owned.
-    expect(wrapper.find('[data-testid="af-agent-shared_agent"]').exists()).toBe(false)
+    const picker = wrapper.find('[data-testid="job-executor-agent"] .n-select-stub')
+    const text = picker.text()
+    expect(text).toContain('sunke')
+    expect(text).toContain('coder1')
+    expect(text).toContain('KippiesWork讨论')
+    expect(text).not.toContain('别人的')
+    const groups = picker.findAll('optgroup').map(group => group.attributes('label'))
+    expect(groups).toEqual(['jobs.executorGroupMine', 'jobs.executorGroupGroups'])
   })
 
-  it("switching agents reloads that agent's expert catalog and drops the old pick", async () => {
+  it('switching agents reloads that agent\'s expert catalog; stale A responses are dropped', async () => {
+    mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
     mockProfilesStore.profiles = [...rosterProfiles]
-    const wrapper = await openSheet()
-    await pickExpert(wrapper, 'hr-expert')
-    expect(wrapper.find('[data-testid="af-expert"]').text()).toContain('HR 专家')
+    let resolveA!: (value: any) => void
+    const slowA = new Promise(resolve => { resolveA = resolve })
+    mockFetchExperts.mockImplementation((profile?: string) => {
+      if (profile === 'coder1') return slowA as any
+      return Promise.resolve({ experts: [{ id: 'g-expert', name: '群专家' }] })
+    })
 
-    await pickAgent(wrapper, 'coder1')
+    const wrapper = mount(JobFormModal, { props: { jobId: null } })
+    await flushPromises()
 
-    expect(mockFetchExperts).toHaveBeenLastCalledWith('coder1')
-    // The previous agent's expert must not survive the switch.
-    expect(wrapper.find('[data-testid="af-expert"]').text()).not.toContain('HR 专家')
+    const agentSelect = wrapper.find('[data-testid="job-executor-agent"] .n-select-stub')
+    await agentSelect.setValue('coder1')
+    await agentSelect.setValue('feishu_group_x')
+    await flushPromises()
+    resolveA({ experts: [{ id: 'a-expert', name: 'A 专家' }] })
+    await flushPromises()
+
+    expect(mockFetchExperts).toHaveBeenCalledWith('coder1')
+    expect(mockFetchExperts).toHaveBeenCalledWith('feishu_group_x')
+    const expertSelect = wrapper.find('[data-testid="job-executor-expert"] .n-select-stub')
+    expect(expertSelect.text()).toContain('群专家')
+    expect(expertSelect.text()).not.toContain('A 专家')
   })
+
+  async function fillAndSubmit(wrapper: any, opts: { agent?: string; expert?: string } = {}) {
+    if (opts.agent) {
+      await wrapper.find('[data-testid="job-executor-agent"] .n-select-stub').setValue(opts.agent)
+      await flushPromises()
+    }
+    if (opts.expert) {
+      await wrapper.find('[data-testid="job-executor-expert"] .n-select-stub').setValue(opts.expert)
+    }
+    const inputs = wrapper.findAll('.n-input-stub')
+    await inputs[0].setValue('Executor task')
+    await inputs[1].setValue('0 9 * * *')
+    await inputs[2].setValue('do the thing')
+    await wrapper.findAll('.n-button-stub')[1].trigger('click')
+    await flushPromises()
+  }
+
+  const basePayload = {
+    name: 'Executor task',
+    schedule: '0 9 * * *',
+    prompt: 'do the thing',
+    deliver: 'origin',
+    skills: [],
+    repeat: undefined,
+  }
+
+  function mountForSubmit() {
+    mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
+    mockProfilesStore.profiles = [...rosterProfiles]
+    mockJobsStore.createJob.mockResolvedValue({ id: 'job-1' })
+    // Deterministic catalog regardless of implementations left by earlier tests.
+    mockFetchExperts.mockImplementation(async (_profile?: string) => ({
+      experts: [
+        { id: 'hr-expert', name: 'HR 专家' },
+        { id: 'ads-expert', name: '投放专家' },
+      ],
+    }))
+    return mount(JobFormModal, { props: { jobId: null } })
+  }
 
   it('agent-only choice submits with the profile override and no expert_id', async () => {
-    mockProfilesStore.profiles = [...rosterProfiles]
-    const wrapper = await openSheet()
-    await pickAgent(wrapper, 'coder1')
-    await fillRequiredAndCreate(wrapper)
+    const wrapper = mountForSubmit()
+    await flushPromises()
 
-    expect(mockJobsStore.createJob).toHaveBeenCalledTimes(1)
-    const [payload, options] = mockJobsStore.createJob.mock.calls[0]
-    expect(options).toEqual({ profile: 'coder1' })
-    expect(payload.expert_id).toBeUndefined()
-  })
+    await fillAndSubmit(wrapper, { agent: 'coder1' })
 
-  it('default own agent with no expert keeps the legacy single-argument request', async () => {
-    mockProfilesStore.profiles = [...rosterProfiles]
-    const wrapper = await openSheet()
-    await fillRequiredAndCreate(wrapper)
-
-    expect(mockJobsStore.createJob).toHaveBeenCalledTimes(1)
-    const [payload, options] = mockJobsStore.createJob.mock.calls[0]
-    expect(options).toBeUndefined()
-    expect(payload.expert_id).toBeUndefined()
-    expect(payload.model).toBeUndefined()
+    expect(mockJobsStore.createJob).toHaveBeenCalledWith(basePayload, { profile: 'coder1' })
   })
 
   it('own agent + expert submits expert_id with the legacy single-argument call', async () => {
-    mockProfilesStore.profiles = [...rosterProfiles]
-    const wrapper = await openSheet()
-    await pickExpert(wrapper, 'it-expert')
-    await fillRequiredAndCreate(wrapper)
+    const wrapper = mountForSubmit()
+    await flushPromises()
 
-    const [payload, options] = mockJobsStore.createJob.mock.calls[0]
-    expect(options).toBeUndefined()
-    expect(payload.expert_id).toBe('it-expert')
+    await fillAndSubmit(wrapper, { expert: 'hr-expert' })
+
+    expect(mockJobsStore.createJob).toHaveBeenCalledWith({
+      ...basePayload,
+      expert_id: 'hr-expert',
+    })
   })
 
-  it("another agent + that agent's expert submits both the override and expert_id", async () => {
-    mockProfilesStore.profiles = [...rosterProfiles]
-    const wrapper = await openSheet()
-    await pickAgent(wrapper, 'coder1')
-    await pickExpert(wrapper, 'hr-expert')
-    await fillRequiredAndCreate(wrapper)
+  it('agent + that agent\'s expert submits both profile override and expert_id', async () => {
+    mockFetchExperts.mockResolvedValue({ experts: [{ id: 'ads-expert', name: '投放专家' }] })
+    const wrapper = mountForSubmit()
+    await flushPromises()
 
-    const [payload, options] = mockJobsStore.createJob.mock.calls[0]
-    expect(options).toEqual({ profile: 'coder1' })
-    expect(payload.expert_id).toBe('hr-expert')
+    await fillAndSubmit(wrapper, { agent: 'coder1', expert: 'ads-expert' })
+
+    expect(mockJobsStore.createJob).toHaveBeenCalledWith(
+      { ...basePayload, expert_id: 'ads-expert' },
+      { profile: 'coder1' },
+    )
   })
 
-  it('a sidebar profile switch while the sheet is open cannot hijack the executor', async () => {
-    mockProfilesStore.profiles = [...rosterProfiles]
-    const wrapper = await openSheet()
-    await pickAgent(wrapper, 'coder1')
+  it('default own agent with no expert keeps the legacy request byte-identical', async () => {
+    const wrapper = mountForSubmit()
+    await flushPromises()
 
-    // The sidebar moves on to another profile mid-edit.
-    mockActiveProfileName.value = 'someone_else'
-    await fillRequiredAndCreate(wrapper)
+    await fillAndSubmit(wrapper)
 
-    const [, options] = mockJobsStore.createJob.mock.calls[0]
-    expect(options).toEqual({ profile: 'coder1' })
+    expect(mockJobsStore.createJob).toHaveBeenCalledWith(basePayload)
   })
 
-  it('a blank executor is rejected: no create call ever fires', async () => {
-    mockProfilesStore.profiles = [...rosterProfiles]
+  it('sidebar profile switch while the modal is open cannot hijack the executor', async () => {
+    const wrapper = mountForSubmit()
+    await flushPromises()
+
+    // Executor still shows user_a, but the sidebar switched to coder1: the
+    // legacy unscoped call would inherit coder1's header — must scope instead.
+    mockActiveProfileName.value = 'coder1'
+    await fillAndSubmit(wrapper)
+
+    expect(mockJobsStore.createJob).toHaveBeenCalledWith(basePayload, { profile: 'user_a' })
+  })
+
+  it('blank executor is rejected: no create call ever fires', async () => {
     mockActiveProfileName.value = null
-    const wrapper = await openSheet()
-    await fillRequiredAndCreate(wrapper)
+    mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
+    mockProfilesStore.profiles = []
+    const wrapper = mount(JobFormModal, { props: { jobId: null } })
+    await flushPromises()
+
+    await fillAndSubmit(wrapper)
 
     expect(mockJobsStore.createJob).not.toHaveBeenCalled()
+    expect(mockMessage.warning).toHaveBeenCalled()
   })
 
-  it("offers the selected executor's own model catalog, not another profile's", async () => {
-    mockProfilesStore.profiles = [...rosterProfiles]
-    mockAppStore.profileModelGroups = [
-      { profile: 'user_a', groups: [{ provider: 'openai', label: 'OpenAI', models: ['gpt-5'] }] },
-      { profile: 'coder1', groups: [{ provider: 'anthropic', label: 'Anthropic', models: ['claude-fable-5'] }] },
+  it('group rows show the Agents-page group name, never the raw identifier', async () => {
+    mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
+    mockProfilesStore.profiles = [
+      { name: 'user_a', kind: 'user', displayLabel: 'sunke' },
+      { name: 'feishu_group_named', kind: 'group', displayLabel: 'ou_cf23e7c262-软件正版化' },
+      { name: 'feishu_group_unsynced', kind: 'group', displayLabel: 'oc_1a10fb26ac51' },
     ]
-    const wrapper = await openSheet()
+    const wrapper = mount(JobFormModal, { props: { jobId: null } })
+    await flushPromises()
 
-    await wrapper.find('[data-testid="af-model"]').trigger('click')
-    expect(wrapper.find('[data-testid="af-model-openai/gpt-5"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="af-model-anthropic/claude-fable-5"]').exists()).toBe(false)
+    const text = wrapper.find('[data-testid="job-executor-agent"] .n-select-stub').text()
+    expect(text).toContain('软件正版化')
+    expect(text).not.toContain('ou_cf23e7c262')
+    expect(text).not.toContain('oc_1a10fb26ac51')
+    expect(text).toContain('agentsHub.unnamedGroup')
+  })
+  it('prefills a scheduled expert job, cancels with zero writes, then submits its session binding once', async () => {
+    mockSettingsStore.platforms = {}
+    // m0 makes the executor agent REQUIRED; a scheduled entry runs as the
+    // caller's own profile, so the roster/active profile must be present.
+    mockActiveProfileName.value = 'user_a'
+    mockProfilesStore.profiles = [{ name: 'user_a', kind: 'user', displayLabel: 'sunke' }]
+    mockJobsStore.createJob.mockResolvedValue({ id: 'job-1' })
+    const wrapper = mount(JobFormModal, {
+      props: {
+        jobId: null,
+        initialName: '资源投放工作',
+        initialPrompt: '每天检查投放队列',
+        initialSkills: ['planner'],
+        sourceSessionId: 'session-expert',
+        expertId: 'keep-resource-delivery',
+        idempotencyKey: 'schedule-key-1',
+      },
+    })
 
-    // The chip is a toggle and the menu is still open (agent/model menus are
-    // independent state) — clicking it again here would close it.
-    await pickAgent(wrapper, 'coder1')
-    expect(wrapper.find('[data-testid="af-model-anthropic/claude-fable-5"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="af-model-openai/gpt-5"]').exists()).toBe(false)
+    await flushPromises()
+    const inputs = wrapper.findAll('.n-input-stub')
+    expect(inputs[0].element.getAttribute('value')).toBe('资源投放工作')
+    expect(inputs[2].element.getAttribute('value')).toBe('每天检查投放队列')
+    // Executor picker is index 0 (m0 final form), so deliver moved to index 4.
+    expect(wrapper.find('[data-testid="job-deliver"] .n-select-stub').text()).toContain('Feishu')
+
+    await wrapper.findAll('.n-button-stub')[0].trigger('click')
+    expect(mockJobsStore.createJob).not.toHaveBeenCalled()
+
+    await inputs[1].setValue('0 9 * * *')
+    await wrapper.findAll('.n-button-stub')[1].trigger('click')
+    await flushPromises()
+
+    expect(mockJobsStore.createJob).toHaveBeenCalledTimes(1)
+    expect(mockJobsStore.createJob).toHaveBeenCalledWith({
+      name: '资源投放工作',
+      schedule: '0 9 * * *',
+      prompt: '每天检查投放队列',
+      deliver: 'feishu',
+      skills: ['planner'],
+      repeat: undefined,
+      expert_id: 'keep-resource-delivery',
+      source_session_id: 'session-expert',
+      idempotency_key: 'schedule-key-1',
+    })
+  })
+
+  it('offers models from the app store with follow-default first', async () => {
+    mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
+    mockAppStore.modelGroups = [
+      { provider: 'custom:litellm-sre', label: 'litellm-sre', models: ['deepseek-v4-flash', 'gpt-5.4'] },
+    ]
+    const wrapper = mount(JobFormModal, {
+      props: { jobId: null },
+    })
+    await flushPromises()
+
+    expect(mockAppStore.loadModels).not.toHaveBeenCalled()
+    const modelSelect = wrapper.find('[data-testid="job-model"] .n-select-stub')
+    const options = modelSelect.findAll('option')
+    expect(options[0].attributes('value')).toBe('')
+    expect(options[0].text()).toBe('jobs.modelFollowDefault')
+    expect(options.map(o => o.attributes('value'))).toContain('custom:litellm-sre/deepseek-v4-flash')
+  })
+
+  it('loads models when the store has none cached', async () => {
+    mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
+    mount(JobFormModal, {
+      props: { jobId: null },
+    })
+    await flushPromises()
+
+    expect(mockAppStore.loadModels).toHaveBeenCalledOnce()
   })
 
   it('sends the selected model spec on create', async () => {
-    mockProfilesStore.profiles = [...rosterProfiles]
-    mockAppStore.profileModelGroups = [
-      { profile: 'user_a', groups: [{ provider: 'openai', label: 'OpenAI', models: ['gpt-5'] }] },
+    mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
+    mockAppStore.modelGroups = [
+      { provider: 'custom:litellm-sre', label: 'litellm-sre', models: ['deepseek-v4-flash'] },
     ]
-    const wrapper = await openSheet()
+    mockJobsStore.createJob.mockResolvedValue({ id: 'job-1' })
+    const wrapper = mount(JobFormModal, {
+      props: { jobId: null },
+    })
+    await flushPromises()
 
-    await wrapper.find('[data-testid="af-model"]').trigger('click')
-    await wrapper.find('[data-testid="af-model-openai/gpt-5"]').trigger('click')
-    await fillRequiredAndCreate(wrapper)
+    await wrapper.find('[data-testid="job-model"] .n-select-stub').setValue('custom:litellm-sre/deepseek-v4-flash')
+    const inputs = wrapper.findAll('.n-input-stub')
+    await inputs[0].setValue('Cheap daily digest')
+    await inputs[1].setValue('0 9 * * *')
+    await inputs[2].setValue('summarize updates')
+    await wrapper.findAll('.n-button-stub')[1].trigger('click')
+    await flushPromises()
 
-    expect(mockJobsStore.createJob.mock.calls[0][0].model).toBe('openai/gpt-5')
+    expect(mockJobsStore.createJob).toHaveBeenCalledWith({
+      name: 'Cheap daily digest',
+      schedule: '0 9 * * *',
+      prompt: 'summarize updates',
+      deliver: 'origin',
+      skills: [],
+      repeat: undefined,
+      model: 'custom:litellm-sre/deepseek-v4-flash',
+    })
+  })
+
+  // Follow-default already asserted implicitly: the exact-payload assertion in
+  // 'submits selected skills when creating a job' has no `model` key.
+
+  it('edit mode shows the stored model read-only and never sends model on update', async () => {
+    mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
+    const { getJob } = await import('@/api/hermes/jobs')
+    vi.mocked(getJob).mockResolvedValue({
+      id: 'job-9',
+      job_id: 'job-9',
+      name: 'Old job',
+      prompt: 'old prompt',
+      skills: [],
+      skill: null,
+      model: 'custom:litellm-sre/gpt-5.4',
+      schedule: '0 9 * * *',
+      schedule_display: '0 9 * * *',
+      deliver: 'origin',
+      repeat: '',
+      enabled: true,
+    } as any)
+    mockJobsStore.updateJob.mockResolvedValue({})
+    const wrapper = mount(JobFormModal, {
+      props: { jobId: 'job-9' },
+    })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="job-model"]').exists()).toBe(false)
+    const readonly = wrapper.find('[data-testid="job-model-readonly"]')
+    expect(readonly.exists()).toBe(true)
+    expect(readonly.text()).toContain('custom:litellm-sre/gpt-5.4')
+
+    const inputs = wrapper.findAll('.n-input-stub')
+    await inputs[0].setValue('Renamed job')
+    await wrapper.findAll('.n-button-stub')[1].trigger('click')
+    await flushPromises()
+
+    expect(mockJobsStore.updateJob).toHaveBeenCalledTimes(1)
+    const payload = mockJobsStore.updateJob.mock.calls[0][1]
+    expect(payload).not.toHaveProperty('model')
+    expect(payload.name).toBe('Renamed job')
   })
 
   it('never double-prefixes a model id that is already provider-qualified', async () => {
-    mockProfilesStore.profiles = [...rosterProfiles]
-    mockAppStore.profileModelGroups = [
-      {
-        profile: 'user_a',
-        groups: [{ provider: 'custom:litellm-sre', label: 'LiteLLM', models: ['custom:litellm-sre/tencent-sonnet-4-6'] }],
-      },
+    mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
+    mockAppStore.modelGroups = [
+      { provider: 'custom:litellm-sre', label: 'litellm-sre', models: ['custom:litellm-sre/tencent-sonnet-4-6', 'bare-model'] },
     ]
-    const wrapper = await openSheet()
+    const wrapper = mount(JobFormModal, { props: { jobId: null } })
+    await flushPromises()
 
-    await wrapper.find('[data-testid="af-model"]').trigger('click')
-    expect(wrapper.find('[data-testid="af-model-custom:litellm-sre/tencent-sonnet-4-6"]').exists()).toBe(true)
+    const values = wrapper.find('[data-testid="job-model"] .n-select-stub').findAll('option').map(o => o.attributes('value'))
+    expect(values).toContain('custom:litellm-sre/tencent-sonnet-4-6')
+    expect(values).not.toContain('custom:litellm-sre/custom:litellm-sre/tencent-sonnet-4-6')
+    expect(values).toContain('custom:litellm-sre/bare-model')
   })
 
-  it('leaves disabled models out and drops a pick the new executor cannot run', async () => {
-    mockProfilesStore.profiles = [...rosterProfiles]
-    mockAppStore.profileModelGroups = [
-      {
-        profile: 'user_a',
-        groups: [{
-          provider: 'p',
-          label: 'P',
-          models: ['ok-model', 'dead-model'],
-          model_meta: { 'dead-model': { disabled: true } },
-        }],
-      },
-      { profile: 'coder1', groups: [{ provider: 'q', label: 'Q', models: ['other'] }] },
+  it('offers the selected executor profile catalog, not another profile models', async () => {
+    mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
+    mockProfilesStore.profiles = [
+      { name: 'user_a', kind: 'user', displayLabel: 'sunke' },
+      { name: 'coder1', kind: 'agent', agentId: 'agent-1', displayLabel: 'coder1' },
     ]
-    const wrapper = await openSheet()
+    mockAppStore.modelGroups = [{ provider: 'p-agg', label: 'agg', models: ['aggregate-only'] }]
+    mockAppStore.profileModelGroups = [
+      { profile: 'user_a', groups: [{ provider: 'p-a', label: 'A', models: ['model-a'] }] },
+      { profile: 'coder1', groups: [{ provider: 'p-b', label: 'B', models: ['model-b'] }] },
+    ]
+    const wrapper = mount(JobFormModal, { props: { jobId: null } })
+    await flushPromises()
 
-    await wrapper.find('[data-testid="af-model"]').trigger('click')
-    // A disabled model would fail (or silently fall back) on a scheduled run.
-    expect(wrapper.find('[data-testid="af-model-p/dead-model"]').exists()).toBe(false)
-    await wrapper.find('[data-testid="af-model-p/ok-model"]').trigger('click')
+    const modelSelect = () => wrapper.find('[data-testid="job-model"] .n-select-stub')
+    expect(modelSelect().findAll('option').map(o => o.attributes('value'))).toContain('p-a/model-a')
+    expect(modelSelect().findAll('option').map(o => o.attributes('value'))).not.toContain('p-b/model-b')
 
-    // The new executor has no p/ok-model, so the selection must not ride along.
-    await pickAgent(wrapper, 'coder1')
-    await fillRequiredAndCreate(wrapper)
+    // Switching the executor swaps the catalog...
+    await wrapper.find('[data-testid="job-executor-agent"] .n-select-stub').setValue('coder1')
+    await flushPromises()
+    expect(modelSelect().findAll('option').map(o => o.attributes('value'))).toContain('p-b/model-b')
+    expect(modelSelect().findAll('option').map(o => o.attributes('value'))).not.toContain('p-a/model-a')
+  })
+
+  it('drops a model selection the new executor cannot run', async () => {
+    mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
+    mockProfilesStore.profiles = [
+      { name: 'user_a', kind: 'user', displayLabel: 'sunke' },
+      { name: 'coder1', kind: 'agent', agentId: 'agent-1', displayLabel: 'coder1' },
+    ]
+    mockAppStore.profileModelGroups = [
+      { profile: 'user_a', groups: [{ provider: 'p-a', label: 'A', models: ['model-a'] }] },
+      { profile: 'coder1', groups: [{ provider: 'p-b', label: 'B', models: ['model-b'] }] },
+    ]
+    mockJobsStore.createJob.mockResolvedValue({ id: 'job-1' })
+    const wrapper = mount(JobFormModal, { props: { jobId: null } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="job-model"] .n-select-stub').setValue('p-a/model-a')
+    await wrapper.find('[data-testid="job-executor-agent"] .n-select-stub').setValue('coder1')
+    await flushPromises()
+
+    const inputs = wrapper.findAll('.n-input-stub')
+    await inputs[0].setValue('X')
+    await inputs[1].setValue('0 9 * * *')
+    await inputs[2].setValue('p')
+    await wrapper.findAll('.n-button-stub')[1].trigger('click')
+    await flushPromises()
+
+    // The stale selection must not ride along to an executor that cannot run it.
+    const payload = mockJobsStore.createJob.mock.calls[0][0]
+    expect(payload.model).toBeUndefined()
+  })
+
+  it('marks disabled models unselectable and drops a selection disabled under the new executor', async () => {
+    mockSettingsStore.platforms = { telegram: { token: 'telegram-token' } }
+    mockProfilesStore.profiles = [
+      { name: 'user_a', kind: 'user', displayLabel: 'sunke' },
+      { name: 'coder1', kind: 'agent', agentId: 'agent-1', displayLabel: 'coder1' },
+    ]
+    mockAppStore.profileModelGroups = [
+      { profile: 'user_a', groups: [{ provider: 'p', label: 'P', models: ['ok-model', 'dead-model'], model_meta: { 'dead-model': { disabled: true } } }] },
+      { profile: 'coder1', groups: [{ provider: 'p', label: 'P', models: ['ok-model'], model_meta: { 'ok-model': { disabled: true } } }] },
+    ]
+    mockJobsStore.createJob.mockResolvedValue({ id: 'job-1' })
+    const wrapper = mount(JobFormModal, { props: { jobId: null } })
+    await flushPromises()
+
+    const options = wrapper.find('[data-testid="job-model"] .n-select-stub').findAll('option')
+    const byValue = Object.fromEntries(options.map(o => [o.attributes('value'), o]))
+    expect(byValue['p/dead-model'].attributes('disabled')).toBe('')
+    expect(byValue['p/ok-model'].attributes('disabled')).toBeUndefined()
+
+    // Selecting a model that is DISABLED under the next executor must not ride along.
+    await wrapper.find('[data-testid="job-model"] .n-select-stub').setValue('p/ok-model')
+    await wrapper.find('[data-testid="job-executor-agent"] .n-select-stub').setValue('coder1')
+    await flushPromises()
+
+    const inputs = wrapper.findAll('.n-input-stub')
+    await inputs[0].setValue('X')
+    await inputs[1].setValue('0 9 * * *')
+    await inputs[2].setValue('p')
+    await wrapper.findAll('.n-button-stub')[1].trigger('click')
+    await flushPromises()
+
     expect(mockJobsStore.createJob.mock.calls[0][0].model).toBeUndefined()
   })
 })

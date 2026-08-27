@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { NButton, NSpin } from 'naive-ui'
+import { NButton, NSpin, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { fetchPerformanceRuntime, type PerformanceRuntimeSnapshot } from '@/api/hermes/performance-monitor'
 
 const { t } = useI18n()
+const message = useMessage()
 const snapshot = ref<PerformanceRuntimeSnapshot | null>(null)
-/** Load failure (background polls stay quiet). */
-const paneError = ref('')
 const loading = ref(false)
 const autoRefresh = ref(true)
 let timer: ReturnType<typeof setInterval> | undefined
@@ -57,7 +56,7 @@ async function loadRuntime(showError = true) {
   try {
     snapshot.value = await fetchPerformanceRuntime()
   } catch (err: any) {
-    if (showError) paneError.value = err?.message || t('performance.loadFailed')
+    if (showError) message.error(err?.message || t('performance.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -86,7 +85,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="performance-view">
-    <p v-if="paneError" class="pane-notice" data-testid="performance-error">{{ paneError }}</p>
     <header class="page-header">
       <h2 class="header-title">{{ t('performance.title') }}</h2>
       <div class="header-actions">
@@ -210,15 +208,6 @@ onBeforeUnmount(() => {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
-.pane-notice {
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  background: var(--danger-bg);
-  color: var(--danger);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
 
 .performance-view {
   height: 100%;

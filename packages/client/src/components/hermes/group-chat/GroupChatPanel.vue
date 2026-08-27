@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, NDropdown, type DropdownOption } from 'naive-ui'
+import { useMessage, NInput, NButton, NSpace, NSelect, NPopover, NPopconfirm, NInputNumber, NDropdown, type DropdownOption } from 'naive-ui'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { updateRoomConfig, forceCompress } from '@/api/hermes/group-chat'
@@ -17,6 +17,7 @@ import type { RoomAgent } from '@/api/hermes/group-chat'
 
 const { t } = useI18n()
 const router = useRouter()
+const message = useMessage()
 const store = useGroupChatStore()
 const profilesStore = useProfilesStore()
 
@@ -27,33 +28,6 @@ const showAddAgentModal = ref(false)
 const showCompressionModal = ref(false)
 const compressionConfig = ref({ triggerTokens: 100000, maxHistoryTokens: 32000, tailMessageCount: 10 })
 const isCompressing = ref(false)
-
-/**
- * Where failures live now that there are no toasts.
- *
- * One room-level notice for the things with no button to sit on — a send that
- * did not go, an agent that could not be interrupted, a copy that did not reach
- * the clipboard, and the agents that failed to connect when a room was created
- * (that last one has to outlive the navigation into the room, which is exactly
- * why it cannot be attached to the dialog that started it).
- *
- * It is dismissible and never self-clears: a failure that disappears on a timer
- * is a failure the user may never have read.
- */
-const roomNotice = ref('')
-/** Dialog-scoped, so each says its piece next to its own fields. */
-const createError = ref('')
-const cloneError = ref('')
-const addAgentError = ref('')
-const compressionError = ref('')
-
-/**
- * A compression is already running. Actions that cannot run concurrently are
- * DISABLED with this as their reason, instead of being clickable and answering
- * with a refusal — the information is the same, but this way it arrives before
- * the click rather than as a penalty for it.
- */
-const compressionBusy = computed(() => store.contextStatuses.size > 0)
 const selectedProfile = ref<string | null>(null)
 const agentName = ref('')
 const agentDescription = ref('')
@@ -145,18 +119,14 @@ function extractApiErrorMessage(err: any): string {
 async function handleCreateRoom(name: string, inviteCode: string, userName: string, description: string, compression: { triggerTokens: number; maxHistoryTokens: number; tailMessageCount: number }) {
     try {
         store.setUserInfo(userName, description)
-        createError.value = ''
         const res = await store.createNewRoom(name, inviteCode, undefined, compression)
         showCreateModal.value = false
-        // Landing in the new room is the success report. A partial failure is
-        // not: the room exists but some agents did not connect, and that has to
-        // survive the navigation — so it is handed to the room's own notice.
-        roomNotice.value = formatAgentFailures(res.agentResults) || ''
+        const failureMessage = formatAgentFailures(res.agentResults)
+        if (failureMessage) message.warning(failureMessage)
+        else message.success(t('groupChat.roomCreated'))
         await router.push({ name: 'hermes.groupChatRoom', params: { roomId: res.room.id } })
     } catch {
-        // The dialog stays open with the reason, rather than closing and
-        // apologising from the corner of the screen.
-        createError.value = t('common.saveFailed')
+        message.error(t('common.saveFailed'))
     }
 }
 
@@ -166,9 +136,9 @@ async function handleDeleteRoom(roomId: string) {
         if (store.currentRoomId === roomId) {
             await router.replace({ name: 'hermes.groupChat' })
         }
-        // The room leaving the list is the report.
+        message.success(t('groupChat.roomDeleted'))
     } catch {
-        roomNotice.value = t('common.saveFailed')
+        message.error(t('common.saveFailed'))
     }
 }
 
@@ -179,11 +149,8 @@ function buildRoomUrl(roomId: string) {
 
 async function copyRoomLink(roomId: string) {
     const ok = await copyToClipboard(buildRoomUrl(roomId))
-    // Copying is the one action with no visible result, and the menu it was
-    // started from has closed. Silence on success is still right — the user
-    // asked for it and can paste — but a failed copy must be said, or they
-    // paste whatever was in the clipboard before.
-    if (!ok) roomNotice.value = t('groupChat.copyLinkFailed')
+    if (ok) message.success(t('common.copied'))
+    else message.error(t('common.copied') + ' ✗')
 }
 
 const roomContextMenuOptions = computed<DropdownOption[]>(() => [
@@ -224,7 +191,6 @@ function handleOpenCloneRoom(roomId: string) {
 
 async function confirmCloneRoom() {
     if (!cloneSourceRoomId.value || !cloneRoomName.value.trim()) return
-    cloneError.value = ''
     try {
         const res = await store.cloneRoom(cloneSourceRoomId.value, {
             name: cloneRoomName.value.trim(),
@@ -235,18 +201,26 @@ async function confirmCloneRoom() {
         cloneRoomName.value = ''
         cloneInviteCode.value = ''
         await router.push({ name: 'hermes.groupChatRoom', params: { roomId: res.room.id } })
-        roomNotice.value = formatAgentFailures(res.agentResults) || ''
+        const failureMessage = formatAgentFailures(res.agentResults)
+        if (failureMessage) message.warning(failureMessage)
+        else message.success(t('groupChat.roomCloned'))
     } catch {
-        cloneError.value = t('common.saveFailed')
+        message.error(t('common.saveFailed'))
     }
 }
 
 async function handleClearRoomContext() {
-    // The guard is enforced by disabling the control (see `compressionBusy`), so
-    // reaching here while busy should not happen; kept as a belt-and-braces
-    // return rather than a message nobody asked for.
-    if (!store.currentRoomId || compressionBusy.value) return
-    await store.clearCurrentRoomContext()
+    if (!store.currentRoomId) return
+    if (store.contextStatuses.size > 0) {
+        message.warning(t('groupChat.compressingInProgress'))
+        return
+    }
+    try {
+        await store.clearCurrentRoomContext()
+        message.success(t('groupChat.contextCleared'))
+    } catch {
+        message.error(t('common.deleteFailed'))
+    }
 }
 
 async function handleSelectRoom(roomId: string) {
@@ -254,17 +228,15 @@ async function handleSelectRoom(roomId: string) {
         await router.push({ name: 'hermes.groupChatRoom', params: { roomId } })
         if (window.innerWidth <= 768) showSidebar.value = false
     } catch {
-        roomNotice.value = t('groupChat.joinFailed')
+        message.error(t('groupChat.joinFailed'))
     }
 }
 
 async function handleSendMessage(content: string, attachments?: Attachment[]) {
     try {
-        roomNotice.value = ''
         await store.sendMessage(content, attachments)
     } catch (err: any) {
-        // Sits above the composer, so it is next to the box that failed to send.
-        roomNotice.value = err.message
+        message.error(err.message)
     }
 }
 
@@ -285,11 +257,11 @@ onUnmounted(() => {
 })
 
 async function confirmAddAgent() {
-    // Without a room there is nothing to add to; the entry point is disabled, so
-    // this is only a guard.
-    if (!store.currentRoomId) return
+    if (!store.currentRoomId) {
+        message.warning(t('groupChat.selectRoomFirst'))
+        return
+    }
     if (!selectedProfile.value) return
-    addAgentError.value = ''
     try {
         await store.addAgentToRoom(store.currentRoomId, {
             profile: selectedProfile.value,
@@ -300,11 +272,13 @@ async function confirmAddAgent() {
         selectedProfile.value = null
         agentName.value = ''
         agentDescription.value = ''
-        // The agent appearing in the member list is the report.
+        message.success(t('groupChat.agentAdded'))
     } catch (err: any) {
-        addAgentError.value = err.message?.includes('already')
-            ? t('groupChat.agentAlreadyInRoom')
-            : extractApiErrorMessage(err)
+        if (err.message?.includes('already')) {
+            message.warning(t('groupChat.agentAlreadyInRoom'))
+        } else {
+            message.error(extractApiErrorMessage(err))
+        }
     }
 }
 
@@ -322,24 +296,29 @@ function handleOpenCompressionConfig() {
 
 async function handleSaveCompressionConfig() {
     if (!store.currentRoomId) return
-    compressionError.value = ''
     try {
         const res = await updateRoomConfig(store.currentRoomId, { ...compressionConfig.value })
         const idx = store.rooms.findIndex(r => r.id === store.currentRoomId)
         if (idx >= 0 && res.room) store.rooms[idx] = res.room
-        // Closing the dialog is the report.
         showCompressionModal.value = false
+        message.success(t('groupChat.compressionSaved'))
     } catch {
-        compressionError.value = t('common.saveFailed')
+        message.error(t('common.saveFailed'))
     }
 }
 
 async function handleForceCompress() {
-    // Disabled while a compression is already running, so this is just a guard.
-    if (!store.currentRoomId || isCompressing.value || compressionBusy.value) return
+    if (!store.currentRoomId || isCompressing.value) return
+    if (store.contextStatuses.size > 0) {
+        message.warning(t('groupChat.compressingInProgress'))
+        return
+    }
     isCompressing.value = true
     try {
         await forceCompress(store.currentRoomId)
+        message.success(t('groupChat.compressionSaved'))
+    } catch {
+        message.error(t('common.saveFailed'))
     } finally {
         isCompressing.value = false
     }
@@ -349,9 +328,8 @@ async function handleRemoveAgent(agentId: string) {
     if (!store.currentRoomId) return
     try {
         await store.removeAgentFromRoom(store.currentRoomId, agentId)
-        // The member leaving the list is the report.
     } catch {
-        roomNotice.value = t('common.deleteFailed')
+        message.error(t('common.deleteFailed'))
     }
 }
 
@@ -359,7 +337,7 @@ async function handleInterruptAgent(agentName: string) {
     try {
         await store.interruptAgent(agentName)
     } catch (err: any) {
-        roomNotice.value = err.message || t('common.saveFailed')
+        message.error(err.message || t('common.saveFailed'))
     }
 }
 
@@ -367,7 +345,7 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
     try {
         await store.respondApproval(choice)
     } catch (err: any) {
-        roomNotice.value = err.message || t('common.saveFailed')
+        message.error(err.message || t('common.saveFailed'))
     }
 }
 
@@ -500,13 +478,9 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                     <button class="icon-btn" :title="t('groupChat.compressionConfig')" @click="handleOpenCompressionConfig">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 4.6a1.65 1.65 0 0 0 1.51 1V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1.51 1z"/></svg>
                     </button>
-                    <NPopconfirm :disabled="compressionBusy" @positive-click="handleClearRoomContext">
+                    <NPopconfirm @positive-click="handleClearRoomContext">
                         <template #trigger>
-                            <button
-                                class="icon-btn"
-                                :disabled="compressionBusy"
-                                :title="compressionBusy ? t('groupChat.compressingInProgress') : t('groupChat.clearContext')"
-                            >
+                            <button class="icon-btn" :title="t('groupChat.clearContext')">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                                     <path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v5" /><path d="M14 11v5" />
                                 </svg>
@@ -587,17 +561,6 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                         {{ store.typingText }}
                     </div>
                 </div>
-                <!-- Resident and dismissible. Never self-clears: a failure that
-                     expires on a timer is one the reader can miss entirely. -->
-                <div v-if="roomNotice" class="room-notice" data-testid="room-notice">
-                    <span class="room-notice__text">{{ roomNotice }}</span>
-                    <button
-                        type="button"
-                        class="room-notice__close"
-                        :title="t('common.close')"
-                        @click="roomNotice = ''"
-                    >&times;</button>
-                </div>
                 <GroupChatInput @send="handleSendMessage" />
             </template>
 
@@ -616,7 +579,6 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
             <div v-if="showCreateModal" class="modal-backdrop" @click.self="showCreateModal = false">
                 <div class="modal">
                     <h3>{{ t('groupChat.createRoom') }}</h3>
-                    <p v-if="createError" class="dialog-error">{{ createError }}</p>
                     <CreateRoomForm @submit="handleCreateRoom" @cancel="showCreateModal = false" />
                 </div>
             </div>
@@ -626,7 +588,6 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
             <div v-if="showAddAgentModal" class="modal-backdrop" @click.self="showAddAgentModal = false">
                 <div class="modal">
                     <h3>{{ t('groupChat.addAgent') }}</h3>
-                    <p v-if="addAgentError" class="dialog-error">{{ addAgentError }}</p>
                     <div class="form-group">
                         <NSelect
                             v-model:value="selectedProfile"
@@ -662,7 +623,6 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
             <div v-if="showCloneModal" class="modal-backdrop" @click.self="showCloneModal = false">
                 <div class="modal">
                     <h3>{{ t('groupChat.cloneRoom') }}</h3>
-                    <p v-if="cloneError" class="dialog-error">{{ cloneError }}</p>
                     <div class="form-group">
                         <label class="form-label">{{ t('groupChat.roomName') }}</label>
                         <NInput
@@ -697,7 +657,6 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
             <div v-if="showCompressionModal" class="modal-backdrop" @click.self="showCompressionModal = false">
                 <div class="modal">
                     <h3>{{ t('groupChat.compressionConfig') }}</h3>
-                    <p v-if="compressionError" class="dialog-error">{{ compressionError }}</p>
                     <div class="form-group">
                         <label class="form-label">{{ t('groupChat.triggerTokens') }}</label>
                         <NInputNumber v-model:value="compressionConfig.triggerTokens" :min="1000" :step="10000" style="width: 100%" />
@@ -716,7 +675,7 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                     <div style="margin-top: 8px">
                         <NButton
                             block
-                            :disabled="isCompressing || compressionBusy"
+                            :disabled="isCompressing || store.contextStatuses.size > 0"
                             :loading="isCompressing"
                             @click="handleForceCompress"
                         >
@@ -744,45 +703,6 @@ export default defineComponent({ components: { CreateRoomForm } })
 
 <style scoped lang="scss">
 @use "@/styles/variables" as *;
-
-/* Resident failure carriers, replacing the toasts. Both use the danger tint so
-   they read as "something did not happen", not as neutral help text. */
-.room-notice {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    margin: 0 12px 8px;
-    padding: 12px;
-    border-radius: var(--r-ctl);
-    background: var(--danger-bg);
-    color: var(--danger);
-    font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
-.room-notice__text {
-    flex: 1;
-    min-width: 0;
-}
-
-.room-notice__close {
-    flex: 0 0 auto;
-    border: 0;
-    background: none;
-    color: inherit;
-    font-size: 18px;
-    line-height: 1;
-    cursor: pointer;
-    padding: 0 2px;
-}
-
-.dialog-error {
-    margin: 0 0 12px;
-    padding: 12px;
-    border-radius: var(--r-ctl);
-    background: var(--danger-bg);
-    color: var(--danger);
-    font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
 
 .group-chat-panel {
     display: flex;

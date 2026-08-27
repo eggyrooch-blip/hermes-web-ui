@@ -10,17 +10,14 @@ import { fetchSkills, type SkillCategory, type SkillInfo } from '@/api/hermes/sk
 import { fetchExperts, type ExpertInfo } from '@/api/hermes/experts'
 import { fetchSlashCommands, type SlashCommand } from '@/api/hermes/slash'
 import { isStoredSuperAdmin } from '@/api/client'
-import { NButton, NTooltip, NModal, NInputNumber, NPopselect, NPopover } from 'naive-ui'
+import { NButton, NTooltip, NSwitch, NModal, NInputNumber, NPopselect, useMessage } from 'naive-ui'
 import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
-import VoiceDialogueControls from './VoiceDialogueControls.vue'
+import { useToolTraceVisibility } from '@/composables/useToolTraceVisibility'
 import AgentPicker from '@/components/hermes/agents/AgentPicker.vue'
-import KpIcon from '@/components/kippies/KpIcon.vue'
-import ComposerBox from './ComposerBox.vue'
 import ChatScheduledEntry from './ChatScheduledEntry.vue'
+import VoiceDialogueControls from './VoiceDialogueControls.vue'
 import { useMicRecorder } from '@/composables/useMicRecorder'
-import { useNet } from '@/composables/useNet'
 import { useGlobalSpeech } from '@/composables/useSpeech'
 import { useVoiceDialogue } from '@/composables/useVoiceDialogue'
 import { transcribeSpeech } from '@/api/hermes/stt'
@@ -28,25 +25,39 @@ import type { StoredSttProvider } from '@/api/hermes/stt-settings'
 import { useSttSettings } from '@/composables/useSttSettings'
 import { useBrowserSpeechRecognition } from '@/composables/useBrowserSpeechRecognition'
 import { CHAT_INPUT_HEIGHT_MOBILE_QUERY, chatInputHeightStyle, clampChatInputHeight } from '@/utils/chat-input-height'
-import { useComposerPrefill } from '@/composables/useComposerPrefill'
 
 const chatStore = useChatStore()
 const appStore = useAppStore()
 const profilesStore = useProfilesStore()
 const settingsStore = useSettingsStore()
 const { t } = useI18n()
-const router = useRouter()
-// Named `netOnline` rather than destructured as `online` — this file already has
-// plenty of short flags and a bare `online` reads ambiguously next to them.
-const { online: netOnline } = useNet()
-
-// The "+" AddMenu (prototype): a two-level hover menu. Level 1 = 添加文件 /
-// 专家 / 技能 / 连接器; hovering the latter three fans out a right-side flyout
-// listing real items, with a "manage" footer that jumps to the full surface.
-// Defined further down (after experts/skills state) so the flyout can read
-// live data — see `openAddMenu` and friends below `loadSlashCommands`.
-const showAddMenu = ref(false)
+const message = useMessage()
+const { toolTraceVisible, toggleToolTraceVisible } = useToolTraceVisibility()
 const isSuperAdmin = computed(() => isStoredSuperAdmin())
+
+const reasoningEffortOptions = computed(() => [
+  { label: t('chat.reasoningEffort.options.default'), value: '' },
+  { label: t('chat.reasoningEffort.options.none'), value: 'none' },
+  { label: t('chat.reasoningEffort.options.minimal'), value: 'minimal' },
+  { label: t('chat.reasoningEffort.options.low'), value: 'low' },
+  { label: t('chat.reasoningEffort.options.medium'), value: 'medium' },
+  { label: t('chat.reasoningEffort.options.high'), value: 'high' },
+  { label: t('chat.reasoningEffort.options.xhigh'), value: 'xhigh' },
+])
+const currentReasoningEffort = computed<string>(() =>
+  chatStore.activeSession?.reasoningEffort || ''
+)
+const reasoningEffortLabel = computed<string>(() => {
+  const v = currentReasoningEffort.value
+  if (!v) return t('chat.reasoningEffort.defaultLabel')
+  const opt = reasoningEffortOptions.value.find(o => o.value === v)
+  return opt?.label || v
+})
+function onReasoningEffortChange(value: string | null | undefined) {
+  const sid = chatStore.activeSessionId
+  if (!sid) return
+  chatStore.setSessionReasoningEffort(sid, value || '')
+}
 
 // --- Expert slot (专家广场) -------------------------------------------------
 // Selecting an expert here stamps the active non-coding session; future runs
@@ -101,15 +112,6 @@ async function loadExpertsForSlot() {
 const DRAFT_STORAGE_KEY = 'hermes_chat_input_drafts_v1'
 type DraftMap = Record<string, string>
 const inputText = ref('')
-
-// Home starter cards drop their text in here rather than sending it, so the
-// user still gets to edit before committing.
-const composerPrefill = useComposerPrefill()
-watch(composerPrefill, (next) => {
-  if (!next) return
-  inputText.value = next.text
-  void nextTick(() => textareaRef.value?.focus())
-})
 const inputWrapperRef = ref<HTMLDivElement>()
 const textareaRef = ref<HTMLTextAreaElement>()
 const commandDropdownRef = ref<HTMLDivElement>()
@@ -273,16 +275,6 @@ let skillsLoadedKey = ''
 let skillsLoadRequest: Promise<void> | null = null
 const isBridgeSession = computed(() => chatStore.activeSession?.source === 'cli')
 
-// The composer has two forms in the prototype. On the home screen it is the
-// hero: a wide box with the scope pills (agent / project / cloud) along its
-// floor. Once a run is under way it becomes the follow-up field — a narrower
-// box wrapped in a pill-shaped halo, with the scope row dropped (the scope is
-// already fixed by the running task) and a placeholder that invites steering
-// rather than starting.
-const isRunState = computed(
-  () => (chatStore.messages?.length ?? 0) > 0 || !!chatStore.isStreaming,
-)
-
 // The session-level agent selector is offered only before the first message:
 // switching agents mid-conversation would hand a running thread to a different
 // profile. Once anything has been said, "new task" is the way to switch.
@@ -345,114 +337,6 @@ async function loadSlashCommands() {
   })()
   return slashCommandsRequest
 }
-// --- "+" AddMenu (prototype two-level hover menu) ---------------------------
-const addBtnRef = ref<HTMLElement>()
-const addMenuPos = ref<{ left: number; top?: number; bottom?: number } | null>(null)
-const activeAddSub = ref<null | 'expert' | 'skill' | 'connector'>(null)
-
-function openAddMenu() {
-  if (!showAddMenu.value && addBtnRef.value) {
-    const r = addBtnRef.value.getBoundingClientRect()
-    const menuH = 260
-    const openUp = window.innerHeight - r.bottom < menuH + 16
-    addMenuPos.value = openUp
-      ? { left: r.left - 4, bottom: window.innerHeight - r.top + 8 }
-      : { left: r.left - 4, top: r.bottom + 8 }
-  }
-  activeAddSub.value = null
-  showAddMenu.value = !showAddMenu.value
-  // Prefetch what the menu itself shows; the "/" panel loads its own commands
-  // when the user starts typing a slash.
-  if (showAddMenu.value) void loadSkills()
-}
-
-function closeAddMenu() {
-  showAddMenu.value = false
-  activeAddSub.value = null
-}
-
-// Level-1 rows: `file` opens the picker and clears any flyout; the other three
-// fan out their right-side sub-list on hover (and on click, matching the
-// prototype where either gesture opens the flyout).
-function onAddRowEnter(key: 'file' | 'expert' | 'skill' | 'connector') {
-  if (key === 'file') {
-    activeAddSub.value = null
-    return
-  }
-  activeAddSub.value = key
-  if (key === 'skill') void loadSkills()
-}
-
-function onAddRowClick(key: 'file' | 'expert' | 'skill' | 'connector') {
-  if (key === 'file') {
-    closeAddMenu()
-    handleAttachClick()
-    return
-  }
-  activeAddSub.value = key
-  if (key === 'skill') void loadSkills()
-}
-
-const addSubExperts = computed(() => experts.value.slice(0, 8))
-// Skills, not slash commands. This used to read `skillSlashCommands` — the
-// broker's `/…` registry — so the 技能 flyout listed command descriptions
-// ("Clear this profile's broker …") instead of skill names. Broker commands
-// are still reachable by typing "/", which is their own surface.
-const addSubSkills = computed(() => skillPickerItems.value.slice(0, 8))
-
-// Prototype parity: picking an expert from the "+" menu does NOT stamp the
-// session immediately — it becomes a removable pill sitting in the composer
-// (same as an attachment) and only takes effect once the message is actually
-// sent. This matches the prototype's generic `attachments` model (an expert
-// pick is `onAttach({type:"expert", label})`, consumed by `onSend`), while
-// the tool-row expert-slot popover keeps its own immediate-apply behavior
-// (a different, already-shipped path this session doesn't touch).
-const pendingExpertPick = ref<{ id: string; label: string } | null>(null)
-
-function pickAddExpert(id: string) {
-  const expert = experts.value.find(e => e.id === id)
-  pendingExpertPick.value = { id, label: expert?.title || expert?.name || id }
-  closeAddMenu()
-}
-
-function clearPendingExpertPick() {
-  pendingExpertPick.value = null
-}
-
-// Skill picks work the same way (prototype: onAttach({type:"skill",...})):
-// a removable pill until send, at which point the skill's slash command is
-// prepended to the outgoing message (`/name <text>`), i.e. exactly what a
-// user typing the command by hand would send.
-const pendingSkillPick = ref<{ command: string; label: string } | null>(null)
-
-// The pill echoes the label the user actually clicked (the skill's own name),
-// matching the prototype's `onAttach({type:"skill", label})`. The slash
-// command still goes out on send — that is `commandName`.
-function pickAddSkill(skill: { commandName: string; name: string }) {
-  pendingSkillPick.value = {
-    command: skill.commandName,
-    label: skill.name,
-  }
-  closeAddMenu()
-}
-
-function clearPendingSkillPick() {
-  pendingSkillPick.value = null
-}
-
-// Home invites a task ("今天帮你做些什么？"), a live run invites a correction
-// ("想改就直接说，不用等它做完") — see isRunState.
-const composerPlaceholder = computed(() => {
-  if (attachments.value.length > 0 || pendingExpertPick.value || pendingSkillPick.value)
-    return t('chat.inputPlaceholderAttached')
-  return isRunState.value ? t('chat.inputPlaceholderRun') : t('chat.inputPlaceholder')
-})
-
-function openAddSurface(surface: 'expert' | 'skills' | 'connectors') {
-  closeAddMenu()
-  void router.push({ name: 'hermes.chat', query: { surface } })
-}
-
 const skillPickerItems = computed(() => {
   const byName = new Map<string, SkillInfo>()
   for (const category of skillCategories.value) {
@@ -461,99 +345,24 @@ const skillPickerItems = computed(() => {
       if (!byName.has(skill.name)) byName.set(skill.name, skill)
     }
   }
-  return [...byName.values()]
-    .map(skill => {
-      const commandName = skillCommandName(skill.name)
-      return {
-        key: `skill:${commandName}`,
-        name: skill.name,
-        commandName,
-        description: skill.description || skill.name,
-      }
-    })
-    // Same ordering the automation and new-task composers use, so one skill
-    // sits in the same place whichever composer you opened.
-    .sort((a, b) => a.name.localeCompare(b.name))
+  return [...byName.values()].map(skill => {
+    const commandName = skillCommandName(skill.name)
+    return {
+      key: `skill:${commandName}`,
+      name: skill.name,
+      commandName,
+      description: skill.description || skill.name,
+    }
+  })
 })
-// Experts as slash entries. The prototype's panel lists what you can hang on
-// the task — 连接器 / 专家 / 技能 — not just typed commands, and an expert is
-// the one of those three this app can actually attach (a connector is an
-// authorization, not something a message carries; picking one would do
-// nothing, so it stays out rather than becoming a dead row).
-//
-// `key` carries the `expert:` prefix the grouping and the picker both read.
-const expertSlashEntries = computed<SlashCommandOption[]>(() =>
-  experts.value.map(expert => ({
-    key: `expert:${expert.id}`,
-    name: expert.title || expert.name || expert.id,
-    args: '',
-    description: expert.tagline || '',
-    insertText: '',
-  })),
-)
-
 const filteredBridgeCommands = computed(() => {
   const query = slashQuery.value.toLowerCase()
-  const all = [
-    ...bridgeCommands.value,
-    ...expertSlashEntries.value,
-    ...skillSlashCommands.value,
-  ]
+  const all = [...bridgeCommands.value, ...skillSlashCommands.value]
   return all.filter(command =>
-    command.name.toLowerCase().includes(query)
+    command.name.includes(query)
     || command.insertText?.includes(query)
     || command.description.toLowerCase().includes(query),
   )
-})
-
-// Prototype SlashPanel groups its entries under muted captions. Our real data
-// has two natural groups — built-in bridge commands and per-profile skill
-// commands (`slash:` keys) — rendered in the prototype's visual language.
-// Items keep their FLAT index so keyboard navigation stays a single cursor.
-// The prototype's slash rows carry a SOLID hue tile with the item's first
-// character in white (measured: 30x30, radius 2, --hue-blue ground, white 600
-// 13px); only a colourless item falls back to the grey tile + group glyph.
-// Market items there ship their own brand colour — the closest stable local
-// equivalent is the same name hash the skills wall already uses.
-const SLASH_TILE_HUES = ['var(--hue-purple)', 'var(--hue-blue)', 'var(--hue-cyan)']
-function slashTileHue(name: string): string {
-  let h = 0
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0
-  return SLASH_TILE_HUES[h % SLASH_TILE_HUES.length]
-}
-function slashTileMark(name: string): string {
-  return (name.trim()[0] || '?').toUpperCase()
-}
-// Bridge commands are the colourless case: they are verbs, not named things.
-function slashHasTileMark(command: SlashCommandOption): boolean {
-  return !command.key.startsWith('command:')
-}
-
-const SLASH_GROUP_META: Record<string, { label: string; icon: string }> = {
-  expert: { label: 'chat.slashGroups.experts', icon: 'line_grade_report' },
-  slash: { label: 'chat.slashGroups.skills', icon: 'line_menu' },
-  command: { label: 'chat.slashGroups.commands', icon: 'line_control' },
-}
-
-function slashGroupKey(command: SlashCommandOption): string {
-  if (command.key.startsWith('expert:')) return 'expert'
-  if (command.key.startsWith('slash:')) return 'slash'
-  return 'command'
-}
-
-const slashGroups = computed(() => {
-  const groups: { label: string; icon: string; items: { command: SlashCommandOption; index: number }[] }[] = []
-  filteredBridgeCommands.value.forEach((command, index) => {
-    const meta = SLASH_GROUP_META[slashGroupKey(command)]
-    const label = t(meta.label)
-    let group = groups[groups.length - 1]
-    if (!group || group.label !== label) {
-      group = { label, icon: meta.icon, items: [] }
-      groups.push(group)
-    }
-    group.items.push({ command, index })
-  })
-  return groups
 })
 const filteredSkillPickerItems = computed(() => {
   const query = skillSearch.value.trim().toLowerCase()
@@ -580,11 +389,8 @@ function currentSkillsKey() {
   return chatStore.activeSession?.profile || profilesStore.activeProfileName || 'default'
 }
 
-// No bridge-session guard here: the "+" menu's skill flyout is available in
-// every session, the same way the automation and new-task composers load
-// skills unconditionally. `openSkillPicker` keeps its own CLI-only check, so
-// the `/skill` picker stays bridge-only.
 async function loadSkills() {
+  if (!isBridgeSession.value) return
   const key = currentSkillsKey()
   if (skillsLoadedKey === key || skillsLoadRequest) return skillsLoadRequest
   skillsLoadRequest = (async () => {
@@ -609,25 +415,10 @@ const textareaHeight = ref<number | null>(null) // null = auto
 const isMobileInput = ref(false)
 let mobileInputQuery: MediaQueryList | null = null
 
-// With an inline pill the textarea shrinks to pill height (28px) so the caret
-// lands right after the chip — the wrapper keeps its configured height, so
-// picking a command never changes the composer's size.
-const hasInlineChips = computed(() => !!(pendingExpertPick.value || pendingSkillPick.value))
-const inputWrapperStyle = computed(() => {
-  const style = chatInputHeightStyle(settingsStore.display.chat_input_height, textareaHeight.value, isMobileInput.value)
-  // Prototype TaskInputBox: the field section is minHeight textarea+40 —
-  // 20px above the caret and 20px of floor before the tool row. The wrapper
-  // is border-box with a fixed inline height, so the +40 must land here (the
-  // run composer instead compresses to its 80px min-height, CSS below).
-  if (!isRunState.value && style.height) {
-    style.height = `${Number.parseInt(style.height, 10) + 40}px`
-  }
-  return style
-})
-const inputTextareaStyle = computed(() => {
-  if (isMobileInput.value) return {}
-  return hasInlineChips.value ? { height: '28px' } : { height: '100%' }
-})
+const inputWrapperStyle = computed(() =>
+  chatInputHeightStyle(settingsStore.display.chat_input_height, textareaHeight.value, isMobileInput.value),
+)
+const inputTextareaStyle = computed(() => (isMobileInput.value ? {} : { height: '100%' }))
 
 function syncMobileInputState() {
   if (typeof window === 'undefined') return
@@ -641,13 +432,8 @@ function startResize(e: MouseEvent) {
   if (isMobileInput.value) return
   const el = textareaRef.value
   if (!el) return
-  // 如果当前是 auto，用实际 clientHeight 作为起始值。home 态 wrapper 比配置值
-  // 多 40px（原型 textarea+40 公式，见 inputWrapperStyle）——起始值要扣回去，
-  // 否则第一次拖拽会跳 40px。
-  const wrapperExtra = isRunState.value ? 0 : 40
-  const startHeight = (inputWrapperRef.value?.clientHeight
-    ? inputWrapperRef.value.clientHeight - wrapperExtra
-    : el.clientHeight)
+  // 如果当前是 auto，用实际 clientHeight 作为起始值
+  const startHeight = inputWrapperRef.value?.clientHeight || el.clientHeight
   const startY = e.clientY
 
   function onMouseMove(e: MouseEvent) {
@@ -800,7 +586,7 @@ watch(
 
 // `agentSwitching` participates: between switchProfile() and the new session
 // being bound, a send would go out on the old session under the new profile.
-const canSend = computed(() => !chatStore.agentSwitching && (inputText.value.trim() || attachments.value.length > 0 || !!pendingExpertPick.value || !!pendingSkillPick.value))
+const canSend = computed(() => !chatStore.agentSwitching && (inputText.value.trim() || attachments.value.length > 0))
 
 function scrollCommandIntoView() {
   nextTick(() => {
@@ -825,22 +611,7 @@ function updateSlashState() {
   void loadSlashCommands().then(() => reevaluateSlashAfterLoad(beforeCursor))
   slashQuery.value = beforeCursor.slice(1)
   slashActiveIndex.value = 0
-  // Prototype SlashPanel: the panel is open whenever the "/" prefix is live —
-  // an unmatched query shows the 没有匹配的结果 empty state, it doesn't close.
-  slashActive.value = true
-  syncSlashPanelMaxHeight()
-}
-
-// Prototype: maxHeight clamps to the space above the composer
-// (max(160, min(360, top - 24))) so the panel never runs off-screen.
-const slashPanelMaxHeight = ref(360)
-function syncSlashPanelMaxHeight() {
-  nextTick(() => {
-    const wrapper = inputWrapperRef.value
-    if (!wrapper) return
-    const top = wrapper.getBoundingClientRect().top
-    slashPanelMaxHeight.value = Math.max(160, Math.min(360, top - 24))
-  })
+  slashActive.value = filteredBridgeCommands.value.length > 0
 }
 
 // After the async command fetch resolves, reopen the dropdown if the user typed a
@@ -855,8 +626,7 @@ function reevaluateSlashAfterLoad(capturedBefore: string) {
   if (!beforeCursor.startsWith('/') || beforeCursor.includes(' ')) return
   slashQuery.value = beforeCursor.slice(1)
   slashActiveIndex.value = 0
-  slashActive.value = true
-  syncSlashPanelMaxHeight()
+  slashActive.value = filteredBridgeCommands.value.length > 0
 }
 
 function selectBridgeCommand(command: SlashCommandOption) {
@@ -865,27 +635,15 @@ function selectBridgeCommand(command: SlashCommandOption) {
     void openSkillPicker()
     return
   }
-  // An expert becomes the same removable pill the "+" menu produces — it is a
-  // who, not a command, so nothing is prepended to the outgoing text.
-  if (command.key.startsWith('expert:')) {
-    pickAddExpert(command.key.slice('expert:'.length))
-    inputText.value = ''
-    slashActive.value = false
-    nextTick(() => textareaRef.value?.focus())
-    return
-  }
-  // Prototype pickSlash: the pick becomes an attachment pill in the composer
-  // and the "/" query is cleared — NOT echoed back as text. Whatever the user
-  // types next becomes the command's arguments (handleSend prepends `/name`).
-  // The pill echoes the item as it appeared in the menu (`/usage`), like the
-  // prototype's name-labelled pills — not the description sentence.
-  pendingSkillPick.value = {
-    command: command.insertText || command.name,
-    label: `/${command.insertText || command.name}`,
-  }
-  inputText.value = ''
+  inputText.value = `/${command.insertText || command.name} `
   slashActive.value = false
-  nextTick(() => textareaRef.value?.focus())
+  nextTick(() => {
+    const el = textareaRef.value
+    if (!el) return
+    const pos = inputText.value.length
+    el.setSelectionRange(pos, pos)
+    el.focus()
+  })
 }
 
 async function openSkillPicker() {
@@ -922,10 +680,6 @@ let contextLengthRequestKey = ''
 let contextLengthRequest: Promise<void> | null = null
 
 // Context length editing
-/** Validation and save failure for the context-limit dialog. */
-const contextEditError = ref('')
-/** Why clicking the placeholder scope pill did nothing. */
-const scopeHint = ref('')
 const showContextEditModal = ref(false)
 const editingContextLimit = ref(256000)
 const isSavingContextLimit = ref(false)
@@ -939,10 +693,9 @@ async function handleEditContextLimit() {
 
 async function saveContextLimit() {
   if (!editingContextLimit.value || editingContextLimit.value <= 0) {
-    contextEditError.value = t('chat.contextEditInvalid')
+    message.error(t('chat.contextEditInvalid'))
     return
   }
-  contextEditError.value = ''
 
   isSavingContextLimit.value = true
   try {
@@ -950,17 +703,17 @@ async function saveContextLimit() {
     const model = chatStore.activeSession?.model || appStore.selectedModel || ''
 
     if (!provider || !model) {
-      contextEditError.value = t('chat.contextEditFailed')
+      message.error(t('chat.contextEditFailed'))
       return
     }
 
     await setModelContext(provider, model, editingContextLimit.value)
     contextLength.value = editingContextLimit.value
     contextLengthLoadedKey = currentContextLengthKey()
-    // The dialog closes and the usage pill repaints against the new limit.
     showContextEditModal.value = false
+    message.success(t('chat.contextEditSuccess'))
   } catch (err: any) {
-    contextEditError.value = `${t('chat.contextEditFailed')}: ${err.message || ''}`
+    message.error(`${t('chat.contextEditFailed')}: ${err.message || ''}`)
   } finally {
     isSavingContextLimit.value = false
   }
@@ -1032,27 +785,9 @@ const totalTokens = computed(() => {
   const output = chatStore.activeSession?.outputTokens ?? 0
   return input + output
 })
-// Prototype UsagePill is always present (📈 count) — it shows even at rest so
-// the "this is what a turn costs" affordance never pops in and out. We only
-// hide it for coding-agent sessions, which have no context-token concept.
-const showContextUsage = computed(() => !isCodingAgentSession.value)
+const showContextUsage = computed(() => totalTokens.value > 0)
 
 const remainingTokens = computed(() => Math.max(0, contextLength.value - totalTokens.value))
-
-// Prototype UsagePill breakdown: 输入/输出 meter bars with the DS accent hues.
-const usageParts = computed(() => {
-  const input = chatStore.activeSession?.inputTokens ?? 0
-  const output = chatStore.activeSession?.outputTokens ?? 0
-  const max = Math.max(input, output, 1)
-  return [
-    { key: 'in', name: t('chat.usagePopover.input'), value: input, pct: Math.round((input / max) * 100), color: 'var(--hue-purple)' },
-    { key: 'out', name: t('chat.usagePopover.output'), value: output, pct: Math.round((output / max) * 100), color: 'var(--hue-orange)' },
-  ]
-})
-
-function openUsageView() {
-  void router.push({ name: 'hermes.usage' })
-}
 
 const usagePercent = computed(() =>
   Math.min((totalTokens.value / contextLength.value) * 100, 100),
@@ -1144,25 +879,11 @@ function handleDrop(e: DragEvent) {
 function handleSend() {
   // Enter bypasses the disabled send button, so the swap guard is re-checked here.
   if (chatStore.agentSwitching) return
-  let text = inputText.value.trim()
-  if (!text && attachments.value.length === 0 && !pendingExpertPick.value && !pendingSkillPick.value) return
+  const text = inputText.value.trim()
+  if (!text && attachments.value.length === 0) return
   if (isBridgeSession.value && text === '/skill' && attachments.value.length === 0) {
     void openSkillPicker()
     return
-  }
-
-  // Commit the pending expert pill to the session now — at send time, not
-  // pick time — matching the prototype's attachment model.
-  if (pendingExpertPick.value) {
-    onExpertChange(pendingExpertPick.value.id)
-    pendingExpertPick.value = null
-  }
-
-  // A pending skill pill becomes its slash command at the head of the message
-  // — exactly what typing `/name <text>` by hand sends.
-  if (pendingSkillPick.value) {
-    text = `/${pendingSkillPick.value.command}${text ? ` ${text}` : ''}`
-    pendingSkillPick.value = null
   }
 
   chatStore.sendMessage(text, attachments.value.length > 0 ? attachments.value : undefined)
@@ -1279,13 +1000,6 @@ function isImeEnter(e: KeyboardEvent): boolean {
 }
 
 function handleKeydown(e: KeyboardEvent) {
-  // Escape closes the panel even when it is showing the no-match empty state.
-  if (slashActive.value && e.key === 'Escape') {
-    e.preventDefault()
-    slashActive.value = false
-    slashDismissed = true  // don't let the async command load reopen it
-    return
-  }
   if (slashActive.value && filteredBridgeCommands.value.length > 0) {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
@@ -1302,6 +1016,12 @@ function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' || e.key === 'Tab') {
       e.preventDefault()
       selectBridgeCommand(filteredBridgeCommands.value[slashActiveIndex.value])
+      return
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      slashActive.value = false
+      slashDismissed = true  // don't let the async command load reopen it
       return
     }
   }
@@ -1359,246 +1079,52 @@ function formatSize(bytes: number): string {
 function isImage(type: string): boolean {
   return type.startsWith('image/')
 }
-
-// The cloud/local scope pill is still a placeholder — clicking it says so
-// rather than pretending to switch anything.
-function handleScopePillClick() {
-  // Offline, the pill states the cause rather than the coming-soon notice — the
-  // reason you can't send is the one thing worth saying at that moment.
-  // Shown on the pill's own tooltip-style line under the scope row rather than a
-  // toast: it explains why the click did nothing, so it belongs next to the pill
-  // that was clicked.
-  scopeHint.value = netOnline.value ? t('chat.featureComingSoon') : t('net.cloudUnreachableHint')
-}
 </script>
 
 <template>
-  <!-- The box (frame, section order, insets) is ComposerBox — the same one
-       group chat's composer uses, so the two cannot drift apart again. This
-       component owns what goes IN the sections. -->
-  <ComposerBox :run="isRunState">
-
-    <!-- Scope row: which agent, which workspace, where it runs. Sits inside
-         the same rounded box as the field, divided from the tool row by a
-         hairline — it describes THIS task, so it belongs to the box rather
-         than floating underneath it. Agent comes first (it owns the run),
-         then whatever the host passes in (workspace, etc). -->
-    <div v-if="!isRunState" class="input-pillbar">
-      <AgentPicker v-if="canPickAgent" class="agent-picker-slot" />
-      <span v-if="canPickAgent" class="input-pillbar__sep" />
-
-      <!-- Where it runs. The project pill that used to sit here went with the
-           projects feature itself. -->
-      <!--
-        Losing the network is said HERE, not in a banner. This pill already
-        answers "where does this task run", so when the cloud is unreachable it is
-        the control that should speak — and unlike a banner it also explains the
-        consequence (your message can't go out because the cloud is unreachable).
-
-        ⚠️ Only the icon and the text colour change; NO red background. Tinting the
-        ground turns a clickable selector into a warning block, and it is still a
-        selector.
-
-        The prototype gates this on `offline && scope === "cloud"` so that a user
-        who has switched to local isn't still shown a wifi icon for a problem they
-        already solved. Here the pill is always cloud — Hermes has no local
-        execution mode — so plain `offline` is the same condition.
-      -->
-      <button
-        type="button"
-        class="composer-scope-pill"
-        :class="{ 'is-offline': !netOnline }"
-        @click="handleScopePillClick"
-      >
-        <KpIcon :name="netOnline ? 'line_weather_cloudy' : 'line_wifi_level1'" :size="14" />
-        <span>{{ netOnline ? t('chat.cloudScope') : t('net.offline') }}</span>
-        <KpIcon name="line_down" :size="10" class="composer-scope-pill__caret" />
-      </button>
-
-      <span v-if="$slots.pillbar" class="input-pillbar__sep" />
-      <slot name="pillbar" />
-    </div>
-
-    <!-- Why the placeholder scope pill did nothing. Next to the pill that was
-         clicked, and dismissible rather than timed. -->
-    <p v-if="scopeHint" class="scope-hint" data-testid="scope-hint">
-      <span class="scope-hint__text">{{ scopeHint }}</span>
-      <button type="button" class="scope-hint__close" :title="t('common.close')" @click="scopeHint = ''">&times;</button>
-    </p>
-
-    <!-- Tool row. Ordered below the textarea (see the `order` rules in the
-         style block) so it reads as the floor of the box rather than a strip
-         above it — attach on the left, usage / model / voice on the right. -->
+  <div class="chat-input-area">
+    <!-- Top bar: attach + auto play speech + context info -->
     <div class="input-top-bar">
-      <!-- Attach sits alone on the far left. The "+" opens a two-level AddMenu
-           (prototype): add a file, or fan out expert/skill/connector flyouts. -->
-      <span ref="addBtnRef" class="add-menu-anchor">
-        <NButton
-          class="attach-button"
-          :class="{ active: showAddMenu }"
-          quaternary
-          size="tiny"
-          circle
-          :title="t('chat.addMenu')"
-          @click="openAddMenu"
-        >
-          <template #icon>
-            <!-- Prototype AddMenu is a plus, not a paperclip. -->
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          </template>
-        </NButton>
-      </span>
-
-      <Teleport to="body">
-        <template v-if="showAddMenu && addMenuPos">
-          <div class="add-menu-overlay" @click="closeAddMenu" />
-          <!-- Level 1 -->
-          <div
-            class="add-menu"
-            :style="{
-              left: `${addMenuPos.left}px`,
-              top: addMenuPos.top != null ? `${addMenuPos.top}px` : undefined,
-              bottom: addMenuPos.bottom != null ? `${addMenuPos.bottom}px` : undefined,
-            }"
-          >
-            <div class="add-menu__row" @mouseenter="onAddRowEnter('file')" @click="onAddRowClick('file')">
-              <KpIcon class="add-menu__icon" name="line_link" :size="16" />
-              <span class="add-menu__label">{{ t('chat.attachFiles') }}</span>
-            </div>
-            <div
-              class="add-menu__row"
-              :class="{ active: activeAddSub === 'expert' }"
-              @mouseenter="onAddRowEnter('expert')"
-              @click="onAddRowClick('expert')"
-            >
-              <KpIcon class="add-menu__icon" name="line_grade_report" :size="16" />
-              <span class="add-menu__label">{{ t('sidebar.expert') }}</span>
-              <KpIcon class="add-menu__caret" name="line_arrow_right" :size="12" />
-            </div>
-            <div
-              class="add-menu__row"
-              :class="{ active: activeAddSub === 'skill' }"
-              @mouseenter="onAddRowEnter('skill')"
-              @click="onAddRowClick('skill')"
-            >
-              <KpIcon class="add-menu__icon" name="line_menu" :size="16" />
-              <span class="add-menu__label">{{ t('sidebar.skills') }}</span>
-              <KpIcon class="add-menu__caret" name="line_arrow_right" :size="12" />
-            </div>
-            <div
-              class="add-menu__row"
-              :class="{ active: activeAddSub === 'connector' }"
-              @mouseenter="onAddRowEnter('connector')"
-              @click="onAddRowClick('connector')"
-            >
-              <KpIcon class="add-menu__icon" name="full_link" :size="16" />
-              <span class="add-menu__label">{{ t('sidebar.connectors') }}</span>
-              <KpIcon class="add-menu__caret" name="line_arrow_right" :size="12" />
-            </div>
-          </div>
-
-          <!-- Level 2 flyout -->
-          <div
-            v-if="activeAddSub"
-            class="add-menu add-menu--sub"
-            :style="{
-              left: `${addMenuPos.left + 216}px`,
-              top: addMenuPos.top != null ? `${addMenuPos.top}px` : undefined,
-              bottom: addMenuPos.bottom != null ? `${addMenuPos.bottom}px` : undefined,
-            }"
-          >
-            <template v-if="activeAddSub === 'expert'">
-              <div v-for="e in addSubExperts" :key="e.id" class="add-menu__row" @click="pickAddExpert(e.id)">
-                <span class="add-menu__label add-menu__label--ellipsis">{{ e.title || e.name }}</span>
-              </div>
-              <div class="add-menu__row add-menu__more" @click="openAddSurface('expert')">
-                <KpIcon class="add-menu__more-arrow" name="line_arrow_right" :size="12" />
-                <span>{{ t('chat.addMore.expert') }}</span>
-              </div>
-            </template>
-            <template v-else-if="activeAddSub === 'skill'">
-              <div v-for="s in addSubSkills" :key="s.key" class="add-menu__row" @click="pickAddSkill(s)">
-                <span class="add-menu__label add-menu__label--ellipsis" :title="s.description">{{ s.name }}</span>
-              </div>
-              <div class="add-menu__row add-menu__more" @click="openAddSurface('skills')">
-                <KpIcon class="add-menu__more-arrow" name="line_arrow_right" :size="12" />
-                <span>{{ t('chat.addMore.skill') }}</span>
-              </div>
-            </template>
-            <template v-else>
-              <div class="add-menu__row add-menu__more" @click="openAddSurface('connectors')">
-                <KpIcon class="add-menu__more-arrow" name="line_arrow_right" :size="12" />
-                <span>{{ t('chat.addMore.connector') }}</span>
-              </div>
-            </template>
-          </div>
-        </template>
-      </Teleport>
-
-      <!-- Flexible spacer: everything after it clusters at the right edge,
-           regardless of which of the optional right-group items render. -->
-      <span class="tool-row-spacer" />
-
-      <!-- Usage: a compact chart pill (prototype UsagePill = 📈 count). The
-           used / limit / remaining detail lives in the tooltip; clicking the
-           pill edits the context limit (kept from the old inline control). -->
-      <!-- Usage pill → breakdown popover on click (prototype UsagePill):
-           big total, input/output meter bars, then footer rows. The old
-           click-to-edit-limit action moved into a footer row. -->
-      <NPopover v-if="showContextUsage" trigger="click" placement="top-end" raw :show-arrow="false">
+      <NTooltip trigger="hover">
         <template #trigger>
-          <button
-            type="button"
-            class="context-info"
-            :class="{ 'context-warning': usagePercent > 80 }"
-          >
-            <KpIcon name="line_chart" :size="14" />
-            <span class="context-info__count">{{ formatTokens(totalTokens) }}</span>
-          </button>
+          <NButton quaternary size="tiny" @click="handleAttachClick" circle>
+            <template #icon>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+            </template>
+          </NButton>
         </template>
-        <div class="usage-popover">
-          <div class="usage-popover__caption">{{ t('chat.usagePopover.title') }}</div>
-          <div class="usage-popover__total">
-            <span class="usage-popover__total-num">{{ formatTokens(totalTokens) }}</span>
-            <span class="usage-popover__total-unit">tokens</span>
-          </div>
-          <div class="usage-popover__meta">
-            {{ t('chat.usagePopover.limit') }} {{ formatTokens(contextLength) }}
-            · {{ t('chat.contextRemaining') }} {{ formatTokens(remainingTokens) }}
-          </div>
-          <div v-for="part in usageParts" :key="part.key" class="usage-popover__part">
-            <div class="usage-popover__part-head">
-              <span class="usage-popover__part-dot" :style="{ background: part.color }" />
-              <span class="usage-popover__part-name">{{ part.name }}</span>
-              <span class="usage-popover__part-value">{{ formatTokens(part.value) }}</span>
-            </div>
-            <div class="usage-popover__part-track">
-              <div class="usage-popover__part-fill" :style="{ width: `${part.pct}%`, background: part.color }" />
-            </div>
-          </div>
-          <div class="usage-popover__divider" />
-          <button type="button" class="usage-popover__row" @click="openUsageView">
-            <span>{{ t('chat.usagePopover.history') }}</span>
-            <KpIcon name="line_arrow_right" :size="12" />
-          </button>
-          <button type="button" class="usage-popover__row" @click="handleEditContextLimit">
-            <span>{{ t('chat.usagePopover.setLimit') }}</span>
-            <KpIcon name="line_arrow_right" :size="12" />
-          </button>
-        </div>
-      </NPopover>
+        {{ t('chat.attachFiles') }}
+      </NTooltip>
 
-      <!-- Model picker trigger. Injected by the host (ChatPanel) so the model
-           selection logic/store stays there; the composer only owns placement:
-           right cluster, immediately after usage and before the effort/mic/send
-           controls (see prototype: usage · model · mic · send). -->
-      <slot name="model" />
+      <NPopselect
+        v-if="!isCodingAgentSession"
+        :value="currentReasoningEffort"
+        :options="reasoningEffortOptions"
+        trigger="click"
+        @update:value="onReasoningEffortChange"
+      >
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <NButton
+              quaternary
+              size="tiny"
+              circle
+              class="reasoning-effort-button"
+              :class="{ active: !!currentReasoningEffort }"
+              :aria-label="`${t('chat.reasoningEffort.tooltip')}: ${reasoningEffortLabel}`"
+            >
+              <template #icon>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/>
+                  <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/>
+                </svg>
+              </template>
+            </NButton>
+          </template>
+          {{ t('chat.reasoningEffort.tooltip') }}: {{ reasoningEffortLabel }}
+        </NTooltip>
+      </NPopselect>
 
-      <!-- Reasoning effort now lives inside the model-selection modal (folded
-           into the composer's model pill by the host), so a single pill opens
-           one menu covering both model AND effort. See ChatPanel.vue. -->
-
-      <!-- Expert slot. -->
       <NPopselect
         v-if="experts.length > 0"
         :value="activeExpertId || ''"
@@ -1635,59 +1161,77 @@ function handleScopePillClick() {
         </NTooltip>
       </NPopselect>
 
-      <!-- The overflow "⋯" menu (auto-play speech + tool-trace toggles) was
-           removed to match the prototype; both toggles now live in
-           设置 → 显示 (DisplaySettings). -->
+      <ChatScheduledEntry
+        v-if="scheduledExpert"
+        :session-id="chatStore.activeSession!.id"
+        :expert-id="scheduledExpert.id"
+        :expert-label="scheduledExpert.title || scheduledExpert.name"
+        :initial-name="chatStore.activeSession!.title"
+        :initial-prompt="inputText"
+        :initial-skills="scheduledExpert.skills || []"
+      />
 
-      <!-- Mic + stop + send close out the right group. -->
-      <div class="input-actions">
-        <VoiceDialogueControls
-          :status="voiceDialogue.status.value"
-          :transcript="voiceDialogueTranscript"
-          :error="voiceDialogueError"
-          :events="voiceDialogue.events.value"
-          :on-start="startVoiceCapture"
-          :on-stop="stopVoiceCapture"
-          :on-cancel="cancelVoiceCapture"
+      <div class="auto-play-speech-switch">
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <div class="switch-label">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="5 3 19 12 5 21 5 3"/>
+              </svg>
+            </div>
+          </template>
+          {{ t('chat.autoPlaySpeech') }}
+        </NTooltip>
+        <NSwitch
+          size="small"
+          v-model:value="autoPlaySpeech"
+          :round="false"
         />
-        <!-- Compact round send, icon-only (prototype). While a run is
-             streaming the SAME circle turns into the stop control (gray-33
-             ground, ✕ glyph) instead of a separate labelled button. -->
-        <NButton
-          v-if="chatStore.isStreaming"
-          class="send-button is-running"
-          size="small"
-          circle
-          :disabled="chatStore.isAborting"
-          :aria-label="t('chat.stop')"
-          :title="t('chat.stop')"
-          @click="chatStore.stopStreaming()"
-        >
-          <template #icon>
-            <KpIcon name="full_close" :size="16" />
+      </div>
+
+      <NTooltip trigger="hover">
+        <template #trigger>
+          <NButton
+            quaternary
+            size="tiny"
+            class="tool-trace-toggle"
+            :class="{ active: toolTraceVisible }"
+            :aria-label="toolTraceVisible ? t('chat.hideToolCalls') : t('chat.showToolCalls')"
+            @click="toggleToolTraceVisible"
+          >
+            <svg class="tool-trace-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14.7 6.3a4.5 4.5 0 0 0-5.8 5.8L3.5 17.5a2.1 2.1 0 0 0 3 3l5.4-5.4a4.5 4.5 0 0 0 5.8-5.8l-3 3-3-3 3-3z"/>
+            </svg>
+          </NButton>
+        </template>
+        {{ toolTraceVisible ? t('chat.hideToolCalls') : t('chat.showToolCalls') }}
+      </NTooltip>
+
+      <span v-if="showContextUsage" class="context-info" :class="{ 'context-warning': usagePercent > 80 }">
+        {{ formatTokens(totalTokens) }} /
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <span class="context-limit-editable" @click="handleEditContextLimit">
+              {{ formatTokens(contextLength) }}
+            </span>
           </template>
-        </NButton>
-        <NButton
-          v-else
-          class="send-button"
-          size="small"
-          type="primary"
-          circle
-          :disabled="!canSend"
-          :aria-label="t('chat.send')"
-          :title="t('chat.send')"
-          @click="handleSend"
-        >
-          <template #icon>
-            <!-- Keep glyph, matching the prototype (not a hand-drawn plane). -->
-            <KpIcon name="full_send" :size="16" />
-          </template>
-        </NButton>
+          <span>{{ t('chat.contextClickToEdit') }}</span>
+        </NTooltip>
+        · {{ t('chat.contextRemaining') }} {{ formatTokens(remainingTokens) }}
+      </span>
+      <div v-if="showContextUsage" class="context-bar">
+        <div
+          class="context-bar-fill"
+          :class="{
+            'context-bar-warn': usagePercent > 60 && usagePercent <= 80,
+            'context-bar-danger': usagePercent > 80,
+          }"
+          :style="{ width: `${usagePercent}%` }"
+        />
       </div>
     </div>
 
-    <!-- Attachment previews (file/image thumbnails only — the expert/skill
-         pills live inline with the textarea, prototype-style) -->
+    <!-- Attachment previews -->
     <div v-if="attachments.length > 0" class="attachment-previews">
       <div
         v-for="att in attachments"
@@ -1714,7 +1258,7 @@ function handleScopePillClick() {
     <div
       ref="inputWrapperRef"
       class="input-wrapper"
-      :class="{ 'drag-over': isDragging, 'has-inline-chips': !!(pendingExpertPick || pendingSkillPick) }"
+      :class="{ 'drag-over': isDragging }"
       :style="inputWrapperStyle"
       @dragover="handleDragOver"
       @dragenter="handleDragEnter"
@@ -1729,27 +1273,12 @@ function handleScopePillClick() {
         @change="handleFileChange"
       />
       <div class="resize-handle" @mousedown="startResize"></div>
-      <!-- Prototype attachment pills (expert/skill picks): inline with the
-           textarea in one wrapping row, so the caret lands right after the
-           pill instead of on a line below. Removable until send. -->
-      <div v-if="pendingExpertPick" class="expert-chip">
-        <button class="expert-chip__remove" type="button" @click="clearPendingExpertPick">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-        <span>{{ pendingExpertPick.label }}</span>
-      </div>
-      <div v-if="pendingSkillPick" class="expert-chip" data-testid="skill-chip">
-        <button class="expert-chip__remove" type="button" @click="clearPendingSkillPick">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-        <span>{{ pendingSkillPick.label }}</span>
-      </div>
       <textarea
         ref="textareaRef"
         v-model="inputText"
         class="input-textarea"
         :style="inputTextareaStyle"
-        :placeholder="composerPlaceholder"
+        :placeholder="t('chat.inputPlaceholder')"
         rows="1"
         @keydown="handleKeydown"
         @compositionstart="handleCompositionStart"
@@ -1757,49 +1286,57 @@ function handleScopePillClick() {
         @input="handleInput"
         @paste="handlePaste"
       ></textarea>
-      <!-- Prototype SlashPanel: entries grouped under muted captions, each row
-           an icon + name + description. Keyboard nav keeps the flat index.
-           No enter/leave transition — the prototype panel appears instantly —
-           and an unmatched query shows the empty state instead of closing. -->
-      <div
-        v-if="slashActive"
-        ref="commandDropdownRef"
-        class="slash-command-dropdown"
-        :style="{ maxHeight: `${slashPanelMaxHeight}px` }"
-      >
-        <div v-if="filteredBridgeCommands.length === 0" class="slash-command-empty">
-          {{ t('chat.slashNoMatch') }}
-        </div>
-        <template v-for="group in slashGroups" :key="group.label">
-          <div class="slash-command-group">{{ group.label }}</div>
+      <Transition name="dropdown-fade">
+        <div
+          v-if="slashActive && filteredBridgeCommands.length > 0"
+          ref="commandDropdownRef"
+          class="slash-command-dropdown"
+        >
           <div
-            v-for="entry in group.items"
-            :key="entry.command.key"
+            v-for="(command, i) in filteredBridgeCommands"
+            :key="command.key"
             class="slash-command-item"
-            :class="{ active: entry.index === slashActiveIndex }"
-            @mousedown.prevent="selectBridgeCommand(entry.command)"
-            @mouseenter="handleCommandHover(entry.index)"
+            :class="{ active: i === slashActiveIndex }"
+            @mousedown.prevent="selectBridgeCommand(command)"
+            @mouseenter="handleCommandHover(i)"
           >
-            <span
-              class="slash-command-tile"
-              :class="{ 'is-mark': slashHasTileMark(entry.command) }"
-              :style="slashHasTileMark(entry.command)
-                ? { background: slashTileHue(entry.command.name) }
-                : undefined"
-            >
-              <template v-if="slashHasTileMark(entry.command)">
-                {{ slashTileMark(entry.command.name) }}
-              </template>
-              <KpIcon v-else :name="group.icon" :size="15" />
-            </span>
-            <div class="slash-command-body">
-              <span class="slash-command-name">
-                {{ entry.command.key.startsWith('expert:') ? entry.command.name : `/${entry.command.name}` }}
-              </span>
-              <span class="slash-command-desc">{{ entry.command.description }}</span>
-            </div>
+            <span class="slash-command-name">/{{ command.name }}</span>
+            <span v-if="command.args" class="slash-command-args">{{ command.args }}</span>
+            <span class="slash-command-desc">{{ command.description }}</span>
           </div>
-        </template>
+        </div>
+      </Transition>
+      <div class="input-actions">
+        <AgentPicker v-if="canPickAgent" class="agent-picker-slot" />
+        <VoiceDialogueControls
+          :status="voiceDialogue.status.value"
+          :transcript="voiceDialogueTranscript"
+          :error="voiceDialogueError"
+          :events="voiceDialogue.events.value"
+          :on-start="startVoiceCapture"
+          :on-stop="stopVoiceCapture"
+          :on-cancel="cancelVoiceCapture"
+        />
+        <NButton
+          v-if="chatStore.isStreaming"
+          size="small"
+          type="error"
+          :disabled="chatStore.isAborting"
+          @click="chatStore.stopStreaming()"
+        >
+          {{ t('chat.stop') }}
+        </NButton>
+        <NButton
+          size="small"
+          type="primary"
+          :disabled="!canSend"
+          @click="handleSend"
+        >
+          <template #icon>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </template>
+          {{ t('chat.send') }}
+        </NButton>
       </div>
     </div>
 
@@ -1850,9 +1387,6 @@ function handleScopePillClick() {
       style="width: 400px"
     >
       <div class="context-edit-content">
-        <p v-if="contextEditError" class="context-edit-error" data-testid="context-edit-error">
-          {{ contextEditError }}
-        </p>
         <p style="margin-bottom: 16px; color: #666;">
           {{ t('chat.contextEditDesc') }}
         </p>
@@ -1884,309 +1418,93 @@ function handleScopePillClick() {
         </div>
       </template>
     </NModal>
-  </ComposerBox>
-
-  <!-- 会话内「定时执行」入口 (digital-employee-scheduled-entry). Deliberately
-       OUTSIDE ComposerBox: it is a dialog trigger, not part of the box, and
-       nesting it inside means a stubbed ComposerBox swallows it — which is
-       exactly how it silently disappeared once already. Renders only for an
-       expert-bound session; cancelling stays a zero-write gesture. -->
-  <ChatScheduledEntry
-    v-if="scheduledExpert"
-    :session-id="chatStore.activeSession!.id"
-    :expert-id="scheduledExpert.id"
-    :expert-label="scheduledExpert.title || scheduledExpert.name"
-    :initial-name="chatStore.activeSession!.title"
-    :initial-prompt="inputText"
-    :initial-skills="scheduledExpert.skills || []"
-  />
+  </div>
 </template>
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
-.scope-hint {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 0 8px 8px;
-  padding: 8px 10px;
-  border-radius: var(--r-ctl);
-  background: var(--surface-2);
-  color: var(--fg-secondary);
-  box-shadow: inset 0 0 0 0.5px var(--divider);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-  position: relative;
-  z-index: 5;
-}
 
-.scope-hint__text {
-  flex: 1;
-  min-width: 0;
-}
-
-.scope-hint__close {
-  flex: 0 0 auto;
-  border: 0;
-  background: none;
-  color: inherit;
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 2px;
-}
-
-.context-edit-error {
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  background: var(--danger-bg);
-  color: var(--danger);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
-
-// Box, section order and insets live in ComposerBox — the same component
-// group chat's composer uses, so the two cannot drift apart again. What stays
-// here is what goes INSIDE the sections.
-
-
-// Pushes the whole right group (usage / model / expert / more / send) to the
-// right edge, leaving `+ attach` alone on the left.
-.tool-row-spacer {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-// Prototype AddMenu trigger is a 32px ghost circle, same weight as the rest
-// of the toolrow controls.
-.attach-button {
+.chat-input-area {
+  padding: 12px 20px 16px;
+  border-top: 1px solid $border-color;
   flex-shrink: 0;
-  width: 32px !important;
-  height: 32px !important;
 }
 
-// AddMenu (prototype "+"): a two-level hover menu. The anchor is a tight
-// inline wrapper so we can measure the button for fixed-position placement.
-.add-menu-anchor {
-  display: inline-flex;
-}
-
-.add-menu-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 29;
-}
-
-.add-menu {
-  position: fixed;
-  width: 208px;
-  padding: 8px;
-  background: var(--bg);
-  border-radius: var(--r-card);
-  // Hairline in and out, no drop shadow — the chrome every prototype popover
-  // carries (it uses no drop shadow at all) and what the model menu and the
-  // automation dialog's popovers already use.
-  box-shadow:
-    inset 0 0 0 0.5px var(--divider),
-    0 0 0 0.5px var(--divider);
-  z-index: 30;
-}
-
-.add-menu--sub {
-  width: 220px;
-  max-height: 320px;
-  overflow: auto;
-}
-
-.add-menu__row {
+.input-top-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  border-radius: var(--r-ctl);
-  color: var(--fg-primary);
-  font: var(--w-regular) var(--t-14) / var(--lh-tight) var(--font-cn);
-  cursor: pointer;
-  transition: background var(--motion-fast) var(--ease-std);
+  gap: 8px;
+  padding: 0 0 6px;
+}
 
-  // Same hover ground as the automation dialog's menu rows (prototype `.row`).
-  &:hover,
-  &.active {
-    background: var(--surface-3);
+.auto-play-speech-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 0 8px;
+  border-left: 1px solid $border-light;
+  margin-left: 4px;
+
+  .switch-label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    color: #999999;
+    font-size: 12px;
+
+    svg {
+      opacity: 1;
+    }
+  }
+
+  :deep(.n-switch),
+  :deep(.n-switch__rail) {
+    margin-right: 0;
   }
 }
 
-.add-menu__icon :deep(.kp-icon-font),
-.add-menu__icon {
-  color: var(--fg-aux);
-  flex: none;
-}
+.tool-trace-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #999999;
+  width: 24px;
+  min-width: 24px;
+  height: 22px;
+  margin-left: -4px;
+  padding: 0;
+  background: transparent !important;
+  opacity: 1;
 
-.add-menu__label {
-  flex: 1;
-  min-width: 0;
-}
-
-.add-menu__label--ellipsis {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.add-menu__caret :deep(.kp-icon-font),
-.add-menu__caret {
-  color: var(--fg-disabled);
-  flex: none;
-}
-
-// "manage / summon more" footer row (prototype: rotated arrow + muted meta).
-.add-menu__more {
-  gap: 8px;
-  color: var(--fg-aux);
-  font: var(--w-regular) var(--t-12) / var(--lh-tight) var(--font-cn);
-}
-
-.add-menu__more-arrow :deep(.kp-icon-font),
-.add-menu__more-arrow {
-  color: var(--fg-aux);
-  flex: none;
-  transform: rotate(-45deg);
-}
-
-// Compact round send (prototype: 32×32 pill). Icon-only. Ground is driven by
-// `canSend` via NButton's :disabled — no text/attachments reads as the
-// disabled look (transparent ground, muted icon); with content it fills.
-//
-// The ground is `--gray-33`, the same as every other main button (create agent,
-// new automation, custom expert). It has been three colours: keep-green read as
-// a status badge (green is the status colour here — running/succeeded), and
-// hue-purple did fix the hierarchy but left this key as the only purple control
-// on the site, so it looked like it came from another product. Consistency wins
-// over hierarchy here, because hierarchy has other carriers — this key is round,
-// alone, and in the corner of the field — while an inconsistent colour has none.
-// Purple stays selection-only, green stays status-only, and nothing moonlights.
-//
-// Hover/press are the §9.1 overlay (black at 8% / 20%), not a second ground
-// colour, so this key answers the pointer the same way every other button does.
-// The overlay is written out here instead of borrowing the global `.ab` class:
-// every other carrier of `.ab` in this repo is a native <button>, and this is an
-// NButton whose label lives in a child element, so the content is stacked
-// explicitly rather than trusting naive-ui's internal z-order to keep the glyph
-// above the overlay.
-.send-button {
-  width: 32px !important;
-  height: 32px !important;
-  min-width: 32px !important;
-  border-radius: 9999px !important;
-  background-color: var(--gray-33) !important;
-  color: #fff !important;
-  transition: background-color var(--motion-fast) var(--ease-std),
-    color var(--motion-fast) var(--ease-std);
-
+  :deep(.n-button__state-border),
   :deep(.n-button__border),
-  :deep(.n-button__state-border) {
+  :deep(.n-button__ripple) {
     display: none;
   }
 
-  &::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    // Follows the pill without restating the radius.
-    border-radius: inherit;
-    pointer-events: none;
-    background: #000;
-    opacity: 0;
-    transition: opacity 90ms var(--ease-std);
+  .tool-trace-icon {
+    display: block;
+    flex: 0 0 16px;
+    width: 16px;
+    height: 16px;
   }
 
-  // The glyph has to outrank the overlay, or pressing the key hides the icon.
-  :deep(.n-button__content) {
-    position: relative;
-    z-index: 1;
-  }
-
-  &:hover::after { opacity: 0.08; }
-  &:active::after { opacity: 0.2; }
-
-  // Disabled neither hovers nor presses (§9.1).
-  &:disabled::after { opacity: 0 !important; }
-
-  // Dark mode overlays white — stacking more black on a dark ground is
-  // invisible. Same flip, and same depths, as the global `.ab` rule.
-  .dark &,
-  [data-theme='dark'] & {
-    &::after { background: #fff; }
-    &:hover::after { opacity: 0.1; }
-    &:active::after { opacity: 0.22; }
-  }
-
-  &:disabled {
-    background-color: transparent !important;
-    color: var(--fg-disabled) !important;
-    opacity: 1 !important;
-  }
-
-  // While a run is streaming the SAME circle is the stop control — same ground,
-  // same size, same slot; only the glyph changes (send vs close). Its disabled
-  // state is "abort already requested", so it keeps the ground and just dims.
-  &.is-running:disabled {
-    background-color: var(--gray-33) !important;
-    color: #fff !important;
-    opacity: 0.6 !important;
-  }
-}
-
-// Pills 4px apart. The 8px inset, the hairline over the row and the lift above
-// the beam layers come from ComposerBox.
-.input-pillbar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px;
-  row-gap: 4px;
-  margin: 0;
-
-  // A thin rule between pills, not a gap, so "which agent / which workspace"
-  // reads as one scope statement broken into parts, not two unrelated chips.
-  &__sep {
-    width: 1px;
-    align-self: stretch;
-    background: var(--divider);
-    flex: none;
-  }
-}
-
-// The scope pill: a small height-28 pill with a subtle surface tint, no drop
-// shadow, hover raises the text to title colour.
-.composer-scope-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: var(--r-pill);
-  background: var(--gray-f7);
-  color: var(--fg-secondary);
-  font: var(--w-regular) var(--t-13) / var(--lh-1) var(--font-cn);
-  cursor: pointer;
-  flex: none;
-  transition: background var(--motion-fast) var(--ease-std), color var(--motion-fast) var(--ease-std);
-
-  // Offline: the text and glyph go danger, the ground does NOT. A danger ground
-  // would read as a warning block; this is still a control you can press.
-  &.is-offline {
-    color: var(--danger);
+  &.active {
+    color: #999999;
+    opacity: 1;
   }
 
   &:hover {
-    background: var(--gray-f2);
-    color: var(--fg-title);
+    color: #999999;
+    opacity: 1;
   }
+}
 
-  &__caret {
-    color: var(--fg-aux);
+.reasoning-effort-button {
+  &.active {
+    color: #4caf50;
   }
 }
 
@@ -2234,167 +1552,51 @@ function handleScopePillClick() {
   white-space: nowrap;
 }
 
-// Prototype UsagePill: a compact chart pill (📈 count). Flat Keep pill,
-// consistent with the scope/model pills; detail is in the hover tooltip.
-// Prototype UsagePill: a bare 32px ghost pill in the tool row — the surface
-// tint only appears on hover, so the number reads as a quiet readout rather
-// than another button competing with the model picker.
 .context-info {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: var(--r-pill);
-  background: transparent;
-  color: var(--fg-secondary);
-  cursor: pointer;
+  font-size: 11px;
+  color: $text-muted;
+  min-width: 0;
   white-space: nowrap;
-  transition: background var(--motion-fast) var(--ease-std),
-    color var(--motion-fast) var(--ease-std);
-
-  :deep(.kp-icon-font) {
-    color: var(--fg-aux);
-  }
-
-  &:hover {
-    background: var(--gray-f7);
-    color: var(--fg-title);
-  }
 
   &.context-warning {
-    color: var(--warning);
-
-    :deep(.kp-icon-font) {
-      color: var(--warning);
-    }
+    color: #e8a735;
   }
 }
 
-// Prototype UsagePill number: medium 13px.
-.context-info__count {
-  font: var(--w-medium) var(--t-13) / var(--lh-1) var(--font-data);
-  font-variant-numeric: tabular-nums;
+.context-limit-editable {
+  cursor: pointer;
+  border-bottom: 1px dashed transparent;
+  transition: all 0.2s ease;
+  padding: 0 2px;
+
+  &:hover {
+    border-bottom-color: $text-muted;
+    background: rgba(128, 128, 128, 0.1);
+    border-radius: 2px;
+  }
 }
 
-// Usage breakdown popover (prototype UsagePill): 288 card, big total, then
-// per-part meter bars, then footer rows. Rendered `raw` so this owns the card.
-.usage-popover {
-  width: 288px;
-  padding: 20px;
-  background: var(--bg);
-  border-radius: var(--r-card);
-  box-shadow:
-    inset 0 0 0 0.5px var(--divider),
-    0 0 0 0.5px var(--divider);
-}
-
-.usage-popover__caption {
-  font: var(--w-regular) var(--t-12) / var(--lh-tight) var(--font-cn);
-  color: var(--fg-aux);
-  margin-bottom: 8px;
-}
-
-.usage-popover__total {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  margin-bottom: 4px;
-}
-
-.usage-popover__total-num {
-  font: var(--w-semibold) 24px / var(--lh-24) var(--font-data);
-  color: var(--fg-title);
-  font-variant-numeric: tabular-nums;
-}
-
-.usage-popover__total-unit {
-  font: var(--w-regular) var(--t-12) / var(--lh-tight) var(--font-cn);
-  color: var(--fg-aux);
-}
-
-.usage-popover__meta {
-  font: var(--w-regular) var(--t-12) / var(--lh-tight) var(--font-cn);
-  color: var(--fg-aux);
-  margin-bottom: 24px;
-}
-
-.usage-popover__part {
-  margin-bottom: 16px;
-}
-
-.usage-popover__part-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.usage-popover__part-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 2px;
-  flex: 0 0 6px;
-  transform: translateY(-1px);
-}
-
-.usage-popover__part-name {
-  flex: 1;
-  font: var(--w-regular) var(--t-13) / var(--lh-1) var(--font-cn);
-  color: var(--fg-primary);
-}
-
-.usage-popover__part-value {
-  font: var(--w-medium) var(--t-13) / var(--lh-1) var(--font-data);
-  color: var(--fg-primary);
-  font-variant-numeric: tabular-nums;
-}
-
-.usage-popover__part-track {
+.context-bar {
+  width: 60px;
   height: 4px;
-  border-radius: 9999px;
-  background: var(--gray-f2);
+  margin-left: -4px;
+  background: rgba(128, 128, 128, 0.2);
+  border-radius: 2px;
   overflow: hidden;
 }
 
-.usage-popover__part-fill {
+.context-bar-fill {
   height: 100%;
+  background: linear-gradient(90deg, rgba(128, 128, 128, 0.3), rgba(128, 128, 128, 0.6));
   border-radius: 2px;
-  transition: width var(--motion-page) var(--ease-out);
-}
+  transition: width 0.3s ease;
 
-.usage-popover__divider {
-  height: 1px;
-  background: var(--divider);
-  margin: 8px 0 8px;
-}
-
-.usage-popover__row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: calc(100% + 24px);
-  padding: 8px 12px;
-  margin: 0 -12px;
-  border: 0;
-  border-radius: var(--r-ctl);
-  background: transparent;
-  cursor: pointer;
-  text-align: left;
-
-  > span {
-    flex: 1;
-    font: var(--w-regular) var(--t-13) / var(--lh-1) var(--font-cn);
-    color: var(--fg-secondary);
+  &.context-bar-warn {
+    background: linear-gradient(90deg, #c98a1a, #e8a735);
   }
 
-  :deep(.kp-icon-font) {
-    color: var(--fg-disabled);
-  }
-
-  &:hover {
-    background: var(--gray-fa);
+  &.context-bar-danger {
+    background: linear-gradient(90deg, #c43a2a, #e85d4a);
   }
 }
 
@@ -2403,36 +1605,25 @@ function handleScopePillClick() {
     gap: 5px;
   }
 
+  .context-info {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 10px;
+    line-height: 14px;
+    margin-right: 10px;
+  }
+
+  .context-bar {
+    width: 42px;
+    flex-shrink: 0;
+  }
 }
 
 .attachment-previews {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-}
-
-// Prototype attachment pill: height 28, full pill, purple tint, leading ×
-// (always visible — unlike the file-thumbnail's hover-only remove button).
-.expert-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 12px;
-  border-radius: 9999px;
-  background: var(--hue-purple-bg);
-  color: var(--hue-purple);
-  font: var(--w-medium) var(--t-13) / var(--lh-1) var(--font-cn);
-  flex: none;
-}
-
-.expert-chip__remove {
-  display: inline-flex;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
+  padding: 0 0 10px;
 }
 
 .attachment-preview {
@@ -2507,25 +1698,22 @@ function handleScopePillClick() {
 
 .input-wrapper {
   display: flex;
-  // Send / voice sit on the floor of the field, level with the tool row,
-  // rather than floating in the middle of a tall box.
-  align-items: flex-end;
+  align-items: center;
   gap: 10px;
-  // Insets, the transparent ground (the beam layers ARE the frame) and the lift
-  // above them come from ComposerBox.
+  box-sizing: border-box;
+  background-color: $bg-input;
+  border: 1px solid $border-color;
+  border-radius: $radius-md;
+  padding: 10px 12px;
+  position: relative;
+  transition: border-color $transition-fast, background-color $transition-fast;
 
-  // Pill + caret share one wrapping row (prototype: pills and the textarea
-  // live in the same flex-wrap container, textarea flex 1 1 60px). Lines pack
-  // to the top of the fixed-height wrapper so the composer height is stable.
-  &.has-inline-chips {
-    flex-wrap: wrap;
-    align-items: center;
-    align-content: flex-start;
+  &:focus-within {
+    border-color: $accent-primary;
+  }
 
-    .input-textarea {
-      flex: 1 1 60px;
-      min-width: 60px;
-    }
+  .dark & {
+    background-color: #333333;
   }
 }
 
@@ -2552,8 +1740,8 @@ function handleScopePillClick() {
   outline: none;
   color: $text-primary;
   font-family: $font-ui;
-  font-size: 16px;
-  line-height: 1.6;
+  font-size: 14px;
+  line-height: 1.5;
   resize: none;
   max-height: 400px;
   min-height: 20px;
@@ -2571,115 +1759,74 @@ function handleScopePillClick() {
   }
 }
 
-// Model / voice / send, at the right end of the tool row — one floor for the
-// box, `+` at one end and the controls at the other. This block lives in the
-// tool row's markup rather than the field wrapper's; positioning alone could
-// not do it, because once the scope row exists the box's bottom edge is the
-// scope row, not this line.
+.agent-picker-slot {
+  margin-right: auto;
+}
+
 .input-actions {
-  margin-left: auto;
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
   align-items: center;
-
-  // Prototype: the send/stop circle sits 4px further from the mic.
-  .send-button {
-    margin-left: 4px;
-  }
 }
 
-// Prototype SlashPanel: a floating sheet (r-sheet, notification shadow,
-// 10px padding), muted group captions, rows led by a 30px rounded tile with
-// name + inline muted description.
 .slash-command-dropdown {
   position: absolute;
-  left: 0;
-  right: 0;
+  left: 12px;
+  right: 12px;
   bottom: calc(100% + 8px);
-  // max-height is inline-bound: prototype clamps it to the space above the
-  // composer (max(160, min(360, top - 24))).
+  max-height: 240px;
   overflow-y: auto;
-  background: var(--bg);
-  border-radius: var(--r-sheet);
-  // Hairline in and out, no drop shadow — §7.1, and the prototype's own panel.
-  // The dark override is gone with it: --bg already carries the theme.
-  box-shadow:
-    inset 0 0 0 0.5px var(--divider),
-    0 0 0 0.5px var(--divider);
-  z-index: 50;
-  padding: 8px;
-}
+  background: $bg-primary;
+  border: 1px solid $border-color;
+  border-radius: $radius-sm;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+  z-index: 20;
+  padding: 4px;
 
-.slash-command-group {
-  padding: 8px 8px 4px;
-  margin-bottom: 4px;
-  font: var(--w-regular) var(--t-12) / var(--lh-1) var(--font-cn);
-  color: var(--fg-disabled);
+  .dark & {
+    background: #2a2a2a;
+  }
 }
 
 .slash-command-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto auto 1fr;
   align-items: center;
-  gap: 12px;
-  padding: 8px;
-  border-radius: var(--r-ctl);
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: $radius-sm;
   cursor: pointer;
+  min-height: 36px;
 
   &.active,
   &:hover {
-    background: var(--surface-3);
+    background: rgba(var(--accent-primary-rgb), 0.1);
   }
-}
 
-// Prototype: an unmatched query keeps the panel open with a centered notice.
-.slash-command-empty {
-  padding: 20px 8px;
-  text-align: center;
-  font: var(--w-regular) var(--t-14) / var(--lh-1) var(--font-cn);
-  color: var(--fg-disabled);
-}
-
-.slash-command-tile {
-  width: 30px;
-  height: 30px;
-  border-radius: var(--r-ctl);
-  background: var(--surface-3);
-  color: var(--fg-aux);
-  display: grid;
-  place-items: center;
-  flex: 0 0 30px;
-  font: var(--w-semibold) var(--t-13) / var(--lh-1) var(--font-cn);
-
-  // Named things get the solid hue + white mark; the ground comes inline from
-  // the name hash.
-  &.is-mark {
-    color: var(--white);
-  }
-}
-
-.slash-command-body {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  align-items: baseline;
-  overflow: hidden;
 }
 
 .slash-command-name {
-  font: var(--w-medium) var(--t-14) / var(--lh-1) var(--font-cn);
-  color: var(--fg-primary);
+  font-family: $font-code;
+  font-size: 13px;
+  color: $accent-primary;
+  white-space: nowrap;
+}
+
+.slash-command-args {
+  font-family: $font-code;
+  font-size: 12px;
+  color: $text-muted;
   white-space: nowrap;
 }
 
 .slash-command-desc {
-  margin-left: 8px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: var(--w-regular) var(--t-12) / var(--lh-1) var(--font-cn);
-  color: var(--fg-aux);
+  color: $text-secondary;
+  font-size: 12px;
 }
 
 .skill-picker-modal {
@@ -2773,4 +1920,21 @@ function handleScopePillClick() {
   }
 }
 
+.dropdown-fade-enter-active,
+.dropdown-fade-leave-active {
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.dropdown-fade-enter-from,
+.dropdown-fade-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+// Drag-over state
+.input-wrapper.drag-over {
+  border-color: var(--accent-info);
+  border-style: dashed;
+  background-color: rgba(var(--accent-info-rgb), 0.04);
+}
 </style>

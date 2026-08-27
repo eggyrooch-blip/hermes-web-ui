@@ -65,8 +65,7 @@ describe('Profiles Store', () => {
     const result = await store.createProfile('new-profile', false)
 
     expect(result.success).toBe(true)
-    // Third arg is the optional displayLabel pass-through (undefined here).
-    expect(mockProfilesApi.createProfile).toHaveBeenCalledWith('new-profile', false, undefined)
+    expect(mockProfilesApi.createProfile).toHaveBeenCalledWith('new-profile', false)
     expect(store.profiles).toHaveLength(2)
   })
 

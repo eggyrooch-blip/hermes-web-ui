@@ -142,12 +142,7 @@ describe('ChatView startup', () => {
     expect(loadSessionsMock).toHaveBeenCalledWith('tester', 'session-9')
   })
 
-  it('leaves the task list unscoped (全部配置) for every role', async () => {
-    // Deliberate: the new sidebar carries no agent dropdown, so scoping the task
-    // list to the active profile would hide tasks with no visible control that
-    // explains why. An explicit filter (route ?profile=, or the 筛选 popover)
-    // still wins — see the test below. Server-side authorization is unchanged;
-    // this only widens what a user is OFFERED, never what they may read.
+  it('defaults employee chat sessions to the active frontend profile', async () => {
     chatState.sessionProfileFilter = null
     profilesState.activeProfileName = 'bianmaceshi'
 
@@ -156,8 +151,8 @@ describe('ChatView startup', () => {
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(chatState.sessionProfileFilter).toBeNull()
-    expect(loadSessionsMock).toHaveBeenCalledWith(null, null)
+    expect(chatState.sessionProfileFilter).toBe('bianmaceshi')
+    expect(loadSessionsMock).toHaveBeenCalledWith('bianmaceshi', null)
   })
 
   it('uses the route profile query when opening a session link', async () => {

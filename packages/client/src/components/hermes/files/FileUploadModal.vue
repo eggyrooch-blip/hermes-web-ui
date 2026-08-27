@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { NModal, NButton, NUpload, NSpace } from 'naive-ui'
+import { NModal, NButton, NUpload, NSpace, useMessage } from 'naive-ui'
 import type { UploadFileInfo } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useFilesStore } from '@/stores/hermes/files'
 
 const { t } = useI18n()
-/** Upload failure, kept in the dialog. */
-const paneError = ref('')
+const message = useMessage()
 const filesStore = useFilesStore()
 
 const props = defineProps<{ show: boolean }>()
@@ -27,11 +26,11 @@ async function handleUpload() {
   uploading.value = true
   try {
     await filesStore.uploadFiles(fileList.value)
-    // The uploaded files appear in the listing behind this dialog.
+    message.success(t('files.uploadSuccess', { count: fileList.value.length }))
     fileList.value = []
     emit('update:show', false)
   } catch (err: any) {
-    paneError.value = err.message || t('files.uploadFailed')
+    message.error(err.message || t('files.uploadFailed'))
   } finally {
     uploading.value = false
   }
@@ -45,7 +44,6 @@ function handleClose() {
 
 <template>
   <NModal :show="props.show" preset="dialog" :title="t('files.upload')" @update:show="handleClose" style="width: 500px;">
-    <p v-if="paneError" class="pane-notice" data-testid="file-upload-error">{{ paneError }}</p>
     <NUpload
       multiple
       directory-dnd
@@ -82,16 +80,5 @@ function handleClose() {
   margin-top: 12px;
   opacity: 0.6;
   font-size: 14px;
-}
-</style>
-
-<style scoped lang="scss">
-.pane-notice {
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  background: var(--danger-bg);
-  color: var(--danger);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
 }
 </style>

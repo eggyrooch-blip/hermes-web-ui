@@ -5,13 +5,13 @@ import { type Session } from '@/stores/hermes/chat'
 import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useSessionBrowserPrefsStore } from '@/stores/hermes/session-browser-prefs'
-import { NButton, NDropdown, NPopconfirm, NTooltip, type DropdownOption } from 'naive-ui'
+import { NButton, NDropdown, NPopconfirm, NTooltip, useMessage, type DropdownOption } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { getSourceLabel } from '@/shared/session-display'
 import { copyToClipboard } from '@/utils/clipboard'
 import HistoryMessageList from '@/components/hermes/chat/HistoryMessageList.vue'
 import SessionListItem from '@/components/hermes/chat/SessionListItem.vue'
-import RunPanel from '@/components/hermes/chat/RunPanel.vue'
+import OutlinePanel from '@/components/hermes/chat/OutlinePanel.vue'
 import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
 import PageSidebarFooter from '@/components/layout/PageSidebarFooter.vue'
 import { batchDeleteSessions, deleteSession, fetchHermesSessions, fetchHermesSession, fetchSessionMessagesPage, importHermesSession, setSessionArchived, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
@@ -19,6 +19,7 @@ import { batchDeleteSessions, deleteSession, fetchHermesSessions, fetchHermesSes
 const appStore = useAppStore()
 const profilesStore = useProfilesStore()
 const sessionBrowserPrefsStore = useSessionBrowserPrefsStore()
+const message = useMessage()
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
@@ -42,27 +43,8 @@ const hermesSessionsLoaded = ref(false)
 // History page's own selected session (independent from chatStore)
 const historySessionId = ref<string | null>(null)
 const historySession = ref<Session | null>(null)
-const showRunPanel = ref(false)
+const showOutline = ref(false)
 const historyMessageListRef = ref<InstanceType<typeof HistoryMessageList> | null>(null)
-/**
- * One resident notice for this page.
- *
- * Most successes here are visible on their own — the row leaves the list, the
- * imported session appears, the archived flag drops. What is NOT visible is a
- * partial batch delete (the survivors look no different from rows that were
- * never selected), an import that found the session already there (nothing
- * changes), and a copy that never reached the clipboard. Those still have to be
- * said, so this carries a tone: failures read as danger, the two informational
- * cases read neutral.
- *
- * Dismissible, and never self-clearing.
- */
-const notice = ref<{ text: string; tone: 'error' | 'info' } | null>(null)
-
-function setNotice(text: string, tone: 'error' | 'info') {
-  notice.value = { text, tone }
-}
-
 const isBatchMode = ref(false)
 const isBatchDeleting = ref(false)
 const showBatchDeleteConfirm = ref(false)
@@ -75,10 +57,9 @@ let hermesSessionsRequestId = 0
 
 const HISTORY_PAGE_SIZE = 150
 
-// The run panel points at whole messages, not at a heading inside one.
-function handleRunPanelNavigate(messageId: string) {
-  historyMessageListRef.value?.scrollToAnchor(messageId, '')
-  if (isMobile.value) showRunPanel.value = false
+function handleOutlineNavigate(target: { messageId: string; anchorId: string }) {
+  historyMessageListRef.value?.scrollToAnchor(target.messageId, target.anchorId)
+  if (isMobile.value) showOutline.value = false
 }
 
 function openNewChatPage() {
@@ -205,7 +186,7 @@ async function loadHistorySession(sessionId: string, profile?: string | null) {
     // Keep the old full-detail path as a compatibility fallback.
     const sessionDetail = await fetchHermesSession(sessionId, sessionProfile)
     if (!sessionDetail) {
-      setNotice(t('chat.sessionNotFound'), 'error')
+      message.error(t('chat.sessionNotFound'))
       return
     }
 
@@ -547,7 +528,8 @@ async function copySessionId(id?: string) {
   const sessionId = id || historySessionId.value
   if (sessionId) {
     const ok = await copyToClipboard(sessionId)
-    if (!ok) setNotice(t('chat.copyFailed'), 'error')
+    if (ok) message.success(t('common.copied'))
+    else message.error(t('common.copied') + ' ✗')
   }
 }
 
@@ -570,7 +552,8 @@ async function copySessionLink(id?: string) {
   const sessionId = id || historySessionId.value
   if (sessionId) {
     const ok = await copyToClipboard(buildHistorySessionUrl(sessionId, historySessionProfile(sessionId)))
-    if (!ok) setNotice(t('chat.copyFailed'), 'error')
+    if (ok) message.success(t('common.copied'))
+    else message.error(t('common.copied') + ' ✗')
   }
 }
 
@@ -591,29 +574,27 @@ async function handleImportToWebUi(sessionId: string) {
   try {
     const result = await importHermesSession(sessionId, summary?.profile || null)
     if (result.ok) {
-      // Imported: it appears in the list, which is the report. Already present:
-      // nothing changes on screen, so that one is stated — as information.
-      if (!result.imported) setNotice(t('chat.importSessionAlreadyExists'), 'info')
+      message.success(t(result.imported ? 'chat.importSessionSuccess' : 'chat.importSessionAlreadyExists'))
       await loadHermesSessions()
       return
     }
   } catch {
     // Fall through to the shared failure message.
   }
-  setNotice(t('chat.importSessionFailed'), 'error')
+  message.error(t('chat.importSessionFailed'))
 }
 
 async function handleUnarchiveSession(sessionId: string) {
   const summary = findHistorySession(sessionId)
   const ok = await setSessionArchived(sessionId, false, summary?.profile || null)
   if (!ok) {
-    setNotice(t('chat.unarchiveFailed'), 'error')
+    message.error(t('chat.unarchiveFailed'))
     return
   }
   if (summary) summary.is_archived = false
   if (historySession.value?.id === sessionId) historySession.value.isArchived = false
-  // The row losing its archived state is the report.
   await loadHermesSessions()
+  message.success(t('chat.sessionUnarchived'))
 }
 
 async function handleContextMenuSelect(key: string) {
@@ -637,7 +618,7 @@ async function handleDeleteSession(id: string, profile?: string | null) {
   const sessionProfile = profile || summary?.profile || null
   const ok = await deleteSession(id, sessionProfile)
   if (!ok) {
-    setNotice(t('common.deleteFailed'), 'error')
+    message.error(t('common.deleteFailed'))
     return
   }
 
@@ -651,7 +632,8 @@ async function handleDeleteSession(id: string, profile?: string | null) {
     if (next) await handleSessionClick(next.id, next.profile)
     else await router.replace({ name: 'hermes.history' })
   }
-  // The row leaving the list is the report.
+
+  message.success(t('chat.sessionDeleted'))
 }
 
 async function handleBatchDelete() {
@@ -684,17 +666,15 @@ async function handleBatchDelete() {
         await openDefaultHistorySession(true)
       }
 
-      // The rows disappearing is the report for the ones that worked. A PARTIAL
-      // failure is not visible at all — the survivors look no different from
-      // rows that were never selected — so that one is stated.
+      message.success(t('chat.batchDeleteSuccess', { count: result.deleted }))
       if (result.failed > 0) {
-        setNotice(t('chat.batchDeletePartial', { failed: result.failed }), 'error')
+        message.warning(t('chat.batchDeletePartial', { failed: result.failed }))
       }
     } else {
-      setNotice(t('chat.batchDeleteFailed'), 'error')
+      message.error(t('chat.batchDeleteFailed'))
     }
   } catch {
-    setNotice(t('chat.batchDeleteFailed'), 'error')
+    message.error(t('chat.batchDeleteFailed'))
   } finally {
     isBatchDeleting.value = false
     showBatchDeleteConfirm.value = false
@@ -712,21 +692,13 @@ function handleBatchDeleteConfirm() {
 
 <template>
   <div class="history-panel">
-    <div v-if="notice" class="history-notice" :class="`is-${notice.tone}`" data-testid="history-notice">
-      <span class="history-notice__text">{{ notice.text }}</span>
-      <button
-        type="button"
-        class="history-notice__close"
-        :title="t('common.close')"
-        @click="notice = null"
-      >&times;</button>
-    </div>
     <div class="session-backdrop" :class="{ active: showSessions }" @click="showSessions = false" />
     <aside class="session-list" :class="{ collapsed: !showSessions }">
       <div v-if="showSessions" class="page-sidebar-top">
         <PageSidebarNav
           active="history"
-          :primary-label="t('chat.newTask')"
+          :primary-label="t('chat.newChat')"
+          hide-mode-switch
           @primary="openNewChatPage"
         />
         <div class="session-list-toolbar">
@@ -880,13 +852,13 @@ function handleBatchDeleteConfirm() {
         <div class="header-actions">
           <NTooltip trigger="hover">
             <template #trigger>
-              <NButton quaternary size="small" @click="showRunPanel = !showRunPanel" circle>
+              <NButton quaternary size="small" @click="showOutline = !showOutline" circle>
                 <template #icon>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
                 </template>
               </NButton>
             </template>
-            {{ t('chat.runPanel.title') }}
+            {{ t('chat.outlineTitle') }}
           </NTooltip>
           <NTooltip trigger="hover">
             <template #trigger>
@@ -909,11 +881,10 @@ function handleBatchDeleteConfirm() {
             :load-older="loadOlderHistoryMessages"
           />
         </div>
-        <RunPanel
-          v-if="showRunPanel && historySession"
+        <OutlinePanel
+          v-if="showOutline && historySession"
           :messages="historySession.messages || []"
-          :artifacts="[]"
-          @navigate="handleRunPanelNavigate"
+          @navigate="handleOutlineNavigate"
         />
       </div>
     </div>
@@ -922,50 +893,6 @@ function handleBatchDeleteConfirm() {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
-.history-notice {
-  position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 20;
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  max-width: min(560px, calc(100% - 32px));
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
-/* Failures read as danger; "already imported" and "3 could not be deleted" are
-   information, not alarms, so they take a neutral surface. */
-.history-notice.is-error {
-  background: var(--danger-bg);
-  color: var(--danger);
-}
-
-.history-notice.is-info {
-  background: var(--surface-2);
-  color: var(--fg-primary);
-  box-shadow: inset 0 0 0 0.5px var(--divider);
-}
-
-.history-notice__text {
-  flex: 1;
-  min-width: 0;
-}
-
-.history-notice__close {
-  flex: 0 0 auto;
-  border: 0;
-  background: none;
-  color: inherit;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 2px;
-}
-
 
 .history-panel {
   display: flex;

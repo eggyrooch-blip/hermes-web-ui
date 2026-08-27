@@ -4513,62 +4513,6 @@
         }
       }
     },
-    "/api/hermes/files/search": {
-      "get": {
-        "tags": [
-          "Files"
-        ],
-        "summary": "Get search",
-        "description": "GET /api/hermes/files/search",
-        "operationId": "getSearch",
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "404": {
-            "description": "Not found"
-          }
-        },
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer"
-            }
-          },
-          {
-            "name": "q",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "recent",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean",
-              "enum": [
-                "1",
-                "true"
-              ]
-            }
-          }
-        ]
-      }
-    },
     "/api/hermes/files/stat": {
       "get": {
         "tags": [

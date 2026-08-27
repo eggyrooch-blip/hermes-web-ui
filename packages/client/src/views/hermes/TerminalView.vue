@@ -5,11 +5,12 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { getApiKey, getBaseUrlValue } from "@/api/client";
-import { NButton, NPopconfirm, NTooltip, NSelect } from 'naive-ui';
+import { NButton, NPopconfirm, NTooltip, NSelect, useMessage } from "naive-ui";
 import { useI18n } from "vue-i18n";
 import type { ITheme } from "@xterm/xterm";
 
 const { t } = useI18n();
+const message = useMessage();
 
 // ─── Terminal themes ────────────────────────────────────────────
 
@@ -369,10 +370,7 @@ function handleControl(msg: any) {
     }
 
     case "error":
-      // Written into the terminal rather than raised as a toast: this is output
-      // from the shell session, so it belongs in the scrollback next to the
-      // command that produced it — where it also stays put.
-      activeTerm?.write(`\r\n\x1b[31m[${msg.message}]\x1b[0m\r\n`);
+      message.error(msg.message);
       break;
   }
 }

@@ -222,24 +222,6 @@ export async function updateDefaultModel(data: {
   })
 }
 
-/**
- * Set the default model of a specific profile (agents-hub card / detail).
- * The profile travels as a query selector: the request client skips its
- * automatic X-Hermes-Profile header when `?profile=` is present, and the
- * server's resolveUserProfile validates the selector against the caller's
- * authorized profile set before scoping the write.
- */
-export async function updateDefaultModelForProfile(profile: string, data: {
-  default: string
-  provider?: string
-}): Promise<void> {
-  const params = new URLSearchParams({ profile })
-  await request(`/api/hermes/config/model?${params.toString()}`, {
-    method: 'PUT',
-    body: JSON.stringify(data),
-  })
-}
-
 export async function updateModelAlias(data: {
   provider: string
   model: string

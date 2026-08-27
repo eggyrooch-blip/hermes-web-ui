@@ -21,10 +21,6 @@ vi.mock('@/stores/hermes/settings', () => ({
   useSettingsStore: () => mockSettingsStore,
 }))
 
-vi.mock('@/stores/hermes/chat', () => ({
-  useChatStore: () => ({ setAutoPlaySpeech: vi.fn() }),
-}))
-
 vi.mock('@/composables/useTheme', () => ({
   useTheme: () => ({
     brightness: 'system',

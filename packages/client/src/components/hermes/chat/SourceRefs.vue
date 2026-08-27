@@ -21,7 +21,7 @@ async function open(ref: SourceRef) {
 </script>
 
 <template>
-  <section v-if="refs.length" class="source-refs" :aria-label="t('chat.sources.title')">
+  <section v-if="refs.length" class="source-refs" aria-label="Answer sources">
     <span class="source-title">{{ t('chat.sources.title') }}</span>
     <div class="source-list">
       <button v-for="ref in refs" :key="ref.id" type="button" class="source-chip" @click="open(ref)">

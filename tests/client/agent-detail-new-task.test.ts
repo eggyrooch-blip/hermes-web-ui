@@ -22,36 +22,9 @@ vi.mock('@/components/hermes/profiles/ProfileAvatar.vue', () => ({
   default: { template: '<span />' },
 }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
-// `useDialog` throws without an <n-dialog-provider> ancestor, which this
-// harness has no reason to mount. Partial mock so every other naive-ui export
-// the view renders stays real.
-vi.mock('naive-ui', async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>()
-  return {
-    ...actual,
-    useDialog: () => ({
-      create: vi.fn(),
-      warning: vi.fn(),
-      error: vi.fn(),
-      info: vi.fn(),
-      success: vi.fn(),
-      destroyAll: vi.fn(),
-    }),
-  }
-})
 vi.mock('vue-router', () => ({
   useRoute: () => ({ params: { name: 'agent-a' } }),
   useRouter: () => ({ push: routerPush }),
-  // `@/api/client` imports the router module, which calls these at import
-  // time. Without them the whole file fails to load, not just one assertion.
-  createRouter: () => ({
-    beforeEach: () => {},
-    afterEach: () => {},
-    push: routerPush,
-    replace: routerPush,
-    currentRoute: { value: { name: 'hermes.chat', query: {}, params: {} } },
-  }),
-  createWebHashHistory: () => ({}),
 }))
 
 import AgentDetailView from '@/views/hermes/AgentDetailView.vue'

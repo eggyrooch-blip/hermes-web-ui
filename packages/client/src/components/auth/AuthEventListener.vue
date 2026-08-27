@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { setSignedOutReason } from '@/composables/useSignedOutReason'
+import { useMessage } from 'naive-ui'
 
+const message = useMessage()
 const { t } = useI18n()
 
 let lastNoticeAt = 0
@@ -13,13 +14,11 @@ function onAuthNotice(event: Event) {
   if (now - lastNoticeAt < 1200) return
   lastNoticeAt = now
 
-  // This component has no surface of its own, and the app is about to redirect
-  // to the login page. A toast raised here is destroyed by that navigation — or
-  // worse, survives just long enough to be missed. So the reason is parked and
-  // the login page states it, which is also where the user can act on it.
-  setSignedOutReason(
-    detail.kind === 'forbidden' ? t('login.accessDenied') : t('login.sessionExpired'),
-  )
+  if (detail.kind === 'forbidden') {
+    message.error(t('login.accessDenied'))
+    return
+  }
+  message.error(t('login.sessionExpired'))
 }
 
 onMounted(() => {

@@ -77,14 +77,10 @@ function makeSession(title: string): Session {
   }
 }
 
-// ChatView's own `productTitle`. Kept as one constant so a rename lands in a
-// single place rather than three assertions.
-const PRODUCT_TITLE = 'Kippies Work'
-
 describe('ChatView tab title', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    document.title = PRODUCT_TITLE
+    document.title = 'Hermes Studio'
     setActivePinia(createPinia())
 
     const appStore = useAppStore()
@@ -111,7 +107,7 @@ describe('ChatView tab title', () => {
     expect(document.title).toBe('Implementation Notes')
 
     wrapper.unmount()
-    expect(document.title).toBe(PRODUCT_TITLE)
+    expect(document.title).toBe('Hermes Studio')
   })
 
   it('falls back to the product title when the session title is blank', () => {
@@ -120,7 +116,7 @@ describe('ChatView tab title', () => {
 
     const wrapper = mount(ChatView)
 
-    expect(document.title).toBe(PRODUCT_TITLE)
+    expect(document.title).toBe('Hermes Studio')
     wrapper.unmount()
   })
 })

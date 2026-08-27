@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, nextTick } from 'vue'
-import { NDropdown, useDialog } from 'naive-ui'
+import { NDropdown, useMessage, useDialog } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { DEFAULT_EDITOR_SCOPE, useFilesStore, isTextFile, isPreviewableFile } from '@/stores/hermes/files'
 import { downloadFile } from '@/api/hermes/download'
@@ -9,6 +9,7 @@ import { copyToClipboard } from '@/utils/clipboard'
 import { getClipboardPathForEntry } from '@/utils/file-path'
 
 const { t } = useI18n()
+const message = useMessage()
 const dialog = useDialog()
 const filesStore = useFilesStore()
 const props = withDefaults(defineProps<{ allowEdit?: boolean, editorScope?: string }>(), {
@@ -25,13 +26,6 @@ const emit = defineEmits<{
   (e: 'rename', entry: FileEntry): void
   (e: 'newFolder', entry: FileEntry): void
   (e: 'editor-opened'): void
-  /**
-   * Something this menu started did not work. Raised to the host rather than
-   * shown here: a context menu closes the moment you pick an item, so it has no
-   * surface of its own to report on, and the host already owns a resident spot
-   * for this.
-   */
-  (e: 'failed', reason: string): void
 }>()
 
 function show(e: MouseEvent, entry: FileEntry) {
@@ -83,22 +77,22 @@ async function handleSelect(key: string) {
       try {
         if (await filesStore.openEditor(entry.path, props.editorScope)) emit('editor-opened')
       } catch {
-        emit('failed', t('files.backendError'))
+        message.error(t('files.backendError'))
       }
       break
     case 'preview':
-      try { await filesStore.openPreview(entry) } catch { emit('failed', t('files.backendError')) }
+      try { await filesStore.openPreview(entry) } catch { message.error(t('files.backendError')) }
       break
     case 'download':
-      // A download that starts is announced by the browser itself.
-      try { await downloadFile(entry.path, entry.name) } catch (err: any) { emit('failed', err.message) }
+      try { await downloadFile(entry.path, entry.name) } catch (err: any) { message.error(err.message) }
       break
     case 'copyPath': {
-      // Nothing visible changes on a successful copy, but the user asked for it
-      // and pasting verifies it. A FAILED copy has to be said, or they paste
-      // whatever was in the clipboard before.
       const ok = await copyToClipboard(getClipboardPathForEntry(entry))
-      if (!ok) emit('failed', t('files.copyPathFailed'))
+      if (ok) {
+        message.success(t('files.pathCopied'))
+      } else {
+        message.error(t('files.pathCopied') + ' ✗')
+      }
       break
     }
     case 'rename':
@@ -115,10 +109,10 @@ async function handleSelect(key: string) {
         negativeText: t('common.cancel'),
         onPositiveClick: async () => {
           try {
-            // The entry leaving the list is the report.
             await filesStore.deleteEntry(entry, props.editorScope)
+            message.success(t('files.deleted'))
           } catch {
-            emit('failed', t('files.deleteFailed'))
+            message.error(t('files.deleteFailed'))
           }
         },
       })

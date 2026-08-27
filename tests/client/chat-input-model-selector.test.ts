@@ -77,9 +77,6 @@ vi.mock('naive-ui', () => ({
     props: ['value', 'options'],
     template: '<div><slot /></div>',
   },
-  NPopover: {
-    template: '<div class="n-popover-stub"><slot name="trigger" /><slot /></div>',
-  },
   useMessage: () => ({
     error: vi.fn(),
     success: vi.fn(),
@@ -99,23 +96,18 @@ describe('ChatInput model selector placement', () => {
     fetchExpertsMock.mockResolvedValue({ experts: [] })
   })
 
-  it('hosts the model picker in the composer tool row via the #model slot', () => {
-    // The model picker used to live in the ChatPanel header; it now lives in the
-    // composer tool row. ChatInput owns only the placement (a #model slot in the
-    // tool row); the host (ChatPanel) injects the actual trigger so the model
-    // selection logic stays there. The picker must render inside `.input-top-bar`.
+  it('does not render the model selector in the chat input toolbar', () => {
     const wrapper = shallowMount(ChatInput, {
-      slots: {
-        model: '<div data-testid="model-selector" />',
+      global: {
+        stubs: {
+          ModelSelector: {
+            template: '<div data-testid="model-selector" />',
+          },
+        },
       },
-      // ComposerBox (the shared box the composer roots on) must render for real:
-      // stubbed, it swallows its default slot and the tool row never exists.
-      global: { stubs: { ComposerBox: false } },
     })
 
-    const picker = wrapper.find('[data-testid="model-selector"]')
-    expect(picker.exists()).toBe(true)
-    expect(picker.element.closest('.input-top-bar')).not.toBeNull()
+    expect(wrapper.find('[data-testid="model-selector"]').exists()).toBe(false)
   })
 
   it.each([

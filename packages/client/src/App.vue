@@ -26,13 +26,7 @@ const isLoginPage = computed(() => route.name === 'login')
 const usesPageSidebar = computed(() =>
   authNavigationReady.value && ['hermes.chat', 'hermes.session', 'hermes.history', 'hermes.historySession', 'hermes.globalAgent', 'hermes.globalAgentSession', 'hermes.groupChat', 'hermes.groupChatRoom'].includes(route.name as string),
 )
-// Also gated on routeContentReady: when a guard aborts mid-navigation (e.g.
-// the session died while redirecting), the route object still points at the
-// PREVIOUS page — rendering its sidebar next to a blank <main> reads as a
-// broken half-page. Until content is ready, show the pending state instead.
-const showAppSidebar = computed(() =>
-  authNavigationReady.value && routeContentReady.value && !isLoginPage.value && !usesPageSidebar.value,
-)
+const showAppSidebar = computed(() => authNavigationReady.value && !isLoginPage.value && !usesPageSidebar.value)
 const showMobileMenuButton = computed(() => authNavigationReady.value && !isLoginPage.value && (showAppSidebar.value || usesPageSidebar.value))
 
 const nodeVersionLow = computed(() => {
@@ -94,12 +88,6 @@ useKeyboard()
               <AppSidebar v-if="authNavigationReady && !isLoginPage && showAppSidebar" />
               <main class="app-main">
                 <router-view v-if="routeContentReady" />
-                <!-- A guard mid-redirect (or an aborted navigation) leaves no
-                     route content; show a quiet pending state instead of a
-                     blank pane so the app never looks half-rendered. -->
-                <div v-else-if="!isLoginPage" class="route-pending" aria-busy="true">
-                  <span class="route-pending__spinner" aria-hidden="true" />
-                </div>
               </main>
             </div>
           </div>
@@ -139,28 +127,6 @@ useKeyboard()
 
 .app-shell.desktop-titlebar-host .app-layout {
   --vh: calc(1vh - 0.36px);
-}
-
-// Pending state while a navigation is unresolved: centered hairline spinner.
-.route-pending {
-  height: 100%;
-  display: grid;
-  place-items: center;
-}
-
-.route-pending__spinner {
-  width: 22px;
-  height: 22px;
-  border-radius: 9999px;
-  border: 2px solid var(--divider);
-  border-top-color: var(--gray-33);
-  animation: route-pending-spin 0.8s linear infinite;
-}
-
-@keyframes route-pending-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .app-main {

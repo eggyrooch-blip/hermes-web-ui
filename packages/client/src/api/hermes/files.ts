@@ -29,53 +29,12 @@ export async function listFiles(path: string = '', profile?: string): Promise<{ 
   return request<{ entries: FileEntry[]; path: string }>(`/api/hermes/files/list${query ? `?${query}` : ''}`)
 }
 
-/**
- * Name search across the workspace, for the global palette.
- *
- * The walk, its depth/visit caps and the sensitive-path filtering all live on
- * the server (`/files/search`) — doing it here would mean one request per
- * directory on every keystroke. `truncated` means a cap was hit, so the caller
- * can say "showing the first N" instead of implying this is everything.
- */
-export async function searchFiles(
-  query: string,
-  limit?: number,
-): Promise<{ entries: FileEntry[]; truncated: boolean }> {
-  const params = new URLSearchParams({ q: query })
-  if (limit) params.set('limit', String(limit))
-  return request<{ entries: FileEntry[]; truncated: boolean }>(
-    `/api/hermes/files/search?${params.toString()}`,
-  )
-}
-
-/**
- * The library's 最近 view: the most recently modified files across the whole
- * workspace, newest first. Same server-side walk (and same caps) as the name
- * search — directories are left out, since a folder is not something you
- * opened.
- */
-export async function fetchRecentFiles(
-  limit = 50,
-): Promise<{ entries: FileEntry[]; truncated: boolean }> {
-  return request<{ entries: FileEntry[]; truncated: boolean }>(
-    `/api/hermes/files/search?recent=1&limit=${limit}`,
-  )
-}
-
 export async function statFile(path: string): Promise<FileStat> {
   return request<FileStat>(`/api/hermes/files/stat?path=${encodeURIComponent(path)}`)
 }
 
-/**
- * `profile` reads another agent's workspace without switching the active one —
- * the same selector `listFiles` takes. The server only honours it for a profile
- * the caller owns (getRequestProfile → ownerOwnsProfile), so passing it can
- * never widen access; omitting it keeps the active-profile behaviour.
- */
-export async function readFile(path: string, profile?: string): Promise<{ content: string; path: string; size: number }> {
-  const params = new URLSearchParams({ path })
-  if (profile) params.set('profile', profile)
-  return request<{ content: string; path: string; size: number }>(`/api/hermes/files/read?${params.toString()}`)
+export async function readFile(path: string): Promise<{ content: string; path: string; size: number }> {
+  return request<{ content: string; path: string; size: number }>(`/api/hermes/files/read?path=${encodeURIComponent(path)}`)
 }
 
 export async function writeFile(path: string, content: string): Promise<void> {
@@ -139,12 +98,11 @@ export async function uploadFiles(targetDir: string, files: File[]): Promise<{ n
   return data.files
 }
 
-export function getFileDownloadUrl(relativePath: string, fileName?: string, profile?: string): string {
+export function getFileDownloadUrl(relativePath: string, fileName?: string): string {
   const base = getBaseUrlValue()
   const params = new URLSearchParams({ path: relativePath })
   if (fileName) params.set('name', fileName)
-  // Same owned-profile selector as readFile; falls back to the active profile.
-  const profileName = profile || getActiveProfileName()
+  const profileName = getActiveProfileName()
   if (profileName) params.set('profile', profileName)
   const token = getApiKey()
   if (token) params.set('token', token)

@@ -6,29 +6,12 @@ import { mount } from '@vue/test-utils'
 const apiMocks = vi.hoisted(() => ({
   fetchSessionsMock: vi.fn(),
   searchSessionsMock: vi.fn(),
-  searchFilesMock: vi.fn(),
-  fetchSkillsMock: vi.fn(),
   routerPushMock: vi.fn(),
-  navigateToMock: vi.fn(),
 }))
 
 vi.mock('@/api/hermes/sessions', () => ({
   fetchSessions: apiMocks.fetchSessionsMock,
   searchSessions: apiMocks.searchSessionsMock,
-}))
-
-// The palette searches three sources now; each is mocked so the module graph
-// never reaches the real api/client (which builds a router at import time).
-vi.mock('@/api/hermes/files', () => ({
-  searchFiles: apiMocks.searchFilesMock,
-}))
-
-vi.mock('@/api/hermes/skills', () => ({
-  fetchSkills: apiMocks.fetchSkillsMock,
-}))
-
-vi.mock('@/stores/hermes/files', () => ({
-  useFilesStore: () => ({ navigateTo: apiMocks.navigateToMock }),
 }))
 
 const chatStoreMock = vi.hoisted(() => ({
@@ -147,87 +130,11 @@ describe('session search modal', () => {
         rank: 0.1,
       },
     ])
-    apiMocks.searchFilesMock.mockResolvedValue({ entries: [], truncated: false })
-    apiMocks.fetchSkillsMock.mockResolvedValue({ categories: [], archived: [] })
     routerCurrentRoute.value = { name: 'hermes.logs' }
   })
 
   afterEach(() => {
     vi.useRealTimers()
-    // `useSessionSearch` is a module singleton — a test that leaves the palette
-    // open makes the next one's `openSessionSearch()` a no-op (the watcher only
-    // fires on the closed→open edge), and its data load never runs.
-    useSessionSearch().sessionSearchOpen.value = false
-  })
-
-  it('searches tasks, files and skills together and groups the results', async () => {
-    apiMocks.searchFilesMock.mockResolvedValue({
-      entries: [{ name: 'docker-notes.md', path: 'notes/docker-notes.md', isDir: false, size: 12, modTime: '' }],
-      truncated: true,
-    })
-    apiMocks.fetchSkillsMock.mockResolvedValue({
-      categories: [
-        {
-          name: 'ops',
-          description: '',
-          skills: [
-            { name: 'docker-deploy', description: 'ship a container' },
-            { name: 'unrelated', description: 'nothing to do with it' },
-          ],
-        },
-      ],
-      archived: [],
-    })
-
-    const { openSessionSearch } = useSessionSearch()
-    const wrapper = mount(SessionSearchModal)
-
-    openSessionSearch()
-    await flushPromises()
-    await nextTick()
-
-    await wrapper.find('input.n-input-stub').setValue('docker')
-    await vi.advanceTimersByTimeAsync(200)
-    await flushPromises()
-    await nextTick()
-
-    expect(apiMocks.searchFilesMock).toHaveBeenCalledWith('docker', 10)
-    // Only the matching skill, and one header per kind.
-    expect(wrapper.findAll('[data-kind="skill"]')).toHaveLength(1)
-    expect(wrapper.text()).toContain('docker-notes.md')
-    expect(wrapper.text()).toContain('docker-deploy')
-    expect(wrapper.text()).not.toContain('unrelated')
-    expect(wrapper.findAll('.result-group').map(node => node.text())).toEqual([
-      'chat.searchGroup.task',
-      'chat.searchGroup.file',
-      'chat.searchGroup.skill',
-      // The file walk hit its cap, and the palette says so.
-      'chat.searchFilesTruncated',
-    ])
-  })
-
-  it('keeps the other groups when one source fails', async () => {
-    apiMocks.searchFilesMock.mockRejectedValue(new Error('workspace unreachable'))
-    apiMocks.fetchSkillsMock.mockResolvedValue({
-      categories: [{ name: 'ops', description: '', skills: [{ name: 'docker-deploy', description: '' }] }],
-      archived: [],
-    })
-
-    const { openSessionSearch } = useSessionSearch()
-    const wrapper = mount(SessionSearchModal)
-
-    openSessionSearch()
-    await flushPromises()
-    await nextTick()
-
-    await wrapper.find('input.n-input-stub').setValue('docker')
-    await vi.advanceTimersByTimeAsync(200)
-    await flushPromises()
-    await nextTick()
-
-    expect(wrapper.text()).toContain('Debugging session')
-    expect(wrapper.text()).toContain('docker-deploy')
-    expect(wrapper.findAll('[data-kind="file"]')).toHaveLength(0)
   })
 
   it('opens from Cmd/Ctrl+K and loads recent sessions', async () => {

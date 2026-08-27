@@ -18,7 +18,7 @@ import { detectHermesRootHome } from '../../services/hermes/hermes-path'
 import { getActiveProfileName } from '../../services/hermes/hermes-profile'
 import { HermesSkillInjector } from '../../services/hermes/skill-injector'
 import type { HermesProfile } from '../../services/hermes/hermes-cli'
-import { addUserProfile, listUserProfiles } from '../../db/hermes/users-store'
+import { listUserProfiles } from '../../db/hermes/users-store'
 import { listOwnedProfileMetadata, registerOwnedProfile } from '../../services/hermes/agent-ownership'
 
 const bridgeCleanupClient = () => new AgentBridgeClient({ connectRetryMs: 0, timeoutMs: 5000 })
@@ -684,15 +684,12 @@ export async function list(ctx: any) {
 }
 
 export async function create(ctx: any) {
-  const { name, clone, displayLabel } = ctx.request.body as { name?: string; clone?: boolean; displayLabel?: string }
+  const { name, clone } = ctx.request.body as { name?: string; clone?: boolean }
   if (!name) {
     ctx.status = 400
     ctx.body = { error: 'Missing profile name' }
     return
   }
-  // Human-facing name (中文 OK), stored as multitenancy display_label while
-  // `name` stays the ASCII identifier. Length-capped: it renders on cards.
-  const label = typeof displayLabel === 'string' ? displayLabel.trim().slice(0, 64) : ''
   if (isForbiddenProfileName(name)) {
     ctx.status = 400
     ctx.body = { error: `Profile name '${name}' is reserved and cannot be created` }
@@ -709,7 +706,7 @@ export async function create(ctx: any) {
     // explicit cloneFrom = caller's own profile; the rebaselined CLI has no cloneFrom
     // parameter, so we close the hole by forcing clone=false in chat-plane — a tenant may
     // only create a brand-new profile that inherits no credentials at all.
-    const user = ctx.state?.user as { id?: number; role?: string; openid?: string; profile?: string } | undefined
+    const user = ctx.state?.user as { openid?: string; profile?: string } | undefined
     const userMode = config.webPlane === 'chat' && !!user?.openid
     const effectiveClone = userMode ? false : !!clone
     const output = await hermesCli.createProfile(name, effectiveClone)
@@ -754,7 +751,7 @@ export async function create(ctx: any) {
     // isolation (ownerOwnsProfile / getRequestProfile) recognizes it as theirs.
     if (userMode && user?.openid) {
       try {
-        if (!registerOwnedProfile(user.openid, name, user.profile, label)) {
+        if (!registerOwnedProfile(user.openid, name, user.profile)) {
           throw new Error('owner registration returned false')
         }
       } catch (err: any) {
@@ -763,24 +760,6 @@ export async function create(ctx: any) {
           await hermesCli.deleteProfile(name)
         } catch (cleanupErr: any) {
           logger.warn(cleanupErr, 'Failed to roll back unregistered profile "%s"', name)
-        }
-        throw new Error('Failed to register created profile ownership')
-      }
-    } else if (user?.id != null && user.role !== 'super_admin') {
-      // Token-login (web plane) users are gated by user_profiles: the list
-      // endpoint filters to allowedProfileNamesForUser, so a profile created
-      // here must be attributed to its creator or it silently never shows up.
-      // Super admins skip the filter entirely and need no row.
-      try {
-        if (!addUserProfile(user.id, name)) {
-          throw new Error('user profile attribution returned false')
-        }
-      } catch (err: any) {
-        logger.error(err, 'Failed to attribute created profile "%s" to user %s', name, user.id)
-        try {
-          await hermesCli.deleteProfile(name)
-        } catch (cleanupErr: any) {
-          logger.warn(cleanupErr, 'Failed to roll back unattributed profile "%s"', name)
         }
         throw new Error('Failed to register created profile ownership')
       }

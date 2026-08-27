@@ -44,7 +44,6 @@ vi.mock('@/components/hermes/chat/MessageItem.vue', () => ({
   },
 }))
 
-import KpMascotFace from '@/components/kippies/KpMascotFace.vue'
 import MessageList from '@/components/hermes/chat/MessageList.vue'
 
 describe('MessageList streaming display', () => {
@@ -106,9 +105,9 @@ describe('MessageList streaming display', () => {
 
     expect(wrapper.findAll('.message-item').map(node => node.attributes('data-id'))).toEqual(['u1'])
     expect(wrapper.find('.streaming-indicator').exists()).toBe(true)
-    // The run's face is the mascot, riding on the status line (the prototype
-    // dropped the standalone avatar tile above it).
-    expect(wrapper.findComponent(KpMascotFace).exists()).toBe(true)
+    // Upstream rebaseline replaced the fork's <video class="thinking-video"> with an
+    // <img class="thinking-avatar"> (thinking.gif) inside the streaming indicator.
+    expect(wrapper.find('.thinking-avatar').exists()).toBe(true)
   })
 
   it('does not use the global active expert avatar for an ordinary live thinking indicator', () => {
@@ -122,9 +121,9 @@ describe('MessageList streaming display', () => {
 
     const wrapper = mount(MessageList)
 
-    // No expert on the session → the mascot, not a picture of anyone.
-    expect(wrapper.find('img.thinking-avatar').exists()).toBe(false)
-    expect(wrapper.findComponent(KpMascotFace).exists()).toBe(true)
+    const avatar = wrapper.get('img.thinking-avatar')
+    expect(avatar.attributes('src')).not.toBe(expertAvatar)
+    expect(avatar.attributes('src')).toContain('thinking.gif')
   })
 
   it('uses the persisted active session expert avatar for the live thinking indicator', () => {
@@ -143,10 +142,8 @@ describe('MessageList streaming display', () => {
 
     const wrapper = mount(MessageList)
 
-    // An expert has a real face of its own — that identity outranks the mascot.
     const avatar = wrapper.get('img.thinking-avatar')
     expect(avatar.attributes('src')).toBe(expertAvatar)
-    expect(wrapper.findComponent(KpMascotFace).exists()).toBe(false)
   })
 
   it('does not use the selected expert avatar for a live coding-agent thinking indicator', () => {
@@ -160,9 +157,9 @@ describe('MessageList streaming display', () => {
 
     const wrapper = mount(MessageList)
 
-    // A coding-agent run is not driven by the picked expert — mascot, not face.
-    expect(wrapper.find('img.thinking-avatar').exists()).toBe(false)
-    expect(wrapper.findComponent(KpMascotFace).exists()).toBe(true)
+    const avatar = wrapper.get('img.thinking-avatar')
+    expect(avatar.attributes('src')).not.toBe(expertAvatar)
+    expect(avatar.attributes('src')).toContain('thinking.gif')
   })
 
   it('shows current tool calls in the streaming tool panel while the run is active', () => {
@@ -186,7 +183,7 @@ describe('MessageList streaming display', () => {
     expect(wrapper.find('.tool-calls-panel').exists()).toBe(true)
     expect(wrapper.text()).toContain('terminal')
     expect(wrapper.text()).toContain('python3 -c "print(1)"')
-    expect(wrapper.findComponent(KpMascotFace).exists()).toBe(true)
+    expect(wrapper.find('.thinking-avatar').exists()).toBe(true)
   })
 
   it('renders completed tool calls through the upstream MessageItem transcript after the run finishes', () => {
@@ -266,7 +263,7 @@ describe('MessageList streaming display', () => {
     expect(wrapper.findAll('.message-item').map(node => node.attributes('data-id'))).toEqual(['u1', 'a1'])
     expect(wrapper.find('.tool-trace-message').exists()).toBe(false)
     expect(wrapper.find('.streaming-indicator').exists()).toBe(true)
-    expect(wrapper.findComponent(KpMascotFace).exists()).toBe(true)
+    expect(wrapper.find('.thinking-avatar').exists()).toBe(true)
     expect(wrapper.findAll('.tool-call-item')).toHaveLength(1)
     expect(wrapper.text()).toContain('STREAMING_RESULT')
   })

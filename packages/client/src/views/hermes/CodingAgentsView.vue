@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { NAlert, NButton, NForm, NFormItem, NInput, NModal, NRadioButton, NRadioGroup, NSelect, NSpace, NSpin, NTag } from 'naive-ui'
+import { NAlert, NButton, NForm, NFormItem, NInput, NModal, NRadioButton, NRadioGroup, NSelect, NSpace, NSpin, NTag, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import {
   deleteCodingAgent,
@@ -40,15 +40,10 @@ type ConfigEditorState = {
   saving: boolean
   absolutePath?: string
   exists?: boolean
-  /**
-   * Load/save failure for THIS agent's editor. Per-agent because both editors
-   * can be open at once, and one shared string would pin a failure on the wrong
-   * one.
-   */
-  error: string
 }
 
 const { t } = useI18n()
+const message = useMessage()
 const profilesStore = useProfilesStore()
 const loading = ref(false)
 const loadError = ref('')
@@ -69,11 +64,6 @@ const deleting = ref<Record<CodingAgentId, boolean>>({
   'claude-code': false,
   codex: false,
 })
-/**
- * Launch-dialog failures and validation. Resident in the dialog: the fields it
- * refers to are in there, and it must survive long enough to be read.
- */
-const launchError = ref('')
 const launchModalVisible = ref(false)
 const launchLoading = ref(false)
 const launchPreparing = ref(false)
@@ -128,7 +118,6 @@ const configEditorStates = ref<Record<CodingAgentId, ConfigEditorState>>({
     originalContent: '',
     loading: false,
     saving: false,
-    error: '',
   },
   codex: {
     selectedKey: 'config',
@@ -136,7 +125,6 @@ const configEditorStates = ref<Record<CodingAgentId, ConfigEditorState>>({
     originalContent: '',
     loading: false,
     saving: false,
-    error: '',
   },
 })
 
@@ -238,9 +226,8 @@ async function loadConfigFile(agentId: CodingAgentId, file: ConfigFileEntry) {
     state.originalContent = result.content
     state.absolutePath = result.absolutePath
     state.exists = result.exists
-    state.error = ''
   } catch (err: any) {
-    state.error = err?.message || t('codingAgents.configLoadFailed')
+    message.error(err?.message || t('codingAgents.configLoadFailed'))
   } finally {
     state.loading = false
   }
@@ -260,11 +247,9 @@ async function saveConfigFile(agentId: CodingAgentId) {
     state.originalContent = result.content
     state.absolutePath = result.absolutePath
     state.exists = result.exists
-    // Saved: the editor now holds what the file holds (originalContent was just
-    // resynced), so the dirty marker clearing is the report.
-    state.error = ''
+    message.success(t('files.saved'))
   } catch (err: any) {
-    state.error = err?.message || t('files.saveFailed')
+    message.error(err?.message || t('files.saveFailed'))
   } finally {
     state.saving = false
   }
@@ -315,7 +300,6 @@ function defaultLaunchApiMode(provider?: AvailableModelGroup | null): CodingAgen
 async function openLaunchModal(agentId: CodingAgentId) {
   launchAgentId.value = agentId
   launchMode.value = 'scoped'
-  launchError.value = ''
   launchModalVisible.value = true
   launchResult.value = null
   launchLoading.value = true
@@ -324,7 +308,7 @@ async function openLaunchModal(agentId: CodingAgentId) {
     launchProviders.value = result.groups || []
     resetLaunchSelection()
   } catch (err: any) {
-    launchError.value = err?.message || t('codingAgents.loadProvidersFailed')
+    message.error(err?.message || t('codingAgents.loadProvidersFailed'))
   } finally {
     launchLoading.value = false
   }
@@ -368,20 +352,19 @@ function parseErrorPayload(err: any): { message?: string; code?: string } | null
 
 async function launchBuiltInTerminal() {
   if (!useGlobalLaunchConfig.value && (!launchProvider.value || !launchModel.value)) {
-    launchError.value = t('codingAgents.selectProviderModel')
+    message.error(t('codingAgents.selectProviderModel'))
     return
   }
-  launchError.value = ''
   launchPreparing.value = true
   try {
     launchResult.value = await prepareCodingAgentLaunch(launchAgentId.value, currentLaunchRequest())
     terminalCommand.value = launchResult.value.shellCommand
     terminalKey.value += 1
     launchModalVisible.value = false
-    // The terminal opening is the report.
     terminalVisible.value = true
+    message.success(t('codingAgents.launchPrepared'))
   } catch (err: any) {
-    launchError.value = err?.message || t('codingAgents.launchPrepareFailed')
+    message.error(err?.message || t('codingAgents.launchPrepareFailed'))
   } finally {
     launchPreparing.value = false
   }
@@ -389,18 +372,16 @@ async function launchBuiltInTerminal() {
 
 async function launchNativeTerminal() {
   if (!useGlobalLaunchConfig.value && (!launchProvider.value || !launchModel.value)) {
-    launchError.value = t('codingAgents.selectProviderModel')
+    message.error(t('codingAgents.selectProviderModel'))
     return
   }
-  launchError.value = ''
   nativeLaunchPreparing.value = true
   try {
     await launchCodingAgentNativeTerminal(launchAgentId.value, currentLaunchRequest())
-    // The dialog closing, with the agent now running in the OS terminal, is
-    // the report.
     launchModalVisible.value = false
+    message.success(t('codingAgents.nativeLaunchStarted'))
   } catch (err: any) {
-    launchError.value = err?.message || t('codingAgents.nativeLaunchFailed')
+    message.error(err?.message || t('codingAgents.nativeLaunchFailed'))
   } finally {
     nativeLaunchPreparing.value = false
   }
@@ -414,17 +395,19 @@ async function handleInstall(id: CodingAgentId) {
     const result = await installCodingAgent(id)
     tools.value = result.tools
     if (result.success) {
-      // `tools` was just replaced, so the card flips to installed on its own.
+      message.success(t('codingAgents.installSuccess'))
       installFailureHints.value[id] = ''
       installFailureDetails.value[id] = ''
     } else {
       const errorMessage = codingAgentMessage(result.code, result.message, 'codingAgents.installFailed')
+      message.error(errorMessage)
       installFailureHints.value[id] = t('codingAgents.installFailedHermesHint')
       installFailureDetails.value[id] = errorMessage
     }
   } catch (err: any) {
     const payload = parseErrorPayload(err)
     const errorMessage = codingAgentMessage(payload?.code, payload?.message || err?.message, 'codingAgents.installFailed')
+    message.error(errorMessage)
     installFailureHints.value[id] = t('codingAgents.installFailedHermesHint')
     installFailureDetails.value[id] = errorMessage
   } finally {
@@ -434,22 +417,17 @@ async function handleInstall(id: CodingAgentId) {
 
 async function handleDelete(id: CodingAgentId) {
   deleting.value[id] = true
-  installFailureHints.value[id] = ''
-  installFailureDetails.value[id] = ''
   try {
     const result = await deleteCodingAgent(id)
     tools.value = result.tools
-    // Success: the card flips back to not-installed on its own. A failure reuses
-    // the card's own alert — same place the install failure appears, because it
-    // is the same question ("why is this card not in the state I asked for").
-    if (!result.success) {
-      installFailureHints.value[id] = t('codingAgents.deleteFailed')
-      installFailureDetails.value[id] = codingAgentMessage(result.code, result.message, 'codingAgents.deleteFailed')
+    if (result.success) {
+      message.success(t('codingAgents.deleteSuccess'))
+    } else {
+      message.error(codingAgentMessage(result.code, result.message, 'codingAgents.deleteFailed'))
     }
   } catch (err: any) {
     const payload = parseErrorPayload(err)
-    installFailureHints.value[id] = t('codingAgents.deleteFailed')
-    installFailureDetails.value[id] = codingAgentMessage(payload?.code, payload?.message || err?.message, 'codingAgents.deleteFailed')
+    message.error(codingAgentMessage(payload?.code, payload?.message || err?.message, 'codingAgents.deleteFailed'))
   } finally {
     deleting.value[id] = false
   }
@@ -534,7 +512,7 @@ onMounted(() => {
           >
             <div>{{ installFailureHints[block.id] }}</div>
             <div v-if="installFailureDetails[block.id]" class="install-error-detail">
-              {{ installFailureDetails[block.id] }}
+              {{ t('codingAgents.installFailureReason') }}: {{ installFailureDetails[block.id] }}
             </div>
           </NAlert>
 
@@ -555,11 +533,6 @@ onMounted(() => {
           </div>
 
           <div class="inline-config-editor">
-            <p
-              v-if="configEditorStates[block.id].error"
-              class="config-editor-error"
-              data-testid="config-editor-error"
-            >{{ configEditorStates[block.id].error }}</p>
             <div class="config-editor-meta">
               <span class="config-editor-path">
                 {{ selectedConfigFile(block.id)?.path }}
@@ -610,7 +583,6 @@ onMounted(() => {
       :title="t('codingAgents.launchTitle')"
       :bordered="false"
     >
-      <p v-if="launchError" class="launch-error" data-testid="launch-error">{{ launchError }}</p>
       <NSpin :show="launchLoading">
         <NForm label-placement="top">
           <NFormItem :label="t('codingAgents.profileScope')">
@@ -711,16 +683,6 @@ onMounted(() => {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
-.config-editor-error,
-.launch-error {
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  background: var(--danger-bg);
-  color: var(--danger);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
 
 .coding-agents-view {
   height: calc(100 * var(--vh));

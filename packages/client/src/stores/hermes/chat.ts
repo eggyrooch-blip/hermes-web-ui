@@ -39,12 +39,6 @@ export interface Attachment {
   file?: File
 }
 
-// See createSession(): a client-only draft that the server has never seen.
-// Every resume/reload path must leave it alone until the first send makes it
-// real — resuming a nonexistent session can only inject junk (e.g. a bridge
-// failure banner) into a pristine draft, silently flipping the 新建任务 home
-// into a conversation view.
-
 export interface Message {
   id: string
   role: 'user' | 'assistant' | 'system' | 'tool' | 'command'
@@ -111,14 +105,6 @@ export interface Session {
   profile?: string
   title: string
   source?: string
-  /**
-   * 推理强度 override for THIS session. Client-only: the server does not carry
-   * it on the session row, so it is persisted to localStorage and hydrated back
-   * (see setSessionReasoningEffort below).
-   */
-  reasoningEffort?: string
-  /** Client-only draft, unknown to the server until the first send. */
-  isLocalDraft?: boolean
   /** Created in this tab and not yet persisted server-side (no row until the first run). */
   localCreated?: boolean
   agent?: string
@@ -149,6 +135,10 @@ export interface Session {
   lastActiveAt?: number
   workspace?: string | null
   isArchived?: boolean
+  /** Per-session reasoning effort override.
+   * Empty string / undefined = use config.yaml default.
+   * Values: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' */
+  reasoningEffort?: string
 }
 
 interface CompressionState {
@@ -924,44 +914,16 @@ export const useChatStore = defineStore('chat', () => {
   const activeSession = ref<Session | null>(null)
   const messages = computed<Message[]>(() => activeSession.value?.messages || [])
 
-  // Produced artifacts of the active session, from the TWO places a run can
-  // report a file, because either one alone under-reports:
-  //
-  //   1. assistant `MEDIA:` directive lines pointing inside the workspace, and
-  //   2. the run's workspace diff (what `write_file` actually changed).
-  //
-  // A run that writes a file without emitting a MEDIA: line — the common case
-  // for `write_file` — showed a file card in the transcript (rendered from the
-  // diff) while 产物 claimed the task produced nothing. The diff is also the
-  // durable half: it is fetched per session, so it survives a reload, whereas a
-  // MEDIA: line only exists if it is in the stored transcript.
-  //
-  // Paths mirror MarkdownRenderer.preprocessMediaDirectives: workspace-relative,
-  // re-encoded per segment so it round-trips through the download/preview URL,
-  // while `name` keeps the decoded basename for display. MEDIA: entries come
-  // first (their order is the assistant's own), then diff files. Deduped by
-  // path. Pure/client-only — no fetch.
-  const WORKSPACE_MARKER = '/workspace/'
-
-  function workspaceArtifactEntry(rel: string): { name: string, path: string } | null {
-    const clean = rel.replace(/^\/+/, '')
-    if (!clean) return null
-    return {
-      name: clean.split('/').filter(Boolean).pop() || clean,
-      path: WORKSPACE_MARKER + clean.split('/').map(encodeURIComponent).join('/'),
-    }
-  }
-
+  // Produced artifacts of the active session, derived from assistant `MEDIA:`
+  // directive lines that point inside the profile workspace. Mirrors
+  // MarkdownRenderer.preprocessMediaDirectives: the workspace-relative path is
+  // re-encoded per segment (so it round-trips through the download/preview URL),
+  // while `name` keeps the decoded basename for display. First-seen order,
+  // deduped by path. Pure/client-only — no fetch.
   const sessionArtifacts = computed<{ name: string, path: string }[]>(() => {
     const out: { name: string, path: string }[] = []
     const seen = new Set<string>()
-    const push = (rel: string) => {
-      const entry = workspaceArtifactEntry(rel)
-      if (!entry || seen.has(entry.path)) return
-      seen.add(entry.path)
-      out.push(entry)
-    }
-
+    const marker = '/workspace/'
     const mediaLine = /(^|\n)[ \t]*MEDIA:([^\r\n]+)/g
     for (const message of activeSession.value?.messages || []) {
       if (message.role !== 'assistant') continue
@@ -971,23 +933,17 @@ export const useChatStore = defineStore('chat', () => {
       let match: RegExpExecArray | null
       while ((match = mediaLine.exec(content)) !== null) {
         const target = match[2].trim()
-        const idx = target.indexOf(WORKSPACE_MARKER)
+        const idx = target.indexOf(marker)
         if (idx === -1) continue
-        push(target.slice(idx + WORKSPACE_MARKER.length))
+        const rel = target.slice(idx + marker.length).replace(/^\/+/, '')
+        if (!rel) continue
+        const name = rel.split('/').filter(Boolean).pop() || rel
+        const path = marker + rel.split('/').map(encodeURIComponent).join('/')
+        if (seen.has(path)) continue
+        seen.add(path)
+        out.push({ name, path })
       }
     }
-
-    // Diff paths are already workspace-relative (that is what MarkdownRenderer
-    // compares against), so they need no marker stripping.
-    const sessionId = activeSession.value?.id
-    if (sessionId) {
-      for (const change of workspaceDiffs.value[sessionId] || []) {
-        for (const file of change.files || []) {
-          if (file?.path) push(file.path)
-        }
-      }
-    }
-
     return out
   })
 
@@ -1121,22 +1077,8 @@ export const useChatStore = defineStore('chat', () => {
         if (prev?.messages?.length) s.messages = prev.messages
         if (prev?.contextTokens != null) s.contextTokens = prev.contextTokens
       }
-      // A wholesale replace would silently drop an ACTIVE client-only draft
-      // (the 新建任务 page the user is sitting on) and the fallback below
-      // would then steal focus to the most recent real session — the page
-      // flips to a conversation with no user action. Keep the draft on top
-      // and keep it active instead.
-      // (An explicit preferredSessionId pointing at a DIFFERENT session — the
-      // route asked for something specific — still wins over the draft.)
-      const activeDraft = activeSession.value?.isLocalDraft
-        && activeSession.value.id === activeSessionId.value
-        && !fresh.some(s => s.id === activeSessionId.value)
-        && (!preferredSessionId || preferredSessionId === activeSessionId.value)
-        ? activeSession.value
-        : null
-      sessions.value = activeDraft ? [activeDraft, ...fresh] : fresh
+      sessions.value = fresh
       pruneCompletedUnreadSessions(new Set(sessions.value.map(s => s.id)))
-      if (activeDraft) return
 
       // Restore route-selected session first (tab-local source of truth),
       // then current in-memory session, then persisted legacy/default choice,
@@ -1198,8 +1140,6 @@ export const useChatStore = defineStore('chat', () => {
       for (const fresh of incoming) {
         const existing = existingById.get(fresh.id)
         if (existing) {
-          // The server lists it, so whatever draft state it had is over.
-          existing.isLocalDraft = false
           // Update scalar metadata in-place; never touch runtime/scroll state
           // (messages, loadedMessageCount, hasMoreBefore, contextTokens).
           existing.title = fresh.title
@@ -1327,7 +1267,6 @@ export const useChatStore = defineStore('chat', () => {
       id: uid(),
       profile: options.profile || useProfilesStore().activeProfileName || 'default',
       title: '',
-      isLocalDraft: true,
       source,
       agent: options.agent || (codingAgentId ? (codingAgentId === 'codex' ? 'codex' : 'claude') : 'hermes'),
       codingAgentId,
@@ -1362,7 +1301,6 @@ export const useChatStore = defineStore('chat', () => {
     const session: Session = {
       id: `${ts}_${hex}`,
       title: '',
-      isLocalDraft: true,
       source: runtimeMode.value === 'global_agent' ? 'global_agent' : 'cli',
       agent: 'hermes',
       messages: [],
@@ -1373,7 +1311,7 @@ export const useChatStore = defineStore('chat', () => {
     return session
   }
 
-  async function switchSession(sessionId: string, focusId?: string | null, opts?: { skipResume?: boolean }) {
+  async function switchSession(sessionId: string, focusId?: string | null) {
     const loadEpoch = ++switchSessionLoadEpoch
     latestSwitchLoadEpochBySession.set(sessionId, loadEpoch)
     const isLatestSessionLoad = () => latestSwitchLoadEpochBySession.get(sessionId) === loadEpoch
@@ -1392,16 +1330,6 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
 
-    // A brand-new client-side draft has nothing to resume: it holds no messages
-    // and doesn't exist on the server yet. Skipping the socket resume keeps the
-    // "new task" gesture instant AND prevents the server's failure response
-    // (e.g. a bridge-unreachable banner) from being injected into a pristine
-    // draft. Callers that can face a draft (newChat, the route watchers) pass
-    // skipResume for it; the visibilitychange path checks isLocalDraft itself.
-    if (opts?.skipResume) {
-      if (loadEpoch === switchSessionLoadEpoch) isLoadingMessages.value = false
-      return
-    }
     // A brand-new locally-created session has no server row yet, so the
     // server's rowless-control fence rejects its 'resume' and no 'resumed'
     // ever arrives. Register the channel as usual (later runs need it) but do
@@ -1724,10 +1652,7 @@ export const useChatStore = defineStore('chat', () => {
     // syncActiveExpertFromSession(), which clears the expert for a session that
     // has none. Pre-stamping here defeated that guard and force-selected the
     // last-browsed/activated expert on every new chat (prod bug, sunke profile).
-    // skipResume: this draft is client-only until the first send, so there is
-    // nothing to resume — this is what makes "new task" land instantly on the
-    // empty composer (prototype parity) instead of a few-second resume load.
-    void switchSession(session.id, null, { skipResume: true })
+    void switchSession(session.id)
     return session
   }
 
@@ -2688,9 +2613,6 @@ export const useChatStore = defineStore('chat', () => {
     const sid = activeSessionId.value!
     const sessionOwner = activeSession.value
     if (!sessionOwner || sessionOwner.id !== sid) return
-    // First send turns a client-only draft into a real server session; from
-    // here on, resume/reload paths may treat it like any other session.
-    if (sessionOwner.isLocalDraft) sessionOwner.isLocalDraft = false
     const shouldSendInitialSessionConfig = activeSession.value
       ? activeSession.value.messageCount == null || activeSession.value.messageCount === 0
       : false
@@ -2815,9 +2737,8 @@ export const useChatStore = defineStore('chat', () => {
               apiMode: codingAgentMode === 'global' ? undefined : activeSession.value?.apiMode || providerGroup?.api_mode || undefined,
             }
           : {}),
-        // 推理强度: the session's own override, or omitted entirely so the
-        // model's agent config decides. Coding-agent sessions have no such
-        // knob, which is the same gate the composer control used.
+        // Per-session reasoning effort override. Coding Agent runners do not
+        // consume this setting yet, so keep their payloads explicit.
         reasoning_effort: sessionSource === 'coding_agent' ? undefined : activeSession.value?.reasoningEffort || undefined,
         expert_id: expertIdForRun,
         expert_label: expertLabelForRun,
@@ -4543,11 +4464,6 @@ export const useChatStore = defineStore('chat', () => {
         if (sid && !streamStates.value.has(sid)) {
           const sessionAtResumeStart = sessions.value.find(session => session.id === sid)
           if (!sessionAtResumeStart || activeSession.value !== sessionAtResumeStart) return
-          // Never resume a client-only draft (e.g. waking from sleep while
-          // sitting on 新建任务): the server doesn't know it, and its error
-          // response would be injected as a message, flipping the empty home
-          // into a conversation view.
-          if (sessionAtResumeStart.isLocalDraft) return
           const sessionLoadEpoch = latestSwitchLoadEpochBySession.get(sid)
           const isCurrentVisibilityResume = () =>
             activeSessionId.value === sid
@@ -4695,9 +4611,9 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  // Persisted in localStorage keyed by sessionId so the choice survives page
-  // reloads. Clearing on session deletion is deliberately NOT implemented —
-  // orphan keys are tiny and never read again.
+  // Persisted in localStorage keyed by sessionId so the choice survives
+  // page reloads. Cleared on session deletion is NOT implemented (best-effort
+  // — orphan keys are tiny and never read again).
   const REASONING_LS_PREFIX = 'hermes:reasoning_effort:'
   function setSessionReasoningEffort(sessionId: string, effort: string) {
     const session = sessions.value.find(s => s.id === sessionId)
@@ -4720,8 +4636,8 @@ export const useChatStore = defineStore('chat', () => {
       return undefined
     }
   }
-  // Hydrate onto sessions whenever they come in fresh from the server
-  // (mapHermesSession doesn't carry this — it is client-only state).
+  // Hydrate reasoningEffort onto sessions whenever they come in fresh from
+  // the server (mapHermesSession doesn't carry this — it's client-only state).
   watch(sessions, (list) => {
     for (const s of list) {
       if (s.reasoningEffort === undefined) {
@@ -4808,10 +4724,10 @@ export const useChatStore = defineStore('chat', () => {
     noteThinkingDelta,
     noteReasoningStart,
     noteReasoningEnd,
-    setSessionReasoningEffort,
     clearThinkingObservationFor,
     setAutoPlaySpeech,
     playMessageSpeech,
+    setSessionReasoningEffort,
     setRuntimeMode,
   }
 })

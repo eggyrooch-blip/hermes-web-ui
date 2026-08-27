@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
-import KpIcon from '@/components/kippies/KpIcon.vue'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useChatStore } from '@/stores/hermes/chat'
 import { agentDisplayName, groupAgents } from '@/utils/hermes/agent-identity'
@@ -24,8 +23,6 @@ const chatStore = useChatStore()
 const open = ref(false)
 const switching = ref(false)
 const rootRef = ref<HTMLElement | null>(null)
-// Prototype AgentPill panel leads with a filter field (autofocused on open).
-const query = ref('')
 
 const activeName = computed(() => profilesStore.activeProfileName || '')
 const activeProfile = computed(() =>
@@ -33,19 +30,7 @@ const activeProfile = computed(() =>
   ?? { name: activeName.value, active: true, model: '', alias: '' } as any,
 )
 const activeLabel = computed(() => agentDisplayName(activeProfile.value, t('agentsHub.unnamedGroup')))
-const sections = computed(() => {
-  const q = query.value.trim().toLowerCase()
-  return groupAgents(profilesStore.profiles)
-    .map(section => ({
-      ...section,
-      items: q
-        ? section.items.filter(p =>
-          agentDisplayName(p, t('agentsHub.unnamedGroup')).toLowerCase().includes(q)
-          || p.name.toLowerCase().includes(q))
-        : section.items,
-    }))
-    .filter(section => section.items.length > 0)
-})
+const sections = computed(() => groupAgents(profilesStore.profiles).filter(section => section.items.length > 0))
 
 function labelFor(profile: any) {
   return agentDisplayName(profile, t('agentsHub.unnamedGroup'))
@@ -53,7 +38,6 @@ function labelFor(profile: any) {
 
 function toggle() {
   open.value = !open.value
-  query.value = ''
   if (open.value && profilesStore.profiles.length === 0) {
     void profilesStore.fetchProfiles()
   }
@@ -110,34 +94,16 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
       data-testid="agent-picker-trigger"
       @click.stop="toggle"
     >
-      <ProfileAvatar :name="activeProfile.name" :avatar="activeProfile.avatar" :size="20" />
+      <ProfileAvatar :name="activeProfile.name" :avatar="activeProfile.avatar" :size="18" />
       <span class="agent-pill-label">{{ activeLabel }}</span>
-      <KpIcon name="line_arrow_right" :size="12" class="agent-pill-caret" :class="{ open }" />
+      <span class="agent-pill-caret">▾</span>
     </button>
 
     <div v-if="open" class="agent-dropdown" data-testid="agent-picker-dropdown" @click.stop>
-      <!-- Prototype panel header: a filter field + a "new agent" icon button. -->
-      <div class="agent-dropdown-search">
-        <input
-          v-model="query"
-          class="agent-dropdown-search__input"
-          type="text"
-          :placeholder="t('agentsHub.title')"
-        />
-        <button
-          type="button"
-          class="agent-dropdown-search__add"
-          data-testid="agent-picker-add"
-          :title="t('agentsHub.addAgent')"
-          @click="goAddAgent"
-        >
-          <KpIcon name="line_add" :size="16" />
-        </button>
-      </div>
-
       <template v-for="section in sections" :key="section.key">
         <div class="agent-dropdown-head">
           <span>{{ t(`agentsHub.sections.${section.key}`) }}</span>
+          <span>{{ section.items.length }}</span>
         </div>
         <button
           v-for="profile in section.items"
@@ -147,12 +113,17 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
           :data-testid="`agent-picker-option-${profile.name}`"
           @click="select(profile.name)"
         >
-          <ProfileAvatar :name="profile.name" :avatar="profile.avatar" :size="26" />
+          <ProfileAvatar :name="profile.name" :avatar="profile.avatar" :size="22" />
           <span class="agent-dropdown-name">{{ labelFor(profile) }}</span>
-          <KpIcon v-if="profile.name === activeName" name="line_check" :size="14" class="agent-dropdown-check" />
+          <span v-if="profile.name === activeName" class="agent-dropdown-check">✓</span>
         </button>
       </template>
-      <div v-if="sections.length === 0" class="agent-dropdown-empty">{{ t('agentsHub.noMatch') }}</div>
+
+      <div class="agent-dropdown-sep" />
+      <button type="button" class="agent-dropdown-item" data-testid="agent-picker-add" @click="goAddAgent">
+        <span class="agent-dropdown-add-icon">+</span>
+        <span class="agent-dropdown-name">{{ t('agentsHub.addAgent') }}</span>
+      </button>
     </div>
   </div>
 </template>
@@ -167,21 +138,22 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 28px;
-  padding: 0 12px 0 4px;
+  padding: 4px 10px;
   border: none;
-  border-radius: var(--r-pill);
-  background: transparent;
-  box-shadow: none;
-  color: var(--fg-primary);
-  font: var(--w-medium) var(--t-13) / var(--lh-1) var(--font-cn);
+  border-radius: 20px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 12.5px;
   cursor: pointer;
   max-width: 220px;
-  transition: background var(--motion-fast) var(--ease-std);
+
+  &:hover {
+    color: var(--text-primary);
+  }
 
   &.on {
-    background: var(--bg);
-    box-shadow: inset 0 0 0 1px var(--divider);
+    background: var(--accent-primary);
+    color: var(--text-on-accent);
   }
 }
 
@@ -191,131 +163,87 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
   white-space: nowrap;
 }
 
-// Points up while closed, down once open — the dropdown itself opens
-// upward from this pill, so the caret mirrors which way it will unfold.
 .agent-pill-caret {
-  flex: none;
-  color: var(--fg-disabled);
-  transform: rotate(-90deg);
-  transition: transform var(--motion-fast) var(--ease-std);
-
-  &.open {
-    transform: rotate(90deg);
-  }
+  font-size: 9px;
+  opacity: 0.65;
 }
 
-// Prototype AgentPill panel: 300 card, 8px padding, led by a search field + a
-// "new agent" icon button. Chrome is the hairline ring every prototype popover
-// carries — it was a drop shadow here, which made the new-task composer and the
-// automation dialog's identical menus look like two different controls.
 .agent-dropdown {
   position: absolute;
   bottom: calc(100% + 8px);
-  // Anchored to the LEFT edge like the prototype (the pill sits at the scope
-  // row's left), clamped so it can never run off a narrow viewport.
-  left: 0;
+  // Anchored to the RIGHT edge: the composer places this pill near the send
+  // button, so a left-anchored panel ran off the viewport.
+  right: 0;
   z-index: 30;
-  width: min(300px, calc(100vw - 32px));
-  max-height: 320px;
+  width: min(288px, calc(100vw - 32px));
+  max-height: 300px;
   overflow-y: auto;
-  padding: 8px;
-  border: 0;
-  border-radius: var(--r-card);
-  background: var(--bg);
-  box-shadow:
-    inset 0 0 0 0.5px var(--divider),
-    0 0 0 0.5px var(--divider);
-  color: var(--fg-primary);
+  padding: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--bg-card);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.14);
+  // Declared explicitly: the trigger pill turns white-on-dark when open, and an
+  // inherited colour made this whole panel invisible during prototyping.
+  color: var(--text-primary);
   text-align: left;
-}
-
-.agent-dropdown-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-
-.agent-dropdown-search__input {
-  flex: 1;
-  min-width: 0;
-  height: 32px;
-  padding: 0 10px;
-  border: 0;
-  outline: none;
-  border-radius: var(--r-ctl);
-  background: var(--bg);
-  box-shadow: inset 0 0 0 1px var(--divider);
-  font: var(--w-regular) var(--t-14) / var(--lh-1) var(--font-cn);
-  color: var(--fg-primary);
-
-  &::placeholder {
-    color: var(--fg-aux);
-  }
-}
-
-.agent-dropdown-search__add {
-  width: 32px;
-  height: 32px;
-  flex: 0 0 32px;
-  border: 0;
-  border-radius: var(--r-pill);
-  background: transparent;
-  color: var(--fg-aux);
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-
-  &:hover {
-    background: var(--gray-f2);
-    color: var(--fg-primary);
-  }
 }
 
 .agent-dropdown-head {
   display: flex;
   align-items: center;
-  padding: 8px 8px 4px;
-  font: var(--w-regular) var(--t-12) / var(--lh-tight) var(--font-cn);
-  color: var(--fg-disabled);
+  justify-content: space-between;
+  padding: 7px 9px 5px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
 .agent-dropdown-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
   width: 100%;
-  padding: 6px 8px;
+  padding: 7px 9px;
   border: none;
-  border-radius: var(--r-ctl);
+  border-radius: 8px;
   background: none;
-  color: var(--fg-primary);
-  font: var(--w-regular) var(--t-14) / var(--lh-1) var(--font-cn);
+  color: var(--text-primary);
+  font-size: 13px;
   text-align: left;
   cursor: pointer;
 
   &:hover {
-    background: var(--surface-3);
+    background: var(--bg-card-hover);
   }
 }
 
 .agent-dropdown-name {
-  flex: 1;
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .agent-dropdown-check {
-  flex: none;
   margin-left: auto;
-  color: var(--fg-title);
+  font-size: 12px;
 }
 
-.agent-dropdown-empty {
-  padding: 10px 8px;
-  font: var(--w-regular) var(--t-12) / var(--lh-tight) var(--font-cn);
-  color: var(--fg-disabled);
+.agent-dropdown-add-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.agent-dropdown-sep {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--border-light);
 }
 </style>

@@ -41,8 +41,6 @@ function renderCodeBlockWrapper(
   copyLabel: string,
   extraClasses: string[] = [],
   rawCopyText?: string,
-  copyOkLabel?: string,
-  copyFailLabel?: string,
 ): string {
   const languageLabelHtml = labelLanguage
     ? `<span class="code-lang">${escapeHtml(labelLanguage)}</span>`
@@ -52,14 +50,7 @@ function renderCodeBlockWrapper(
     ? ''
     : ` data-copy-text="${escapeHtml(rawCopyText)}"`
 
-  // The outcome labels ride on the button as data attributes. Copying is the one
-  // action with no visible result, so the report has to be the button itself
-  // briefly changing what it says — and this module has no i18n of its own, so
-  // the caller supplies the strings at render time.
-  const okAttr = copyOkLabel ? ` data-copy-ok="${escapeHtml(copyOkLabel)}"` : ''
-  const failAttr = copyFailLabel ? ` data-copy-fail="${escapeHtml(copyFailLabel)}"` : ''
-
-  return `<pre class="${blockClasses}"${copyTextAttr}><div class="code-header">${languageLabelHtml}<button type="button" class="copy-btn" data-copy-code="true"${okAttr}${failAttr}>${escapeHtml(copyLabel)}</button></div><code class="hljs language-${sanitizeLanguageClass(codeClassLanguage)}">${highlighted}</code></pre>`
+  return `<pre class="${blockClasses}"${copyTextAttr}><div class="code-header">${languageLabelHtml}<button type="button" class="copy-btn" data-copy-code="true">${escapeHtml(copyLabel)}</button></div><code class="hljs language-${sanitizeLanguageClass(codeClassLanguage)}">${highlighted}</code></pre>`
 }
 
 function isUnifiedDiffLanguage(lang?: string): boolean {
@@ -185,8 +176,6 @@ function renderUnifiedDiffCode(
   labelLanguage: string,
   copyLabel: string,
   formatFoldLabel: (hiddenCount: number) => string,
-  copyOkLabel?: string,
-  copyFailLabel?: string,
 ): string {
   const numbers: DiffLineNumbers = {}
   const lines = content.split(/\r?\n/)
@@ -219,16 +208,7 @@ function renderUnifiedDiffCode(
     .map((row) => row.html)
     .join('')
 
-  return renderCodeBlockWrapper(
-    highlighted,
-    'diff',
-    labelLanguage,
-    copyLabel,
-    ['hljs-unified-diff'],
-    content,
-    copyOkLabel,
-    copyFailLabel,
-  )
+  return renderCodeBlockWrapper(highlighted, 'diff', labelLanguage, copyLabel, ['hljs-unified-diff'], content)
 }
 
 export function normalizeHighlightLanguage(lang?: string): string {
@@ -334,10 +314,6 @@ export function extractUnifiedDiffPayload(value: unknown, depth = 0): string | n
 type RenderHighlightedCodeBlockOptions = {
   maxHighlightLength?: number
   formatDiffFoldLabel?: (hiddenCount: number) => string
-  /** Shown on the copy button for a beat after a successful copy. */
-  copyOkLabel?: string
-  /** Shown on the copy button when the copy did not go through. */
-  copyFailLabel?: string
 }
 
 export function renderHighlightedCodeBlock(
@@ -352,14 +328,7 @@ export function renderHighlightedCodeBlock(
 
   if (isUnifiedDiffContent(content, requestedLanguage || normalizedLanguage)) {
     const formatDiffFoldLabel = options.formatDiffFoldLabel ?? ((hiddenCount: number) => String(hiddenCount))
-    return renderUnifiedDiffCode(
-      content,
-      requestedLanguage || 'diff',
-      copyLabel,
-      formatDiffFoldLabel,
-      options.copyOkLabel,
-      options.copyFailLabel,
-    )
+    return renderUnifiedDiffCode(content, requestedLanguage || 'diff', copyLabel, formatDiffFoldLabel)
   }
 
   let highlighted = ''
@@ -386,16 +355,7 @@ export function renderHighlightedCodeBlock(
     }
   }
 
-  return renderCodeBlockWrapper(
-    highlighted,
-    codeClassLanguage,
-    labelLanguage,
-    copyLabel,
-    [],
-    undefined,
-    options.copyOkLabel,
-    options.copyFailLabel,
-  )
+  return renderCodeBlockWrapper(highlighted, codeClassLanguage, labelLanguage, copyLabel)
 }
 
 export async function copyTextToClipboard(text: string): Promise<boolean> {
@@ -414,44 +374,7 @@ export async function handleCodeBlockCopyClick(event: MouseEvent): Promise<boole
   const block = button.closest<HTMLElement>('.hljs-code-block')
   const code = block?.querySelector('code')
   const text = block?.getAttribute('data-copy-text') ?? code?.textContent ?? ''
-  if (!text) {
-    flashCopyResult(button, false)
-    return false
-  }
+  if (!text) return false
 
-  const ok = await copyTextToClipboard(text)
-  flashCopyResult(button, ok)
-  return ok
-}
-
-/** How long the button holds its outcome label before returning to "copy". */
-export const COPY_FLASH_MS = 1600
-
-/**
- * Say what happened on the button that was pressed.
- *
- * The idle label is remembered on first use rather than re-read each time, so a
- * double-click mid-flash cannot capture "copied" as the resting text and leave
- * the button permanently claiming success.
- */
-function flashCopyResult(button: HTMLElement, ok: boolean): void {
-  const idle = button.getAttribute('data-copy-idle') ?? button.textContent ?? ''
-  button.setAttribute('data-copy-idle', idle)
-
-  const next = ok ? button.getAttribute('data-copy-ok') : button.getAttribute('data-copy-fail')
-  if (!next) return
-
-  const previousTimer = button.getAttribute('data-copy-timer')
-  if (previousTimer) window.clearTimeout(Number(previousTimer))
-
-  button.textContent = next
-  button.classList.toggle('is-copy-ok', ok)
-  button.classList.toggle('is-copy-fail', !ok)
-
-  const timer = window.setTimeout(() => {
-    button.textContent = idle
-    button.classList.remove('is-copy-ok', 'is-copy-fail')
-    button.removeAttribute('data-copy-timer')
-  }, COPY_FLASH_MS)
-  button.setAttribute('data-copy-timer', String(timer))
+  return copyTextToClipboard(text)
 }

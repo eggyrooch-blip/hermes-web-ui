@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { NButton, NSpin } from 'naive-ui'
+import { NButton, NSpin, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import AuxiliaryModelsPanel from '@/components/hermes/models/AuxiliaryModelsPanel.vue'
 import ProvidersPanel from '@/components/hermes/models/ProvidersPanel.vue'
@@ -10,10 +10,9 @@ import { useProfilesStore } from '@/stores/hermes/profiles'
 import { checkCopilotToken } from '@/api/hermes/copilot-auth'
 
 const { t } = useI18n()
-/** Cache-refresh failure. */
-const paneError = ref('')
 const modelsStore = useModelsStore()
 const profilesStore = useProfilesStore()
+const message = useMessage()
 const showModal = ref(false)
 
 async function loadProvidersForProfile() {
@@ -46,16 +45,15 @@ async function handleSaved() {
 async function handleRefreshModelCache() {
   try {
     await modelsStore.refreshModelCache()
-    // The refreshed model lists on the cards are the report.
+    message.success(t('models.refreshModelCacheSuccess'))
   } catch (e: any) {
-    paneError.value = e?.message || t('models.refreshModelCacheFailed')
+    message.error(e?.message || t('models.refreshModelCacheFailed'))
   }
 }
 </script>
 
 <template>
   <div class="models-view">
-    <p v-if="paneError" class="pane-notice" data-testid="models-error">{{ paneError }}</p>
     <div v-if="modelsStore.refreshingModelCache" class="model-cache-overlay">
       <NSpin size="large" :description="t('models.refreshModelCacheLoading')" />
     </div>
@@ -100,15 +98,6 @@ async function handleRefreshModelCache() {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
-.pane-notice {
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  background: var(--danger-bg);
-  color: var(--danger);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
 
 .models-view {
   height: calc(100 * var(--vh));

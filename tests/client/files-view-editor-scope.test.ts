@@ -7,12 +7,6 @@ vi.mock('@/components/hermes/files/FileEditor.vue', () => ({
   default: { name: 'FileEditor', template: '<div data-testid="file-editor" />' },
 }))
 
-// FilesView now owns the view tabs / type filter (prototype LibraryScreen),
-// so it calls useI18n directly.
-vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ t: (key: string) => key }),
-}))
-
 import FilesView from '@/views/hermes/FilesView.vue'
 import FileEditor from '@/components/hermes/files/FileEditor.vue'
 import { useFilesStore } from '@/stores/hermes/files'

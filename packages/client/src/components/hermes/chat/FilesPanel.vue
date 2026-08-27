@@ -24,11 +24,6 @@ const emit = defineEmits<{ (e: 'editor-opened'): void }>()
 const scopedEditingFile = computed(() => filesStore.getEditingFile(props.editorScope))
 
 const contextMenuRef = ref<InstanceType<typeof FileContextMenu> | null>(null)
-/**
- * What the context menu tried and could not do. It lives here because a context
- * menu closes the moment an item is picked, leaving it nowhere to report.
- */
-const fileOpError = ref('')
 const showUpload = ref(false)
 const showRenameModal = ref(false)
 const renameMode = ref<'newFile' | 'newFolder' | 'rename'>('newFile')
@@ -79,16 +74,6 @@ onMounted(() => {
 
 <template>
   <div class="files-panel-drawer">
-    <!-- The context menu closes on select, so what it started reports here. -->
-    <p v-if="fileOpError" class="file-op-error" data-testid="file-op-error">
-      <span class="file-op-error__text">{{ fileOpError }}</span>
-      <button
-        type="button"
-        class="file-op-error__close"
-        :title="t('common.close')"
-        @click="fileOpError = ''"
-      >&times;</button>
-    </p>
     <!-- Clean artifact preview: when a file/artifact is being previewed it takes
          over the whole panel (no file tree, no new-file/upload toolbar, no
          breadcrumb) for a light, WorkBuddy-style view. FilePreview's 关闭 button
@@ -146,7 +131,6 @@ onMounted(() => {
       :allow-edit="editorScopeActive"
       :editor-scope="props.editorScope"
       @editor-opened="handleEditorOpened"
-      @failed="(reason: string) => (fileOpError = reason)"
       @rename="handleRename"
       @new-folder="handleContextNewFolder"
     />
@@ -163,34 +147,6 @@ onMounted(() => {
 
 <style scoped lang="scss">
 @use "@/styles/variables" as *;
-.file-op-error {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  background: var(--danger-bg);
-  color: var(--danger);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
-.file-op-error__text {
-  flex: 1;
-  min-width: 0;
-}
-
-.file-op-error__close {
-  flex: 0 0 auto;
-  border: 0;
-  background: none;
-  color: inherit;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 2px;
-}
-
 
 .files-panel-drawer {
   display: flex;

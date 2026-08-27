@@ -1,21 +1,19 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { NModal, NUpload, NButton, NInput, NRadioGroup, NRadio } from 'naive-ui'
+import { NModal, NUpload, NButton, NInput, NRadioGroup, NRadio, useMessage } from 'naive-ui'
 import type { UploadFileInfo } from 'naive-ui'
 import { importSkill } from '@/api/hermes/skills'
 import { useI18n } from 'vue-i18n'
 
 const emit = defineEmits<{
   close: []
-  /** Imported. Carries the skill name so the host can name it in its notice. */
-  saved: [name: string]
+  saved: []
 }>()
 
 const { t } = useI18n()
+const message = useMessage()
 
 const showModal = ref(true)
-/** Validation and import failures, kept in the dialog. */
-const paneError = ref('')
 const loading = ref(false)
 const mode = ref<'zip' | 'folder'>('folder')
 const zipFiles = ref<UploadFileInfo[]>([])
@@ -37,7 +35,7 @@ function onModeChange() {
 function beforeUpload({ file }: { file: UploadFileInfo }) {
   const name = file.name?.toLowerCase() || ''
   if (!name.endsWith('.zip')) {
-    paneError.value = t('skills.importInvalidFile')
+    message.warning(t('skills.importInvalidFile'))
     return false
   }
   return true
@@ -61,7 +59,7 @@ function onFolderSelected(e: Event) {
 
 async function handleSave() {
   if (!hasSelection.value) {
-    paneError.value = t('skills.importNoSelection')
+    message.warning(t('skills.importNoSelection'))
     return
   }
 
@@ -74,19 +72,18 @@ async function handleSave() {
     files = folderFiles.value
   }
   if (files.length === 0) {
-    paneError.value = t('skills.importFailed')
+    message.error(t('skills.importFailed'))
     return
   }
 
   loading.value = true
   try {
     const res = await importSkill(files, category.value.trim() || undefined)
-    // The skill appearing in the list is the success report. The reload hint is
-    // NOT a report though — it is an instruction, and this dialog is about to
-    // close, so it is handed to the host to keep on screen.
-    emit('saved', res?.name ? `${res.name}` : '')
+    message.success(t('skills.importSuccess') + (res?.name ? `: ${res.name}` : ''))
+    message.info(t('skills.reloadHint'), { duration: 6000 })
+    emit('saved')
   } catch (err: any) {
-    paneError.value = t('skills.importFailed') + `: ${err.message}`
+    message.error(t('skills.importFailed') + `: ${err.message}`)
   } finally {
     loading.value = false
   }
@@ -108,7 +105,6 @@ function handleClose() {
     :mask-closable="!loading"
     @after-leave="emit('close')"
   >
-    <p v-if="paneError" class="pane-notice is-error" data-testid="skill-import-error">{{ paneError }}</p>
     <div class="form-row">
       <NRadioGroup v-model:value="mode" size="small" :disabled="loading" @update:value="onModeChange">
         <NRadio value="folder">{{ t('skills.importModeFolder') }}</NRadio>
@@ -171,27 +167,6 @@ function handleClose() {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
-.pane-notice {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
-.pane-notice.is-error {
-  background: var(--danger-bg);
-  color: var(--danger);
-}
-
-.pane-notice.is-info {
-  background: var(--surface-2);
-  color: var(--fg-primary);
-  box-shadow: inset 0 0 0 0.5px var(--divider);
-}
-
 
 .form-row {
   margin-bottom: 14px;

@@ -2,7 +2,6 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useFeedbackStore } from '@/stores/hermes/feedback'
-import KpIcon from '@/components/kippies/KpIcon.vue'
 import type { FeedbackRating, FeedbackReason } from '@/api/hermes/feedback'
 
 const props = defineProps<{ sessionId: string; runId: string }>()
@@ -65,7 +64,7 @@ function retry() {
         :disabled="saving"
         @click="choose('up')"
       >
-        <KpIcon name="line_praise" :size="16" />
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10v10H3V10h4Zm4 10H8V9l4-7 2 1v5h5a2 2 0 0 1 2 2l-2 8a2 2 0 0 1-2 2h-6Z" /></svg>
       </button>
       <button
         type="button"
@@ -75,7 +74,7 @@ function retry() {
         :disabled="saving"
         @click="choose('down')"
       >
-        <KpIcon name="line_praise" :size="16" class="is-flip" />
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v10H3V4h4Zm4 0h6a2 2 0 0 1 2 2l2 8a2 2 0 0 1-2 2h-5v5l-2 1-4-7V4h3Z" /></svg>
       </button>
     </div>
     <div v-if="choosingReason" class="feedback-reasons" :aria-label="t('chat.feedback.reasons')">
@@ -100,103 +99,81 @@ function retry() {
 </template>
 
 <style scoped lang="scss">
-/* Renders INSIDE MessageItem's .message-meta action row, so the two rating
-   buttons must be indistinguishable from the row's other KpIcon buttons
-   (28px circle, --fg-aux, no ground). The reason picker and the retry notice
-   are the only parts that need room of their own — they float below the row
-   instead of widening it, which would push 复制/分享 out of line. */
 .feedback-control {
-  position: relative;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 2px;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--text-color-3);
 }
 
-.feedback-buttons {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.feedback-buttons button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: none;
-  border-radius: 9999px;
-  background: transparent;
-  color: var(--fg-aux);
-  cursor: pointer;
-  transition: opacity var(--motion-base) var(--ease-std);
-
-  &:active {
-    opacity: 0.6;
-  }
-}
-
-.feedback-buttons .is-flip {
-  transform: rotate(180deg);
-}
-
-/* The only state that reads back after a reload — keep it unmistakable. */
-.feedback-buttons button[aria-pressed="true"] {
-  color: var(--keep-green);
-}
-
-.feedback-buttons button:focus-visible {
-  outline: 2px solid var(--keep-green);
-  outline-offset: 2px;
-}
-
-.feedback-buttons button:disabled {
-  cursor: wait;
-  opacity: 0.55;
-}
-
+.feedback-buttons,
 .feedback-reasons,
 .feedback-error {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 3;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 4px;
-  max-width: min(420px, 70vw);
-  padding: 6px;
-  border: 1px solid var(--divider);
-  border-radius: var(--r-ctl);
-  background: var(--bg-card);
-  box-shadow: var(--shadow-toast);
+}
+
+button {
+  min-height: 28px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.feedback-buttons button {
+  display: inline-grid;
+  width: 30px;
+  place-items: center;
+  padding: 4px;
+}
+
+.feedback-buttons svg {
+  width: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+button:hover,
+button[aria-pressed="true"] {
+  border-color: rgba(var(--accent-primary-rgb), 0.35);
+  background: rgba(var(--accent-primary-rgb), 0.08);
+  color: var(--accent-primary);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 
 .feedback-reasons button,
 .feedback-retry {
   padding: 3px 8px;
-  border: 1px solid var(--divider);
-  border-radius: var(--r-ctl);
-  background: transparent;
-  color: var(--fg-primary);
-  cursor: pointer;
-  font: var(--w-regular) var(--t-12) / var(--lh-tight) var(--font-cn);
-
-  &:hover {
-    border-color: var(--keep-green);
-    color: var(--keep-green);
-  }
-
-  &:disabled {
-    cursor: wait;
-    opacity: 0.55;
-  }
+  border-color: var(--border-color);
+  font-size: 12px;
 }
 
 .feedback-error {
-  color: var(--danger);
-  font: var(--w-regular) var(--t-12) / var(--lh-tight) var(--font-cn);
+  color: var(--error-color, #d03050);
+  font-size: 12px;
+}
+
+@media (max-width: 480px) {
+  .feedback-control,
+  .feedback-reasons {
+    max-width: 100%;
+  }
 }
 </style>

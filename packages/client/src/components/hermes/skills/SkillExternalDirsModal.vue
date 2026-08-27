@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { NModal, NButton, NInput } from 'naive-ui'
+import { NModal, NButton, NInput, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { fetchExternalDirs, saveExternalDirs, type ExternalDirEntry } from '@/api/hermes/skills'
 
@@ -10,6 +10,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const message = useMessage()
 
 interface Row {
   raw: string
@@ -17,8 +18,6 @@ interface Row {
   hint: 'missing' | 'notdir' | null
 }
 
-/** Load and save failures, kept in the dialog. */
-const paneError = ref('')
 const showModal = ref(true)
 const loading = ref(false)
 const initializing = ref(true)
@@ -35,7 +34,7 @@ onMounted(async () => {
     const entries = await fetchExternalDirs()
     rows.value = entries.map(entryToRow)
   } catch (err: any) {
-    paneError.value = t('skills.externalDirs.loadFailed') + `: ${err.message}`
+    message.error(t('skills.externalDirs.loadFailed') + `: ${err.message}`)
   } finally {
     initializing.value = false
   }
@@ -70,10 +69,10 @@ async function handleSave() {
   loading.value = true
   try {
     await saveExternalDirs(cleaned)
-    // Saved: the dialog closes and the directory list reflects it.
+    message.success(t('skills.externalDirs.saveSuccess'))
     emit('saved')
   } catch (err: any) {
-    paneError.value = t('skills.externalDirs.saveFailed') + `: ${err.message}`
+    message.error(t('skills.externalDirs.saveFailed') + `: ${err.message}`)
   } finally {
     loading.value = false
   }
@@ -95,7 +94,6 @@ function handleClose() {
     :mask-closable="!loading"
     @after-leave="emit('close')"
   >
-    <p v-if="paneError" class="pane-notice" data-testid="external-dirs-error">{{ paneError }}</p>
     <p class="hint">{{ t('skills.externalDirs.hint') }}</p>
 
     <div v-if="initializing" class="state-row">{{ t('common.loading') }}</div>
@@ -153,15 +151,6 @@ function handleClose() {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
-.pane-notice {
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  background: var(--danger-bg);
-  color: var(--danger);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
 
 .hint {
   font-size: 12px;

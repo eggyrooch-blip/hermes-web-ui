@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { NModal, NForm, NFormItem, NInput, NButton, NText } from 'naive-ui'
+import { NModal, NForm, NFormItem, NInput, NButton, NText, useMessage } from 'naive-ui'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useI18n } from 'vue-i18n'
 
@@ -11,9 +11,8 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-/** Validation and rename failures, kept in the dialog. */
-const paneError = ref('')
 const profilesStore = useProfilesStore()
+const message = useMessage()
 
 const showModal = ref(true)
 const loading = ref(false)
@@ -33,21 +32,24 @@ function handleNameInput(value: string) {
 
 async function handleSave() {
   if (!newName.value) {
-    paneError.value = t('profiles.newNamePlaceholder')
+    message.warning(t('profiles.newNamePlaceholder'))
     return
   }
 
   if (!/^[a-z0-9_-]+$/.test(newName.value)) {
-    paneError.value = t('profiles.nameValidation')
+    message.error(t('profiles.nameValidation'))
     return
   }
 
   loading.value = true
   try {
     const ok = await profilesStore.renameProfile(props.profileName, newName.value.trim())
-    // The renamed profile shows its new name in the list.
-    if (ok) emit('saved')
-    else paneError.value = t('profiles.renameFailed')
+    if (ok) {
+      message.success(t('profiles.renameSuccess'))
+      emit('saved')
+    } else {
+      message.error(t('profiles.renameFailed'))
+    }
   } finally {
     loading.value = false
   }
@@ -68,7 +70,6 @@ function handleClose() {
     :mask-closable="!loading"
     @after-leave="emit('close')"
   >
-    <p v-if="paneError" class="pane-notice" data-testid="profile-rename-error">{{ paneError }}</p>
     <NForm label-placement="top">
       <NFormItem :label="t('profiles.newName')" required>
         <NInput
@@ -94,16 +95,6 @@ function handleClose() {
 </template>
 
 <style scoped lang="scss">
-.pane-notice {
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  background: var(--danger-bg);
-  color: var(--danger);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-  white-space: pre-line;
-}
-
 .modal-footer {
   display: flex;
   justify-content: flex-end;

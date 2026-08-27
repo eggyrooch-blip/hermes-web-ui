@@ -1,19 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import JobCard from './JobCard.vue'
-import KpEmptyState from '@/components/kippies/KpEmptyState.vue'
-import KpListSkeleton from '@/components/kippies/KpListSkeleton.vue'
 import { useJobsStore } from '@/stores/hermes/jobs'
 import { useI18n } from 'vue-i18n'
 
-const props = withDefaults(defineProps<{
+const props = defineProps<{
   selectedJobId: string | null
   sortBy: 'time' | 'name'
   sortAsc: boolean
-  filter?: 'all' | 'enabled'
-}>(), {
-  filter: 'all',
-})
+}>()
 
 const emit = defineEmits<{
   edit: [jobId: string]
@@ -40,11 +35,6 @@ const sortedJobs = computed(() => {
   return jobs
 })
 
-const visibleJobs = computed(() => {
-  if (props.filter === 'enabled') return sortedJobs.value.filter(job => job.enabled)
-  return sortedJobs.value
-})
-
 function handleSelect(jobId: string) {
   emit('select', props.selectedJobId === jobId ? null : jobId)
 }
@@ -57,25 +47,18 @@ function handleDeselect() {
 </script>
 
 <template>
-  <!--
-    The skeleton has to come BEFORE the empty state. With only the empty branch,
-    the first paint of a cold load says "you have no automations" and then swaps
-    to a list — a claim that turns out to be false. `table` is the right variant:
-    a rule is a fixed-height 56px single-line row, not a card.
-  -->
-  <KpListSkeleton
-    v-if="jobsStore.loading && jobsStore.jobs.length === 0"
-    variant="table"
-    :rows="4"
-  />
-  <KpEmptyState
-    v-else-if="jobsStore.jobs.length === 0"
-    :title="t('jobs.emptyTitle')"
-    :body="t('jobs.noJobs')"
-  />
-  <div v-else class="rules">
+  <div v-if="jobsStore.jobs.length === 0" class="empty-state">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" class="empty-icon">
+      <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+      <line x1="16" y1="2" x2="16" y2="6"/>
+      <line x1="8" y1="2" x2="8" y2="6"/>
+      <line x1="3" y1="10" x2="21" y2="10"/>
+    </svg>
+    <p>{{ t('jobs.noJobs') }}</p>
+  </div>
+  <div v-else class="jobs-grid">
     <JobCard
-      v-for="job in visibleJobs"
+      v-for="job in sortedJobs"
       :key="job.id"
       :job="job"
       :selected="selectedJobId === (job.job_id || job.id)"
@@ -92,9 +75,30 @@ function handleDeselect() {
 </template>
 
 <style scoped lang="scss">
-.rules {
+@use '@/styles/variables' as *;
+
+.empty-state {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: $text-muted;
+  gap: 12px;
+
+  .empty-icon {
+    opacity: 0.3;
+  }
+
+  p {
+    font-size: 14px;
+  }
+}
+
+.jobs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
+  gap: 14px;
 }
 
 .deselect-overlay {

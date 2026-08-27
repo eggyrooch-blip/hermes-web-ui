@@ -120,18 +120,13 @@ describe('App auth navigation readiness', () => {
     authReadyBox.ref!.value = true
     await nextTick()
 
-    // Auth is settled but the navigation hasn't landed: no stale sidebar next
-    // to a blank main — the pending indicator owns the screen instead.
-    expect(wrapper.find('[data-test="app-sidebar"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="app-sidebar"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="router-view"]').exists()).toBe(false)
-    expect(wrapper.find('.route-pending').exists()).toBe(true)
 
     routeContentReadyBox.ref!.value = true
     await nextTick()
 
-    expect(wrapper.find('[data-test="app-sidebar"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="router-view"]').exists()).toBe(true)
-    expect(wrapper.find('.route-pending').exists()).toBe(false)
     expect(loadModelsMock).toHaveBeenCalled()
     expect(startHealthPollingMock).toHaveBeenCalled()
   })

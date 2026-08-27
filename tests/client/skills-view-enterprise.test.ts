@@ -5,7 +5,6 @@ import { flushPromises, mount } from '@vue/test-utils'
 const mockIsStoredSuperAdmin = vi.hoisted(() => vi.fn())
 const mockFetchSkills = vi.hoisted(() => vi.fn())
 const mockFetchPendingWrites = vi.hoisted(() => vi.fn())
-const mockRouterPush = vi.hoisted(() => vi.fn())
 const mockProfilesStore = vi.hoisted(() => ({
   activeProfileName: 'feishu_g41a5b5g',
   profiles: [{ name: 'feishu_g41a5b5g' }],
@@ -28,13 +27,6 @@ vi.mock('@/stores/hermes/profiles', () => ({
   useProfilesStore: () => mockProfilesStore,
 }))
 
-vi.mock('vue-router', () => ({
-  useRouter: () => ({ push: mockRouterPush }),
-  // The market tab strip in the page head reads the current route to decide
-  // whether to navigate by surface query or by route name.
-  useRoute: () => ({ name: 'hermes.skills', query: {} }),
-}))
-
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     locale: { value: 'en' },
@@ -51,8 +43,8 @@ vi.mock('naive-ui', () => ({
   NInput: { inheritAttrs: false, template: '<div class="n-input" />' },
 }))
 
-vi.mock('@/components/hermes/skills/SkillMarketGrid.vue', () => ({
-  default: { name: 'SkillMarketGrid', template: '<div class="skill-market">SkillMarketGrid</div>' },
+vi.mock('@/components/hermes/skills/SkillList.vue', () => ({
+  default: { name: 'SkillList', template: '<div class="skill-list">SkillList</div>' },
 }))
 vi.mock('@/components/hermes/skills/SkillDetail.vue', () => ({
   default: { name: 'SkillDetail', template: '<div>SkillDetail</div>' },
@@ -72,14 +64,6 @@ vi.mock('@/components/hermes/chat/MarkdownRenderer.vue', () => ({
 
 import SkillsView from '@/views/hermes/SkillsView.vue'
 
-// The header follows the prototype: a search pill plus one dark 创建技能
-// split menu. Every acquisition/admin entry (import, Keep AI Hub, write
-// approvals, external dirs) lives inside that menu, so the tests open it
-// before asserting.
-async function openCreateMenu(wrapper: ReturnType<typeof mount>) {
-  await wrapper.get('.create-skill-btn').trigger('click')
-}
-
 describe('SkillsView enterprise surface gating', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -92,11 +76,10 @@ describe('SkillsView enterprise surface gating', () => {
   it('shows profile-local skill import but hides host-level directory controls from non-super-admin users', async () => {
     const wrapper = mount(SkillsView)
     await flushPromises()
-    await openCreateMenu(wrapper)
 
     expect(mockFetchSkills).toHaveBeenCalledWith('feishu_g41a5b5g')
     expect(wrapper.text()).toContain('Pending 0')
-    expect(wrapper.text()).toContain('skills.importTitle')
+    expect(wrapper.text()).toContain('skills.import')
     expect(wrapper.text()).not.toContain('skills.externalDirs.manage')
     expect(mockFetchPendingWrites).toHaveBeenCalledOnce()
   })
@@ -120,29 +103,31 @@ describe('SkillsView enterprise surface gating', () => {
 
     const wrapper = mount(SkillsView)
     await flushPromises()
-    await openCreateMenu(wrapper)
 
-    expect(wrapper.text()).toContain('skills.importTitle')
+    expect(wrapper.text()).toContain('skills.import')
     expect(wrapper.text()).toContain('skills.externalDirs.manage')
   })
 
-  it('keeps the Keep AI Hub browse entry inside the create menu', async () => {
+  it('renders merged KeepAiHub legend filter and standalone browse link', async () => {
     const wrapper = mount(SkillsView)
     await flushPromises()
-    await openCreateMenu(wrapper)
 
+    // hub + keephub are merged into one legend item; standalone (non-embedded)
+    // SkillsView keeps the toolbar browse link.
+    expect(wrapper.text()).toContain('skills.source.keepaihub')
     const keepHubLink = wrapper.get('a.keephub-link')
     expect(keepHubLink.attributes('href')).toBe('https://ark.example.com/aidock-cms/admin/skills')
     expect(keepHubLink.attributes('target')).toBe('_blank')
     expect(keepHubLink.attributes('rel')).toContain('noopener')
-    expect(keepHubLink.text()).toContain('skills.keepHubLink')
+    expect(keepHubLink.text()).toBe('skills.keepHubLink')
   })
 
-  it('keeps the browse entry when embedded, since skills is a nav destination of its own', async () => {
+  it('hides the toolbar browse link when embedded so it never duplicates the ExpertView header link', async () => {
     const wrapper = mount(SkillsView, { props: { embedded: true } })
     await flushPromises()
-    await openCreateMenu(wrapper)
 
-    expect(wrapper.get('a.keephub-link').attributes('href')).toBe('https://ark.example.com/aidock-cms/admin/skills')
+    // Embedded in the expert panel, the Keep AI Hub entry lives only in
+    // ExpertView's shared header — the toolbar copy must not render.
+    expect(wrapper.find('a.keephub-link').exists()).toBe(false)
   })
 })

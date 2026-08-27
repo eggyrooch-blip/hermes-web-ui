@@ -8,7 +8,7 @@ import {
   isUnnamedGroup,
 } from '@/utils/hermes/agent-identity'
 
-const OWNER = 'ou_11111111111111110000000000000001'
+const OWNER = 'ou_7576020ac75436f4935892f6353567c7'
 
 function profile(over: Partial<Record<string, unknown>> = {}) {
   return {
@@ -69,8 +69,8 @@ describe('groupNameFromLabel', () => {
   it('returns empty when the label is missing or fell back to the chat id', () => {
     expect(groupNameFromLabel(undefined)).toBe('')
     expect(groupNameFromLabel('   ')).toBe('')
-    expect(groupNameFromLabel(`${OWNER}-oc_ffffffffffffffff0000000000000001`)).toBe('')
-    expect(groupNameFromLabel('oc_ffffffffffffffff0000000000000001')).toBe('')
+    expect(groupNameFromLabel(`${OWNER}-oc_21034461c59426aaf0d10d55827ac0dc`)).toBe('')
+    expect(groupNameFromLabel('oc_21034461c59426aaf0d10d55827ac0dc')).toBe('')
   })
 
   it('never leaks an identifier when the label carries no group name at all', () => {
@@ -93,7 +93,7 @@ describe('agentDisplayName', () => {
   })
 
   it('never leaks a raw profile name or chat id for an unsynced group', () => {
-    const p = profile({ name: 'feishu_group_21034461c594_x', kind: 'group', displayLabel: `${OWNER}-oc_ffffffffffffffff0000000000000001` })
+    const p = profile({ name: 'feishu_group_21034461c594_x', kind: 'group', displayLabel: `${OWNER}-oc_21034461c59426aaf0d10d55827ac0dc` })
     const shown = agentDisplayName(p)
     expect(shown).toBe('未命名群聊')
     expect(shown).not.toContain('oc_')

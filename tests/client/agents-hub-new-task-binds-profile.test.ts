@@ -4,7 +4,7 @@ import { mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import zh from '@/i18n/locales/zh'
 
-const OWNER = 'ou_11111111111111110000000000000001'
+const OWNER = 'ou_7576020ac75436f4935892f6353567c7'
 
 const profilesState = vi.hoisted(() => ({
   profiles: [] as any[],
@@ -24,23 +24,6 @@ const routerState = vi.hoisted(() => ({ push: vi.fn(async () => {}) }))
 
 vi.mock('@/stores/hermes/profiles', () => ({ useProfilesStore: () => profilesState }))
 vi.mock('@/stores/hermes/chat', () => ({ useChatStore: () => chatState }))
-// AgentCard's model InlinePick pulls in the app store (model catalog), the
-// profile-scoped model API (whose client module drags the real router in),
-// and naive-ui's message hook — all unrelated to what this suite asserts.
-vi.mock('@/stores/hermes/app', () => ({
-  useAppStore: () => ({
-    modelGroups: [],
-    profileModelGroups: [],
-    isModelVisible: () => true,
-    displayModelName: (model: string) => model,
-    loadModels: vi.fn(async () => {}),
-  }),
-}))
-vi.mock('@/api/hermes/system', () => ({ updateDefaultModelForProfile: vi.fn(async () => {}) }))
-vi.mock('naive-ui', () => ({
-  NSpin: { name: 'NSpin', props: ['show'], template: '<div><slot /></div>' },
-  useMessage: () => ({ error: vi.fn(), success: vi.fn() }),
-}))
 vi.mock('vue-router', () => ({
   useRouter: () => routerState,
   useRoute: () => ({ params: {}, query: {} }),
@@ -75,7 +58,7 @@ const FIXTURE = [
   profile({ name: 'webui_c84d5851f3c0_kehugenzong_830478d9b1', kind: 'agent', displayLabel: 'kehugenzong' }),
   profile({ name: 'feishu_group_8ec050fb3255_703fc51f7d272a1f', kind: 'group', displayLabel: `${OWNER}-IT&SEC 安全共建群` }),
   profile({ name: 'feishu_group_e1b71bb649bb_53a248a333c72a5b', kind: 'group', displayLabel: `${OWNER}-智能体先锋队` }),
-  profile({ name: 'feishu_group_21034461c594_e5df580756fa42f2', kind: 'group', displayLabel: `${OWNER}-oc_ffffffffffffffff0000000000000001` }),
+  profile({ name: 'feishu_group_21034461c594_e5df580756fa42f2', kind: 'group', displayLabel: `${OWNER}-oc_21034461c59426aaf0d10d55827ac0dc` }),
   profile({ name: 'shared_agent_x', kind: 'agent', displayLabel: '别人的 agent', shareRole: 'viewer' }),
 ]
 
@@ -93,16 +76,12 @@ describe('agents hub', () => {
     routerState.push.mockClear()
   })
 
-  // Prototype structure: the groups are segmented tabs, one on screen at a
-  // time — so "exactly once" is asserted per tab and across the union.
-  it('renders every profile exactly once across the three tabs', async () => {
+  it('renders every profile exactly once across the three sections', () => {
     const wrapper = mountView()
-    const ids: string[] = []
-    for (const key of ['mine', 'group', 'shared'] as const) {
-      await wrapper.get(`[data-testid="agents-tab-${key}"]`).trigger('click')
-      ids.push(...wrapper.findAll('[data-testid^="agent-card-"]').map(card => card.attributes('data-testid')!))
-    }
-    expect(ids).toHaveLength(FIXTURE.length)
+    const cards = wrapper.findAll('[data-testid^="agent-card-"]')
+    expect(cards).toHaveLength(FIXTURE.length)
+
+    const ids = cards.map(card => card.attributes('data-testid'))
     expect(new Set(ids).size).toBe(FIXTURE.length)
 
     expect(wrapper.get('[data-testid="agents-section-count-mine"]').text()).toBe('3')
@@ -110,18 +89,16 @@ describe('agents hub', () => {
     expect(wrapper.get('[data-testid="agents-section-count-shared"]').text()).toBe('1')
   })
 
-  it('shows group names, never the raw profile name or chat id', async () => {
-    const wrapper = mountView()
-    await wrapper.get('[data-testid="agents-tab-group"]').trigger('click')
-    const text = wrapper.text()
+  it('shows group names, never the raw profile name or chat id', () => {
+    const text = mountView().text()
     expect(text).toContain('IT&SEC 安全共建群')
     expect(text).toContain('智能体先锋队')
     expect(text).toContain('未命名群聊')
     expect(text).toContain('群名待同步')
-    // The raw profile name lives only in the title tooltip and the detail
-    // page; the openid prefix / bare chat id must never reach the user.
+    // The profile name is shown as a monospace subtitle, but never as the title,
+    // and the openid prefix / bare chat id must never reach the user.
     expect(text).not.toContain(OWNER)
-    expect(text).not.toContain('oc_ffffffffffffffff0000000000000001')
+    expect(text).not.toContain('oc_21034461c59426aaf0d10d55827ac0dc')
   })
 
   it('still groups correctly when the server merged no multitenancy metadata', () => {
@@ -135,11 +112,10 @@ describe('agents hub', () => {
     expect(wrapper.get('[data-testid="agents-section-count-group"]').text()).toBe('1')
   })
 
-  it('renders an empty state (not an error) when nothing is shared with me', async () => {
+  it('renders an empty state (not an error) when nothing is shared with me', () => {
     profilesState.profiles = [profile({ name: 'sunke', kind: 'user' })]
     const wrapper = mountView()
     expect(wrapper.get('[data-testid="agents-section-count-shared"]').text()).toBe('0')
-    await wrapper.get('[data-testid="agents-tab-shared"]').trigger('click')
     expect(wrapper.text()).toContain('还没有共享给你的 agent')
   })
 
@@ -172,7 +148,6 @@ describe('agents hub', () => {
 
   it('binds a group agent by its profile name, not its display name', async () => {
     const wrapper = mountView()
-    await wrapper.get('[data-testid="agents-tab-group"]').trigger('click')
     await wrapper.get('[data-testid="agent-new-task-feishu_group_8ec050fb3255_703fc51f7d272a1f"]').trigger('click')
     await Promise.resolve()
     expect(routerState.push).toHaveBeenCalledWith({

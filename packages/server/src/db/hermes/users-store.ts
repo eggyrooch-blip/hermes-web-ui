@@ -115,18 +115,6 @@ export function listUserProfiles(userId: UserId): UserProfileRecord[] {
   ).all(id) as unknown as UserProfileRecord[]
 }
 
-export function addUserProfile(userId: UserId, profileName: string): boolean {
-  const db = getDb()
-  if (!db) return false
-  const id = normalizeUserId(userId)
-  const name = profileName.trim()
-  if (!id || !name) return false
-  db.prepare(
-    `INSERT OR IGNORE INTO ${USER_PROFILES_TABLE} (user_id, profile_name, is_default, created_at) VALUES (?, ?, 0, ?)`
-  ).run(id, name, Date.now())
-  return true
-}
-
 export function userCanAccessProfile(userId: UserId, profileName: string): boolean {
   const db = getDb()
   if (!db) return false

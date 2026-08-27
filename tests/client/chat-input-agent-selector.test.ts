@@ -4,7 +4,7 @@ import { mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import zh from '@/i18n/locales/zh'
 
-const OWNER = 'ou_11111111111111110000000000000001'
+const OWNER = 'ou_7576020ac75436f4935892f6353567c7'
 
 const profilesState = vi.hoisted(() => ({
   profiles: [] as any[],
@@ -71,11 +71,8 @@ describe('session-level agent picker', () => {
     expect(dropdown.text()).toContain('我的智能体')
     expect(dropdown.text()).toContain('群聊智能体')
     expect(dropdown.text()).toContain('智能体先锋队')
-    // The add entry is now the header's icon button (prototype panel).
-    expect(dropdown.find('[data-testid="agent-picker-add"]').exists()).toBe(true)
-    expect(
-      wrapper.get('[data-testid="agent-picker-option-sunke"]').find('.kp_ic_line_check').exists(),
-    ).toBe(true)
+    expect(dropdown.text()).toContain('添加 agent')
+    expect(wrapper.get('[data-testid="agent-picker-option-sunke"]').text()).toContain('✓')
   })
 
   it('shows the group name rather than the raw profile name', async () => {

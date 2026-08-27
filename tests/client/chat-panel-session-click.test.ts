@@ -5,9 +5,7 @@ describe('ChatPanel session clicks', () => {
   it('allows session model switching for coding agent sessions', () => {
     const source = readFileSync('packages/client/src/components/hermes/chat/ChatPanel.vue', 'utf8')
 
-    // The per-row 设置模型 menu entry was cut on the prototype-parity pass; the
-    // switching machinery survives behind the composer's model menu.
-    expect(source).toContain('await openSessionModelModal(sessionId)')
+    expect(source).toContain('contextSession.value?.source === "coding_agent"')
     expect(source).toContain('isSessionModelScopedCodingAgent')
     expect(source).toContain('!isCodingAgentAuthProvider(group.provider)')
     expect(source).toContain('showSessionModelModeModal')

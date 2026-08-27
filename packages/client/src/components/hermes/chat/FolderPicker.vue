@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, watch } from 'vue'
-import { NButton, NDropdown, NInput, NModal, NSpace, NSpin, useDialog } from 'naive-ui'
+import { NButton, NDropdown, NInput, NModal, NSpace, NSpin, useDialog, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { copyToClipboard } from '@/utils/clipboard'
-import KpIcon from '@/components/kippies/KpIcon.vue'
 import {
   createWorkspaceFolder,
   deleteWorkspaceFolder,
@@ -32,6 +31,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const dialog = useDialog()
+const message = useMessage()
 const loading = ref(false)
 const basePath = ref('')
 const folders = ref<FolderEntry[]>([])
@@ -47,8 +47,6 @@ const contextTarget = ref<FolderEntry | null>(null)
 const renameModalVisible = ref(false)
 const renameMode = ref<'create' | 'rename'>('create')
 const renameInput = ref('')
-/** Folder create / rename / delete failures. */
-const paneError = ref('')
 const actionLoading = ref(false)
 
 watch(() => props.modelValue, (v) => { selectedPath.value = v || '' })
@@ -182,9 +180,7 @@ async function handleContextSelect(key: string) {
     case 'copyPath': {
       const path = folder?.fullPath || basePath.value
       const ok = await copyToClipboard(path)
-      // Silent on success (the user asked for it and pasting verifies it); a
-      // failed copy must be said or they paste the previous clipboard.
-      if (!ok) paneError.value = t('files.copyPathFailed')
+      message[ok ? 'success' : 'error'](ok ? t('files.pathCopied') : `${t('files.pathCopied')} ✗`)
       break
     }
     case 'newFolder':
@@ -210,10 +206,10 @@ async function handleContextSelect(key: string) {
             expandedPaths.value = new Set(expandedPaths.value)
             childrenCache.value.delete(folder.path)
             childrenCache.value = new Map(childrenCache.value)
-            // The folder leaving the tree is the report.
             await refreshFolderList(relativeParentPath(folder.path))
+            message.success(t('files.deleted'))
           } catch {
-            paneError.value = t('files.deleteFailed')
+            message.error(t('files.deleteFailed'))
           }
         },
       })
@@ -233,8 +229,8 @@ async function submitRenameModal() {
         expandedPaths.value.add(parentPath)
         expandedPaths.value = new Set(expandedPaths.value)
       }
-      // The new folder appears in the tree.
       await refreshFolderList(parentPath)
+      message.success(t('files.created'))
     } else if (contextTarget.value) {
       const oldFolder = contextTarget.value
       await renameWorkspaceFolder(oldFolder.path, name)
@@ -243,10 +239,11 @@ async function submitRenameModal() {
       if (selectedPath.value === oldFolder.fullPath || selectedPath.value.startsWith(`${oldFolder.fullPath}/`)) {
         updateSelectedPath(null)
       }
+      message.success(t('files.renamed'))
     }
     renameModalVisible.value = false
   } catch {
-    paneError.value = renameMode.value === 'rename' ? t('files.renameFailed') : t('files.createFailed')
+    message.error(renameMode.value === 'rename' ? t('files.renameFailed') : t('files.createFailed'))
   } finally {
     actionLoading.value = false
   }
@@ -281,7 +278,6 @@ const flatNodes = computed<FlatNode[]>(() => {
 
 <template>
   <div class="folder-picker">
-    <p v-if="paneError" class="pane-notice is-error" data-testid="folder-picker-error">{{ paneError }}</p>
     <NInput
       :value="selectedPath"
       :placeholder="t('chat.workspacePlaceholder')"
@@ -302,7 +298,7 @@ const flatNodes = computed<FlatNode[]>(() => {
         @click="selectBase"
         @contextmenu="showContextMenu($event, null)"
       >
-        <KpIcon name="line_box" :size="14" class="folder-icon" />
+        <span class="folder-icon">📂</span>
         <span class="folder-name">{{ basePath || '/' }}</span>
       </div>
 
@@ -317,16 +313,10 @@ const flatNodes = computed<FlatNode[]>(() => {
         @contextmenu="showContextMenu($event, node.folder)"
       >
         <span class="folder-expand" @click.stop="toggleExpand(node.folder)">
-          <NSpin v-if="node.isLoading" :size="10" />
-          <KpIcon
-            v-else
-            name="line_arrow_right"
-            :size="10"
-            class="folder-expand-arrow"
-            :class="{ open: node.isExpanded }"
-          />
+          <template v-if="node.isLoading">⏳</template>
+          <template v-else>{{ node.isExpanded ? '▼' : '▶' }}</template>
         </span>
-        <KpIcon name="line_box" :size="14" class="folder-icon" />
+        <span class="folder-icon">📁</span>
         <span class="folder-name">{{ node.folder.name }}</span>
       </div>
 
@@ -388,27 +378,6 @@ const flatNodes = computed<FlatNode[]>(() => {
 </template>
 
 <style scoped lang="scss">
-.pane-notice {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
-.pane-notice.is-error {
-  background: var(--danger-bg);
-  color: var(--danger);
-}
-
-.pane-notice.is-info {
-  background: var(--surface-2);
-  color: var(--fg-primary);
-  box-shadow: inset 0 0 0 0.5px var(--divider);
-}
-
 .folder-picker {
   max-height: 360px;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -471,20 +440,11 @@ const flatNodes = computed<FlatNode[]>(() => {
 
 .folder-expand {
   width: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  font-size: 10px;
+  text-align: center;
   flex-shrink: 0;
   user-select: none;
   opacity: 0.6;
-}
-
-.folder-expand-arrow {
-  transition: transform var(--motion-fast, 120ms) var(--ease-std, ease);
-
-  &.open {
-    transform: rotate(90deg);
-  }
 }
 
 .folder-icon {

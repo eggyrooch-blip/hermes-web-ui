@@ -460,21 +460,6 @@ if (!desktopPaths.includes('HERMES_DESKTOP_RUNTIME_DIR')) {
   fail('desktop paths must allow HERMES_DESKTOP_RUNTIME_DIR override')
 }
 
-// ponytail: parse-only e2e gate. tests/e2e/ was NEVER compiled by any CI job, so 9da45ef2
-// shipped a spec with a syntax error straight into main and the whole suite silently became
-// "0 tests in 0 files". `--list` only parses — no browser, no webServer (verified under
-// CI=true: ~1s for 53 tests). It lives here, not in .gitlab-ci.yml, because the policy job
-// rejects any MR that touches that file. Full e2e stays out: single-runner starvation
-// already cost one 30min ship timeout.
-try {
-  // --reporter=line is load-bearing: playwright.config.ts picks the html reporter under CI,
-  // which writes playwright-report/ even for --list and errors on read-only runners.
-  execFileSync('npx', ['playwright', 'test', '--list', '--reporter=line'], { stdio: 'pipe', cwd: root })
-} catch (error) {
-  const raw = String(error?.stderr || error?.stdout || error?.message || '').trim()
-  const detail = raw.split(/\r?\n/).slice(0, 12).join('\n')
-  fail('tests/e2e failed to parse (playwright test --list):\n' + detail)
-}
 if (failures.length > 0) {
   console.error('Harness check failed:')
   for (const failure of failures) {

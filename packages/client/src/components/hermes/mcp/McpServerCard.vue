@@ -1,74 +1,25 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { NButton, NSwitch, NPopconfirm } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import type { McpServerInfo } from '@/api/hermes/mcp'
-import { useAction } from '@/components/kippies/useAction'
 
-/**
- * Test / reload / remove arrive as async FUNCTION props rather than emits: each
- * reports its own outcome on its own button, and an emit cannot hand back the
- * promise that says whether it worked. Edit and manage-tools stay emits — they
- * open a dialog, which is its own answer.
- */
 const props = defineProps<{
   server: McpServerInfo
   toolsByServer: Record<string, Array<{ name: string; description?: string }>>
   canManage?: boolean
-  onTest?: (server: McpServerInfo) => Promise<unknown>
-  onReload?: (name: string) => Promise<unknown>
-  onRemove?: (server: McpServerInfo) => Promise<unknown>
-  onToggleEnabled?: (server: McpServerInfo) => Promise<unknown>
 }>()
 
 const emit = defineEmits<{
   edit: [server: McpServerInfo]
+  test: [server: McpServerInfo]
+  reload: [name: string]
+  remove: [server: McpServerInfo]
+  toggleEnabled: [server: McpServerInfo]
   manageTools: [server: McpServerInfo]
 }>()
 
 const { t } = useI18n()
-
-const [testState, runTest] = useAction()
-const [reloadState, runReload] = useAction()
-const [removeState, runRemove] = useAction()
-/** Why the last press failed, for the failed button's tooltip. */
-const reason = ref('')
-
-function track<T>(work: () => Promise<T>): () => Promise<T> {
-  return async () => {
-    reason.value = ''
-    try {
-      return await work()
-    } catch (err: any) {
-      reason.value = err?.message || ''
-      throw err
-    }
-  }
-}
-
-const failTitle = computed(() => reason.value || t('common.retryHint'))
-
-// ⚠️ These wrappers exist because `Promise` is NOT in Vue's template global
-// allow-list — `onTest?.(s) ?? Promise.resolve()` inline compiles to a lookup of
-// `Promise` on the render context and fails to type-check (same trap as
-// `MouseEvent` in a template).
-const testRun = () => props.onTest?.(props.server) ?? Promise.resolve()
-const reloadRun = () => props.onReload?.(props.server.name) ?? Promise.resolve()
-const removeRun = () => props.onRemove?.(props.server) ?? Promise.resolve()
-
-/**
- * The switch is bound to the prop, never to local state, so it simply does not
- * move until the server confirms — and if the call fails it never moves at all,
- * which is the report. The rejection is swallowed here only so it does not
- * surface as an unhandled rejection.
- */
-async function toggleEnabled() {
-  try {
-    await props.onToggleEnabled?.(props.server)
-  } catch {
-    // Left where it was: see above.
-  }
-}
 
 function statusClass(server: McpServerInfo) {
   if (server.raw_config.enabled === false) return 'disabled'
@@ -132,32 +83,11 @@ const MAX_VISIBLE_TOOLS = 20
       <div class="card-actions">
         <NButton size="tiny" quaternary @click="emit('edit', server)">{{ t('mcp.edit') }}</NButton>
         <NButton size="tiny" quaternary :disabled="!server.connected" @click="emit('manageTools', server)">{{ t('mcp.manageTools') }}</NButton>
-        <NButton
-          size="tiny"
-          quaternary
-          :type="testState === 'fail' ? 'error' : undefined"
-          :loading="testState === 'pending'"
-          :title="testState === 'fail' ? failTitle : undefined"
-          @click="runTest({ run: track(testRun) })"
-        >{{ t('mcp.test') }}</NButton>
-        <NButton
-          size="tiny"
-          quaternary
-          :type="reloadState === 'fail' ? 'error' : undefined"
-          :loading="reloadState === 'pending'"
-          :title="reloadState === 'fail' ? failTitle : undefined"
-          @click="runReload({ run: track(reloadRun) })"
-        >{{ t('mcp.reload') }}</NButton>
-        <!-- Success removes this card, so there is no `ok` to show on it. -->
-        <NPopconfirm @positive-click="runRemove({ run: track(removeRun), noOk: true })">
+        <NButton size="tiny" quaternary @click="emit('test', server)">{{ t('mcp.test') }}</NButton>
+        <NButton size="tiny" quaternary @click="emit('reload', server.name)">{{ t('mcp.reload') }}</NButton>
+        <NPopconfirm @positive-click="emit('remove', server)">
           <template #trigger>
-            <NButton
-              size="tiny"
-              quaternary
-              type="error"
-              :loading="removeState === 'pending'"
-              :title="removeState === 'fail' ? failTitle : undefined"
-            >{{ t('mcp.remove') }}</NButton>
+            <NButton size="tiny" quaternary type="error">{{ t('mcp.remove') }}</NButton>
           </template>
           {{ t('mcp.confirmRemove', { name: server.name }) }}
         </NPopconfirm>
@@ -165,7 +95,7 @@ const MAX_VISIBLE_TOOLS = 20
       <NSwitch
         :value="server.raw_config.enabled !== false"
         size="small"
-        @update:value="toggleEnabled"
+        @update:value="() => emit('toggleEnabled', server)"
       />
     </div>
   </div>

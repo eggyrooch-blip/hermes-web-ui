@@ -5,21 +5,6 @@ import { canAccessProtectedRoutes, clearApiKey, clearRuntimeMode, hasApiKey, isS
 export const authNavigationReady = ref(false)
 export const routeContentReady = ref(false)
 
-// Pages that used to be their own entry in the management sidebar are now tabs
-// inside 设置, which renders in the chat shell — one sidebar everywhere. Their
-// old paths stay linkable and land on the matching tab.
-const settingsTab = (tab: string) => ({
-  name: 'hermes.chat' as const,
-  query: { surface: 'settings', tab },
-})
-
-// Admin-only pages keep their `meta` (that is the declared contract, and the
-// tests read it), but the check ALSO happens here: a redirect record is not
-// part of the resolved `to.matched`, so `beforeEach` never sees its meta and
-// would wave a non-admin straight through to the tab.
-const adminSettingsTab = (tab: string, nonAdminRedirect = 'hermes.chat') => () =>
-  isStoredSuperAdmin() ? settingsTab(tab) : { name: nonAdminRedirect }
-
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
@@ -43,11 +28,6 @@ const router = createRouter({
       path: '/hermes/history',
       name: 'hermes.history',
       component: () => import('@/views/hermes/HistoryView.vue'),
-    },
-    {
-      path: '/hermes/design',
-      name: 'hermes.design',
-      component: () => import('@/views/hermes/DesignModeView.vue'),
     },
     {
       path: '/hermes/history/session/:sessionId',
@@ -80,22 +60,15 @@ const router = createRouter({
       component: () => import('@/views/hermes/JobsView.vue'),
     },
     {
-      path: '/hermes/apps',
-      name: 'hermes.apps',
-      component: () => import('@/views/hermes/AppsView.vue'),
-    },
-    {
       path: '/hermes/kanban',
       name: 'hermes.kanban',
-      redirect: settingsTab('kanban'),
+      component: () => import('@/views/hermes/KanbanView.vue'),
     },
     {
-      // `providers`, not `models`: 设置 already had a `models` tab (ModelSettings),
-      // which is a different page from ModelsView (provider accounts).
       path: '/hermes/models',
       name: 'hermes.models',
+      component: () => import('@/views/hermes/ModelsView.vue'),
       meta: { requiresSuperAdmin: true },
-      redirect: adminSettingsTab('providers'),
     },
     {
       // Deliberately NOT requiresSuperAdmin: this is the everyday agent hub and
@@ -119,24 +92,24 @@ const router = createRouter({
     {
       path: '/hermes/logs',
       name: 'hermes.logs',
+      component: () => import('@/views/hermes/LogsView.vue'),
       meta: { requiresSuperAdmin: true },
-      redirect: adminSettingsTab('logs'),
     },
     {
       path: '/hermes/usage',
       name: 'hermes.usage',
-      redirect: settingsTab('usage'),
+      component: () => import('@/views/hermes/UsageView.vue'),
     },
     {
       path: '/hermes/performance',
       name: 'hermes.performance',
+      component: () => import('@/views/hermes/PerformanceView.vue'),
       meta: { requiresSuperAdmin: true },
-      redirect: adminSettingsTab('performance'),
     },
     {
       path: '/hermes/skills-usage',
       name: 'hermes.skillsUsage',
-      redirect: settingsTab('skillsUsage'),
+      component: () => import('@/views/hermes/SkillsUsageView.vue'),
     },
     {
       path: '/hermes/skills',
@@ -146,7 +119,7 @@ const router = createRouter({
     {
       path: '/hermes/expert',
       name: 'hermes.expert',
-      component: () => import('@/views/hermes/ExpertCatalogView.vue'),
+      component: () => import('@/views/hermes/ExpertView.vue'),
     },
     {
       path: '/hermes/connectors',
@@ -157,33 +130,24 @@ const router = createRouter({
     {
       path: '/hermes/plugins',
       name: 'hermes.plugins',
+      component: () => import('@/views/hermes/PluginsView.vue'),
       meta: { requiresSuperAdmin: true, nonAdminRedirect: 'hermes.connectors' },
-      redirect: adminSettingsTab('plugins', 'hermes.connectors'),
     },
     {
       path: '/hermes/memory',
       name: 'hermes.memory',
-      redirect: settingsTab('memory'),
+      component: () => import('@/views/hermes/MemoryView.vue'),
     },
     {
-      // 设置 renders inside the chat shell (surface=settings) so it keeps the
-      // one sidebar. The name stays valid — `router.push({name:'hermes.settings'})`
-      // still works everywhere it is already called — and `?tab=` is carried over.
       path: '/hermes/settings',
       name: 'hermes.settings',
-      redirect: (to) => ({
-        name: 'hermes.chat' as const,
-        query: {
-          surface: 'settings',
-          ...(typeof to.query.tab === 'string' ? { tab: to.query.tab } : {}),
-        },
-      }),
+      component: () => import('@/views/hermes/SettingsView.vue'),
     },
     {
       path: '/hermes/channels',
       name: 'hermes.channels',
+      component: () => import('@/views/hermes/ChannelsView.vue'),
       meta: { requiresSuperAdmin: true },
-      redirect: adminSettingsTab('channels'),
     },
     {
       path: '/hermes/terminal',
@@ -194,8 +158,8 @@ const router = createRouter({
     {
       path: '/hermes/devices',
       name: 'hermes.devices',
+      component: () => import('@/views/hermes/DevicesView.vue'),
       meta: { requiresSuperAdmin: true },
-      redirect: adminSettingsTab('devices'),
     },
     {
       path: '/hermes/group-chat',
@@ -215,20 +179,20 @@ const router = createRouter({
     {
       path: '/hermes/coding-agents',
       name: 'hermes.codingAgents',
+      component: () => import('@/views/hermes/CodingAgentsView.vue'),
       meta: { requiresSuperAdmin: true },
-      redirect: adminSettingsTab('codingAgents'),
     },
     {
       path: '/hermes/version-preview',
       name: 'hermes.versionPreview',
+      component: () => import('@/views/hermes/VersionPreviewView.vue'),
       meta: { requiresSuperAdmin: true },
-      redirect: adminSettingsTab('versionPreview'),
     },
     {
       path: '/hermes/mcp',
       name: 'hermes.mcp',
+      component: () => import('@/views/hermes/McpManagerView.vue'),
       meta: { requiresSuperAdmin: true, nonAdminRedirect: 'hermes.connectors' },
-      redirect: adminSettingsTab('mcp', 'hermes.connectors'),
     },
   ],
 })
@@ -248,23 +212,11 @@ function clearStaleServerSession() {
   clearRuntimeMode()
 }
 
-// Auth probes must not hang navigation forever: if the backend stalls (e.g.
-// mid-restart), abort and fall through to the login page instead of leaving
-// the router — and the whole screen — suspended.
-const AUTH_PROBE_TIMEOUT_MS = 5000
-
-function authProbeSignal(): AbortSignal | undefined {
-  return typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
-    ? AbortSignal.timeout(AUTH_PROBE_TIMEOUT_MS)
-    : undefined
-}
-
 async function discoverServerSessionMode(): Promise<boolean> {
   try {
     const res = await fetch('/api/auth/status', {
       credentials: 'same-origin',
       headers: { Accept: 'application/json' },
-      signal: authProbeSignal(),
     })
     if (!res.ok) return false
     const status = await res.json().catch(() => ({})) as { authMode?: unknown; plane?: unknown }
@@ -283,7 +235,6 @@ async function hasValidServerSession(): Promise<boolean> {
     serverSessionCheck = fetch('/api/auth/me', {
       credentials: 'same-origin',
       headers: { Accept: 'application/json' },
-      signal: authProbeSignal(),
     })
       .then((res) => {
         if (res.ok) {
@@ -320,61 +271,49 @@ function nonAdminRedirectTarget(to: { meta: Record<string | number | symbol, unk
 }
 
 router.beforeEach(async (to, _from, next) => {
-  try {
-    // Public pages don't need auth
-    if (to.meta.public) {
-      // Already has key, skip login
-      if (to.name === 'login' && hasApiKey()) {
-        next({ path: '/hermes/chat' })
-        return
-      }
-      next()
+  // Public pages don't need auth
+  if (to.meta.public) {
+    // Already has key, skip login
+    if (to.name === 'login' && hasApiKey()) {
+      next({ path: '/hermes/chat' })
       return
     }
-
-    // All other pages require auth. Feishu OAuth uses an httpOnly cookie instead
-    // of a JS-readable token, so do not gate protected routes on localStorage.
-    let discoveredServerSession = false
-    if (!canAccessProtectedRoutes()) {
-      discoveredServerSession = await discoverServerSessionMode()
-      if (!discoveredServerSession) {
-        next({ name: 'login' })
-        return
-      }
-    }
-
-    if (!(await hasValidServerSession())) {
-      next({ name: 'login' })
-      return
-    }
-
-    authNavigationReady.value = true
-    if (to.meta.requiresSuperAdmin && !isStoredSuperAdmin()) {
-      routeContentReady.value = false
-      next(nonAdminRedirectTarget(to))
-      return
-    }
-
-    const settingsRedirect = freshServerSettingsLandingRedirect(discoveredServerSession, to.name)
-    if (settingsRedirect) {
-      routeContentReady.value = false
-      next(settingsRedirect)
-      return
-    }
-
-    routeContentReady.value = true
     next()
-  } catch {
-    // An unexpected failure inside the auth checks must never strand the app
-    // on a half-finished navigation (previous page's chrome + blank main).
-    // Land on the login page, which re-runs the bootstrap cleanly.
-    routeContentReady.value = false
-    if (to.name === 'login') {
-      next()
-    } else {
+    return
+  }
+
+  // All other pages require auth. Feishu OAuth uses an httpOnly cookie instead
+  // of a JS-readable token, so do not gate protected routes on localStorage.
+  let discoveredServerSession = false
+  if (!canAccessProtectedRoutes()) {
+    discoveredServerSession = await discoverServerSessionMode()
+    if (!discoveredServerSession) {
       next({ name: 'login' })
+      return
     }
   }
+
+  if (!(await hasValidServerSession())) {
+    next({ name: 'login' })
+    return
+  }
+
+  authNavigationReady.value = true
+  if (to.meta.requiresSuperAdmin && !isStoredSuperAdmin()) {
+    routeContentReady.value = false
+    next(nonAdminRedirectTarget(to))
+    return
+  }
+
+  const settingsRedirect = freshServerSettingsLandingRedirect(discoveredServerSession, to.name)
+  if (settingsRedirect) {
+    routeContentReady.value = false
+    next(settingsRedirect)
+    return
+  }
+
+  routeContentReady.value = true
+  next()
 })
 
 router.afterEach((to) => {

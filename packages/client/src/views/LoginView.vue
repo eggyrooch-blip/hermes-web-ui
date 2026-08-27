@@ -16,7 +16,6 @@ function claimProbeGeneration(): () => boolean {
 
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { takeSignedOutReason } from "@/composables/useSignedOutReason";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { setApiKey, hasApiKey, setRuntimeMode } from "@/api/client";
@@ -84,10 +83,6 @@ async function hasLiveFeishuSession(): Promise<boolean> {
 }
 
 onMounted(async () => {
-  // Why the last session ended, if it ended on its own (401 / 403) rather than
-  // by signing out. Read before the first await so a slow status probe cannot
-  // swallow it, and read-once so it does not resurface on a later visit.
-  errorMsg.value = takeSignedOutReason();
   // Claimed before the first await: a slow status request on an older mount
   // must not outlive a newer one and drag an already-recovered session to OAuth.
   const isCurrentProbe = claimProbeGeneration();

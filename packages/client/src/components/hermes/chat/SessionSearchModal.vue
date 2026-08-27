@@ -1,30 +1,22 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { NButton, NInput, NModal, NSpin } from 'naive-ui'
+import { NButton, NInput, NModal, NSpin, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { fetchSessions, searchSessions, type SessionSearchResult, type SessionSummary } from '@/api/hermes/sessions'
-import { searchFiles, type FileEntry } from '@/api/hermes/files'
-import { fetchSkills, type SkillInfo } from '@/api/hermes/skills'
 import { useChatStore } from '@/stores/hermes/chat'
-import { useFilesStore } from '@/stores/hermes/files'
 import { useSessionSearch } from '@/composables/useSessionSearch'
 
 const { t } = useI18n()
-/** Search failure, shown in the palette above the results. */
-const paneError = ref('')
+const message = useMessage()
 const router = useRouter()
 const chatStore = useChatStore()
-const filesStore = useFilesStore()
 const { sessionSearchOpen } = useSessionSearch()
 
 const query = ref('')
 const loading = ref(false)
 const recentSessions = ref<SessionSummary[]>([])
 const searchResults = ref<SessionSearchResult[]>([])
-const fileResults = ref<FileEntry[]>([])
-const skillResults = ref<SkillInfo[]>([])
-const filesTruncated = ref(false)
 const activeIndex = ref(0)
 const inputRef = ref<InstanceType<typeof NInput> | null>(null)
 const profileFilter = computed(() => chatStore.sessionProfileFilter || undefined)
@@ -33,57 +25,23 @@ const runtimeSource = computed(() => chatStore.runtimeMode === 'global_agent' ? 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 let requestSeq = 0
 
-type SessionItem = SessionSearchResult | (SessionSummary & {
+type SearchItem = SessionSearchResult | (SessionSummary & {
   snippet?: string
   matched_message_id: number | null
   rank: number
 })
 
-// The palette searches the three things you can look for by name: a task you
-// ran, a file it produced or you gave it, and a skill you can invoke. They are
-// kept in ONE flat list rather than three, so arrow keys walk the whole result
-// set the way they always did — the group headers are rendered from the `kind`
-// changing, not from separate lists.
-type SearchItem =
-  | { kind: 'task'; key: string; session: SessionItem }
-  | { kind: 'file'; key: string; entry: FileEntry }
-  | { kind: 'skill'; key: string; skill: SkillInfo }
-
 const hasQuery = computed(() => query.value.trim().length > 0)
 
 const items = computed<SearchItem[]>(() => {
-  if (!hasQuery.value) {
-    return recentSessions.value.map(session => ({
-      kind: 'task' as const,
-      key: `task:${session.id}`,
-      session: { ...session, matched_message_id: null, snippet: session.preview || '', rank: 0 },
-    }))
-  }
-  return [
-    ...searchResults.value.map(result => ({
-      kind: 'task' as const,
-      key: `task:${result.id}`,
-      session: result,
-    })),
-    ...fileResults.value.map(entry => ({
-      kind: 'file' as const,
-      key: `file:${entry.path}`,
-      entry,
-    })),
-    ...skillResults.value.map(skill => ({
-      kind: 'skill' as const,
-      key: `skill:${skill.name}`,
-      skill,
-    })),
-  ]
+  if (hasQuery.value) return searchResults.value
+  return recentSessions.value.map(session => ({
+    ...session,
+    matched_message_id: null,
+    snippet: session.preview || '',
+    rank: 0,
+  }))
 })
-
-// A header is drawn on the first row of each kind.
-function groupLabel(item: SearchItem, index: number): string | null {
-  if (!hasQuery.value) return null
-  if (index > 0 && items.value[index - 1].kind === item.kind) return null
-  return t(`chat.searchGroup.${item.kind}`)
-}
 
 function formatSource(source: string): string {
   const map: Record<string, string> = {
@@ -113,11 +71,11 @@ function formatTime(ts?: number): string {
   })
 }
 
-function getSessionTitle(session: SessionItem): string {
-  const title = session.title?.trim()
+function getItemTitle(item: SearchItem): string {
+  const title = item.title?.trim()
   if (title) return title
-  if (session.preview?.trim()) return session.preview.trim()
-  return session.id
+  if (item.preview?.trim()) return item.preview.trim()
+  return item.id
 }
 
 async function loadRecentSessions() {
@@ -133,7 +91,7 @@ async function loadRecentSessions() {
     activeIndex.value = 0
   } catch (err) {
     if (seq !== requestSeq) return
-    paneError.value = err instanceof Error ? err.message : t('chat.searchFailed')
+    message.error(err instanceof Error ? err.message : t('chat.searchFailed'))
   } finally {
     if (seq === requestSeq) {
       loading.value = false
@@ -141,56 +99,21 @@ async function loadRecentSessions() {
   }
 }
 
-// Skills are fetched whole and filtered here: the endpoint returns the
-// profile's catalog in one response and has no query parameter, so a request
-// per keystroke would buy nothing.
-async function searchSkills(text: string): Promise<SkillInfo[]> {
-  const data = await fetchSkills(profileFilter.value)
-  const needle = text.toLowerCase()
-  if (!data) return []
-  const out: SkillInfo[] = []
-  for (const category of data.categories || []) {
-    for (const skill of category.skills || []) {
-      if (out.length >= 10) return out
-      const haystack = `${skill.name} ${skill.description || ''}`.toLowerCase()
-      if (haystack.includes(needle)) out.push(skill)
-    }
-  }
-  return out
-}
-
 async function runSearch(text: string) {
   const seq = ++requestSeq
-  const trimmed = text.trim()
-  if (!trimmed) {
-    searchResults.value = []
-    fileResults.value = []
-    skillResults.value = []
-    filesTruncated.value = false
-    activeIndex.value = 0
-    return
-  }
   loading.value = true
   try {
-    // One slow or failing source must not blank the other two — each settles on
-    // its own and an error there costs that group, not the palette.
-    const [sessions, files, skills] = await Promise.allSettled([
-      profileFilter.value
-        ? searchSessions(trimmed, runtimeSource.value, 10, profileFilter.value)
-        : searchSessions(trimmed, runtimeSource.value, 10),
-      searchFiles(trimmed, 10),
-      searchSkills(trimmed),
-    ])
+    const results = text.trim()
+      ? profileFilter.value
+        ? await searchSessions(text.trim(), runtimeSource.value, 10, profileFilter.value)
+        : await searchSessions(text.trim(), runtimeSource.value, 10)
+      : []
     if (seq !== requestSeq) return
-    searchResults.value = sessions.status === 'fulfilled' ? sessions.value ?? [] : []
-    fileResults.value = files.status === 'fulfilled' ? files.value?.entries ?? [] : []
-    filesTruncated.value = files.status === 'fulfilled' ? !!files.value?.truncated : false
-    skillResults.value = skills.status === 'fulfilled' ? skills.value ?? [] : []
+    searchResults.value = results
     activeIndex.value = 0
-    if (sessions.status === 'rejected') {
-      paneError.value =
-        sessions.reason instanceof Error ? sessions.reason.message : t('chat.searchFailed')
-    }
+  } catch (err) {
+    if (seq !== requestSeq) return
+    message.error(err instanceof Error ? err.message : t('chat.searchFailed'))
   } finally {
     if (seq === requestSeq) {
       loading.value = false
@@ -205,28 +128,6 @@ async function ensureChatSessionsLoaded() {
 }
 
 async function openItem(item: SearchItem) {
-  if (item.kind === 'file') return openFileItem(item.entry)
-  if (item.kind === 'skill') return openSkillItem()
-  return openSessionItem(item.session)
-}
-
-// Land in the folder that holds the match rather than opening the file blind:
-// the palette searched by name, and the surrounding folder is what tells you
-// whether this is the one you meant.
-async function openFileItem(entry: FileEntry) {
-  sessionSearchOpen.value = false
-  const parent = entry.isDir ? entry.path : entry.path.split('/').slice(0, -1).join('/')
-  await router.push({ name: 'hermes.chat', query: { surface: 'files' } })
-  await filesStore.navigateTo(parent)
-}
-
-// There is no per-skill route, so this opens the market's skills section.
-async function openSkillItem() {
-  sessionSearchOpen.value = false
-  await router.push({ name: 'hermes.chat', query: { surface: 'skills' } })
-}
-
-async function openSessionItem(item: SessionItem) {
   const messageId = item.matched_message_id != null ? String(item.matched_message_id) : null
   sessionSearchOpen.value = false
 
@@ -350,7 +251,6 @@ onUnmounted(() => {
     :mask-closable="true"
     :auto-focus="false"
   >
-    <p v-if="paneError" class="pane-notice" data-testid="session-search-error">{{ paneError }}</p>
     <div class="session-search-modal">
       <div class="search-header">
         <div class="search-title">{{ t('chat.searchSubtitle') }}</div>
@@ -372,66 +272,30 @@ onUnmounted(() => {
             {{ hasQuery ? t('chat.searchNoResults') : t('chat.searchEmpty') }}
           </div>
           <div v-else class="result-list">
-            <template v-for="(item, idx) in items" :key="item.key">
-              <div v-if="groupLabel(item, idx)" class="result-group">{{ groupLabel(item, idx) }}</div>
-              <button
-                class="result-item"
-                :class="{ active: idx === activeIndex }"
-                :data-kind="item.kind"
-                @click="openItem(item)"
-                @mouseenter="activeIndex = idx"
-              >
-                <template v-if="item.kind === 'task'">
-                  <div class="result-main">
-                    <div class="result-title-row">
-                      <span class="result-title">{{ getSessionTitle(item.session) }}</span>
-                      <span class="result-source">{{ formatSource(item.session.source) }}</span>
-                    </div>
-                    <div class="result-snippet">
-                      {{ hasQuery
-                        ? item.session.snippet || t('chat.searchNoSnippet')
-                        : item.session.preview || t('chat.searchRecent') }}
-                    </div>
-                  </div>
-                  <div class="result-meta">
-                    <span class="result-time">
-                      {{ formatTime(item.session.last_active || item.session.started_at) }}
-                    </span>
-                    <span v-if="hasQuery && item.session.matched_message_id != null" class="result-match">
-                      #{{ item.session.matched_message_id }}
-                    </span>
-                  </div>
-                </template>
-
-                <template v-else-if="item.kind === 'file'">
-                  <div class="result-main">
-                    <div class="result-title-row">
-                      <span class="result-title">{{ item.entry.name }}</span>
-                    </div>
-                    <div class="result-snippet">{{ item.entry.path }}</div>
-                  </div>
-                </template>
-
-                <template v-else>
-                  <div class="result-main">
-                    <div class="result-title-row">
-                      <span class="result-title">{{ item.skill.name }}</span>
-                      <span v-if="item.skill.enabled === false" class="result-source">
-                        {{ t('skills.stateDisabled') }}
-                      </span>
-                    </div>
-                    <div class="result-snippet">
-                      {{ item.skill.description || t('skills.noDescription') }}
-                    </div>
-                  </div>
-                </template>
-              </button>
-            </template>
-            <!-- The file walk is capped; say so rather than letting a partial
-                 list read as the whole workspace. -->
-            <div v-if="filesTruncated" class="result-group result-group--note">
-              {{ t('chat.searchFilesTruncated') }}
-            </div>
+            <button
+              v-for="(item, idx) in items"
+              :key="item.id"
+              class="result-item"
+              :class="{ active: idx === activeIndex }"
+              @click="openItem(item)"
+              @mouseenter="activeIndex = idx"
+            >
+              <div class="result-main">
+                <div class="result-title-row">
+                  <span class="result-title">{{ getItemTitle(item) }}</span>
+                  <span class="result-source">{{ formatSource(item.source) }}</span>
+                </div>
+                <div class="result-snippet">
+                  {{ hasQuery ? item.snippet || t('chat.searchNoSnippet') : item.preview || t('chat.searchRecent') }}
+                </div>
+              </div>
+              <div class="result-meta">
+                <span class="result-time">{{ formatTime(item.last_active || item.started_at) }}</span>
+                <span v-if="hasQuery && item.matched_message_id != null" class="result-match">
+                  #{{ item.matched_message_id }}
+                </span>
+              </div>
+            </button>
           </div>
         </NSpin>
       </div>
@@ -446,16 +310,6 @@ onUnmounted(() => {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
-.pane-notice {
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  background: var(--danger-bg);
-  color: var(--danger);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-  white-space: pre-line;
-}
-
 
 .session-search-modal {
   display: flex;
@@ -578,16 +432,6 @@ onUnmounted(() => {
 
 .result-match {
   font-family: $font-code;
-}
-
-.result-group {
-  padding: 10px 4px 4px;
-  font-size: 12px;
-  color: var(--fg-disabled);
-}
-
-.result-group--note {
-  padding-top: 8px;
 }
 
 .search-footer {

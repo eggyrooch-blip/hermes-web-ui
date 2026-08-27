@@ -25,11 +25,4 @@ describe('SourceRefs', () => {
   it('renders nothing without authorized refs', () => {
     expect(mount(SourceRefs, { props: { sessionId: 's1', refs: [] } }).html()).toBe('<!--v-if-->')
   })
-  it('labels the region from i18n, not a hardcoded English string', () => {
-    // A screen reader on a 中文 UI must not hear "Answer sources".
-    const wrapper = mount(SourceRefs, {
-      props: { refs: [{ kind: 'web', url: 'https://example.com', title: 'T' }], sessionId: 's1' },
-    })
-    expect(wrapper.get('section.source-refs').attributes('aria-label')).toBe('chat.sources.title')
-  })
 })

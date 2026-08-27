@@ -1,24 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { NSpin, useDialog } from 'naive-ui'
+import { NSpin } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
-import AgentArtifactPreview, { type ArtifactKind } from '@/components/hermes/agents/AgentArtifactPreview.vue'
-import KpCatalogGroup from '@/components/kippies/KpCatalogGroup.vue'
-import KpCatalogRow from '@/components/kippies/KpCatalogRow.vue'
-import KpIconBtn from '@/components/kippies/KpIconBtn.vue'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useChatStore } from '@/stores/hermes/chat'
-import { isHtmlFile, isImageFile, isMarkdownFile, isTextFile } from '@/stores/hermes/files'
-import { fetchMemory, fetchSkills, saveMemory, type MemoryData, type SkillsData } from '@/api/hermes/skills'
-import { listFiles, readFile, type FileEntry } from '@/api/hermes/files'
-import { downloadFile } from '@/api/hermes/download'
-import { fetchAgentShares, revokeAgentShare, type AgentShare } from '@/api/hermes/agents'
-import { safeShareAvatarUrl } from '@/utils/hermes/share-identity'
+import { fetchMemory, fetchSkills, type MemoryData, type SkillsData } from '@/api/hermes/skills'
+import { listFiles, type FileEntry } from '@/api/hermes/files'
 import { agentDisplayName, agentKind, isUnnamedGroup } from '@/utils/hermes/agent-identity'
 
-type TabKey = 'persona' | 'artifacts' | 'skills' | 'model' | 'safe'
+type TabKey = 'persona' | 'artifacts' | 'skills' | 'model'
 type PersonaKey = 'soul' | 'user' | 'memory'
 
 const props = withDefaults(defineProps<{ agentName?: string; embedded?: boolean }>(), {
@@ -28,7 +20,6 @@ const props = withDefaults(defineProps<{ agentName?: string; embedded?: boolean 
 const emit = defineEmits<{ back: [] }>()
 
 const { t } = useI18n()
-const dialog = useDialog()
 const route = useRoute()
 const router = useRouter()
 const profilesStore = useProfilesStore()
@@ -88,96 +79,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'artifacts', label: 'agentDetail.tabs.artifacts' },
   { key: 'skills', label: 'agentDetail.tabs.skills' },
   { key: 'model', label: 'agentDetail.tabs.model' },
-  { key: 'safe', label: 'agentDetail.tabs.safe' },
 ]
-
-// ── 安全 · who can reach this agent ─────────────────────────
-// Real sharing, the same grants the profiles page manages: an agent only has
-// them once it is registered in the chat plane (that is what gives it an
-// agentId), and only its owner or a manager may see or change them.
-const shares = ref<AgentShare[]>([])
-/** Failures on this page: shares, persona save, and file downloads. */
-const paneError = ref('')
-const sharesLoading = ref(false)
-const sharesLoaded = ref(false)
-// A shared agent never gets this far — the whole panel shows `sharedNotice`
-// instead — so this only has to gate the fetch for agents you own.
-const canManageShares = computed(
-  () => !!profile.value.agentId && (!profile.value.shareRole || profile.value.shareRole === 'manager'),
-)
-
-async function loadShares() {
-  const agentId = profile.value.agentId
-  if (!agentId || !canManageShares.value) return
-  sharesLoading.value = true
-  try {
-    shares.value = await fetchAgentShares(agentId)
-    sharesLoaded.value = true
-  } catch (err: any) {
-    paneError.value = err?.message || t('profiles.share.loadFailed')
-    shares.value = []
-  } finally {
-    sharesLoading.value = false
-  }
-}
-
-function shareName(share: AgentShare): string {
-  return share.principal?.display_name || share.principal?.email || share.grantee_open_id
-}
-
-// Revoking is the one destructive action on this page, so it confirms first.
-function confirmRevoke(share: AgentShare) {
-  const agentId = profile.value.agentId
-  if (!agentId) return
-  dialog.warning({
-    title: t('profiles.share.revoke'),
-    content: t('agentDetail.safe.revokeConfirm', { name: shareName(share) }),
-    positiveText: t('profiles.share.revoke'),
-    negativeText: t('common.cancel'),
-    onPositiveClick: async () => {
-      try {
-        await revokeAgentShare(agentId, share.share_id || share.grantee_open_id)
-        // The row leaving the list is the report.
-        await loadShares()
-      } catch (err: any) {
-        paneError.value = err?.message || t('profiles.share.revokeFailed')
-      }
-    },
-  })
-}
-
-// ── 人设 · editing the file in place ────────────────────────
-// The three persona files are what the agent actually reads, so editing them
-// here is editing its behaviour — hence an explicit save rather than
-// autosave-on-blur, and a cancel that puts the original back.
-const editing = ref(false)
-const draft = ref('')
-const saving = ref(false)
-
-function startEdit() {
-  draft.value = personaFile.value.body
-  editing.value = true
-}
-
-function cancelEdit() {
-  editing.value = false
-  draft.value = ''
-}
-
-async function savePersona() {
-  if (saving.value) return
-  saving.value = true
-  try {
-    await saveMemory(personaKey.value, draft.value, profileName.value)
-    if (memory.value) memory.value[personaKey.value] = draft.value
-    // Leaving edit mode with the new text in place is the report.
-    editing.value = false
-  } catch (err: any) {
-    paneError.value = err?.message || t('settings.saveFailed')
-  } finally {
-    saving.value = false
-  }
-}
 
 /**
  * Every read is scoped with ?profile= so the page shows THIS agent's data even
@@ -229,24 +131,6 @@ watch(scopedReadsAllowed, allowed => {
   if (allowed) void load(profileName.value)
 })
 
-// Switching agents drops both the share list and any half-written persona edit
-// — carrying either across would attribute one agent's state to another.
-watch(profileName, () => {
-  shares.value = []
-  sharesLoaded.value = false
-  cancelEdit()
-})
-
-// Shares are only fetched when their tab is opened: it is one request per agent
-// and most visits never look.
-watch(tab, next => {
-  if (next === 'safe' && !sharesLoaded.value) void loadShares()
-})
-
-// Changing which persona file you are looking at abandons the edit; the draft
-// belongs to the file it was started from.
-watch(personaKey, () => cancelEdit())
-
 async function startNewTask() {
   if (starting.value) return
   // Captured up front: navigating away mid-await would otherwise switch one
@@ -271,127 +155,10 @@ function formatModTime(value: string): string {
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
 }
-
-// ── 产物 · preview + download ───────────────────────────────
-// The prototype's 产物 rows are CatalogRows with a file-type tile (FILE_ICON /
-// FILE_COLOR, athand-manage.jsx:2311). Extensions the prototype does not name
-// fall back to a neutral document tile rather than inventing a colour.
-const ARTIFACT_TILES: Record<string, { icon: string; color: string }> = {
-  docx: { icon: 'line_content', color: 'var(--hue-blue)' },
-  doc: { icon: 'line_content', color: 'var(--hue-blue)' },
-  pdf: { icon: 'line_content', color: 'var(--hue-blue)' },
-  xlsx: { icon: 'full_data', color: 'var(--hue-green)' },
-  xls: { icon: 'full_data', color: 'var(--hue-green)' },
-  csv: { icon: 'full_data', color: 'var(--hue-green)' },
-  pptx: { icon: 'line_screening', color: 'var(--hue-orange)' },
-  html: { icon: 'line_link', color: 'var(--hue-purple)' },
-  htm: { icon: 'line_link', color: 'var(--hue-purple)' },
-  md: { icon: 'line_content', color: 'var(--fg-secondary)' },
-}
-const NEUTRAL_TILE = { icon: 'line_content', color: 'var(--fg-secondary)' }
-
-function artifactExt(name: string): string {
-  return (name.match(/\.(\w+)$/)?.[1] || '').toLowerCase()
-}
-
-function artifactTile(name: string) {
-  return ARTIFACT_TILES[artifactExt(name)] || NEUTRAL_TILE
-}
-
-/** `HTML · 2026/8/18 14:52` — the prototype's `文档 · 8 月 7 日` line, with a
- * real extension instead of a translated type word (extensions aren't localised). */
-function artifactMeta(entry: FileEntry): string {
-  const ext = artifactExt(entry.name).toUpperCase()
-  const when = formatModTime(entry.modTime)
-  return [ext, when].filter(Boolean).join(' · ')
-}
-
-function formatSize(bytes: number): string {
-  if (!bytes) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  const exp = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-  const value = bytes / 1024 ** exp
-  return `${exp === 0 ? value : value.toFixed(1)} ${units[exp]}`
-}
-
-function artifactKind(name: string): ArtifactKind {
-  if (isImageFile(name)) return 'image'
-  if (isMarkdownFile(name)) return 'markdown'
-  if (isHtmlFile(name)) return 'html'
-  if (isTextFile(name)) return 'text'
-  return 'binary'
-}
-
-// The prototype's group note reads「按最近一次用到排序」— newest first is also
-// the useful order for artifacts, so the raw directory order is not shown.
-const sortedArtifacts = computed(() =>
-  [...artifacts.value].sort((a, b) => (b.modTime || '').localeCompare(a.modTime || '')),
-)
-
-const previewEntry = ref<FileEntry | null>(null)
-const previewKind = ref<ArtifactKind>('binary')
-const previewContent = ref('')
-const previewLoading = ref(false)
-const previewError = ref('')
-const downloadingPath = ref('')
-// Late reads must not land on a preview the user has since replaced or closed.
-let previewRequestId = 0
-
-async function openArtifact(entry: FileEntry) {
-  const requestId = ++previewRequestId
-  const kind = artifactKind(entry.name)
-  previewEntry.value = entry
-  previewKind.value = kind
-  previewContent.value = ''
-  previewError.value = ''
-  // Images stream from /download; binaries have nothing to read.
-  if (kind === 'image' || kind === 'binary') {
-    previewLoading.value = false
-    return
-  }
-  previewLoading.value = true
-  try {
-    const result = await readFile(entry.path, profileName.value)
-    if (requestId !== previewRequestId) return
-    previewContent.value = result.content
-  } catch (err: any) {
-    if (requestId !== previewRequestId) return
-    previewError.value = err?.message || t('agentDetail.artifacts.previewFailed')
-  } finally {
-    if (requestId === previewRequestId) previewLoading.value = false
-  }
-}
-
-function closeArtifact() {
-  previewRequestId += 1
-  previewEntry.value = null
-  previewContent.value = ''
-  previewError.value = ''
-  previewLoading.value = false
-}
-
-async function downloadArtifact(entry: FileEntry) {
-  if (downloadingPath.value) return
-  downloadingPath.value = entry.path
-  try {
-    // Scoped to THIS agent's profile: the artifact list is read with ?profile=,
-    // so the download has to be too or it would fetch the active profile's file
-    // of the same name.
-    await downloadFile(entry.path, entry.name, profileName.value)
-  } catch (err: any) {
-    paneError.value = err?.message || t('download.downloadFailed')
-  } finally {
-    downloadingPath.value = ''
-  }
-}
-
-// A preview belongs to the agent and the tab it was opened from.
-watch([profileName, tab], () => closeArtifact())
 </script>
 
 <template>
   <div class="agent-detail-view" :class="{ 'is-embedded': props.embedded }">
-    <p v-if="paneError" class="pane-notice is-error" data-testid="agent-detail-error">{{ paneError }}</p>
     <header class="page-header">
       <div class="crumb">
         <a class="crumb-link" @click="props.embedded ? emit('back') : router.push({ name: 'hermes.agents' })">{{ t('agentsHub.title') }}</a>
@@ -476,99 +243,27 @@ watch([profileName, tab], () => closeArtifact())
               </div>
               <div class="agent-file-card">
                 <div class="agent-file-head">
-                  <div class="agent-file-titles">
-                    <div class="agent-file-name">{{ personaFile.file }}</div>
-                    <div class="agent-file-desc">{{ t(`agentDetail.persona.${personaKey}Hint`) }}</div>
-                  </div>
-                  <button
-                    v-if="!editing"
-                    type="button"
-                    class="agent-file-edit"
-                    data-testid="agent-persona-edit"
-                    @click="startEdit"
-                  >{{ t('agentDetail.persona.edit') }}</button>
+                  <div class="agent-file-name">{{ personaFile.file }}</div>
+                  <div class="agent-file-desc">{{ t(`agentDetail.persona.${personaKey}Hint`) }}</div>
                 </div>
-                <template v-if="editing">
-                  <!-- ⌘/Ctrl+Enter saves, Esc cancels — the file is what the
-                       agent reads, so nothing is written until you say so. -->
-                  <textarea
-                    v-model="draft"
-                    class="agent-file-editor"
-                    data-testid="agent-persona-editor"
-                    @keydown.esc.prevent="cancelEdit"
-                    @keydown.meta.enter.prevent="savePersona"
-                    @keydown.ctrl.enter.prevent="savePersona"
-                  />
-                  <div class="agent-file-actions">
-                    <span class="agent-file-hint">{{ t('agentDetail.persona.editHint') }}</span>
-                    <button type="button" class="agent-file-btn" @click="cancelEdit">
-                      {{ t('common.cancel') }}
-                    </button>
-                    <button
-                      type="button"
-                      class="agent-file-btn is-primary"
-                      :disabled="saving"
-                      data-testid="agent-persona-save"
-                      @click="savePersona"
-                    >{{ t('common.save') }}</button>
-                  </div>
-                </template>
-                <template v-else>
-                  <pre v-if="personaFile.body" class="agent-file-body">{{ personaFile.body }}</pre>
-                  <div v-else class="agent-panel-empty">{{ t('agentDetail.persona.empty') }}</div>
-                </template>
+                <pre v-if="personaFile.body" class="agent-file-body">{{ personaFile.body }}</pre>
+                <div v-else class="agent-panel-empty">{{ t('agentDetail.persona.empty') }}</div>
               </div>
             </template>
 
             <template v-else-if="tab === 'artifacts'">
-              <!-- Opening an artifact replaces the list, the way the prototype's
-                   library swaps its right pane for the document. -->
-              <AgentArtifactPreview
-                v-if="previewEntry"
-                :entry="previewEntry"
-                :kind="previewKind"
-                :content="previewContent"
-                :profile="profileName"
-                :loading="previewLoading"
-                :error="previewError"
-                :downloading="downloadingPath === previewEntry.path"
-                @close="closeArtifact"
-                @download="downloadArtifact(previewEntry)"
-              />
-              <template v-else>
-                <div v-if="artifactCount === 0" class="agent-panel-empty">{{ t('agentDetail.artifacts.empty') }}</div>
-                <KpCatalogGroup
-                  v-else
-                  :cols="1"
-                  :title="t('agentDetail.artifacts.title')"
-                  :note="t('agentDetail.artifacts.summary', { count: artifactCount })"
-                >
-                  <KpCatalogRow
-                    v-for="entry in sortedArtifacts"
-                    :key="entry.path"
-                    clickable
-                    :name="entry.name"
-                    :icon="artifactTile(entry.name).icon"
-                    :color="artifactTile(entry.name).color"
-                    :meta="artifactMeta(entry)"
-                    :desc="`${entry.path} · ${formatSize(entry.size)}`"
-                    data-testid="agent-artifact-row"
-                    @click="openArtifact(entry)"
-                  >
-                    <!-- Download stays on the row: it is the one thing you may
-                         want without opening the file first. -->
-                    <template #action>
-                      <KpIconBtn
-                        name="line_download"
-                        :size="16"
-                        :title="t('files.download')"
-                        data-testid="agent-artifact-row-download"
-                        @click.stop="downloadArtifact(entry)"
-                      />
-                    </template>
-                  </KpCatalogRow>
-                </KpCatalogGroup>
-              </template>
+              <div class="agent-list-bar">
+                {{ t('agentDetail.artifacts.summary', { count: artifactCount }) }}
+              </div>
+              <div v-if="artifactCount === 0" class="agent-panel-empty">{{ t('agentDetail.artifacts.empty') }}</div>
+              <div v-else class="agent-rows">
+                <div v-for="entry in artifacts" :key="entry.path" class="agent-row">
+                  <div class="agent-row-main">
+                    <div class="agent-row-name">{{ entry.name }}</div>
+                    <div class="agent-row-desc">{{ entry.path }} · {{ formatModTime(entry.modTime) }}</div>
+                  </div>
+                </div>
+              </div>
             </template>
 
             <template v-else-if="tab === 'skills'">
@@ -591,7 +286,7 @@ watch([profileName, tab], () => closeArtifact())
               </div>
             </template>
 
-            <template v-else-if="tab === 'model'">
+            <template v-else>
               <div class="agent-list-bar">{{ t('agentDetail.model.summary') }}</div>
               <div class="agent-rows">
                 <div class="agent-row">
@@ -602,43 +297,6 @@ watch([profileName, tab], () => closeArtifact())
                 </div>
               </div>
             </template>
-
-            <template v-else>
-              <div class="agent-list-bar">{{ t('agentDetail.safe.summary') }}</div>
-              <!-- An agent that was never registered in the chat plane has no
-                   agentId, so there is nothing to share it by. -->
-              <div v-if="!profile.agentId" class="agent-panel-empty">
-                {{ t('agentDetail.safe.unavailable') }}
-              </div>
-              <NSpin v-else :show="sharesLoading">
-                <div v-if="shares.length === 0" class="agent-panel-empty">
-                  {{ t('profiles.share.empty') }}
-                </div>
-                <div v-else class="agent-rows">
-                  <div v-for="share in shares" :key="share.share_id || share.grantee_open_id" class="agent-row">
-                    <img
-                      v-if="safeShareAvatarUrl(share.principal?.avatar_url)"
-                      class="agent-share-avatar"
-                      :src="safeShareAvatarUrl(share.principal?.avatar_url)"
-                      alt=""
-                    />
-                    <div class="agent-row-main">
-                      <div class="agent-row-name">
-                        {{ shareName(share) }}
-                        <span class="agent-tag">{{ share.role }}</span>
-                      </div>
-                      <div class="agent-row-desc">{{ share.principal?.email || share.grantee_open_id }}</div>
-                    </div>
-                    <button
-                      type="button"
-                      class="agent-file-btn"
-                      data-testid="agent-share-revoke"
-                      @click="confirmRevoke(share)"
-                    >{{ t('profiles.share.revoke') }}</button>
-                  </div>
-                </div>
-              </NSpin>
-            </template>
           </div>
         </NSpin>
       </section>
@@ -648,27 +306,6 @@ watch([profileName, tab], () => closeArtifact())
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
-.pane-notice {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
-.pane-notice.is-error {
-  background: var(--danger-bg);
-  color: var(--danger);
-}
-
-.pane-notice.is-info {
-  background: var(--surface-2);
-  color: var(--fg-primary);
-  box-shadow: inset 0 0 0 0.5px var(--divider);
-}
-
 
 .agent-detail-view {
   height: calc(100 * var(--vh));
@@ -872,95 +509,9 @@ watch([profileName, tab], () => closeArtifact())
 }
 
 .agent-file-head {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
   padding: 11px 13px;
   border-bottom: 1px solid var(--border-light);
   background: var(--bg-secondary);
-}
-
-.agent-file-titles {
-  flex: 1;
-  min-width: 0;
-}
-
-.agent-file-edit {
-  flex: 0 0 auto;
-  height: 26px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: var(--r-ctl);
-  background: transparent;
-  box-shadow: inset 0 0 0 1px var(--btn-line);
-  color: var(--fg-primary);
-  font: var(--w-medium) var(--t-12) / var(--lh-1) var(--font-cn);
-  cursor: pointer;
-
-  &:hover {
-    background: var(--surface-1);
-  }
-}
-
-// Same measure as the read view, so switching in and out does not reflow the
-// card.
-.agent-file-editor {
-  display: block;
-  width: 100%;
-  min-height: 220px;
-  max-height: 420px;
-  padding: 14px 15px;
-  border: 0;
-  outline: none;
-  resize: vertical;
-  background: transparent;
-  color: var(--text-secondary);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
-.agent-file-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 13px 12px;
-}
-
-.agent-file-hint {
-  flex: 1;
-  min-width: 0;
-  font: var(--w-regular) var(--t-12) / var(--lh-1) var(--font-cn);
-  color: var(--fg-disabled);
-}
-
-.agent-file-btn {
-  height: 30px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: var(--r-pill);
-  background: transparent;
-  box-shadow: inset 0 0 0 1px var(--btn-line);
-  color: var(--fg-primary);
-  font: var(--w-medium) var(--t-13) / var(--lh-1) var(--font-cn);
-  cursor: pointer;
-
-  &.is-primary {
-    background: var(--gray-33);
-    box-shadow: none;
-    color: var(--white);
-  }
-
-  &:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-}
-
-.agent-share-avatar {
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
-  border-radius: var(--r-pill);
-  object-fit: cover;
 }
 
 .agent-file-name {

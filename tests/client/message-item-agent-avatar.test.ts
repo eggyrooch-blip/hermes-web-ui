@@ -3,12 +3,9 @@
 // Regression guard for agent-avatar-non-personal:
 // The re-baseline (commit 9f7296e2) made the assistant bubble reuse the ACTIVE
 // PROFILE's avatar. In multitenancy each user IS a profile, so the agent ended up
-// wearing the user's own Feishu photo ("talking to yourself").
-//
-// The prototype has since deleted the assistant identity row entirely — the run's
-// signature is the mascot on the thinking line (MessageList), not a per-message
-// avatar + name. So the assertion is now the stronger one: an assistant turn
-// renders NO avatar at all, and in particular never the user's own photo.
+// wearing the user's own Feishu photo ("talking to yourself"). The agent bubble must
+// instead render the AGENT's own per-agent logo (Hermes / Codex / Claude), matching the
+// session list — never the profile's uploaded/image avatar.
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
@@ -50,7 +47,7 @@ describe('MessageItem agent avatar', () => {
 
   const userPhoto = 'data:image/png;base64,AAAA'
 
-  function mountAssistant(session: Record<string, any>, messageSession?: Record<string, any>) {
+  function mountAssistant(session: Record<string, any>) {
     // The active profile carries the user's own uploaded photo.
     const profiles = useProfilesStore()
     profiles.profiles = [
@@ -63,66 +60,102 @@ describe('MessageItem agent avatar', () => {
     return mount(MessageItem, {
       props: {
         message: {
-          // content empty so MarkdownRenderer (naive-ui) isn't mounted.
+          // content empty so MarkdownRenderer (naive-ui) isn't mounted — the avatar
+          // renders purely from message.role and is what we assert here.
           id: 'a1',
           role: 'assistant',
           content: '',
           timestamp: Date.now(),
         } satisfies Message,
-        ...(messageSession ? { session: messageSession as any } : {}),
       },
     })
   }
 
-  function expectNoIdentityRow(wrapper: ReturnType<typeof mountAssistant>) {
-    // Prototype: no mark, no name, no image above the answer.
-    expect(wrapper.find('.msg-agent-head').exists()).toBe(false)
-    expect(wrapper.find('.msg-agent-tile').exists()).toBe(false)
-    expect(wrapper.find('.msg-agent-name').exists()).toBe(false)
-    expect(wrapper.find('img').exists()).toBe(false)
-    // NEVER the user's own photo, by any route.
-    expect(wrapper.html()).not.toContain(userPhoto)
-  }
-
-  it('renders no identity row above the answer for a normal session', () => {
-    expectNoIdentityRow(mountAssistant({ id: 's1', profile: '孙可' }))
+  it('renders the Hermes agent logo (not the user profile avatar) for a normal session', () => {
+    const wrapper = mountAssistant({ id: 's1', profile: '孙可' })
+    const avatar = wrapper.get('img.msg-avatar')
+    expect(avatar.attributes('src')).toBe('/coding-agents/hermes.png')
+    expect(avatar.attributes('alt')).toBe('Hermes')
+    // NEVER the user's own photo.
+    expect(avatar.attributes('src')).not.toBe(userPhoto)
   })
 
-  it('renders no identity row for a session carrying a persisted expert avatar', () => {
-    expectNoIdentityRow(
-      mountAssistant({
-        id: 's-expert',
-        profile: '孙可',
-        expertId: 'keep-resource-delivery',
-        expertLabel: '资源投放专家',
-        expertAvatar: '/api/hermes/plugin-assets/keep-resource-delivery/expert.png',
-      }),
-    )
+  it('renders the persisted expert avatar for a normal active Hermes session', () => {
+    const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
+    const wrapper = mountAssistant({
+      id: 's-expert',
+      profile: '孙可',
+      expertId: 'keep-resource-delivery',
+      expertLabel: '资源投放专家',
+      expertAvatar,
+    })
+    const avatar = wrapper.get('img.msg-avatar')
+    expect(avatar.attributes('src')).toBe(expertAvatar)
+    expect(avatar.attributes('alt')).toBe('资源投放专家')
   })
 
   it('does not let the global active expert avatar leak into a normal session', () => {
+    const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
     const chat = useChatStore()
     chat.setActiveExpert('keep-resource-delivery', {
-      avatar: '/api/hermes/plugin-assets/keep-resource-delivery/expert.png',
+      avatar: expertAvatar,
       label: '资源投放专家',
     })
 
-    expectNoIdentityRow(mountAssistant({ id: 's-normal', profile: '孙可' }))
+    const wrapper = mountAssistant({ id: 's-normal', profile: '孙可' })
+    const avatar = wrapper.get('img.msg-avatar')
+    expect(avatar.attributes('src')).toBe('/coding-agents/hermes.png')
+    expect(avatar.attributes('alt')).toBe('Hermes')
   })
 
-  it('renders no identity row for a coding-agent session', () => {
-    expectNoIdentityRow(
-      mountAssistant({ id: 's2', profile: '孙可', source: 'coding_agent', agent: 'codex', codingAgentId: 'codex' }),
-    )
+  it('renders a persisted expert avatar from the message session prop', () => {
+    const expertAvatar = '/api/hermes/plugin-assets/keep-resource-delivery/expert.png'
+    const chat = useChatStore()
+    chat.activeSession = { id: 'active-normal', profile: '孙可' } as any
+    chat.setActiveExpert(null)
+
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: { id: 'h-expert', role: 'assistant', content: '', timestamp: Date.now() } satisfies Message,
+        session: {
+          id: 'history-expert',
+          profile: '孙可',
+          source: 'cli',
+          expertAvatar,
+          expertLabel: '资源投放专家',
+          expertId: 'keep-resource-delivery',
+        } as any,
+      },
+    })
+
+    const avatar = wrapper.get('img.msg-avatar')
+    expect(avatar.attributes('src')).toBe(expertAvatar)
+    expect(avatar.attributes('alt')).toBe('资源投放专家')
   })
 
-  it('renders no identity row for a history message carrying its own session', () => {
-    // History lists render a session that is NOT the globally active one.
-    expectNoIdentityRow(
-      mountAssistant(
-        { id: 'active', profile: '孙可' },
-        { id: 'history', profile: '孙可', source: 'coding_agent', agent: 'codex', codingAgentId: 'codex' },
-      ),
-    )
+  it('renders a DIFFERENT (per-agent) logo for a coding-agent session', () => {
+    const wrapper = mountAssistant({ id: 's2', profile: '孙可', source: 'coding_agent', agent: 'codex', codingAgentId: 'codex' })
+    const avatar = wrapper.get('img.msg-avatar')
+    expect(avatar.attributes('src')).toBe('/coding-agents/codex-openai.png')
+    expect(avatar.attributes('alt')).toBe('Codex')
+  })
+
+  it('keys the logo off the message\'s own session prop, not the global active session', () => {
+    // History lists render a session that is NOT the globally active one. The agent logo
+    // must follow the message's own session (passed as the `session` prop), not
+    // chatStore.activeSession — otherwise a Codex transcript shows the Hermes logo.
+    const chat = useChatStore()
+    chat.activeSession = { id: 'active', profile: '孙可' } as any // a Hermes session
+
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: { id: 'h1', role: 'assistant', content: '', timestamp: Date.now() } satisfies Message,
+        session: { id: 'history', profile: '孙可', source: 'coding_agent', agent: 'codex', codingAgentId: 'codex' } as any,
+      },
+    })
+
+    const avatar = wrapper.get('img.msg-avatar')
+    expect(avatar.attributes('src')).toBe('/coding-agents/codex-openai.png')
+    expect(avatar.attributes('alt')).toBe('Codex')
   })
 })

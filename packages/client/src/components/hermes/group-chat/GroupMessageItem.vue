@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useCopyFeedback } from '@/composables/useCopyFeedback'
+import { useMessage } from 'naive-ui'
 import MarkdownRenderer from '../chat/MarkdownRenderer.vue'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
 import { useProfilesStore } from '@/stores/hermes/profiles'
@@ -36,10 +36,7 @@ const props = defineProps<{
 }>()
 
 const { t } = useI18n()
-// Copy feedback lands on the button that was pressed — same reasoning as the
-// single-chat transcript: copying changes nothing on screen, and a toast is
-// furthest from the control you clicked.
-const copyFeedback = useCopyFeedback()
+const toast = useMessage()
 const profilesStore = useProfilesStore()
 const speech = useGlobalSpeech()
 const voiceSettings = useVoiceSettings()
@@ -342,16 +339,21 @@ async function handleToolDetailClick(event: MouseEvent): Promise<void> {
 
     const source = button.closest<HTMLElement>('[data-copy-source]')?.dataset.copySource
     if (source === 'tool-args' && fullToolArgs.value) {
-        await copyFeedback.run('tool-args', () => copyTextToClipboard(fullToolArgs.value))
+        const ok = await copyTextToClipboard(fullToolArgs.value)
+        if (ok) toast.success(t('common.copied'))
+        else toast.error(t('chat.copyFailed'))
         return
     }
     if (source === 'tool-result' && fullToolResult.value) {
-        await copyFeedback.run('tool-result', () => copyTextToClipboard(fullToolResult.value))
+        const ok = await copyTextToClipboard(fullToolResult.value)
+        if (ok) toast.success(t('common.copied'))
+        else toast.error(t('chat.copyFailed'))
         return
     }
 
-    // Code blocks report on their own button (flashCopyResult in highlight.ts).
-    await handleCodeBlockCopyClick(event)
+    const copyResult = await handleCodeBlockCopyClick(event)
+    if (copyResult) toast.success(t('common.copied'))
+    else if (copyResult === false) toast.error(t('chat.copyFailed'))
 }
 
 function handleAutoplayTtsError(err: unknown) {
@@ -432,7 +434,9 @@ function handleSpeechToggle() {
 async function copyBubbleContent() {
     const text = copyableContent.value
     if (!text) return
-    await copyFeedback.run('bubble', () => copyTextToClipboard(text))
+    const ok = await copyTextToClipboard(text)
+    if (ok) toast.success(t('chat.copiedBubble'))
+    else toast.error(t('chat.copyFailed'))
 }
 
 function isImage(type: string): boolean {
@@ -595,19 +599,10 @@ onBeforeUnmount(() => {
                 <button
                     v-if="copyableContent"
                     class="copy-bubble-btn"
-                    :class="{
-                        'is-copy-ok': copyFeedback.state('bubble') === 'ok',
-                        'is-copy-fail': copyFeedback.state('bubble') === 'fail',
-                    }"
-                    :title="copyFeedback.state('bubble') === 'fail' ? t('chat.copyFailed') : t('chat.copyBubble')"
+                    :title="t('chat.copyBubble')"
                     @click="copyBubbleContent"
                 >
-                    <!-- Becomes a tick for a beat — the only honest place to
-                         answer "did that copy?". -->
-                    <svg v-if="copyFeedback.state('bubble') === 'ok'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M20 6 9 17l-5-5"/>
-                    </svg>
-                    <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
                     </svg>
@@ -623,14 +618,6 @@ onBeforeUnmount(() => {
 
 <style scoped lang="scss">
 @use "@/styles/variables" as *;
-.copy-bubble-btn.is-copy-ok {
-  color: var(--keep-green);
-}
-
-.copy-bubble-btn.is-copy-fail {
-  color: var(--danger);
-}
-
 
 .group-message {
     display: flex;

@@ -249,6 +249,7 @@ describe('chat store reasoning/tool boundaries', () => {
     session.baseUrl = 'http://example.invalid'
     session.apiKey = 'secret'
     session.apiMode = 'chat_completions'
+    session.reasoningEffort = 'high'
     store.sessions = [session]
     store.activeSessionId = 'session-1'
     store.activeSession = session

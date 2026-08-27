@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { NButton } from 'naive-ui'
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useUsageStore } from '@/stores/hermes/usage'
@@ -6,8 +7,6 @@ import { useProfilesStore } from '@/stores/hermes/profiles'
 import StatCards from '@/components/hermes/usage/StatCards.vue'
 import ModelBreakdown from '@/components/hermes/usage/ModelBreakdown.vue'
 import DailyTrend from '@/components/hermes/usage/DailyTrend.vue'
-import KpSegChip from '@/components/kippies/KpSegChip.vue'
-import KpGhostBtn from '@/components/kippies/KpGhostBtn.vue'
 
 const { t } = useI18n()
 const usageStore = useUsageStore()
@@ -45,23 +44,23 @@ onMounted(() => {
       <h2 class="header-title">{{ t('usage.title') }}</h2>
       <div class="usage-toolbar">
         <div class="period-selector" role="group" aria-label="Usage statistics period">
-          <!-- Segment filter, so KpSegChip: §9.1 has no 30px step and §8.2 puts
-               action buttons on a pill, which the default Naive button is not. -->
-          <KpSegChip
+          <NButton
             v-for="option in periodOptions"
             :key="option.days"
-            type="button"
             class="period-option"
-            :on="selectedPeriod === option.days"
+            size="small"
+            :type="selectedPeriod === option.days ? 'primary' : 'default'"
+            :secondary="selectedPeriod === option.days"
+            :quaternary="selectedPeriod !== option.days"
             :aria-pressed="selectedPeriod === option.days"
             @click="loadUsage(option.days)"
           >
             {{ option.label }}
-          </KpSegChip>
+          </NButton>
         </div>
-        <KpGhostBtn class="refresh-button" :disabled="usageStore.isLoading" @click="loadUsage()">
+        <NButton class="refresh-button" size="small" quaternary :loading="usageStore.isLoading" @click="loadUsage()">
           {{ t('usage.refresh') }}
-        </KpGhostBtn>
+        </NButton>
       </div>
     </header>
 

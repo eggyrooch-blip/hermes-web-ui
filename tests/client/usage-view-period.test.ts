@@ -85,10 +85,7 @@ describe('UsageView period selector', () => {
 
     await periodButtons[0].trigger('click')
     expect(mockUsageStore.loadSessions).toHaveBeenLastCalledWith(7)
-    // Selection is KpSegChip's `is-on` plus aria-pressed. It used to be asserted
-    // via `data-type="primary"`, which only ever existed on the NButton stub in
-    // this file — that assertion tested the stub, not the component.
-    expect(periodButtons[0].classes()).toContain('is-on')
+    expect(periodButtons[0].attributes('data-type')).toBe('primary')
     expect(periodButtons[0].attributes('aria-pressed')).toBe('true')
 
     await wrapper.find('.refresh-button').trigger('click')

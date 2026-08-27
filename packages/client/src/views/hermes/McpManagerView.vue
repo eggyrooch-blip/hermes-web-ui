@@ -3,13 +3,12 @@ import { computed, onUnmounted, ref } from 'vue'
 import yaml from 'js-yaml'
 import {
   NAlert, NButton, NEmpty, NInput, NModal,
-  NSpin, NRadioGroup, NRadioButton,
+  NSpin, NRadioGroup, NRadioButton, useMessage,
   NCheckbox, NScrollbar,
 } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import McpServerCard from '@/components/hermes/mcp/McpServerCard.vue'
 import { isStoredSuperAdmin } from '@/api/client'
-import { useAction, unwrapOk } from '@/components/kippies/useAction'
 import {
   fetchMcpServers, fetchMcpTools, mcpServerAdd, mcpServerRemove,
   mcpServerUpdate, mcpServerTest, mcpReload,
@@ -17,29 +16,8 @@ import {
 } from '@/api/hermes/mcp'
 
 const { t } = useI18n()
+const message = useMessage()
 const canManageMcp = computed(() => isStoredSuperAdmin())
-
-// One per button, so each reports only its own press. The failure text is the
-// server's own message, carried through the rejection by `unwrapOk` — the
-// button shows the state, its title shows the reason.
-const [reloadAllState, runReloadAll] = useAction()
-const [saveServerState, runSaveServer] = useAction()
-const [fetchToolsState, runFetchTools] = useAction()
-const [saveToolsState, runSaveTools] = useAction()
-const actionError = ref('')
-
-/** Remembers the reason so a failed button can carry it in its tooltip. */
-function withReason<T>(work: () => Promise<T>): () => Promise<T> {
-  return async () => {
-    actionError.value = ''
-    try {
-      return await work()
-    } catch (err: any) {
-      actionError.value = err?.message || ''
-      throw err
-    }
-  }
-}
 
 const servers = ref<McpServerInfo[]>([])
 const loading = ref(false)
@@ -261,23 +239,25 @@ async function loadServers() {
   }
 }
 
-/**
- * These handlers now REJECT on failure instead of raising a toast: the control
- * that was pressed shows its own pending / ok / fail, so a rejection is how it
- * learns the press did not take. The server's own `error` string is carried into
- * the rejection by `unwrapOk`, so it is still available wherever there is room
- * to show it (the tooltip on the failed button).
- */
 async function handleReload(server?: string) {
   if (!canManageMcp.value) return
-  await unwrapOk(mcpReload(server), t('mcp.reloadFailed'))
-  if (server) {
-    const { [server]: _, ...rest } = toolsByServer.value
-    toolsByServer.value = rest
-  } else {
-    toolsByServer.value = {}
+  try {
+    const res = await mcpReload(server)
+    if (res.ok) {
+      if (server) {
+        const { [server]: _, ...rest } = toolsByServer.value
+        toolsByServer.value = rest
+      } else {
+        toolsByServer.value = {}
+      }
+      message.success(server ? t('mcp.reloaded', { server }) : t('mcp.reloadedAll'))
+      scheduleReload()
+    } else {
+      message.error(res.error || t('mcp.reloadFailed'))
+    }
+  } catch (err: any) {
+    message.error(err.message || t('mcp.reloadFailed'))
   }
-  scheduleReload()
 }
 
 function openAddModal() {
@@ -322,37 +302,40 @@ async function saveServer() {
         return
       }
       let added = 0
-      // Per-server failures are collected rather than raised one toast at a
-      // time: a config can add several servers, and the save button can only
-      // report one outcome — so the names that did not take are named in it.
-      const failed: string[] = []
       for (const [name, config] of entries) {
         if (typeof config !== 'object' || config === null) continue
         const res = await mcpServerAdd(name, config as McpServerConfig)
         if (res.ok) added++
-        else failed.push(`${name}: ${res.error || t('mcp.addFailed')}`)
+        else message.error(`${name}: ${res.error || t('mcp.addFailed')}`)
       }
       if (added > 0) {
         showModal.value = false
+        message.success(t('mcp.serverAdded', { name: `${added} server(s)` }))
         // Immediately show server from config (disconnected)
         await loadServers()
         // Delayed refresh to show updated connection status after discovery
         scheduleReload()
       }
-      if (failed.length) throw new Error(failed.join('; '))
     } else {
       const name = editingName.value
       // For edit, config can be flat or wrapped: { "name": { ... } }
       const config = (parsed[name] && typeof parsed[name] === 'object')
         ? parsed[name] as Record<string, unknown>
         : parsed
-      await unwrapOk(mcpServerUpdate(name, config), t('mcp.updateFailed'))
-      showModal.value = false
-      // Immediately show updated config
-      await loadServers()
-      // Delayed refresh to show reconnection status
-      scheduleReload()
+      const res = await mcpServerUpdate(name, config)
+      if (res.ok) {
+        showModal.value = false
+        message.success(t('mcp.serverUpdated', { name: editingName.value }))
+        // Immediately show updated config
+        await loadServers()
+        // Delayed refresh to show reconnection status
+        scheduleReload()
+      } else {
+        message.error(res.error || t('mcp.updateFailed'))
+      }
     }
+  } catch (err: any) {
+    message.error(err.message || t('mcp.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -360,32 +343,53 @@ async function saveServer() {
 
 async function handleRemove(server: McpServerInfo) {
   if (!canManageMcp.value) return
-  await unwrapOk(mcpServerRemove(server.name), t('mcp.removeFailed'))
-  // Success removes the card, so there is no button left to report on.
-  const { [server.name]: _, ...rest } = toolsByServer.value
-  toolsByServer.value = rest
-  await loadServers()
+  try {
+    const res = await mcpServerRemove(server.name)
+    if (res.ok) {
+      message.success(t('mcp.serverRemoved', { name: server.name }))
+      const { [server.name]: _, ...rest } = toolsByServer.value
+      toolsByServer.value = rest
+      await loadServers()
+    } else {
+      message.error(res.error || t('mcp.removeFailed'))
+    }
+  } catch (err: any) {
+    message.error(err.message || t('mcp.removeFailed'))
+  }
 }
 
 async function handleToggleEnabled(server: McpServerInfo) {
   if (!canManageMcp.value) return
   const newValue = !server.raw_config.enabled
-  const config = { ...server.raw_config, enabled: newValue }
-  // The switch is its own report: on success the card's status line changes, and
-  // on failure the switch is left where it was.
-  await unwrapOk(mcpServerUpdate(server.name, config), t('mcp.updateFailed'))
-  const { [server.name]: _, ...rest } = toolsByServer.value
-  toolsByServer.value = rest
-  await mcpReload(server.name)
-  scheduleReload()
+  try {
+    const config = { ...server.raw_config, enabled: newValue }
+    const res = await mcpServerUpdate(server.name, config)
+    if (res.ok) {
+      message.success(t(newValue ? 'mcp.enabled' : 'mcp.disabled', { name: server.name }))
+      const { [server.name]: _, ...rest } = toolsByServer.value
+      toolsByServer.value = rest
+      await mcpReload(server.name)
+      scheduleReload()
+    } else {
+      message.error(res.error || t('mcp.updateFailed'))
+    }
+  } catch (err: any) {
+    message.error(err.message || t('mcp.updateFailed'))
+  }
 }
 
 async function handleTest(server: McpServerInfo) {
   if (!canManageMcp.value) return
-  const res = await unwrapOk(mcpServerTest(server.name), t('mcp.testFailed'))
-  // Connected but exposing nothing is a failed test, not a quiet success —
-  // there is no third state on the button, and "ok" here would be a lie.
-  if (!res.tools?.length) throw new Error(res.error || t('mcp.testEmpty'))
+  try {
+    const res = await mcpServerTest(server.name)
+    if (res.ok && res.tools) {
+      message.success(t('mcp.testOk', { count: res.tools.length }), { duration: 3000 })
+    } else {
+      message.warning(res.error || t('mcp.testEmpty'))
+    }
+  } catch (err: any) {
+    message.error(err.message || t('mcp.testFailed'))
+  }
 }
 
 
@@ -425,6 +429,8 @@ async function fetchToolsList() {
         }
       }
     }
+  } catch (err: any) {
+    message.error(err.message || t('mcp.fetchToolsFailed'))
   } finally {
     fetchingTools.value = false
   }
@@ -483,11 +489,19 @@ async function saveToolsVisibility() {
     config.tools = { exclude: [...selectedTools.value] }
   }
 
-  await unwrapOk(mcpServerUpdate(server.name, config), t('mcp.updateFailed'))
-  // Success closes the dialog, which is the whole report.
-  showToolsModal.value = false
-  await loadServers()
-  scheduleReload()
+  try {
+    const res = await mcpServerUpdate(server.name, config)
+    if (res.ok) {
+      message.success(t('mcp.toolsVisibilitySaved'))
+      showToolsModal.value = false
+      await loadServers()
+      scheduleReload()
+    } else {
+      message.error(res.error || t('mcp.updateFailed'))
+    }
+  } catch (err: any) {
+    message.error(err.message || t('mcp.updateFailed'))
+  }
 }
 </script>
 
@@ -539,14 +553,7 @@ async function saveToolsVisibility() {
             class="search-input"
           />
           <div class="btn-group">
-            <NButton
-              v-if="canManageMcp"
-              size="small"
-              :type="reloadAllState === 'fail' ? 'error' : 'primary'"
-              :loading="reloadAllState === 'pending'"
-              :title="reloadAllState === 'fail' ? actionError || t('common.retryHint') : undefined"
-              @click="runReloadAll({ run: withReason(() => handleReload()) })"
-            >
+            <NButton v-if="canManageMcp" size="small" type="primary" @click="handleReload()">
               {{ t('mcp.reloadAll') }}
             </NButton>
             <NButton v-if="canManageMcp" type="primary" size="small" @click="openAddModal">
@@ -562,11 +569,11 @@ async function saveToolsVisibility() {
             :server="server"
             :tools-by-server="toolsByServer"
             :can-manage="canManageMcp"
-            :on-test="handleTest"
-            :on-reload="handleReload"
-            :on-remove="handleRemove"
-            :on-toggle-enabled="handleToggleEnabled"
             @edit="openEditModal"
+            @test="handleTest"
+            @reload="handleReload"
+            @remove="handleRemove"
+            @toggle-enabled="handleToggleEnabled"
             @manage-tools="openToolsModal"
           />
         </div>
@@ -593,12 +600,7 @@ async function saveToolsVisibility() {
       <div v-if="jsonError" class="config-error">{{ jsonError }}</div>
       <div class="modal-actions">
         <NButton @click="showModal = false">{{ t('mcp.cancel') }}</NButton>
-        <NButton
-          :type="saveServerState === 'fail' ? 'error' : 'primary'"
-          :loading="saving || saveServerState === 'pending'"
-          :title="saveServerState === 'fail' ? actionError || t('common.retryHint') : undefined"
-          @click="runSaveServer({ run: withReason(saveServer), noOk: true })"
-        >
+        <NButton type="primary" :loading="saving" @click="saveServer">
           {{ modalMode === 'add' ? t('mcp.add') : t('mcp.save') }}
         </NButton>
       </div>
@@ -609,13 +611,7 @@ async function saveToolsVisibility() {
       <div v-if="toolsModalServer" class="tools-modal-content">
         <div class="tools-modal-header">
           <span class="server-name-label">{{ toolsModalServer.name }}</span>
-          <NButton
-            size="small"
-            :type="fetchToolsState === 'fail' ? 'error' : undefined"
-            :loading="fetchingTools || fetchToolsState === 'pending'"
-            :title="fetchToolsState === 'fail' ? actionError || t('common.retryHint') : undefined"
-            @click="runFetchTools({ run: withReason(fetchToolsList) })"
-          >
+          <NButton size="small" :loading="fetchingTools" @click="fetchToolsList">
             {{ t('mcp.fetchTools') }}
           </NButton>
         </div>
@@ -666,12 +662,7 @@ async function saveToolsVisibility() {
 
         <div class="modal-actions">
           <NButton @click="showToolsModal = false">{{ t('mcp.cancel') }}</NButton>
-          <NButton
-            :type="saveToolsState === 'fail' ? 'error' : 'primary'"
-            :loading="saveToolsState === 'pending'"
-            :title="saveToolsState === 'fail' ? actionError || t('common.retryHint') : undefined"
-            @click="runSaveTools({ run: withReason(saveToolsVisibility), noOk: true })"
-          >{{ t('mcp.save') }}</NButton>
+          <NButton type="primary" @click="saveToolsVisibility">{{ t('mcp.save') }}</NButton>
         </div>
       </div>
     </NModal>

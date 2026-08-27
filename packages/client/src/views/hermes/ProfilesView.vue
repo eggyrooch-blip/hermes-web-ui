@@ -9,8 +9,6 @@ import ProfileImportModal from '@/components/hermes/profiles/ProfileImportModal.
 import { useProfilesStore } from '@/stores/hermes/profiles'
 
 const { t } = useI18n()
-/** What a clone left behind — stripped credentials, disabled platforms. */
-const cloneGaps = ref('')
 const profilesStore = useProfilesStore()
 
 const showCreateModal = ref(false)
@@ -36,12 +34,6 @@ function handleImported() {
 
 <template>
   <div class="profiles-view">
-    <!-- What the clone did NOT bring over. Informational, not a failure, and
-         dismissible — the user needs it to know what to re-add. -->
-    <p v-if="cloneGaps" class="clone-gaps" data-testid="clone-gaps">
-      <span class="clone-gaps__text">{{ cloneGaps }}</span>
-      <button type="button" class="clone-gaps__close" :title="t('common.close')" @click="cloneGaps = ''">&times;</button>
-    </p>
     <header class="page-header">
       <h2 class="header-title">{{ t('profiles.title') }}</h2>
       <div class="header-actions">
@@ -76,7 +68,6 @@ function handleImported() {
     <ProfileCreateModal
       v-if="showCreateModal"
       @close="showCreateModal = false"
-      @clone-gaps="(summary: string) => (cloneGaps = summary)"
       @saved="handleCreated"
     />
     <ProfileRenameModal
@@ -95,36 +86,6 @@ function handleImported() {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
-.clone-gaps {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  background: var(--surface-2);
-  color: var(--fg-primary);
-  box-shadow: inset 0 0 0 0.5px var(--divider);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-  white-space: pre-line;
-}
-
-.clone-gaps__text {
-  flex: 1;
-  min-width: 0;
-}
-
-.clone-gaps__close {
-  flex: 0 0 auto;
-  border: 0;
-  background: none;
-  color: inherit;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 2px;
-}
-
 
 .profiles-view {
   height: calc(100 * var(--vh));

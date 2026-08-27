@@ -6,6 +6,7 @@ import { useAppStore } from '@/stores/hermes/app'
 import { useChatStore } from '@/stores/hermes/chat'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useSettingsStore } from '@/stores/hermes/settings'
+import { isStoredSuperAdmin } from '@/api/client'
 
 const appStore = useAppStore()
 const chatStore = useChatStore()
@@ -24,7 +25,7 @@ const routeProfile = computed(() => {
   return typeof value === 'string' && value.trim() ? value : null
 })
 
-const productTitle = 'Kippies Work'
+const productTitle = 'Hermes Studio'
 const tabTitle = computed(() => {
   if (route.name !== 'hermes.session') return productTitle
   return chatStore.activeSession?.title?.trim() || productTitle
@@ -38,13 +39,11 @@ onUnmounted(() => {
   document.title = productTitle
 })
 
-// Default is "全部配置" (null) for every role: the sidebar no longer carries an
-// agent dropdown, so silently scoping the task list to the active profile
-// would hide tasks with no visible control explaining why. An explicit filter
-// (route ?profile=, or the 筛选 popover's select) still wins.
 function preferredSessionProfileFilter(): string | null {
   if (routeProfile.value) return routeProfile.value
-  return chatStore.sessionProfileFilter
+  if (chatStore.sessionProfileFilter) return chatStore.sessionProfileFilter
+  if (isStoredSuperAdmin()) return chatStore.sessionProfileFilter
+  return profilesStore.activeProfileName || null
 }
 
 function applyPreferredSessionProfileFilter(): string | null {
@@ -116,17 +115,15 @@ watch([routeSessionId, routeProfile], async ([sessionId]) => {
   }
   if (chatStore.activeSessionId === sessionId && (!profile || chatStore.activeSession?.profile === profile)) return
 
-  const target = chatStore.sessions.find(session => (
+  const exists = chatStore.sessions.some(session => (
     session.id === sessionId && (!profile || session.profile === profile)
   ))
-  if (!target) {
+  if (!exists) {
     await loadRouteSession()
     return
   }
 
-  // A client-only draft (新建任务) must not be resumed: the server doesn't
-  // know it and its failure response would be injected as a message.
-  await chatStore.switchSession(sessionId, null, target.isLocalDraft ? { skipResume: true } : undefined)
+  await chatStore.switchSession(sessionId)
 })
 </script>
 

@@ -1,78 +1,66 @@
 <script setup lang="ts">
-import { NInputNumber, NSelect, NSwitch } from "naive-ui";
+import { NInputNumber, NSelect, NSwitch, useMessage } from "naive-ui";
 import { useI18n } from "vue-i18n";
 import { useSettingsStore } from "@/stores/hermes/settings";
 import { useSessionBrowserPrefsStore } from "@/stores/hermes/session-browser-prefs";
 import SettingRow from "./SettingRow.vue";
-import KpSectionTitle from "@/components/kippies/KpSectionTitle.vue";
-import { useAutosave } from "@/composables/useAutosave";
 
 const settingsStore = useSettingsStore();
 const sessionBrowserPrefsStore = useSessionBrowserPrefsStore();
+const message = useMessage();
 const { t } = useI18n();
-// Autosaving controls: the control's new position is the success report, and a
-// refused save puts it back — which also stops the pane quietly disagreeing
-// with what is actually stored.
-const { error: saveError, run: autosave } = useAutosave();
 
 // 防抖保存：每个字段独立定时器，300ms 内只发最后一次 HTTP 请求
 const debounceTimers: Record<string, ReturnType<typeof setTimeout>> = {};
 
 function save(values: Record<string, any>) {
   // NSelect/NSwitch 等一次性操作，直接保存，不需要防抖
-  const previous = Object.fromEntries(
-    Object.keys(values).map((key) => [key, (settingsStore.sessionReset as Record<string, any>)[key]]),
-  );
-  void autosave({
-    apply: () => settingsStore.updateLocal('session_reset', values),
-    revert: () => settingsStore.updateLocal('session_reset', previous),
-    save: () => settingsStore.saveSection('session_reset', values),
-    failMessage: t("settings.saveFailed"),
+  settingsStore.updateLocal('session_reset', values)
+  settingsStore.saveSection('session_reset', values).then(() => {
+    message.success(t("settings.saved"));
+  }).catch(() => {
+    message.error(t("settings.saveFailed"));
   });
 }
 
 function debouncedSave(key: string, value: any) {
-  // The value to go back to is captured BEFORE the optimistic write, and only on
-  // the first keystroke of a burst — re-reading it inside the timer would
-  // capture the optimistic value itself and make the revert a no-op.
-  const previous = (settingsStore.sessionReset as Record<string, any>)[key];
   // 先立即更新本地 store（UI 即时响应）
   settingsStore.updateLocal('session_reset', { [key]: value });
   // 再防抖发 HTTP 保存
   if (debounceTimers[key]) clearTimeout(debounceTimers[key])
-  debounceTimers[key] = setTimeout(() => {
-    void autosave({
-      revert: () => settingsStore.updateLocal('session_reset', { [key]: previous }),
-      save: () => settingsStore.saveSection('session_reset', { [key]: value }),
-      failMessage: t("settings.saveFailed"),
-    });
+  debounceTimers[key] = setTimeout(async () => {
+    try {
+      await settingsStore.saveSection('session_reset', { [key]: value });
+      message.success(t("settings.saved"));
+    } catch (err: any) {
+      message.error(t("settings.saveFailed"));
+    }
   }, 300);
 }
 
-function toggleRequireAuth(value: boolean) {
-  // Bound straight to the store, so a refused save leaves the switch where it
-  // was without needing an explicit revert.
-  void autosave({
-    save: () => settingsStore.saveSection("approvals", { mode: value ? "manual" : "off" }),
-    failMessage: t("settings.saveFailed"),
-  });
+async function toggleRequireAuth(value: boolean) {
+  try {
+    await settingsStore.saveSection("approvals", { mode: value ? "manual" : "off" });
+    message.success(t("settings.saved"));
+  } catch (err: any) {
+    message.error(t("settings.saveFailed"));
+  }
 }
 
-function toggleWriteApproval(section: "memory" | "skills", value: boolean) {
-  void autosave({
-    apply: () => settingsStore.updateLocal(section, { write_approval: value }),
-    revert: () => settingsStore.updateLocal(section, { write_approval: !value }),
-    save: () => settingsStore.saveSection(section, { write_approval: value }),
-    failMessage: t("settings.saveFailed"),
-  });
+async function toggleWriteApproval(section: "memory" | "skills", value: boolean) {
+  try {
+    settingsStore.updateLocal(section, { write_approval: value });
+    await settingsStore.saveSection(section, { write_approval: value });
+    message.success(t("settings.saved"));
+  } catch (err: any) {
+    message.error(t("settings.saveFailed"));
+  }
 }
 
 </script>
 
 <template>
   <section class="settings-section">
-    <p v-if="saveError" class="settings-save-error" data-testid="settings-save-error">{{ saveError }}</p>
-    <KpSectionTitle>{{ t('settings.session.sectionApprovals') }}</KpSectionTitle>
     <SettingRow
       :label="t('settings.session.requireAuth')"
       :hint="t('settings.session.requireAuthHint')"
@@ -97,7 +85,6 @@ function toggleWriteApproval(section: "memory" | "skills", value: boolean) {
         @update:value="(value) => toggleWriteApproval('skills', value)"
       />
     </SettingRow>
-    <KpSectionTitle class="settings-section__title">{{ t('settings.session.sectionReset') }}</KpSectionTitle>
     <SettingRow
       :label="t('settings.session.mode')"
       :hint="t('settings.session.modeHint')"
@@ -157,21 +144,8 @@ function toggleWriteApproval(section: "memory" | "skills", value: boolean) {
 
 <style scoped lang="scss">
 @use "@/styles/variables" as *;
-.settings-save-error {
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  background: var(--danger-bg);
-  color: var(--danger);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
 
 .settings-section {
-  margin-top: 0;
-}
-
-.settings-section__title {
-  margin-top: 36px;
+  margin-top: 16px;
 }
 </style>

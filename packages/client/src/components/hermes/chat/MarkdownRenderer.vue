@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { NDrawer, NDrawerContent, NSpin } from 'naive-ui'
+import { NDrawer, NDrawerContent, NSpin, useMessage } from 'naive-ui'
 import type MarkdownIt from 'markdown-it'
 import MarkdownItConstructor from 'markdown-it'
 import katex from 'katex'
@@ -84,6 +84,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const message = useMessage()
 // Resolved lazily inside the file-card click handler rather than at setup, so
 // MarkdownRenderer can still mount in contexts without an active Pinia (e.g.
 // the markdown-special-mentions unit test). The store is only needed when a
@@ -101,8 +102,6 @@ const md: MarkdownIt = new MarkdownItConstructor({
   highlight(str: string, lang: string): string {
     return renderHighlightedCodeBlock(str, lang, t('common.copy'), {
       formatDiffFoldLabel: diffFoldLabel,
-      copyOkLabel: t('common.copied'),
-      copyFailLabel: t('chat.copyFailed'),
     })
   },
 })
@@ -168,14 +167,6 @@ const renderedWorkspaceDiffFileIds = new Set<number>()
 // Preview config variable
 const textPreviewContent = ref<string | null>(null)
 const textPreviewFileName = ref('')
-/**
- * A download that did not start. The browser announces a download that DID —
- * there is a shelf or a notification for it — so only the failure is ours to
- * report, and it sits under the message it came from rather than in a toast.
- */
-const downloadError = ref('')
-/** Failure inside the text-preview panel, which is already open and empty. */
-const textPreviewError = ref('')
 const textPreviewLoading = ref(false)
 const textPreviewVisible = ref(false)
 
@@ -640,12 +631,15 @@ onBeforeUnmount(() => {
 })
 
 async function handleMarkdownClick(event: MouseEvent): Promise<void> {
-  // The copy button reports on itself now — it briefly swaps its own label to
-  // 已复制 / 复制失败 (see `flashCopyResult` in highlight.ts). Copying has no
-  // visible result of its own, so the control that was pressed is the only
-  // honest place for the answer.
   const copyResult = await handleCodeBlockCopyClick(event)
-  if (copyResult !== null) return
+  if (copyResult !== null) {
+    if (copyResult) {
+      message.success(t('common.copied'))
+    } else {
+      message.error(t('chat.copyFailed'))
+    }
+    return
+  }
 
   const target = event.target as HTMLElement
 
@@ -684,8 +678,9 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
     const isDownloadBtn = target.closest('.att-download-btn')
 
     if (isDownloadBtn && path) { // Only download file with download icon clicked.
+      message.info(t('download.downloading'))
       downloadFile(path, fileName).catch((err: Error) => {
-        downloadError.value = err.message || t('download.downloadFailed')
+        message.error(err.message || t('download.downloadFailed'))
       })
       return
     }
@@ -721,14 +716,14 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
           // Non-workspace image cards cannot use the profile-scoped workspace
           // preview endpoint. Preserve their previous safe download behavior.
           downloadFile(path, fileName).catch((err: Error) => {
-            downloadError.value = err.message || t('download.downloadFailed')
+            message.error(err.message || t('download.downloadFailed'))
           })
         } else {
           previewTextFile(path, fileName || '')
         }
       } else { // Download file immediately
         downloadFile(path, fileName).catch((err: Error) => {
-          downloadError.value = err.message || t('download.downloadFailed')
+          message.error(err.message || t('download.downloadFailed'))
         })
       }
     }
@@ -756,11 +751,12 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
     event.stopPropagation()
     const linkText = link.textContent || ''
     const fileName = linkText.startsWith('File: ') ? linkText.slice(6).trim() : linkText.trim()
+    message.info(t('download.downloading'))
     // Parse the real file path from the existing query param
     const url = new URL(href, window.location.origin)
     const realPath = url.searchParams.get('path') || href
     downloadFile(realPath, fileName || undefined).catch((err: Error) => {
-      downloadError.value = err.message || t('download.downloadFailed')
+      message.error(err.message || t('download.downloadFailed'))
     })
     return
   }
@@ -771,8 +767,9 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
     event.stopPropagation()
     const linkText = link.textContent || ''
     const fileName = linkText.startsWith('File: ') ? linkText.slice(6).trim() : linkText.trim()
+    message.info(t('download.downloading'))
     downloadFile(normalizeLocalFilePath(href), fileName || undefined).catch((err: Error) => {
-      downloadError.value = err.message || t('download.downloadFailed')
+      message.error(err.message || t('download.downloadFailed'))
     })
   }
 }
@@ -783,13 +780,10 @@ async function previewTextFile(path: string, fileName: string): Promise<void> {
   textPreviewVisible.value = true
   textPreviewFileName.value = fileName
   textPreviewContent.value = null
-  textPreviewError.value = ''
   try {
-    textPreviewError.value = ''
     textPreviewContent.value = await fetchFileText(path, fileName)
   } catch (err: any) {
-    // The preview panel is already open and empty; the reason belongs in it.
-    textPreviewError.value = err.message || t('download.downloadFailed')
+    message.error(err.message || t('download.downloadFailed'))
   } finally {
     textPreviewLoading.value = false
   }
@@ -802,17 +796,6 @@ function closeTextPreview(): void {
 
 <template>
   <div ref="markdownBody" class="markdown-body" v-html="renderedHtml" @click="handleMarkdownClick"></div>
-  <!-- Under the message the download was started from, and dismissible. A
-       successful download announces itself through the browser. -->
-  <p v-if="downloadError" class="markdown-inline-error" data-testid="download-error">
-    <span class="markdown-inline-error__text">{{ downloadError }}</span>
-    <button
-      type="button"
-      class="markdown-inline-error__close"
-      :title="t('common.close')"
-      @click="downloadError = ''"
-    >&times;</button>
-  </p>
   <!-- File preview area -->
   <NDrawer
     v-model:show="textPreviewVisible"
@@ -829,9 +812,6 @@ function closeTextPreview(): void {
       @close="closeTextPreview"
     >
       <NSpin :show="textPreviewLoading">
-        <p v-if="textPreviewError" class="markdown-inline-error" data-testid="preview-error">
-          <span class="markdown-inline-error__text">{{ textPreviewError }}</span>
-        </p>
         <div v-if="textPreviewContent !== null && textPreviewIsMarkdown" class="text-preview-markdown">
           <MarkdownRenderer :content="textPreviewContent" />
         </div>
@@ -848,37 +828,6 @@ function closeTextPreview(): void {
 
 <style lang="scss">
 @use '@/styles/variables' as *;
-
-/* Resident replacements for the old download / preview toasts. This block is
-   unscoped (it has to reach v-html output), so these names carry the
-   `markdown-` prefix to stay collision-free. */
-.markdown-inline-error {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 8px 0 0;
-  padding: 8px 10px;
-  border-radius: var(--r-ctl);
-  background: var(--danger-bg);
-  color: var(--danger);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
-.markdown-inline-error__text {
-  flex: 1;
-  min-width: 0;
-}
-
-.markdown-inline-error__close {
-  flex: 0 0 auto;
-  border: 0;
-  background: none;
-  color: inherit;
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 2px;
-}
 
 .markdown-body {
   font-size: 14px;
@@ -1009,51 +958,35 @@ function closeTextPreview(): void {
   }
 
   .markdown-file-card {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 12px;
-    padding: 12px 16px;
-    font-size: var(--t-12);
-    color: var(--fg-secondary);
-    background-color: var(--gray-fa);
-    box-shadow: inset 0 0 0 0.5px var(--divider);
-    border-radius: var(--r-card);
+    gap: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    color: $text-secondary;
+    background-color: rgba(0, 0, 0, 0.04);
+    border: 1px solid $border-light;
+    border-radius: $radius-sm;
     margin: 8px 0;
     cursor: pointer;
-    transition: background-color var(--motion-fast) var(--ease-std);
+    transition: background-color 0.15s ease, border-color 0.15s ease;
 
     &:hover {
-      background-color: var(--gray-f2);
-    }
-
-    > svg:first-child {
-      flex-shrink: 0;
-      width: 38px;
-      height: 38px;
-      padding: 10px;
-      box-sizing: border-box;
-      border-radius: 10px;
-      background: var(--bg);
-      box-shadow: inset 0 0 0 0.5px var(--divider);
-      color: var(--fg-secondary);
+      background-color: rgba(0, 0, 0, 0.08);
+      border-color: $border-color;
     }
 
     .att-name {
-      flex: 1;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: 240px;
-      font-weight: var(--w-medium);
-      font-size: var(--t-14);
-      color: var(--fg-title);
+      max-width: 160px;
     }
 
     .att-download-icon {
       flex-shrink: 0;
-      color: var(--fg-aux);
       opacity: 0.6;
-      transition: opacity var(--motion-fast) var(--ease-std);
+      transition: opacity 0.15s ease;
     }
 
     .att-download-btn {
@@ -1084,27 +1017,9 @@ function closeTextPreview(): void {
   }
 
   .markdown-file-card.markdown-inline-file-card {
-    display: inline-flex;
-    gap: 6px;
     margin: 0 2px;
-    padding: 2px 8px;
-    border-radius: var(--r-ctl);
+    padding: 2px 6px;
     vertical-align: middle;
-
-    > svg:first-child {
-      width: 16px;
-      height: 16px;
-      padding: 0;
-      border-radius: 0;
-      background: transparent;
-      box-shadow: none;
-    }
-
-    .att-name {
-      max-width: 160px;
-      font-size: var(--t-12);
-      color: var(--fg-secondary);
-    }
   }
 
   .markdown-file-diff-btn {
@@ -1115,23 +1030,22 @@ function closeTextPreview(): void {
     height: 18px;
     gap: 3px;
     padding: 0 5px;
-    font-family: var(--font-mono);
-    font-size: var(--t-12);
+    font-family: $font-code;
+    font-size: 11px;
     line-height: 1;
-    color: var(--fg-secondary);
-    background: var(--bg);
-    box-shadow: inset 0 0 0 0.5px var(--divider);
-    border: 0;
-    border-radius: 9999px;
+    color: var(--accent-primary, #4f7cff);
+    background: rgba(var(--accent-primary-rgb), 0.08);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.18);
+    border-radius: 999px;
     cursor: pointer;
   }
 
   .diff-badge-add {
-    color: var(--keep-green);
+    color: #2f9e44;
   }
 
   .diff-badge-del {
-    color: var(--danger);
+    color: #d9480f;
   }
 
   .markdown-diff-fallback-row {
@@ -1149,15 +1063,13 @@ function closeTextPreview(): void {
   }
 
   code:not(.hljs) {
-    background: var(--gray-f2);
-    padding: 2px 4px;
-    margin: 0 2px;
-    border-radius: var(--r-card-s);
-    font-family: var(--font-mono);
-    font-size: var(--t-12);
-    line-height: 1.6;
-    color: var(--fg-primary);
-    white-space: nowrap;
+    background: $code-bg;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: $font-code;
+    font-size: 13px;
+    color: $accent-primary;
+    white-space: pre-wrap;
     overflow-wrap: anywhere;
     word-break: break-word;
   }

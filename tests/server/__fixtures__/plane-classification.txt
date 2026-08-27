@@ -1,4 +1,4 @@
-425 entries
+423 entries
 DENY    DELETE /api/auth/locked-ips
 DENY    DELETE /api/auth/password
 DENY    DELETE /api/auth/users/:id
@@ -228,7 +228,6 @@ allow   GET    /api/hermes/experts
 allow   GET    /api/hermes/experts/:expertId/work-record
 allow   GET    /api/hermes/files/list
 allow   GET    /api/hermes/files/read
-allow   GET    /api/hermes/files/search
 allow   GET    /api/hermes/files/stat
 allow   GET    /api/hermes/group-chat/rooms
 allow   GET    /api/hermes/group-chat/rooms/:roomId
@@ -298,7 +297,6 @@ allow   HEAD   /api/hermes/available-models
 allow   HEAD   /api/hermes/download
 allow   HEAD   /api/hermes/files/list
 allow   HEAD   /api/hermes/files/read
-allow   HEAD   /api/hermes/files/search
 allow   HEAD   /api/hermes/files/stat
 allow   HEAD   /api/hermes/group-chat/rooms
 allow   HEAD   /api/hermes/group-chat/rooms/:roomId

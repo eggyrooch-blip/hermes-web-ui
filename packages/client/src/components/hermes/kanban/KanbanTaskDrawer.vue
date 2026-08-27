@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { NDrawer, NDrawerContent, NButton, NSelect, NInput, NSpin, NModal } from 'naive-ui'
+import { NDrawer, NDrawerContent, NButton, NSelect, NInput, NSpin, NModal, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { request } from '@/api/client'
@@ -25,21 +25,9 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const router = useRouter()
+const message = useMessage()
 const kanbanStore = useKanbanStore()
 
-/**
- * One resident line for everything that fails in this drawer.
- *
- * Every success in here either closes the drawer or visibly changes it (the
- * comment joins the list, the log fills in), so none of them needs saying. The
- * failures do, and they belong in the drawer rather than in a toast at the edge
- * of the screen — especially since several of these actions close the drawer on
- * success, which would leave a toast pointing at something no longer on screen.
- *
- * Cleared when the drawer switches tasks, so a failure never carries over onto
- * a different task.
- */
-const drawerError = ref('')
 const detail = ref<KanbanTaskDetail | null>(null)
 const loading = ref(false)
 const assignProfile = ref<string | null>(null)
@@ -184,7 +172,6 @@ watch(() => [props.taskId, kanbanStore.selectedBoard] as const, async ([id, boar
     return
   }
   loading.value = true
-  drawerError.value = ''
   try {
     const nextDetail = await getTask(id, { board })
     if (isActiveTask(id, board)) {
@@ -192,7 +179,7 @@ watch(() => [props.taskId, kanbanStore.selectedBoard] as const, async ([id, boar
     }
   } catch (err: any) {
     if (isActiveTask(id, board)) {
-      drawerError.value = t('kanban.message.loadFailed')
+      message.error(t('kanban.message.loadFailed'))
     }
   } finally {
     if (isActiveTask(id, board)) {
@@ -220,12 +207,13 @@ async function handleComplete() {
   }
   try {
     await kanbanStore.completeTasks([props.taskId], completeSummary.value.trim() || undefined)
+    message.success(t('kanban.message.taskCompleted'))
     showCompleteInput.value = false
     completeSummary.value = ''
     emit('updated')
     emit('close')
   } catch (err: any) {
-    drawerError.value = err.message
+    message.error(err.message)
   }
 }
 
@@ -233,12 +221,13 @@ async function handleBlock() {
   if (!props.taskId || !blockReason.value.trim()) return
   try {
     await kanbanStore.blockTask(props.taskId, blockReason.value.trim())
+    message.success(t('kanban.message.taskBlocked'))
     showBlockInput.value = false
     blockReason.value = ''
     emit('updated')
     emit('close')
   } catch (err: any) {
-    drawerError.value = err.message
+    message.error(err.message)
   }
 }
 
@@ -246,10 +235,11 @@ async function handleUnblock() {
   if (!props.taskId) return
   try {
     await kanbanStore.unblockTasks([props.taskId])
+    message.success(t('kanban.message.taskUnblocked'))
     emit('updated')
     emit('close')
   } catch (err: any) {
-    drawerError.value = err.message
+    message.error(err.message)
   }
 }
 
@@ -260,6 +250,7 @@ async function handleAssign() {
   try {
     await kanbanStore.assignTask(taskId, assignProfile.value)
     if (isActiveTask(taskId, board)) {
+      message.success(t('kanban.message.taskAssigned'))
       assignProfile.value = null
     }
     if (detail.value) {
@@ -268,7 +259,7 @@ async function handleAssign() {
     }
     emit('updated')
   } catch (err: any) {
-    if (isActiveTask(taskId, board)) drawerError.value = err.message
+    if (isActiveTask(taskId, board)) message.error(err.message)
   }
 }
 
@@ -282,10 +273,11 @@ async function handleAddComment() {
     if (isActiveTask(taskId, board)) {
       commentBody.value = ''
       detail.value = nextDetail
+      message.success(t('kanban.message.commentAdded'))
     }
     emit('updated')
   } catch (err: any) {
-    if (isActiveTask(taskId, board)) drawerError.value = err.message
+    if (isActiveTask(taskId, board)) message.error(err.message)
   }
 }
 
@@ -300,7 +292,7 @@ async function handleLoadLog() {
       taskLog.value = log.exists ? log.content : t('kanban.detail.noLog')
     }
   } catch (err: any) {
-    if (isActiveTask(taskId, board)) drawerError.value = err.message
+    if (isActiveTask(taskId, board)) message.error(err.message)
   } finally {
     if (isActiveTask(taskId, board)) taskLogLoading.value = false
   }
@@ -317,7 +309,7 @@ async function handleLoadDiagnostics() {
       diagnostics.value = nextDiagnostics
     }
   } catch (err: any) {
-    if (isActiveTask(taskId, board)) drawerError.value = err.message
+    if (isActiveTask(taskId, board)) message.error(err.message)
   } finally {
     if (isActiveTask(taskId, board)) diagnosticsLoading.value = false
   }
@@ -327,10 +319,11 @@ async function handleReclaim() {
   if (!props.taskId) return
   try {
     await kanbanStore.reclaimTask(props.taskId, recoveryReason.value.trim() || undefined)
+    message.success(t('kanban.message.taskReclaimed'))
     emit('updated')
     emit('close')
   } catch (err: any) {
-    drawerError.value = err.message
+    message.error(err.message)
   }
 }
 
@@ -341,10 +334,11 @@ async function handleReassign() {
       reclaim: detail.value?.task.status === 'running',
       reason: recoveryReason.value.trim() || undefined,
     })
+    message.success(t('kanban.message.taskReassigned'))
     emit('updated')
     emit('close')
   } catch (err: any) {
-    drawerError.value = err.message
+    message.error(err.message)
   }
 }
 
@@ -356,11 +350,12 @@ async function handleSpecify() {
     await kanbanStore.specifyTask(taskId)
     const nextDetail = await getTask(taskId, { board })
     if (isActiveTask(taskId, board)) {
+      message.success(t('kanban.message.taskSpecified'))
       detail.value = nextDetail
     }
     emit('updated')
   } catch (err: any) {
-    drawerError.value = err.message
+    message.error(err.message)
   }
 }
 
@@ -373,9 +368,6 @@ function handleNavigateTask(taskId: string) {
 <template>
   <NDrawer :show="!!taskId" :width="420" placement="right" @update:show="(v: boolean) => { if (!v) emit('close') }">
     <NDrawerContent :title="detail?.task.title || ''" closable>
-      <!-- Resident: several of these actions close the drawer on success, so a
-           failure has to stay put and be readable, not expire on a timer. -->
-      <p v-if="drawerError" class="drawer-error" data-testid="kanban-drawer-error">{{ drawerError }}</p>
       <NSpin :show="loading">
         <template v-if="detail">
           <!-- Metadata -->
@@ -567,15 +559,6 @@ function handleNavigateTask(taskId: string) {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
-.drawer-error {
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  background: var(--danger-bg);
-  color: var(--danger);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
 
 .detail-section {
   margin-bottom: 20px;

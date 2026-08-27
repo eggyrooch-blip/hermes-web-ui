@@ -158,12 +158,8 @@ describe('FileContextMenu', () => {
     await wrapper.get('[data-key="edit"]').trigger('click')
     await flushPromises()
 
-    // The point is unchanged: a failed load must NOT be announced as ownership,
-    // and the failure must be reported. It is now raised to the host as
-    // `failed` — a context menu closes on select, so it has nowhere of its own
-    // to show it.
     expect(wrapper.emitted('editor-opened')).toBeUndefined()
-    expect(wrapper.emitted('failed')).toBeTruthy()
+    expect(mockMessage.error).toHaveBeenCalled()
   })
 
   it('invokes the store preview action from the preview menu item', async () => {

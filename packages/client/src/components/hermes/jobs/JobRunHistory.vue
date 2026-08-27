@@ -1,13 +1,10 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
-import { NSpin, NCollapse, NCollapseItem } from 'naive-ui'
+import { NSpin, NEmpty, NCollapse, NCollapseItem } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { listCronRuns, readCronRun } from '@/api/hermes/cron-history'
 import type { RunEntry, RunDetail } from '@/api/hermes/cron-history'
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
-import KpSectionTitle from '@/components/kippies/KpSectionTitle.vue'
-import KpIcon from '@/components/kippies/KpIcon.vue'
-import KpEmptyState from '@/components/kippies/KpEmptyState.vue'
 
 const props = defineProps<{
   selectedJobId: string | null
@@ -78,16 +75,14 @@ watch(() => [props.selectedJobId, props.profileKey], () => {
 
 <template>
   <div class="run-history">
-    <KpSectionTitle :note="t('jobs.runHistory.recentTimes', { count: filteredRuns.length })">
-      {{ t('jobs.runHistory.title') }}
-    </KpSectionTitle>
+    <div class="history-header">
+      <span class="history-title">{{ t('jobs.runHistory.title') }}</span>
+      <span class="history-count">{{ filteredRuns.length }} {{ t('jobs.runHistory.runs') }}</span>
+    </div>
 
     <div class="history-body">
       <NSpin :show="loading">
-        <KpEmptyState
-          v-if="!loading && filteredRuns.length === 0"
-          :title="t('jobs.runHistory.noRuns')"
-        />
+        <NEmpty v-if="!loading && filteredRuns.length === 0" :description="t('jobs.runHistory.noRuns')" />
 
         <NCollapse
           v-else
@@ -97,21 +92,11 @@ watch(() => [props.selectedJobId, props.profileKey], () => {
           <NCollapseItem
             v-for="run in filteredRuns"
             :key="`${run.jobId}/${run.fileName}`"
+            :title="`${getJobName(run.jobId)} — ${run.runTime}`"
             :name="`${run.jobId}/${run.fileName}`"
           >
-            <template #header>
-              <span class="run-row">
-                <span class="run-row__tile">
-                  <KpIcon name="line_check" :size="18" color="var(--action-press)" />
-                </span>
-                <span class="run-row__text">
-                  <span class="run-row__name">{{ getJobName(run.jobId) }}</span>
-                  <span class="run-row__desc">{{ run.runTime }}</span>
-                </span>
-              </span>
-            </template>
             <template #header-extra>
-              <span class="run-meta t-meta">{{ formatSize(run.size) }}</span>
+              <span class="run-meta">{{ formatSize(run.size) }}</span>
             </template>
 
             <NSpin v-if="loadingContent[`${run.jobId}/${run.fileName}`]" size="small" />
@@ -127,59 +112,40 @@ watch(() => [props.selectedJobId, props.profileKey], () => {
 @use '@/styles/variables' as *;
 
 .run-history {
+  height: 100%;
   display: flex;
   flex-direction: column;
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid $border-light;
+  flex-shrink: 0;
+}
+
+.history-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: $text-primary;
+}
+
+.history-count {
+  font-size: 12px;
+  color: $text-muted;
 }
 
 .history-body {
-  margin-top: 4px;
-}
-
-// Prototype AutoScreen 运行记录 uses CatalogRow anatomy: a 40px rounded tile
-// on the left, a two-line text block (name + desc), and right-aligned meta.
-.run-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.run-row__tile {
-  flex: 0 0 40px;
-  width: 40px;
-  height: 40px;
-  border-radius: 11px;
-  background: var(--bg);
-  box-shadow: inset 0 0 0 0.5px var(--divider);
-  display: grid;
-  place-items: center;
-}
-
-.run-row__text {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.run-row__name {
-  font: var(--w-semibold) var(--t-14) / 1.6 var(--font-cn);
-  color: var(--fg-title);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.run-row__desc {
-  font: var(--w-regular) var(--t-13) / 1.6 var(--font-cn);
-  color: var(--fg-aux);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 20px 20px;
 }
 
 .run-meta {
-  color: var(--fg-disabled);
-  font-family: var(--font-data);
+  font-size: 11px;
+  color: $text-muted;
+  font-family: $font-code;
 }
 </style>

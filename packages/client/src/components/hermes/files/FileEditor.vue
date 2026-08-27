@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
-import { NButton, NSpace, useDialog } from 'naive-ui'
+import { NButton, NSpace, useMessage, useDialog } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { DEFAULT_EDITOR_SCOPE, useFilesStore } from '@/stores/hermes/files'
 import * as monaco from 'monaco-editor'
@@ -16,8 +16,7 @@ import * as monaco from 'monaco-editor'
 }
 
 const { t } = useI18n()
-/** Save failure for the open file. */
-const paneError = ref('')
+const message = useMessage()
 const dialogApi = useDialog()
 const filesStore = useFilesStore()
 const props = withDefaults(defineProps<{ editorScope?: string }>(), {
@@ -66,9 +65,9 @@ async function handleSave() {
   saving.value = true
   try {
     if (!await filesStore.saveEditor(props.editorScope)) return
-    // Saved: the dirty marker clears, which is the report.
+    message.success(t('files.saved'))
   } catch {
-    paneError.value = t('files.saveFailed')
+    message.error(t('files.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -92,7 +91,6 @@ function handleClose() {
 
 <template>
   <div v-if="editingFile" class="file-editor">
-    <p v-if="paneError" class="pane-notice" data-testid="file-editor-error">{{ paneError }}</p>
     <div class="editor-header">
       <span class="editor-filename">{{ editingFile.path }}</span>
       <NSpace>
@@ -110,15 +108,6 @@ function handleClose() {
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
-.pane-notice {
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  background: var(--danger-bg);
-  color: var(--danger);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
 
 .file-editor {
   display: flex;

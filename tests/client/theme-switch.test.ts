@@ -17,24 +17,23 @@ vi.mock('@/composables/useTheme', () => ({
 import ThemeSwitch from '@/components/layout/ThemeSwitch.vue'
 
 describe('ThemeSwitch', () => {
-  it('renders the comic-style toggle and the shared light/dark segmented control', async () => {
-    // Light/dark now lives in the shared KpThemeSeg component (the prototype's
-    // 浅色/深色 segmented control), used identically in both sidebars. Stub it —
-    // it pulls in i18n — and assert it is composed in alongside the comic toggle.
-    const wrapper = mount(ThemeSwitch, {
-      global: {
-        stubs: {
-          KpThemeSeg: { template: '<span class="kp-theme-seg-stub" />' },
-        },
-      },
-    })
+  it('renders the comic-style and brightness controls', async () => {
+    const wrapper = mount(ThemeSwitch)
+    const buttons = wrapper.findAll('button.theme-switch')
+
+    // Upstream renders both a comic-style toggle and a brightness toggle.
+    expect(buttons).toHaveLength(2)
 
     const comicButton = wrapper.find('button[title="Comic style"]')
     expect(comicButton.exists()).toBe(true)
+
+    const brightnessButton = wrapper.find('button[title="Dark mode"]')
+    expect(brightnessButton.exists()).toBe(true)
+
+    await brightnessButton.trigger('click')
+    expect(toggleBrightnessMock).toHaveBeenCalled()
+
     await comicButton.trigger('click')
     expect(toggleStyleMock).toHaveBeenCalled()
-
-    // The brightness affordance is the shared segmented control.
-    expect(wrapper.find('.kp-theme-seg-stub').exists()).toBe(true)
   })
 })

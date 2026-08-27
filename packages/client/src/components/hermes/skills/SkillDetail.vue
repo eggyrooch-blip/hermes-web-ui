@@ -3,8 +3,10 @@ import { computed, ref, watch } from 'vue'
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
 import { fetchSkillContent, fetchSkillFiles, pinSkillApi, updateSkillContent, type SkillFileEntry } from '@/api/hermes/skills'
 import { useI18n } from 'vue-i18n'
+import { useMessage } from 'naive-ui'
 
 const { t } = useI18n()
+const message = useMessage()
 
 const props = defineProps<{
   category: string
@@ -21,8 +23,6 @@ const emit = defineEmits<{
   pinToggled: [name: string, pinned: boolean]
 }>()
 
-/** Save and pin failures for this skill. */
-const paneError = ref('')
 const content = ref('')
 const files = ref<SkillFileEntry[]>([])
 const loading = ref(false)
@@ -118,9 +118,9 @@ async function saveEditing() {
     }
     editing.value = false
     editContent.value = ''
-    // Saved: the detail pane shows the stored text.
+    message.success(t('common.saved'))
   } catch (err: any) {
-    paneError.value = t('common.saveFailed') + `: ${err.message}`
+    message.error(t('common.saveFailed') + `: ${err.message}`)
   } finally {
     saving.value = false
   }
@@ -136,7 +136,7 @@ async function handlePinToggle() {
     await pinSkillApi(props.skillName, newPinned)
     emit('pinToggled', props.skillName, newPinned)
   } catch (err: any) {
-    paneError.value = t('skills.pinFailed') + `: ${err.message}`
+    message.error(t('skills.pinFailed') + `: ${err.message}`)
   } finally {
     pinLoading.value = false
   }
@@ -147,7 +147,6 @@ watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
 
 <template>
   <div class="skill-detail">
-    <p v-if="paneError" class="pane-notice" data-testid="skill-detail-error">{{ paneError }}</p>
     <!-- Skill title -->
     <div class="detail-title">
       <span class="detail-category">{{ category }}</span>
@@ -244,15 +243,6 @@ watch(() => `${props.category}/${props.skill}`, loadSkill, { immediate: true })
 
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
-.pane-notice {
-  margin: 0 0 12px;
-  padding: 12px;
-  border-radius: var(--r-ctl);
-  background: var(--danger-bg);
-  color: var(--danger);
-  font: var(--w-regular) var(--t-13) / var(--lh-multi) var(--font-cn);
-}
-
 
 .skill-detail {
   height: 100%;
