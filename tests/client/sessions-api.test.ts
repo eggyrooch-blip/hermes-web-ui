@@ -8,7 +8,7 @@ vi.mock('@/api/client', () => ({
   getBaseUrlValue: vi.fn(() => ''),
 }))
 
-import { fetchSessionMessagesPage, setSessionModel } from '@/api/hermes/sessions'
+import { fetchSessionMessagesPage, setSessionExpert, setSessionModel } from '@/api/hermes/sessions'
 
 describe('sessions api', () => {
   beforeEach(() => {
@@ -66,6 +66,22 @@ describe('sessions api', () => {
     await expect(setSessionModel('session-1', 'gpt-5.5', 'openai')).resolves.toEqual({
       ok: false,
       familySwitchNotice: false,
+    })
+  })
+
+  it('persists or clears the session expert through the BFF', async () => {
+    requestMock.mockResolvedValue({ ok: true })
+
+    await expect(setSessionExpert('session-1', 'expert-a', 'harness', 'profile-a')).resolves.toBe(true)
+    expect(requestMock).toHaveBeenLastCalledWith('/api/hermes/sessions/session-1/expert?profile=profile-a', {
+      method: 'POST',
+      body: JSON.stringify({ expert_id: 'expert-a', execution_engine: 'harness', profile: 'profile-a' }),
+    })
+
+    await expect(setSessionExpert('session-1', null, 'hermes', 'profile-a')).resolves.toBe(true)
+    expect(requestMock).toHaveBeenLastCalledWith('/api/hermes/sessions/session-1/expert?profile=profile-a', {
+      method: 'POST',
+      body: JSON.stringify({ expert_id: null, execution_engine: 'hermes', profile: 'profile-a' }),
     })
   })
 })

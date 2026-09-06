@@ -11,6 +11,7 @@ vi.mock('../../packages/client/src/api/client', () => ({
 import {
   cloneRoom,
   clearRoomContext,
+  joinRoomByCode,
 } from '../../packages/client/src/api/hermes/group-chat'
 
 describe('Group chat API', () => {
@@ -23,12 +24,20 @@ describe('Group chat API', () => {
       .mockResolvedValueOnce({ room: { id: 'copy-room' }, agents: [] })
       .mockResolvedValueOnce({ success: true, room: { id: 'room-1' } })
 
-    await expect(cloneRoom('room-1', { name: 'Copy', inviteCode: 'ABC123' })).resolves.toEqual({ room: { id: 'copy-room' }, agents: [] })
+    await expect(cloneRoom('room-1', { name: 'Copy', inviteCode: 'ABC12345' })).resolves.toEqual({ room: { id: 'copy-room' }, agents: [] })
     await expect(clearRoomContext('room-1')).resolves.toEqual({ success: true, room: { id: 'room-1' } })
 
     expect(mockRequest.mock.calls).toEqual([
-      ['/api/hermes/group-chat/rooms/room-1/clone', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Copy', inviteCode: 'ABC123' }) }],
+      ['/api/hermes/group-chat/rooms/room-1/clone', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Copy', inviteCode: 'ABC12345' }) }],
       ['/api/hermes/group-chat/rooms/room-1/clear-context', { method: 'POST' }],
     ])
+  })
+
+  it('uses POST when an invite code creates persistent membership', async () => {
+    mockRequest.mockResolvedValueOnce({ room: { id: 'room-1' } })
+
+    await joinRoomByCode('JOINME88')
+
+    expect(mockRequest).toHaveBeenCalledWith('/api/hermes/group-chat/rooms/join/JOINME88', { method: 'POST' })
   })
 })

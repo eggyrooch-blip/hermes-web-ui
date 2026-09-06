@@ -10,7 +10,7 @@ vi.mock('@/api/client', () => ({
   request: requestMock,
 }))
 
-import { submitGitlabToken } from '@/api/skillCredentials'
+import { revokeGithubToken, submitGithubToken, submitGitlabToken } from '@/api/skillCredentials'
 
 describe('submitGitlabToken URL construction', () => {
   beforeEach(() => {
@@ -40,5 +40,29 @@ describe('submitGitlabToken URL construction', () => {
     for (const call of requestMock.mock.calls) {
       expect(call[0]).toBe('/api/hermes/credentials/gitlab')
     }
+  })
+})
+
+describe('GitHub connector credential API', () => {
+  beforeEach(() => {
+    requestMock.mockReset()
+    requestMock.mockResolvedValue({ ok: true })
+  })
+
+  it('submits only the PAT and keeps profile as a non-authoritative query hint', async () => {
+    await submitGithubToken('github_pat_x', 'profile a')
+
+    const [url, init] = requestMock.mock.calls[0] as [string, any]
+    expect(url).toBe('/api/hermes/credentials/github?profile=profile+a')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body)).toEqual({ token: 'github_pat_x' })
+  })
+
+  it('revokes the caller-bound credential without sending identity fields', async () => {
+    await revokeGithubToken('profile a')
+
+    const [url, init] = requestMock.mock.calls[0] as [string, any]
+    expect(url).toBe('/api/hermes/credentials/github?profile=profile+a')
+    expect(init).toEqual({ method: 'DELETE' })
   })
 })

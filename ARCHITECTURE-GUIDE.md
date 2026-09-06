@@ -1,5 +1,120 @@
 ---
 
+> [!success] 2026-09-04 Chat-native Project UI is live and production-verified
+> `release-20260904-01` pins multitenancy `c4b803afe5a5b95e99013b1009afa9e43eab5e3f` and WebUI `568c1fe4cd5a19b1f64380b17bdcebe985dab660`. Ordinary Chat is the sole Project task entry: its composer exposes Project selection/creation/context while Workspace selection and the Cowork nav are absent; legacy `/hermes/cowork` redirects to Chat. Project sessions and the management surface reuse the existing Chat/session UI and never expose the internal cwd.
+>
+> WebUI MR !74 / pipeline 544610, multitenancy MR !184 / pipeline 544604, and profile-route hotfix MR !75 / pipeline 544614 all merged green. The release executor passed 12/12; exact symlinks/HEADs, services, ports, HTTP, databases, two-identity isolation, session mirror, and post-ready logs passed independent readback. Authenticated production Chrome created a Project and proved that the picker, View all Projects, manager auto-selection, and AppSidebar preserve the current profile. Upstream `hermes-agent`, Muse, KippiesWork, and DeerFlow remain untouched.
+
+> [!success] 2026-09-03 专家选择持久化已发布并通过生产验收
+> `release-20260903-04` 精确运行 WebUI `d5da180ba6dd7337aab6dd73c61b7bfe9ae21a0c`。Chat 在首次 run 前通过 owner/profile-scoped sessions BFF 持久化专家与执行引擎；列表刷新、详情刷新、页面刷新和模型切换必须先观察该写入结果，失败会显示错误并停止 dispatch。服务端只接受当前可信 actor 的专家目录项；有消息后专家与引擎继续不可重绑。显式 None 仅在首条消息前可用。
+>
+> MR !72 / pipeline 544598 已合并成功，发布与复验 12/12。真实登录态完成 61 秒等待、刷新、GPT-5.4 切换和真实发送，专家保持且回复可见；显式 None、New Chat、profile 切换均通过。双身份只读 canary self=2/cross=0/ambiguity=0，session mirror malformed identity=0，发布后相关错误日志为 0。
+
+> [!history] 2026-09-03 Chat-native Project UI was then a local candidate (superseded by the 2026-09-04 production record above)
+> `chat-native-project` reuses the existing Chat shell: the Project picker is available in the ordinary Chat composer, Projects remains the management surface, the Cowork nav item is removed, visible Workspace selection is removed, and legacy `/hermes/cowork` redirects to `/hermes/chat`. The existing Socket transport now forwards the multitenancy `project.bound` receipt so first-send freezing and Project-to-new-task switching work in the live Chat flow. Existing multitenancy Project/Session/cwd/isolation contracts are unchanged; `hermes-agent`, Muse, KippiesWork, and DeerFlow are untouched. Focused Vitest passed 86/86, the production build passed, and mocked-API Chromium passed the Project freeze/fork, Rename, desktop, mobile, and no-Project send paths. Production remains `release-20260903-03`.
+
+> [!success] 2026-09-03 【267】Hermes native Projects 已发布生产
+> `release-20260903-02` 运行 WebUI `9a4f00af9f34b2e7bb49d165dc0dc05e2c6f8b07` 与 multitenancy `810b151c86c4f0880667e107f74a01f324dba171`。release executor 与独立复验均 12/12；登录态生产读回为 Cowork Project button=1/Workspace button=0，普通 Chat Project button=0/Workspace button=2。开源 `hermes-agent`、Muse、KippiesWork 和 DeerFlow 未修改。首次 2145-profile 技能同步耗时 101 秒超过默认 90 秒窗口而自动回滚；旧版复检 12/12 后，同一不可变 release 以一次性 180 秒窗口重跑成功，临时覆盖已撤销。
+
+> [!history] 2026-09-02 PRD 267 Hermes 原生 Project 当时仅为本地候选
+> 当时 Cowork 复用既有 `/hermes/cowork` `ChatView`，Project 管理与选择器经 `/api/hermes/cowork/projects*` 同源 BFF 连接 routed-profile Run Broker。客户端只提交 Project ID；multitenancy 解析 profile-scoped Project folder、冻结 Session 绑定并回传脱敏 receipt。不存在 Muse/KippiesWork/DeerFlow、外部 Cowork API、Thread/SSE/Library 数据源或普通 session fallback。开源 `hermes-agent` 未修改；该候选后续已由上方 `release-20260903-02` 发布记录取代。
+
+> [!success] 2026-09-03 connector catalog card actions are live and Chrome-verified
+> WebUI MR !68 / pipeline 544461 merged successfully; `release-20260903-03` runs WebUI
+> `1c773fb63ec035f0bab68e1b22e564a5f0cbb3c9` with multitenancy
+> `810b151c86c4f0880667e107f74a01f324dba171`. The effective 642-source catalog contains 18 pass,
+> 264 owner-authorized, and 360 pinned-sandbox paths with zero `incompatible` or `rejected` rows.
+> Executor and independent probes both passed 12/12; services, ports, databases, identity isolation,
+> and the session mirror passed readback. In a real logged-in production Chrome session, the refreshed
+> source 642/642 and canonical 330/330 cards were all pointer-enabled, `role=button`, `tabindex=0`, and
+> non-disabled. Mouse and keyboard opened direct, authorization, Feishu Connected, and sandbox details;
+> visible warnings and console errors were zero. No primary action, OAuth, install, revoke, credential write,
+> employee message, model call, or cron job was triggered.
+
+> [!warning] 2026-09-01 Harness 通用 workspace/expert 引擎为本地候选，尚未 ship
+> 本候选替代下面 2026-08-31 的单 profile pilot 设计：`HERMES_WEBUI_HARNESS_PROFILES` 不再决定可见性；全局开关与 readiness 健康时，每个已认证用户都能在其已授权专家上选择 Harness。新会话复用并持久化现有 `sessions.workspace`，空值表示该 profile 默认工作区；Harness 的 engine/workspace 在 sessions API、写消息与 Run Broker dispatch 三处均不可重绑，已删除的命名 workspace 会失败关闭而不是静默落到默认目录。Hermes 原有 per-run workspace 选择保持不变。聊天标题显示 `Codex · <workspace末级名>` 或本地化的 `Codex · Default workspace`，不再显示固定 `hermes-web-ui`。专家 audience、profile owner ACL 和生产环境均未改变。
+
+> [!warning] 2026-09-01 hermes-1 CI runner 稳定化候选
+> 本任务的连续失败并非 Harness 断言：受限的 rootless Docker runner 同时允许 16 个 job，曾让 WebUI server 用例慢 100 倍并令 Docker socket 失联。runner 配置已备份后热调为 `concurrent = 2`；仓库的 CI common suite 同步收敛到 1 个 Vitest worker，调用方传入的更高并发仍被覆盖，workspace-diff 继续独占。受控并发 pipeline 543509 已 8/8 jobs success；因它是手工补跑，`ftask` 不把它当当前 ship 的精确 canonical receipt，仍需由新 head 的自动 pipeline 完成正式合入。
+
+> [!success] 2026-08-31 chat-plane workspace picker UX 已发布并通过真实浏览器验收
+> `webui-workspace-picker-ux` 只调整现有目录绑定的展示层：空值显示“默认工作区”，chat plane 不再提示宿主机绝对项目路径，点目录及 `uploads`/`runs` 不再作为 Workspace 候选；Files 页、admin plane、`sessions.workspace`、Run Broker 与 runtime cwd 均未改变。MR !57 / pipeline 543059 将 WebUI `8d71f0cbe5817ee680ed88a699aa735a6eca2bc9` 合入；`release-20260831-08` 首次发布，随后并发的 `release-20260831-09` 保持同一 WebUI SHA。两次 executor 均 12/12，回滚记录均为 `SUCCESS`。sunke 真实 Chrome 登录态在 `https://hermes.example.com` 打开选择器，读回云端标题、默认工作区、普通云端目录及无绝对路径；`.ai-docs`、`uploads`、`runs` 均不可见，随后点 Cancel，未修改会话工作区。当前 WebUI/public/profile health 正常，8648/8652/8766/8770 各一 listener，当前服务启动后隔离错误计数为 0；未发送员工消息或触发 cron。ftask 通用 SPA canary 仅得到 `status=?`，没有形成有效 HTTP 判定，真实登录态 DOM 与发布器探针为本次产品验收依据。
+
+> [!warning] 2026-08-31 connector catalog/custom remote MCP is local and awaiting ship
+> The existing ordinary-user Connectors surface now consumes an owner-bound BFF API for the frozen 642 source rows and 330 canonical rows, including archived catalog icons and honest unknown download counts. The same panel accepts JSON/YAML only for HTTPS Streamable HTTP or SSE `mcpServers`; it rejects `command` / `args` before submit and sends only `{config}`. The BFF derives profile plus Feishu owner from the authenticated request, rejects browser-supplied profile/owner/subject keys, forwards only trusted headers to Run Broker, and exposes icons through a bounded public image proxy. Local proof: focused Vitest 90/90, focused Chromium 1/1, production build exit 0, and the isolated real browser rendered 642 then 330 rows with 642/642 icons, zero console errors, two-identity isolation, and connect/revoke persistence. Production is unchanged until ftask ship and release verification complete.
+
+> [!success] 2026-08-31 Studio selective harvest released without widening local boundaries
+> `release-20260831-03` keeps multitenancy pinned at
+> `1112767bcb7d41014f0bdc3cddf105d18473b267` and moves WebUI to
+> `d0d64957ea0f17b7784b75fde6d3bbc0e92482d1`. Group-chat owner/member isolation landed via
+> MR !53 / pipeline 542939; the seven reliability ports landed via MR !54 / pipeline 542957.
+> The release executor passed 12/12 probes and the rollback package records SUCCESS. Exact release code passed
+> the four group-chat files (36 tests); all six existing production rooms remain ownerless with no backfill or
+> data rewrite. Core services and relay are active with zero restarts, required ports have one listener each,
+> both databases pass quick-check, and the session mirror is 44244/44244 non-empty. Feishu WS is connected;
+> no employee message or cron job was triggered. Cron lazy-worker startup and browser focus remain unverified.
+
+> [!warning] 2026-08-31 Harness 单 profile pilot admission 为本地候选，尚未 ship
+> Expert catalog 与 session execution-engine binding 现在共用
+> `isHarnessEnabledForProfile(profile)`：只有全局开关为 1 且可信 profile 在有限白名单中才暴露或接受
+> Harness。浏览器不能自行扩大白名单，既有 Hermes session 不受影响。定向 52/52 已通过；生产 env、
+> build、restart 与真实两轮 UAT 尚未执行。
+
+> [!success] 2026-08-31 workspace diff 截断基线误报已发布并通过真实 WebUI 回归
+> `webui-workspace-diff-stale-files` 将路径枚举、轻量元数据与内容读取分层：checkpoint 先为所有已枚举路径保留真实 size/mtime，再在原有共享预算内读取内容；Git 使用 `--untracked-files=all` 保留目录内完整文件路径，起跑路径扫描若自身截断则对无法证明归属的未知文件 fail-closed。MR !51 / WebUI `07b51df93bb11fb55565fae59971cfd38a01be3b` 已随 `release-20260831-02` 部署；tracker 31/31、harness/build、SIM 3/3、pipeline 542885 与 release executor 12/12 通过。sunke 真实 Chrome 登录态在原问题会话收到新回复“收到”，该新回复容器下载项为 0；只读 DB 复核没有新增 workspace change 行。旧回复的 11 个历史 chip 保留，未删除或改写用户数据；未发送员工飞书消息或触发 cron。
+
+> [!warning] 2026-09-01 CI 下的定向测试调用也必须带 worker cap
+> 下面 2026-08-29 那条写的"explicitly targeted runs 直通原参数"只对**本地**成立，CI 里不再成立。
+> tiered pipeline 之后 `.gitlab-ci.yml` 的 lane 自己就是定向调用（`npm test -- tests/client|server|desktop`），
+> 直通等于把 CI 全套跑在裸并发上（vitest 默认 ≈CPU 核数），正是 2026-08-29 那条要避免的
+> runner 上 worker RPC `onTaskUpdate` 超时 —— pipeline 543253 就是这样 1931 个用例全过却 exit 1。
+> 现在 `CI=1` + 有 filter 时照样 cap 到 1 worker；**并且**当 filter 选中
+> `tests/server/workspace-diff-tracker.test.ts` 时，仍按未过滤路径那样把它拎出来独占
+> 1 worker 跑。只 cap 到 2 是不够的 —— `tests/server` lane 实测会连撞
+> `Test timed out` / `Hook timed out`（pipeline 543264，以及空闲 runner 上的 job 3203111 重试），
+> 该文件带硬 wall-clock 断言（`toBeLessThan(3_500)`），必须独占。
+> 边界条件：filter 只命中该文件时 common 阶段排掉它就一个文件不剩，vitest 会以
+> `No test files found` 退 1（实测：不带该 flag exit=1，带上 exit=0）——所以有 filter 时
+> common 带 `--passWithNoTests`；这不会掩盖"整轮没跑用例"，因为 isolated 阶段一定跑到它。
+> 另一条同源约束：cap 前必须剥掉 caller 的所有并发写法，`--poolOptions.<pool>.max*` 优先级
+> 高于 `--maxWorkers`，漏剥会静默盖掉 cap（`--poolOptions` 与 `--pool-options` 两种前缀都收）。
+> 未过滤全集的分区正确性由 Vitest 自己的 `list --filesOnly` 回归核对。
+> 本地（无 CI）定向调用行为完全不变，仍然直通。
+
+> [!warning] 2026-08-29 CI workspace-diff worker isolation candidate, not shipped
+> The package test entrypoint preserves normal Vitest behavior for local and
+> explicitly targeted runs. In an untargeted `CI=1` full run it first executes
+> the ordinary suite with at most 2 workers while excluding
+> `tests/server/workspace-diff-tracker.test.ts`, then runs that one load-sensitive
+> file in a single, non-file-parallel worker. A non-zero exit from either phase
+> still fails the job. No workspace product code, deadline/lease constants,
+> assertions, skips, or xfails changed. Vitest's own CLI parser distinguishes
+> positional filters from flag values; coverage/reporter artifacts use separate
+> phase paths, and false-like CI values do not activate the split. The exact local
+> CI-mode capture at `7172c582` passed 354 common files (3,041 passed + 2 skipped), then the isolated
+> file passed 28/28. GitLab pipeline verification and independent review remain pending.
+
+> [!warning] 2026-08-28 Harness Expert follow-up debt closure，仅为本地候选
+> Harness credential resume 的客户端临时 streaming 状态现在以服务端 `auth.resolved` 为终点；
+> 若 resume 失败并重新收到同 workflow 的 `auth.required`，也只收束临时 attachment、保留可重试卡；
+> 服务端只返回固定安全失败原因，客户端把它显示给用户；旧 attachment 的 late `onDone` 先经
+> 同一 settle/closed 边界，不能清掉紧接着建立的新 retry attachment。
+> 普通 connector replay 仍等待实际重放。BFF 只按 session 持久化的 `execution_engine` 选择
+> Harness credential 路径，客户端 `workflow_id` 不能把 Hermes session 升格为 Harness。
+> profile-local 飞书 UAT 状态必须带可信 actor，只读取并校验该 actor 的单一文件；actor 缺失或
+> 非法时失败关闭，不扫描目录。当前三个回归文件 170/170、全量 352 files / 3036 passed /
+> 2 skipped、双 typecheck、Harness check 与 production build 均通过；新 HEAD 独立复审待刷新。
+> 未 ship/push/merge/deploy，生产与员工界面不变。
+
+> [!warning] 2026-08-28 全租户飞书链接预览仅为本地候选
+> ChatInput 和已发送的用户消息都识别任意合法 `*.feishu.cn` / `*.larksuite.com`
+> 链接并显示预览 chip；消息正文仍保留原 URL，但输入框和消息气泡不重复展示裸链接。
+> BFF 只把 URL 与已验证的当前 owner/profile 转发给 Run Broker，浏览器不抓租户页面。Wiki/Drive
+> 返回用户身份验证的标题/类型，其余能力或不透明链接显示产品类型/权限/通用状态，原消息 URL 不变。
+> Run Broker 现额外允许精确 `open.feishu.cn`/`open.larksuite.com` 的 `/document/...` 公开页面匿名提取标题；不携带 cookie/凭据、不跟随重定向，最多 1 MB、2 秒，其他租户 HTML 仍禁止。
+> WebUI 聚焦 40/40、MT 聚焦 140/140、typecheck 与 production build 通过；同 profile/URL 成功结果会复用，瞬时只读失败短重试一次；隔离候选 `8748/8877`
+> 已只读验收真实 Base 消息资源卡及输入框紧凑标题条，粘贴和草稿恢复均会解析。未 ship、生产不可见。
+
 > [!warning] 2026-08-12 数字员工定时执行入口为本地候选，尚未 ship
 > `digital-employee-scheduled-entry` 只在 persisted expert 与当前 catalog 一致的普通会话
 > 显示 `Schedule`，复用既有 JobFormModal 预填会话标题、当前 prompt、expert skills 与固定
@@ -14,7 +129,7 @@
 > `Session authorization is unavailable`，不向客户端暴露 DB 异常；组合 focused 118/118、
 > typecheck/build 通过，仍未发布。
 title: hermes-web-ui 架构速查 — EKKO fork (Koa 2 + Vue3 BFF)
-updated: 2026-08-11
+updated: 2026-08-30
 status: living
 scope: ~/code/hermes-web-ui (EKKOLearnAI/hermes-web-ui fork, v0.6.15)
 audience: Claude PAI / 孙可
@@ -27,7 +142,30 @@ related:
   - "[[.omc/research/06-webui-internals.md]]"
 ---
 
+> [!warning] 2026-08-28 H-05 correction continuity 仅为本地候选，尚未 ship
+> `ChatContextCompressor` 与 session export 的 `ExportCompressor` 在 full/incremental summary
+> prompt 中共用同一组字段纠正规则：
+> 新值覆盖旧值、展示格式变化不改底层值、未声明字段保持不变，并把旧冲突值只作为已 superseded
+> 历史保留。确定性 41/41 回归只验证共享规则确实进入 full/incremental 两个 prompt seam；它不冒充
+> 模型语义断言。未改 token budget、UI、DB、身份或 session fence。追加本机真实 UAT：应用原有
+> `ChatContextCompressor.compress → AgentBridgeClient` 使用 `dev` 与 `coder1` 各自的
+> profile-local `zai/glm-5.2` 配置按 A/B 顺序交错执行四轮，共 8 次模型摘要；ftask 当前 runner
+> capture exit 0 绑定 `6/9 → 67%`、未声明 `title/owner` 不变、各自 canary 保留且另一 session
+> canary cross-match=0。更早的手工证据已被该 capture 取代，不作为结论来源。未 ship/push/merge/
+> deploy，未连接生产；没有读取、复制或改变 profile credential。
+
 # hermes-web-ui 架构速查 — EKKO fork
+
+> [!warning] 2026-08-28 Harness Expert Claude 复审整改，仅为本地候选
+> Harness 能力现在完全由服务端 feature flag 返回，普通 run 与 `/plan`、`/goal` 共用同一个
+> session/expert/engine 准入函数；浏览器不能绕过枚举、已绑定 session 或授权 expert。刷新时 BFF
+> 把可信 profile/owner/session 交给 MT 权威解析 workflow ID，并回读阶段、pending Gate 与 credential wait，
+> 同时保留非 Harness 的普通终端审批。Gate 决定在服务端 ACK 前保持卡片并可失败重试；credential
+> resume 使用明确 connector ID，BFF 按当前用户/profile 回读认证状态；lark profile cache 只接受
+> 当前 actor 的精确文件。MT 成功恢复 durable workflow 后直接等待同一 thread 的下一轮，不再误走
+> 普通 run 的进程内 parked replay；因此 WebUI/BFF 重启恢复的授权卡不会先清状态再报 replay 失效。
+> 新增文案均走现有 10 语言 i18n。Feishu delivery、profile apiserver、cron 和
+> `multitenancy_sessions` context mirror 均未改；未发布生产。
 
 > [!warning] 2026-08-12 数字员工会话入口为本地候选，尚未 ship
 > `digital-employee-session-entry` 把目录卡主动作改为“和 TA 对话”并固定创建独立会话；
@@ -1698,8 +1836,9 @@ CLAUDE.md 写过：dev 模式下"`hermes` CLI 必须在 `$PATH`"——确实，s
 | `FEISHU_APP_ID` | `''` | 飞书 app_id | `config.ts:61` |
 | `FEISHU_APP_SECRET` | `''` ***REDACTED 必填*** | 飞书 app_secret | `config.ts:62` |
 | `FEISHU_REDIRECT_URI` | `''` | OAuth callback URL | `config.ts:63` |
-| `FEISHU_AUTHORIZE_URL` | `https://open.feishu.cn/open-apis/authen/v1/index` | oversea 部署换 `open.larksuite.com` | `config.ts:64` |
+| `FEISHU_AUTHORIZE_URL` | `https://accounts.feishu.cn/open-apis/authen/v1/authorize` | 飞书官方 Authorization Code 授权页；显式旧 URL 仍按 legacy `app_id` 参数兼容 | `config.ts` |
 | `FEISHU_API_BASE_URL` | `https://open.feishu.cn` | 同上 | `config.ts:65` |
+| `FEISHU_TOKEN_URL` | `https://accounts.feishu.cn/oauth/v3/token` | OAuth v3 code→token 端点。**与 `FEISHU_API_BASE_URL` 是不同域名**（`accounts.*` vs `open.*`），出网白名单必须同时放行两者 | `config.ts` |
 | `FEISHU_SESSION_SECRET` | `''` ***REDACTED*** | cookie HMAC secret，fallback 到 trustedHeader / appSecret | `config.ts:66` + `feishu-oauth.ts:112` |
 | `FEISHU_SESSION_MAX_AGE_SECONDS` | `604800` (7天) | cookie 过期 | `config.ts:67` |
 | `FEISHU_CALLBACK_REDIRECT` | `/#/` | callback 跳转默认页 | `config.ts:68` |
@@ -1722,6 +1861,11 @@ CLAUDE.md 写过：dev 模式下"`hermes` CLI 必须在 `$PATH`"——确实，s
 
 ## Changelog
 
+- 2026-08-30：CI workspace-diff 两阶段入口的 Opus 复审整改仅为本地候选。worker 参数统一移除 caller 的 camel/kebab 写法后固定 common=2、isolated=1；显式 filter 由 Vitest `parseCLI` 判定，不再把 `--exclude` 等 flag value 当 filter；`CI=0/false/no/off` 不触发拆分；spawn 失败明确输出；coverage/reporter/outputFile（含 Vitest kebab `--output-file`）在隔离阶段使用独立 artifact 路径。新增 runner 合约与完整文件集合分区回归 7/7；`7172c582` 的 exact `CI=1 npm test -- --maxWorkers=4` capture 为 common 354 files / 3041 passed / 2 skipped，isolated workspace-diff 28/28。未 ship、未发布生产。
+
+- 2026-08-29：GitLab CI 的 exact `npm test -- --maxWorkers=4` 入口由 `scripts/run-tests.mjs` 收口为两阶段：普通 353 个文件使用 2 workers，避免 runner 上 Vitest worker RPC `onTaskUpdate` 超时；`workspace-diff-tracker` 随后独占单 worker 跑 28/28，保留原 deadline/lease/settlement 断言。显式定向测试仍直通原参数。候选尚未合并或发布生产。
+
+- 2026-08-26：本地候选 `feishu-login-uat-merge` 将 WebUI 登录迁到飞书官方 Authorization Code 授权页与 v3 token 端点，登录前从 master-key-only Run Broker scope 接口取得固定应用当前已开通的 Lark-cli 用户权限并兜底补入 `offline_access`；callback 在 session cookie 写入前把 access/refresh token 仅通过服务器 localhost 请求交给 multitenancy。import 成功维持原 chat landing；只有 import 失败（含缺 refresh token）仍登录并转到 Connectors 显示 Lark-cli 重授权提示，绝对 callback 地址保留配置的 WebUI origin，state/token/user_info/route 失败继续失败关闭。浏览器、URL、cookie、client state 与错误文本均不含 token；现有 Device Flow 保留。focused 62/62、full 3112 passed / 2 skipped、client/server typecheck 与 production build 通过，未 ship/merge/deploy。
 - 2026-08-12：`workspace-session-binding` 复用 `sessions.workspace` 实现可选工作空间，不新增 Project/Workspace 表。普通 Hermes 会话可在首条消息前从 routed profile 的 `workspace/` 下选择现存目录；未选择仍持久化 `null`。侧栏按 `profile + workspace` 自然分组并显示计数，会话行与输入区显示目录名；已有消息后切换会创建新 session，避免旧上下文 cwd 漂移。BFF 只持久化规范化相对路径，folder API 不再向 chat plane 返回主机绝对路径；绝对越界、`..`、缺失目录、workspace-root symlink 与逃逸 symlink 均在 Run Broker fetch 前拒绝。当前正由 `workspace-session-binding-mr` 通过受保护分支 MR 门禁发布；生产未发布。
 - 2026-08-13：handoff sidebar 改用独立 `handoffActive` 扩展，不再占用共享 `ActiveSection` 枚举或固定 tab 索引；与 agents hub 的只读组合树无冲突，组合 focused 118/118、typecheck/build 通过，未发布。
 - 2026-08-12：本地候选 `digital-employee-feedback` 以 trusted principal + session + authoritative run 隔离评价，缺失、歧义、跨主体和非最终回答均失败关闭；focused 117、Playwright 12/12、SIM 9/9、typecheck/build 通过，未 ship/push/merge/deploy。
@@ -1756,3 +1900,151 @@ CLAUDE.md 写过：dev 模式下"`hermes` CLI 必须在 `$PATH`"——确实，s
 - 2026-05-14：新增 WebUI jobs broker seam：`hermes-web-ui@700ae53` 后，chat plane 下 `/api/hermes/jobs` 默认跟随 `HERMES_WEBUI_RUN_BROKER` 走 `${HERMES_RUN_BROKER_URL}/api/run-broker/jobs`；`HERMES_WEBUI_JOBS_BROKER` 可单独覆盖。生产 canary 在 profile apiserver 停止期间创建并删除 job 成功。
 - 2026-05-11：初稿。基于 06-webui-internals.md (v3) + 计划文档 30+ 子条目 + 实测仓库锚点（PID 56768、v0.5.16）。
 - 2026-07-24：本机候选 `cloud-agent-session-stability` 选择性吸收 upstream #2203/#2207 的云端稳定性语义，不引入 Electron/Desktop Browser。客户端 abort lifecycle 按 runtime + profile + session 复合键隔离；session-list full load 与 metadata refresh 共用 request epoch；A→B→A resume 与 foreground visibility resume 使用 per-session latest epoch，并在分页 hydration/workspace diff 的异步写入前校验 epoch + exact `Session` identity，workspace diff 另以 latest-success epoch 阻止同会话旧响应反盖。`VirtualMessageList` 同时观察 viewport 与 rendered content，高度延迟增长时仅为仍在跟底的用户保持贴底。focused 3 files / 97 tests、full 322 files / 2677 passed / 2 skipped、typecheck、build、harness 与 mocked Chromium 5/5 通过；当前仅 ftask worktree，未合入、未发布生产。
+
+## 2026-08-28 Expert Harness sessions (local candidate)
+
+An expert session chooses `hermes` or `harness` only at creation. The server persists that engine and
+derives the broker header from the session row; later request payloads cannot switch it. Harness status,
+workflow stage, and the repository label are presentation state only and are never identity evidence.
+
+`workflow.stage` and the existing approval events share the chat stream. The server retains the latest
+stage and unresolved approval so socket resume/browser refresh restores the same pending state. The
+multitenancy Run Broker remains the authority for principal binding, gates, operation enforcement, and
+Codex workspace/thread continuity; WebUI never receives a capability token and cannot choose the local
+repository path. Native Codex tool previews may still show paths from the isolated clone as execution evidence.
+
+The opt-in Playwright acceptance uses Chromium plus the real Codex CLI for two turns in one isolated
+clone, renders the resulting command/file-change evidence in this UI, and asserts the source repository
+status hash is unchanged. Its chat socket remains a test boundary; the real MT Run Broker contract is
+proved by the paired backend integration suite, so this test must not be described as a production-network E2E.
+
+Separately, a manual local browser UAT ran through the real WebUI BFF, MT Run Broker, sandbox and native
+Codex app-server for two turns. It reused thread `01a04424-5620-7b83-a4df-add94b0a2cc9` in one isolated
+clone, whose push URL was `disabled://local-harness`; the source repository HEAD and status digest stayed
+unchanged. Evidence: `/Users/dev/code/hermes-web-ui/.ftask/harness-expert-mvp/sim_artifacts/real-harness-two-turns.png`. Harness sessions skip
+WebUI's broad profile-workspace diff scanner because MT owns their per-workflow clone; this prevents files
+from an unrelated historical run being attached to the current answer.
+
+The broker frame mapper now carries native Harness heartbeats as the existing transient `run.status`,
+persists stage/related IDs/audit ID, and maps Gate checklists plus credential wait/resume events onto the
+existing approval and re-auth UI. Gate comments are forwarded unchanged to MT. Chromium acceptance sends
+raw MT frames through that mapper, covers refresh/resume, and also completes two real Codex turns on one
+thread while proving the source repository status hash is unchanged.
+
+Workflow restore no longer implements the MT workflow hash in TypeScript: BFF calls the master-only
+`by-session` snapshot route and MT derives the authoritative ID from the trusted owner/session tuple.
+Harness credential resume stops after MT accepts the connector. Ordinary credential events still use the
+existing parked-run replay, but a restored Harness workflow has no process-local parked request; the next
+turn resumes its durable workflow/thread normally.
+
+## 2026-08-28 Workspace artifact user-entry readback (safe integration candidate)
+
+This candidate replays only the approved H02 semantics onto the current main; the original paused task
+worktree and its pre-main Harness history remain untouched. `MEDIA:` publication stays in the existing
+WebUI rewrite seam and records the download route MIME plus file byte count on the `/workspace/` link.
+Broker and direct-API terminal paths publish that link before persisting and emitting `parsed_content`, so
+a live in-run card does not depend on a historical reload.
+The direct-API fallback publication call runs only after the async completion ownership fence; a run
+superseded while usage/finalization is awaited therefore cannot copy an orphan fallback artifact or mutate
+its abandoned in-memory transcript.
+
+The card becomes complete only after an independent current-profile/token `/api/hermes/download` GET is
+confirmed as an own-origin Hermes response whose MIME and non-missing `Content-Length` exactly match the
+publication. The browser cancels the response body and memoizes the in-flight path/MIME/length readback to
+avoid full-body and repeated render downloads. Local download routes stat and stream the file rather than
+allocating a whole-file Buffer. HTTP 404/403, a foreign redirect, missing length, and MIME/byte mismatch stay
+incomplete. Unreachable workspace aliases and missing non-workspace MEDIA targets retain a friendly failed
+card without exposing raw `MEDIA:`. Existing workspace containment and sensitive-path checks are unchanged.
+
+This is a local source candidate only; production is not contacted or deployed by this task.
+The safe-integration checkpoint passed the seven focused files (93 tests), client typecheck, server
+typecheck, and all three hash-bound SIM scenarios on the current main baseline.
+
+### 2026-08-30 H02 full-scope audit
+
+The original H02 boundary is broader than workspace artifacts: message delivery and every other external
+write must also be independently read back before the user-visible answer may claim completion. WebUI is
+not the authority for that decision. It only forwards the trusted actor/profile/session to Run Broker and
+renders broker tool/content/terminal frames; guessing from a tool name, command, exit code, HTTP status, or
+assistant wording would miss sibling connectors and would not prove the external effect.
+
+The MT prerequisite is now landed on `origin/main` through MR !134/!135. Message send/reply confirmation uses
+the routed actor's managed broker identity for an independent mget and matches message ID, target chat or
+parent/root, message type, and content fingerprint. Missing permissions, unavailable/empty readback, field
+mismatch, or a second actor stays uncertain with zero automatic rewrite. Other external writes require a
+connector-owned typed descriptor/matcher and fail closed before the connector when no exact matcher exists.
+The refreshed SIM runs those contracts against the merged MT main and proves two actor/session routes have
+zero cross-match; WebUI still adds no tool-name or model-text heuristic.
+
+Artifact publication parsing now requires an explicit decimal `hermes_bytes` value. A renderer verifies at
+most 20 published cards and schedules at most three readbacks concurrently; the existing authenticated GET
+cancels its body immediately after reading the stat-derived response headers. No employee message or external
+write was executed during this audit, and production was not contacted.
+
+## 2026-08-31 Group-chat trusted owner boundary (local candidate)
+
+Group-chat rooms are bound to the authenticated numeric WebUI user, not profile overlap, display names, Feishu
+text, or client Socket.IO auth fields. Owners manage rooms; invited members read/speak; outsiders fail closed.
+Ownerless legacy rooms are never guessed or backfilled, and their agents are not restored. Agent profile access
+is rechecked before restore and mention dispatch. See
+`docs/chat-chain-changes/2026-08-31-group-chat-owner-boundary.md`. Production is unchanged.
+
+## 2026-08-31 Upstream selective harvest (local candidate)
+
+Seven small upstream semantics are ported at existing seams: exact parent segments, SQLite diff sidecars,
+New Chat selection/profile races, workspace line/column references, ASCII punctuation preservation, guarded desktop-only composer
+focus, and strictly decimal bounded/drained configurable uploads. Identity, profile, Run Broker, workspace containment,
+pagination, Feishu, cron, and multitenancy contracts are unchanged. See
+`docs/chat-chain-changes/2026-08-31-upstream-selective-harvest.md`. Production is unchanged.
+> [!warning] 2026-08-31 Codex 显式 GPT 模型过滤为本地发布候选
+> 用户界面只显示 `Hermes / Codex`；Codex 新会话从现有 profile 模型目录中过滤裸 `gpt-*` 与
+> `tencent/gpt-*`，不展示或接受 `auto`/非 GPT/自定义输入。首条消息前的模型切换只改本地 session，
+> 首发再原子绑定内部 `execution_engine=harness` 与所选模型；普通 Hermes 的模型目录和 `auto` 不变。
+> 目标单测 17/17、Chromium mocked-BFF 1/1、harness check 与 build 已通过；此段记录时尚未部署生产。
+
+### 2026-08-31 GitHub MCP bundle connector (local candidate)
+
+The existing Connectors surface now maps the broker's eighth `github-mcp` row and reuses the credential-card/modal flow for personal PAT connect and revoke. The browser sends only `{token}` to `/api/hermes/credentials/github`; the BFF derives the owner from the verified session, stamps `X-Hermes-Owner-Open-Id`, and drops all body-supplied identity. PAT values are password inputs, never persisted to localStorage, never returned, and cleared after handoff.
+
+Broker-unavailable fallback includes the GitHub row in `error` state, never authenticated. Connect/revoke are the only chat-plane methods admitted for the exact path. Existing seven cards and GitLab/device/QR flows are unchanged. This remains in the local ftask worktree and has not been shipped, merged, pushed, deployed, or tested against production.
+
+Local verification: `npm test` passed 356 files / 3112 tests with 2 skipped; `npm run build` passed; the Chromium connector surface passed 6/6; the ftask simulation check passed. Review findings around token/response validation, profile handoff, stale attempts, and revoke result handling are covered by regression tests. A live GitHub upstream call remains deliberately unverified until the user submits a PAT through the trusted page.
+
+The PAT fallback no longer assumes users know GitHub's settings layout. The modal links directly to GitHub's fine-grained token form with a 30-day read-only permission template and spells out repository selection, read-only permissions, and the return-to-paste step. The public component seam passes 31/31 focused tests, typecheck passes, and the running Chromium DOM exposes the link and guidance. One-click OAuth remains the intended product default; it is not added inside this PAT-scoped local candidate.
+
+### 2026-08-31 standard MCP OAuth approval (local candidate)
+
+The WebUI now exposes one narrowly admitted consent pair, `GET /api/auth/mcp-oauth/requests/:requestId` and
+`POST /api/auth/mcp-oauth/approve`, plus the `/#/mcp/oauth/approve?request_id=...` view. The GET returns only
+client name, callback origin and requested scopes; approval stays disabled until those fields are visible. The
+browser carries only the one-time request id. The server derives
+the actor and profile from the verified WebUI session, forwards them to the Run Broker, and returns only the
+broker-validated HTTP(S) client callback URL. Consent POST requires same-origin JSON, and the browser validates
+the callback protocol again before navigation. Expired login resumes the exact approval route after reauthentication;
+forged/expired requests, broker failure, or unsafe callback schemes fail closed.
+
+This is the browser half of the multitenancy standard MCP gateway. Client-specific configuration remains outside
+the WebUI: Codex, Claude, Cursor, Gemini and WorkBuddy use the shared Streamable HTTP/OAuth endpoint, while
+stdio-only clients use the secretless launcher. Local proof passed 147 focused tests and `npm run build`; Chromium
+proved pre-consent metadata, approval, callback, zero console errors, and login-expiry resume. No production service
+was contacted or changed.
+
+### 2026-09-02 Hermes native Projects (merged to main 2026-09-03)
+
+Cowork reuses the existing `ChatView` and adds only a Project picker plus a Project management page. The same-origin BFF proxies Project CRUD, Project Session lists, and redacted Session receipts to the routed-profile Run Broker; it has no Muse, KippiesWork, DeerFlow, external Cowork API, Thread, Run, or Library data source. A selected Project is editable only before first send, then stored in the local Session mirror and confirmed from the broker receipt.
+
+Every Project Run carries `project_id`; the broker accepts the frozen ID idempotently and rejects a different ID. The selected folder comes back only through the trusted receipt and then feeds the existing workspace-diff path. This implementation changes no upstream `hermes-agent` source.
+
+Final review follow-up removed client-supplied Project workspace, retries `project_id` until receipt-confirmed binding, creates a fresh Session when switching a frozen task, and adds server-side provisional freeze/rebind guards. Real local UAT then found two shared-path defects: `node:sqlite` rejected raw boolean Session updates, and a model name present in multiple provider groups could override the profile's declared provider. Both are fixed at their common selection/storage seams with regressions. Icon-only Cowork controls now reuse existing localized labels as accessible names.
+
+Final local evidence: 365 test files, 3205 passed / 2 skipped; production build passed; a real built WebUI -> BFF -> Run Broker -> AIAgent walk passed all 26 boolean checks with zero unexpected console errors. It created and read back a real Project-folder file, preserved the Project receipt over continuation/reload, created a fresh Session on Project switch, rejected cross-identity Project/Session reads, and had zero visible unnamed controls or horizontal overflow at 1440px and a fresh 390px context. This remains local acceptance evidence, not production evidence.
+
+The 2026-09-03 Cowork UX follow-up makes Project the sole Cowork folder-selection surface. `ChatPanel` suppresses the generic Workspace composer button, session groups, New Chat field, and session context-menu action on `hermes.cowork`; it also clears stale Workspace picker/filter state when the shared view changes into Cowork. Cowork session creation submits no standalone Workspace, so the Project primary folder remains the only routed cwd source. New and selected Cowork sessions stay on the Cowork route instead of navigating into the ordinary Session surface. Ordinary `hermes.chat` keeps the existing Workspace behavior. The route-boundary regression, full suite (`365 files / 3206 passed / 2 skipped`), production build, and real built-browser Cowork/Chat comparison pass. This follow-up changes no multitenancy or upstream `hermes-agent` code.
+
+`ftask ship` merged WebUI MR !66 as `929fe35e4a7b80e7382e916d534e3215cb5bf66a` and multitenancy MR !180 as `810b151c86c4f0880667e107f74a01f324dba171`. WebUI pipeline `544061` and multitenancy pipeline `544388` finished green. Production `release-20260903-02` then pinned the multitenancy merge and WebUI doc-sync head `9a4f00af9f34b2e7bb49d165dc0dc05e2c6f8b07`; marker, symlinks and repository HEADs matched, release probes passed 12/12, and authenticated Cowork/Chat comparison confirmed the intended Project/Workspace route boundary. No employee Feishu message, model call, cron execution, credential change, or upstream `hermes-agent` modification was performed.
+
+### 2026-09-03 Chat-native Project completion (local candidate)
+
+Ordinary Chat is now the sole Project task surface: the composer shows a Project chip instead of Workspace, Project sessions show the Project name in the existing session list, and the existing Projects page exposes description, instructions, task Sessions, and persisted artifacts. `New task` always creates a fresh local Session before applying the Project, even when the currently open Session belongs to the same Project. Project detail hydration is non-blocking, so a newly bound task cannot hide the Project context while its server Session row is still appearing.
+
+Real local built-WebUI UAT used the routed profile and Run Broker for five consecutive turns in Session `mtln8mb8xindyn`; all five terminal replies survived reload and retained the Project name, description facts, instruction code, and Project chip. Focused Vitest passed 104/104, the Project Chromium flow passed 1/1, and the production build passed. The paired multitenancy candidate snapshots and injects Project description alongside existing instructions without modifying upstream `hermes-agent`. Production remains unchanged until both ftask releases complete.

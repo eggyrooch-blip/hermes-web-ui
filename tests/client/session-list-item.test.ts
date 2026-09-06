@@ -116,6 +116,22 @@ describe('SessionListItem', () => {
     expect(wrapper.text()).not.toContain('clients/acme')
   })
 
+  it('shows Project identity instead of the underlying workspace folder', () => {
+    const wrapper = mount(SessionListItem, {
+      props: {
+        session: { ...session, projectId: 'project-a', projectName: 'Alpha', workspace: 'clients/acme' },
+        active: false,
+        pinned: false,
+        canDelete: true,
+      },
+      global: { stubs: { ProfileAvatar: true } },
+    })
+
+    expect(wrapper.get('.session-item-project').text()).toContain('Alpha')
+    expect(wrapper.find('.session-item-workspace').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('acme')
+  })
+
   it('does not select the row when clicking nested action controls', async () => {
     const wrapper = mount(SessionListItem, {
       props: {

@@ -1,5 +1,11 @@
 import Router from '@koa/router'
-import type { GroupChatServer } from '../../services/hermes/group-chat'
+import {
+    authenticatedGroupUserId,
+    canManageGroupChatRoom,
+    canReadGroupChatRoom,
+    serializeGroupChatRoom,
+    type GroupChatServer,
+} from '../../services/hermes/group-chat'
 import { isReservedMentionName } from '../../services/hermes/group-chat/mention-routing'
 
 export const groupChatRoutes = new Router()
@@ -14,6 +20,32 @@ export function getGroupChatServer(): GroupChatServer | null {
     return chatServer
 }
 
+function requestUser(ctx: any) {
+    const user = ctx.state?.user
+    return user && Number.isSafeInteger(user.id) && user.id > 0 ? user : null
+}
+
+function denyHidden(ctx: any): false {
+    ctx.status = 404
+    ctx.body = { error: 'Room not found' }
+    return false
+}
+
+function requireRoomRead(ctx: any): boolean {
+    const user = requestUser(ctx)
+    return Boolean(chatServer && user && canReadGroupChatRoom(chatServer.getStorage() as any, ctx.params.roomId, user)) || denyHidden(ctx)
+}
+
+function requireRoomManage(ctx: any): boolean {
+    const user = requestUser(ctx)
+    return Boolean(chatServer && user && canManageGroupChatRoom(chatServer.getStorage() as any, ctx.params.roomId, user)) || denyHidden(ctx)
+}
+
+function requestUserCanUseProfile(ctx: any, profile: string): boolean {
+    const user = requestUser(ctx)
+    return Boolean(user && (user.role === 'super_admin' || user.profiles?.includes(profile)))
+}
+
 function generateId(): string {
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
 }
@@ -21,10 +53,15 @@ function generateId(): string {
 function generateInviteCode(): string {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
     let code = ''
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 10; i++) {
         code += chars[Math.floor(Math.random() * chars.length)]
     }
     return code
+}
+
+function normalizedInviteCode(value: unknown): string | null {
+    const code = typeof value === 'string' ? value.trim() : ''
+    return /^[A-Za-z0-9_-]{8,64}$/.test(code) ? code : null
 }
 
 type AgentInput = { profile: string; name?: string; description?: string; invited?: boolean | number }
@@ -76,15 +113,33 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms', async (ctx) => {
         return
     }
 
-    const { name, inviteCode, agents, compression } = ctx.request.body as {
+    const body = ctx.request.body
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        ctx.status = 400
+        ctx.body = { error: 'Invalid room payload' }
+        return
+    }
+    const { name, inviteCode: requestedInviteCode, agents, compression } = ctx.request.body as {
         name?: string
         inviteCode?: string
         agents?: { profile: string; name?: string; description?: string; invited?: boolean }[]
         compression?: { triggerTokens?: number; maxHistoryTokens?: number; tailMessageCount?: number }
     }
-    if (!name || !inviteCode) {
+    const inviteCode = normalizedInviteCode(requestedInviteCode)
+    if (typeof name !== 'string' || !name.trim() || !inviteCode) {
         ctx.status = 400
-        ctx.body = { error: 'name and inviteCode are required' }
+        ctx.body = { error: 'name and a valid inviteCode are required' }
+        return
+    }
+    const user = requestUser(ctx)
+    if (!user) {
+        ctx.status = 403
+        ctx.body = { error: 'Trusted user required' }
+        return
+    }
+    if (agents !== undefined && (!Array.isArray(agents) || agents.some(agent => !agent || typeof agent.profile !== 'string' || !agent.profile.trim()))) {
+        ctx.status = 400
+        ctx.body = { error: 'Invalid agents payload' }
         return
     }
     const reservedAgent = (agents || []).find(a => isReservedMentionName(a.name || a.profile))
@@ -93,10 +148,22 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms', async (ctx) => {
         ctx.body = { error: '`all` is reserved for @all mentions' }
         return
     }
+    const unavailableAgent = (agents || []).find(agent => !requestUserCanUseProfile(ctx, agent.profile))
+    if (unavailableAgent) {
+        ctx.status = 403
+        ctx.body = { error: 'Profile unavailable' }
+        return
+    }
 
     const roomId = generateId()
     const storage = chatServer.getStorage()
-    storage.saveRoom(roomId, name, inviteCode, compression)
+    if (storage.getRoomByInviteCode(inviteCode)) {
+        ctx.status = 409
+        ctx.body = { error: 'Invite code already exists' }
+        return
+    }
+    storage.saveRoom(roomId, name.trim(), inviteCode, { ...compression, ownerAuthUserId: user.id })
+    storage.addRoomMember(roomId, authenticatedGroupUserId(user.id), user.username, '', '', user.id)
 
     const addedAgents = []
     const agentResults = []
@@ -117,7 +184,7 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms', async (ctx) => {
     }
 
     const room = storage.getRoom(roomId)
-    ctx.body = { room, agents: addedAgents, agentResults }
+    ctx.body = { room: room ? serializeGroupChatRoom(room as any, true) : room, agents: addedAgents, agentResults }
 })
 
 // Clone room roles/config without copying the conversation context.
@@ -134,20 +201,50 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/clone', async (ctx) =
         ctx.body = { error: 'Room not found' }
         return
     }
-
-    const { name, inviteCode } = ctx.request.body as { name?: string; inviteCode?: string }
-    const roomId = generateId()
+    if (!requireRoomManage(ctx)) return
+    const user = requestUser(ctx)!
     const storage = chatServer.getStorage()
-    const code = inviteCode?.trim() || generateInviteCode()
+    const sourceAgents = storage.getRoomAgents(sourceRoom.id)
+    if (sourceAgents.some(agent => !requestUserCanUseProfile(ctx, agent.profile))) {
+        ctx.status = 403
+        ctx.body = { error: 'Profile unavailable' }
+        return
+    }
+
+    if (!ctx.request.body || typeof ctx.request.body !== 'object' || Array.isArray(ctx.request.body)) {
+        ctx.status = 400
+        ctx.body = { error: 'Invalid clone payload' }
+        return
+    }
+    const { name, inviteCode } = ctx.request.body as { name?: string; inviteCode?: string }
+    if (name != null && typeof name !== 'string') {
+        ctx.status = 400
+        ctx.body = { error: 'Invalid room name' }
+        return
+    }
+    const roomId = generateId()
+    const code = inviteCode == null || inviteCode === '' ? generateInviteCode() : normalizedInviteCode(inviteCode)
+    if (!code) {
+        ctx.status = 400
+        ctx.body = { error: 'Invalid invite code' }
+        return
+    }
+    if (storage.getRoomByInviteCode(code)) {
+        ctx.status = 409
+        ctx.body = { error: 'Invite code already exists' }
+        return
+    }
     storage.saveRoom(roomId, name?.trim() || `${sourceRoom.name} Copy`, code, {
         triggerTokens: sourceRoom.triggerTokens,
         maxHistoryTokens: sourceRoom.maxHistoryTokens,
         tailMessageCount: sourceRoom.tailMessageCount,
+        ownerAuthUserId: user.id,
     })
+    storage.addRoomMember(roomId, authenticatedGroupUserId(user.id), user.username, '', '', user.id)
 
     const addedAgents = []
     const agentResults = []
-    for (const sourceAgent of storage.getRoomAgents(sourceRoom.id)) {
+    for (const sourceAgent of sourceAgents) {
         try {
             const agent = await connectAndPersistRoomAgent(chatServer, roomId, {
                 profile: sourceAgent.profile,
@@ -164,7 +261,7 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/clone', async (ctx) =
     }
 
     const room = storage.getRoom(roomId)
-    ctx.body = { room, agents: addedAgents, agentResults }
+    ctx.body = { room: room ? serializeGroupChatRoom(room as any, true) : room, agents: addedAgents, agentResults }
 })
 
 // Get room detail and messages
@@ -181,6 +278,8 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId', async (ctx) => {
         ctx.body = { error: 'Room not found' }
         return
     }
+    if (!requireRoomRead(ctx)) return
+    const canManage = canManageGroupChatRoom(chatServer.getStorage() as any, ctx.params.roomId, requestUser(ctx)!)
 
     const offset = ctx.query.offset ? Math.max(0, parseInt(ctx.query.offset as string, 10) || 0) : 0
     const limit = ctx.query.limit ? Math.max(1, parseInt(ctx.query.limit as string, 10) || 150) : 150
@@ -188,7 +287,7 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId', async (ctx) => {
     const total = chatServer.getStorage().getMessageCount(ctx.params.roomId)
     const agents = chatServer.getStorage().getRoomAgents(ctx.params.roomId)
     const members = chatServer.getStorage().getRoomMembers(ctx.params.roomId)
-    ctx.body = { room, messages, agents, members, total, offset, limit, hasMore: offset + messages.length < total }
+    ctx.body = { room: serializeGroupChatRoom(room as any, canManage), messages, agents, members, total, offset, limit, hasMore: offset + messages.length < total }
 })
 
 // List rooms
@@ -199,30 +298,46 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms', async (ctx) => {
         return
     }
 
-    const user = ctx.state.user
+    const user = requestUser(ctx)
     const storage = chatServer.getStorage()
-    const rooms = !user || user.role === 'super_admin'
+    if (!user) {
+        ctx.status = 403
+        ctx.body = { error: 'Trusted user required' }
+        return
+    }
+    const rooms = user.role === 'super_admin'
         ? storage.getAllRooms()
-        : storage.getRoomsForProfiles(user.profiles || [])
-    ctx.body = { rooms }
+        : storage.getRoomsForAuthUser(user.id)
+    ctx.body = {
+        rooms: rooms.map(room => serializeGroupChatRoom(
+            room as any,
+            canManageGroupChatRoom(storage as any, room.id, user),
+        )),
+    }
 })
 
 // Get room by invite code
-groupChatRoutes.get('/api/hermes/group-chat/rooms/join/:code', async (ctx) => {
+groupChatRoutes.post('/api/hermes/group-chat/rooms/join/:code', async (ctx) => {
     if (!chatServer) {
         ctx.status = 503
         ctx.body = { error: 'Group chat not initialized' }
         return
     }
 
-    const room = chatServer.getStorage().getRoomByInviteCode(ctx.params.code)
-    if (!room) {
+    const user = requestUser(ctx)
+    if (!user) {
+        ctx.status = 403
+        ctx.body = { error: 'Trusted user required' }
+        return
+    }
+    const room = chatServer.getStorage().joinRoomByInviteCode(ctx.params.code, user.id, user.username)
+    if (!room?.ownerAuthUserId) {
         ctx.status = 404
         ctx.body = { error: 'Room not found' }
         return
     }
 
-    ctx.body = { room }
+    ctx.body = { room: serializeGroupChatRoom(room as any, false) }
 })
 
 // Update room invite code
@@ -232,11 +347,19 @@ groupChatRoutes.put('/api/hermes/group-chat/rooms/:roomId/invite-code', async (c
         ctx.body = { error: 'Group chat not initialized' }
         return
     }
+    if (!requireRoomManage(ctx)) return
 
-    const { inviteCode } = ctx.request.body as { inviteCode?: string }
+    const inviteCode = normalizedInviteCode((ctx.request.body as { inviteCode?: string })?.inviteCode)
     if (!inviteCode) {
         ctx.status = 400
-        ctx.body = { error: 'inviteCode is required' }
+        ctx.body = { error: 'A valid inviteCode is required' }
+        return
+    }
+
+    const existing = chatServer.getStorage().getRoomByInviteCode(inviteCode)
+    if (existing && existing.id !== ctx.params.roomId) {
+        ctx.status = 409
+        ctx.body = { error: 'Invite code already exists' }
         return
     }
 
@@ -251,11 +374,17 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/agents', async (ctx) 
         ctx.body = { error: 'Group chat not initialized' }
         return
     }
+    if (!requireRoomManage(ctx)) return
 
     const { profile, name, description, invited } = ctx.request.body as { profile?: string; name?: string; description?: string; invited?: boolean }
     if (!profile) {
         ctx.status = 400
         ctx.body = { error: 'profile is required' }
+        return
+    }
+    if (!chatServer.getStorage().isRoomProfileAuthorized(ctx.params.roomId, profile)) {
+        ctx.status = 403
+        ctx.body = { error: 'Profile unavailable to room owner' }
         return
     }
     if (isReservedMentionName(name || profile)) {
@@ -294,6 +423,7 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/agents', async (ctx) =
         ctx.body = { error: 'Group chat not initialized' }
         return
     }
+    if (!requireRoomRead(ctx)) return
 
     const agents = chatServer.getStorage().getRoomAgents(ctx.params.roomId)
     ctx.body = { agents }
@@ -306,6 +436,7 @@ groupChatRoutes.delete('/api/hermes/group-chat/rooms/:roomId/agents/:agentId', a
         ctx.body = { error: 'Group chat not initialized' }
         return
     }
+    if (!requireRoomManage(ctx)) return
 
     const roomId = ctx.params.roomId
     const requestedAgentId = ctx.params.agentId
@@ -334,6 +465,7 @@ groupChatRoutes.delete('/api/hermes/group-chat/rooms/:roomId', async (ctx) => {
         ctx.body = { error: 'Group chat not initialized' }
         return
     }
+    if (!requireRoomManage(ctx)) return
 
     const roomId = ctx.params.roomId
     // Disconnect all agents in room
@@ -350,6 +482,7 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/clear-context', async
         ctx.body = { error: 'Group chat not initialized' }
         return
     }
+    if (!requireRoomManage(ctx)) return
 
     const roomId = ctx.params.roomId
     if (!chatServer.getStorage().getRoom(roomId)) {
@@ -370,6 +503,7 @@ groupChatRoutes.put('/api/hermes/group-chat/rooms/:roomId/config', async (ctx) =
         ctx.body = { error: 'Group chat not initialized' }
         return
     }
+    if (!requireRoomManage(ctx)) return
 
     const roomId = ctx.params.roomId
     const { triggerTokens, maxHistoryTokens, tailMessageCount } = ctx.request.body as {
@@ -390,6 +524,7 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/compress', async (ctx
         ctx.body = { error: 'Group chat not initialized' }
         return
     }
+    if (!requireRoomManage(ctx)) return
 
     const roomId = ctx.params.roomId
     if (!chatServer.getStorage().getRoom(roomId)) {

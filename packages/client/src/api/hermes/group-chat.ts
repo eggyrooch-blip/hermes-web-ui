@@ -183,7 +183,7 @@ export async function getRoomDetail(
 }
 
 export async function joinRoomByCode(code: string): Promise<{ room: RoomInfo }> {
-    return request(`/api/hermes/group-chat/rooms/join/${code}`)
+    return request(`/api/hermes/group-chat/rooms/join/${code}`, { method: 'POST' })
 }
 
 export async function updateInviteCode(roomId: string, inviteCode: string): Promise<void> {

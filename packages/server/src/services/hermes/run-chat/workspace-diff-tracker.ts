@@ -270,7 +270,17 @@ const SKIPPED_FILE_EXTENSIONS = new Set([
   '.7z',
   '.rar',
   '.sqlite',
+  '.sqlite-wal',
+  '.sqlite-shm',
+  '.sqlite-journal',
+  '.sqlite3',
+  '.sqlite3-wal',
+  '.sqlite3-shm',
+  '.sqlite3-journal',
   '.db',
+  '.db-wal',
+  '.db-shm',
+  '.db-journal',
   '.pdf',
   '.docx',
   '.xlsx',
@@ -331,6 +341,8 @@ interface WorkspaceRunCheckpoint {
   root: string
   kind: 'git' | 'filesystem'
   startedAt: number
+  scanTruncated: boolean
+  baselinePaths: Set<string>
   files: Map<string, SnapshotFile>
   truncated: boolean
 }
@@ -630,7 +642,7 @@ async function getGitStatusPaths(
 ): Promise<WorkspacePathScan> {
   try {
     const output = await waitForSnapshotOperation(
-      () => runGit(gitRoot, ['status', '--porcelain=v1', '-z', '--untracked-files=normal'], 4 * 1024 * 1024),
+      () => runGit(gitRoot, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], 4 * 1024 * 1024),
       deadline,
       lease,
     )
@@ -765,6 +777,48 @@ async function scanFilesystemPaths(
   return { paths, truncated }
 }
 
+async function snapshotPathMetadata(
+  root: string,
+  relPath: string,
+  deadline: number,
+  lease: WorkspaceDiffOperationLease,
+): Promise<{ file: SnapshotFile; readPath: string | null } | typeof DEADLINE_EXCEEDED> {
+  const unavailable = { file: { exists: false, size: null, mtimeMs: null, binary: false, content: null }, readPath: null }
+  if (shouldSkipRelativePath(relPath)) {
+    return unavailable
+  }
+  const absPath = resolve(root, relPath)
+  if (!isPathInside(root, absPath)) {
+    return unavailable
+  }
+  try {
+    const linkStat = await waitForSnapshotOperation(() => lstat(absPath), deadline, lease)
+    if (linkStat === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
+    if (linkStat.isSymbolicLink()) {
+      return unavailable
+    }
+    const realPath = await waitForSnapshotOperation(() => realpath(absPath), deadline, lease)
+    if (realPath === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
+    if (!isPathInside(root, realPath)) {
+      return unavailable
+    }
+    const fileStat = await waitForSnapshotOperation(() => stat(realPath), deadline, lease)
+    if (fileStat === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
+    if (!fileStat.isFile()) {
+      return {
+        file: { exists: true, size: fileStat.size, mtimeMs: fileStat.mtimeMs, binary: false, content: null },
+        readPath: null,
+      }
+    }
+    return {
+      file: { exists: true, size: fileStat.size, mtimeMs: fileStat.mtimeMs, binary: false, content: null },
+      readPath: realPath,
+    }
+  } catch {
+    return unavailable
+  }
+}
+
 async function snapshotPath(
   root: string,
   relPath: string,
@@ -772,44 +826,18 @@ async function snapshotPath(
   deadline: number,
   lease: WorkspaceDiffOperationLease,
 ): Promise<SnapshotFile | typeof DEADLINE_EXCEEDED> {
-  if (shouldSkipRelativePath(relPath)) {
-    return { exists: false, size: null, mtimeMs: null, binary: false, content: null }
-  }
-  const absPath = resolve(root, relPath)
-  if (!isPathInside(root, absPath)) {
-    return { exists: false, size: null, mtimeMs: null, binary: false, content: null }
-  }
+  const metadata = await snapshotPathMetadata(root, relPath, deadline, lease)
+  if (metadata === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
+  const { file, readPath } = metadata
+  if (!file.exists || !readPath || file.size == null) return file
   try {
-    const linkStat = await waitForSnapshotOperation(() => lstat(absPath), deadline, lease)
-    if (linkStat === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
-    if (linkStat.isSymbolicLink()) {
-      return { exists: false, size: null, mtimeMs: null, binary: false, content: null }
-    }
-    const realPath = await waitForSnapshotOperation(() => realpath(absPath), deadline, lease)
-    if (realPath === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
-    if (!isPathInside(root, realPath)) {
-      return { exists: false, size: null, mtimeMs: null, binary: false, content: null }
-    }
-    const fileStat = await waitForSnapshotOperation(() => stat(realPath), deadline, lease)
-    if (fileStat === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
-    if (!fileStat.isFile()) {
-      return { exists: true, size: fileStat.size, mtimeMs: fileStat.mtimeMs, binary: false, content: null }
-    }
     const contentLimit = Math.min(MAX_SNAPSHOT_BYTES, Math.max(0, maxContentBytes))
-    if (contentLimit <= 0 || fileStat.size > contentLimit) {
-      return { exists: true, size: fileStat.size, mtimeMs: fileStat.mtimeMs, binary: false, content: null }
-    }
-    const content = await waitForSnapshotOperation(() => readFile(realPath), deadline, lease)
+    if (contentLimit <= 0 || file.size > contentLimit) return file
+    const content = await waitForSnapshotOperation(() => readFile(readPath), deadline, lease)
     if (content === DEADLINE_EXCEEDED) return DEADLINE_EXCEEDED
-    return {
-      exists: true,
-      size: fileStat.size,
-      mtimeMs: fileStat.mtimeMs,
-      binary: isBinaryBuffer(content),
-      content,
-    }
+    return { ...file, binary: isBinaryBuffer(content), content }
   } catch {
-    return { exists: false, size: null, mtimeMs: null, binary: false, content: null }
+    return file
   }
 }
 
@@ -824,20 +852,35 @@ async function snapshotPaths(
   truncated: boolean
 }> {
   const files = new Map<string, SnapshotFile>()
+  const readPaths = new Map<string, string>()
   let remainingContentBytes = totalContentBytes
   let truncated = false
+
+  // Capture cheap metadata for every enumerated path before any slow content read can consume the deadline.
   for (const relPath of paths) {
-    const snapshot = await snapshotPath(root, relPath, remainingContentBytes, deadline, lease)
-    if (snapshot === DEADLINE_EXCEEDED) {
+    const metadata = await snapshotPathMetadata(root, relPath, deadline, lease)
+    if (metadata === DEADLINE_EXCEEDED) {
       truncated = true
       break
     }
-    if (snapshot.content) {
-      remainingContentBytes -= snapshot.content.length
-    } else if (remainingContentBytes <= 0 && snapshot.exists) {
-      truncated = true
+    files.set(relPath, metadata.file)
+    if (metadata.readPath) readPaths.set(relPath, metadata.readPath)
+  }
+
+  for (const [relPath, metadata] of files) {
+    const readPath = readPaths.get(relPath)
+    if (!metadata.exists || metadata.size == null || !readPath) continue
+    if (metadata.size > Math.min(MAX_SNAPSHOT_BYTES, remainingContentBytes)) {
+      continue
     }
-    files.set(relPath, snapshot)
+    const content = await waitForSnapshotOperation(() => readFile(readPath), deadline, lease).catch(() => null)
+    if (content === DEADLINE_EXCEEDED) {
+      truncated = true
+      break
+    }
+    if (!content) continue
+    remainingContentBytes -= content.length
+    files.set(relPath, { ...metadata, binary: isBinaryBuffer(content), content })
   }
   return { files, truncated }
 }
@@ -1072,6 +1115,8 @@ async function buildWorkspaceRunCheckpoint(args: {
       root: gitRoot,
       kind: 'git',
       startedAt: nowSeconds(),
+      scanTruncated: status.truncated,
+      baselinePaths: new Set(status.paths),
       files: snapshot.files,
       truncated: status.truncated || snapshot.truncated,
     }
@@ -1080,7 +1125,13 @@ async function buildWorkspaceRunCheckpoint(args: {
   const filesystemRoot = await resolveFilesystemRoot(args.workspace, deadline, lease)
   if (!filesystemRoot) return null
   const scan = await scanFilesystemPaths(filesystemRoot, lease, deadline)
-  const snapshot = await snapshotPaths(filesystemRoot, scan.paths, MAX_TOTAL_SNAPSHOT_BYTES, deadline, lease)
+  const snapshot = await snapshotPaths(
+    filesystemRoot,
+    scan.paths,
+    MAX_TOTAL_SNAPSHOT_BYTES,
+    deadline,
+    lease,
+  )
   return {
     sessionId: args.sessionId,
     sessionRowId,
@@ -1091,6 +1142,8 @@ async function buildWorkspaceRunCheckpoint(args: {
     root: filesystemRoot,
     kind: 'filesystem',
     startedAt: nowSeconds(),
+    scanTruncated: scan.truncated,
+    baselinePaths: new Set(scan.paths),
     files: snapshot.files,
     truncated: scan.truncated || snapshot.truncated,
   }
@@ -1205,14 +1258,17 @@ export async function completeWorkspaceRunCheckpoint(args: {
       truncated = true
     }
     let before = checkpoint.files.get(relPath)
+    if (before === undefined && checkpoint.baselinePaths.has(relPath)) continue
     if (before === undefined && checkpoint.kind === 'git') {
       const headSnapshot = await snapshotGitHeadPath(checkpoint.root, relPath, snapshotDeadline, lease)
       if (headSnapshot === DEADLINE_EXCEEDED) {
         truncated = true
         break
       }
+      if (!headSnapshot.exists && checkpoint.scanTruncated) continue
       before = headSnapshot
     }
+    if (before === undefined && checkpoint.scanTruncated) continue
     const comparison = await compareSnapshots(
       before,
       after,

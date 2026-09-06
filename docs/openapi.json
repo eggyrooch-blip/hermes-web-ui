@@ -366,10 +366,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "enum": [
-                "string"
-              ]
+              "type": "string"
             }
           },
           {
@@ -377,10 +374,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "enum": [
-                "string"
-              ]
+              "type": "string"
             }
           }
         ]
@@ -409,7 +403,41 @@
           "404": {
             "description": "Not found"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "required_scopes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
       }
     },
     "/api/auth/feishu/logout": {
@@ -573,10 +601,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "enum": [
-                "string"
-              ]
+              "type": "string"
             }
           }
         ]
@@ -884,9 +909,381 @@
         },
         "parameters": [
           {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "fresh",
             "in": "query",
             "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "row_key",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/auth/skill-credentials/catalog": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get catalog",
+        "description": "GET /api/auth/skill-credentials/catalog",
+        "operationId": "connectorCatalog",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Trusted connector identity unavailable"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/auth/skill-credentials/catalog/connect": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create connect",
+        "description": "POST /api/auth/skill-credentials/catalog/connect",
+        "operationId": "connectorCatalogConnect",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Connected"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Trusted connector identity unavailable"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "row_key": {
+                    "type": "string",
+                    "maxLength": 256
+                  },
+                  "fields": {
+                    "type": "object",
+                    "minProperties": 1,
+                    "maxProperties": 32,
+                    "propertyNames": {
+                      "pattern": "^[!#$%&\\'*+.^_`|~0-9A-Za-z-]+$"
+                    },
+                    "additionalProperties": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 8192
+                    }
+                  }
+                },
+                "required": [
+                  "row_key"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/skill-credentials/catalog/icon": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get icon",
+        "description": "GET /api/auth/skill-credentials/catalog/icon",
+        "operationId": "connectorCatalogIcon",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "row_key",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/auth/skill-credentials/catalog/oauth/callback": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get callback",
+        "description": "GET /api/auth/skill-credentials/catalog/oauth/callback",
+        "operationId": "connectorCatalogOAuthCallback",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/auth/skill-credentials/catalog/status": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create status",
+        "description": "POST /api/auth/skill-credentials/catalog/status",
+        "operationId": "connectorCatalogStatus",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Trusted connector identity unavailable"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "row_key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "row_key"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/skill-credentials/custom": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Get custom",
+        "description": "GET /api/auth/skill-credentials/custom",
+        "operationId": "customConnectors",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Trusted connector identity unavailable"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/api/auth/skill-credentials/custom/import": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create import",
+        "description": "POST /api/auth/skill-credentials/custom/import",
+        "operationId": "customConnectorImport",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Imported"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Trusted connector identity unavailable"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "config": {
+                    "type": "string",
+                    "maxLength": 65536
+                  }
+                },
+                "required": [
+                  "config"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/skill-credentials/custom/{connectorId}": {
+      "delete": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Delete :connectorId",
+        "description": "DELETE /api/auth/skill-credentials/custom/:connectorId",
+        "operationId": "customConnectorDelete",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Trusted connector identity unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "connectorId",
+            "in": "path",
+            "required": true,
             "schema": {
               "type": "string"
             }
@@ -4081,10 +4478,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "enum": [
-                "string"
-              ]
+              "type": "string"
             }
           },
           {
@@ -4845,13 +5239,13 @@
       }
     },
     "/api/hermes/group-chat/rooms/join/{code}": {
-      "get": {
+      "post": {
         "tags": [
           "Group Chat"
         ],
-        "summary": "Get :code",
-        "description": "GET /api/hermes/group-chat/rooms/join/:code",
-        "operationId": "getJoin",
+        "summary": "Create :code",
+        "description": "POST /api/hermes/group-chat/rooms/join/:code",
+        "operationId": "postJoin",
         "security": [
           {
             "BearerAuth": []
@@ -4861,11 +5255,11 @@
           "200": {
             "description": "Success"
           },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
-          },
-          "404": {
-            "description": "Not found"
           }
         },
         "parameters": [
@@ -8917,10 +9311,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "enum": [
-                "string"
-              ]
+              "type": "string"
             }
           },
           {
@@ -9058,10 +9449,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "enum": [
-                "string"
-              ]
+              "type": "string"
             }
           },
           {
@@ -9069,10 +9457,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "enum": [
-                "string"
-              ]
+              "type": "string"
             }
           }
         ]
@@ -9357,10 +9742,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "enum": [
-                "string"
-              ]
+              "type": "string"
             }
           },
           {
@@ -9563,6 +9945,61 @@
             }
           }
         ]
+      }
+    },
+    "/api/hermes/sessions/{id}/expert": {
+      "post": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Create expert",
+        "description": "POST /api/hermes/sessions/:id/expert",
+        "operationId": "setExpert",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "execution_engine": {
+                    "type": "string"
+                  },
+                  "expert_id": {
+                    "nullable": true,
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/hermes/sessions/{id}/export": {
@@ -10556,10 +10993,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "enum": [
-                "string"
-              ]
+              "type": "string"
             }
           }
         ]
@@ -10796,10 +11230,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "enum": [
-                "string"
-              ]
+              "type": "string"
             }
           }
         ]

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Message, ContentBlock, Session, WorkspaceDiffInlineFile } from "@/stores/hermes/chat";
-import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
 import { useMessage } from "naive-ui";
 import { downloadFile, getDownloadUrl } from "@/api/hermes/download";
@@ -8,6 +8,7 @@ import { copyToClipboard } from "@/utils/clipboard";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import FeedbackControl from "./FeedbackControl.vue";
 import SourceRefs from "./SourceRefs.vue";
+import FeishuLinkPreviewCard from "./FeishuLinkPreviewCard.vue";
 import { parseThinking, countThinkingChars } from "@/utils/thinking-parser";
 import { useChatStore } from "@/stores/hermes/chat";
 import { useFilesStore } from "@/stores/hermes/files";
@@ -23,6 +24,7 @@ import { useGlobalSpeech } from "@/composables/useSpeech";
 import { useVoiceSettings } from "@/composables/useVoiceSettings";
 import { speedToEdgeRate, hzToEdgePitch } from "@/utils/ttsHelpers";
 import { formatChatTimestamp } from "@/utils/chat-timestamp";
+import { extractFeishuUrls, fetchLinkPreviews, stripCardifiedFeishuUrls, type FeishuLinkPreview } from "@/api/hermes/link-previews";
 
 const TOOL_PAYLOAD_DISPLAY_LIMIT = 1000;
 const JSON_STRING_DISPLAY_LIMIT = 200;
@@ -181,6 +183,38 @@ const displayText = computed(() => {
     .filter(Boolean)
     .join('\n');
 });
+
+const messageLinkPreviews = ref<FeishuLinkPreview[]>([]);
+let linkPreviewRequest = 0;
+
+function feishuUrls(text: string): string[] {
+  return extractFeishuUrls(text);
+}
+
+const messageFeishuUrls = computed(() => props.message.role === 'user' ? feishuUrls(displayText.value) : []);
+const visibleUserText = computed(() => stripCardifiedFeishuUrls(displayText.value, messageFeishuUrls.value));
+
+watch(
+  [messageFeishuUrls, () => (props.session ?? chatStore.activeSession)?.profile],
+  async ([urls, profile]) => {
+    const requestId = ++linkPreviewRequest;
+    if (!urls.length) {
+      messageLinkPreviews.value = [];
+      return;
+    }
+    try {
+      const result = await fetchLinkPreviews(urls, profile || undefined);
+      if (requestId === linkPreviewRequest) messageLinkPreviews.value = result.previews;
+    } catch {
+      if (requestId === linkPreviewRequest) {
+        messageLinkPreviews.value = urls.map(url => ({
+          kind: 'feishu', title: '', type_label: '飞书链接', url, status: 'generic',
+        }));
+      }
+    }
+  },
+  { immediate: true },
+);
 
 // Extract files from ContentBlock[]
 const contentFiles = computed<DisplayContentFile[] | null>(() => {
@@ -973,6 +1007,14 @@ onBeforeUnmount(() => {
 
             <!-- Render user message content -->
             <template v-if="message.role === 'user'">
+              <div v-if="messageLinkPreviews.length" class="message-feishu-link-previews">
+                <FeishuLinkPreviewCard
+                  v-for="preview in messageLinkPreviews"
+                  :key="preview.url"
+                  class="message-feishu-link-preview"
+                  :preview="preview"
+                />
+              </div>
               <!-- ContentBlock[] format -->
               <template v-if="isContentBlockArray">
                 <div v-if="contentFiles && contentFiles.length > 0" class="msg-attachments">
@@ -1006,10 +1048,10 @@ onBeforeUnmount(() => {
                     </template>
                   </div>
                 </div>
-                <MarkdownRenderer v-if="displayText" :content="displayText" />
+                <MarkdownRenderer v-if="visibleUserText" :content="visibleUserText" />
               </template>
               <!-- Plain text format -->
-              <MarkdownRenderer v-else-if="message.content" :content="message.content" />
+              <MarkdownRenderer v-else-if="visibleUserText" :content="visibleUserText" />
             </template>
 
             <!-- Render assistant message content -->
@@ -1268,6 +1310,13 @@ onBeforeUnmount(() => {
       0 0 20px rgba(255, 107, 107, 0.2);
     animation: rainbow-glow 4s linear infinite;
   }
+}
+
+.message-feishu-link-previews {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
 .command-result {

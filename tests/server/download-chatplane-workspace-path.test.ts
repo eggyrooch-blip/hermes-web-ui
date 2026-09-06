@@ -54,6 +54,13 @@ async function request(path: string): Promise<any> {
   return ctx
 }
 
+async function readBody(body: any): Promise<Buffer> {
+  if (Buffer.isBuffer(body)) return body
+  const chunks: Buffer[] = []
+  for await (const chunk of body) chunks.push(Buffer.from(chunk))
+  return Buffer.concat(chunks)
+}
+
 mkdirSync(join(workspaceDir, 'Downloads'), { recursive: true })
 mkdirSync(join(workspaceDir, 'credentials'), { recursive: true })
 mkdirSync(uploadDir, { recursive: true })
@@ -84,15 +91,20 @@ describe('chat-plane /workspace/ display-path downloads', () => {
   it('downloads a produced artifact via its /workspace/ display path', async () => {
     const ctx = await request('/workspace/Downloads/a.pptx')
     expect(ctx.body?.error).toBeUndefined()
-    expect(Buffer.isBuffer(ctx.body)).toBe(true)
-    expect(ctx.body.toString()).toBe('PPTX-BYTES')
+    expect(Buffer.isBuffer(ctx.body)).toBe(false)
+    await expect(readBody(ctx.body)).resolves.toEqual(Buffer.from('PPTX-BYTES'))
+    expect(ctx.set).toHaveBeenCalledWith(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    )
+    expect(ctx.set).toHaveBeenCalledWith('Content-Length', '10')
   })
 
   it('handles spaces and CJK in the file name byte-for-byte', async () => {
     const ctx = await request('/workspace/Downloads/a b 报告.pptx')
     expect(ctx.body?.error).toBeUndefined()
-    expect(Buffer.isBuffer(ctx.body)).toBe(true)
-    expect(ctx.body.toString()).toBe('中文-BYTES')
+    expect(Buffer.isBuffer(ctx.body)).toBe(false)
+    await expect(readBody(ctx.body)).resolves.toEqual(Buffer.from('中文-BYTES'))
   })
 
   it('still blocks sensitive paths after prefix normalization', async () => {
@@ -150,7 +162,8 @@ describe('chat-plane /workspace/ display-path downloads', () => {
   it('keeps the upload-dir absolute-path allowance unchanged', async () => {
     const ctx = await request(join(uploadDir, 'up.bin'))
     expect(ctx.body?.error).toBeUndefined()
-    expect(ctx.body.toString()).toBe('UPLOAD-BYTES')
+    expect(Buffer.isBuffer(ctx.body)).toBe(false)
+    await expect(readBody(ctx.body)).resolves.toEqual(Buffer.from('UPLOAD-BYTES'))
   })
 })
 
@@ -159,7 +172,8 @@ describe('admin plane stays untouched', () => {
     chatPlane = false
     const ctx = await request(join(uploadDir, 'up.bin'))
     expect(ctx.body?.error).toBeUndefined()
-    expect(ctx.body.toString()).toBe('UPLOAD-BYTES')
+    expect(Buffer.isBuffer(ctx.body)).toBe(false)
+    await expect(readBody(ctx.body)).resolves.toEqual(Buffer.from('UPLOAD-BYTES'))
   })
 
   it('does not strip /workspace/ for admin requests', async () => {

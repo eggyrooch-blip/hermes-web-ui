@@ -75,6 +75,8 @@ vi.mock('vue-i18n', () => ({
 
 vi.mock('naive-ui', () => ({
   NButton: { template: '<button type="button" v-bind="$attrs"><slot /><slot name="icon" /></button>' },
+  NInput: { template: '<input />' },
+  NPopover: { template: '<div><slot name="trigger" /></div>' },
   NTooltip: { template: '<div><slot name="trigger" /><slot /></div>' },
   NSwitch: { template: '<button type="button"></button>' },
   NModal: { template: '<div><slot /><slot name="footer" /></div>' },
@@ -327,12 +329,12 @@ describe('VoiceDialogueControls', () => {
 
   it('renders only the last five event type strings in order when debug is true', () => {
     const events = [
-      { type: 'session.started', payload: { apiKey: 'secret-api-key-123' } },
+      { type: 'session.started', payload: { apiKey: 'test-key' } },
       { type: 'capture.started', payload: { audioBlob: 'blob:super-secret-audio' } },
       { type: 'capture.partial' },
-      { type: 'transcript.done', payload: { apiKey: 'secret-api-key-123' } },
+      { type: 'transcript.done', payload: { apiKey: 'test-key' } },
       { type: 'turn.started', payload: { audioBlob: 'blob:super-secret-audio' } },
-      { type: 'turn.ended', payload: { apiKey: 'secret-api-key-123', audioBlob: 'blob:super-secret-audio' } },
+      { type: 'turn.ended', payload: { apiKey: 'test-key', audioBlob: 'blob:super-secret-audio' } },
     ]
 
     const wrapper = mount(VoiceTranscriptOverlay, {
@@ -354,7 +356,7 @@ describe('VoiceDialogueControls', () => {
       'turn.ended',
     ])
     expect(wrapper.text()).not.toContain('session.started')
-    expect(wrapper.text()).not.toContain('secret-api-key-123')
+    expect(wrapper.text()).not.toContain('test-key')
     expect(wrapper.text()).not.toContain('blob:super-secret-audio')
   })
 
@@ -419,12 +421,12 @@ describe('VoiceDialogueControls', () => {
 
   it('keeps debug diagnostics hidden by default in ChatInput even when live voice events include sensitive payloads', async () => {
     const liveEvents = [
-      { id: 'voice-session:1', seq: 1, sessionId: 'voice-session', type: 'session.started', timestamp: '2026-06-06T00:00:00.000Z', payload: { apiKey: 'secret-api-key-123' } },
+      { id: 'voice-session:1', seq: 1, sessionId: 'voice-session', type: 'session.started', timestamp: '2026-06-06T00:00:00.000Z', payload: { apiKey: 'test-key' } },
       { id: 'voice-session:2', seq: 2, sessionId: 'voice-session', type: 'capture.started', timestamp: '2026-06-06T00:00:01.000Z', payload: { audioBlob: 'blob:super-secret-audio' } },
       { id: 'voice-session:3', seq: 3, sessionId: 'voice-session', type: 'capture.stopped', timestamp: '2026-06-06T00:00:02.000Z' },
-      { id: 'voice-session:4', seq: 4, sessionId: 'voice-session', type: 'transcript.done', timestamp: '2026-06-06T00:00:03.000Z', payload: { apiKey: 'secret-api-key-123' } },
+      { id: 'voice-session:4', seq: 4, sessionId: 'voice-session', type: 'transcript.done', timestamp: '2026-06-06T00:00:03.000Z', payload: { apiKey: 'test-key' } },
       { id: 'voice-session:5', seq: 5, sessionId: 'voice-session', type: 'turn.started', timestamp: '2026-06-06T00:00:04.000Z', payload: { audioBlob: 'blob:super-secret-audio' } },
-      { id: 'voice-session:6', seq: 6, sessionId: 'voice-session', type: 'turn.ended', timestamp: '2026-06-06T00:00:05.000Z', payload: { apiKey: 'secret-api-key-123', audioBlob: 'blob:super-secret-audio' } },
+      { id: 'voice-session:6', seq: 6, sessionId: 'voice-session', type: 'turn.ended', timestamp: '2026-06-06T00:00:05.000Z', payload: { apiKey: 'test-key', audioBlob: 'blob:super-secret-audio' } },
     ]
 
     useVoiceDialogueOverride.value = () => ({
@@ -452,18 +454,18 @@ describe('VoiceDialogueControls', () => {
     expect(overlay.text()).not.toContain('chat.voiceInput.recentEvents')
     expect(overlay.text()).not.toContain('session.started')
     expect(overlay.text()).not.toContain('capture.started')
-    expect(overlay.text()).not.toContain('secret-api-key-123')
+    expect(overlay.text()).not.toContain('test-key')
     expect(overlay.text()).not.toContain('blob:super-secret-audio')
   })
 
   it('passes live voice dialogue events into VoiceDialogueControls while leaving debug disabled in ChatInput', async () => {
     const liveEvents = [
-      { id: 'voice-session:1', seq: 1, sessionId: 'voice-session', type: 'session.started', timestamp: '2026-06-06T00:00:00.000Z', payload: { apiKey: 'secret-api-key-123' } },
+      { id: 'voice-session:1', seq: 1, sessionId: 'voice-session', type: 'session.started', timestamp: '2026-06-06T00:00:00.000Z', payload: { apiKey: 'test-key' } },
       { id: 'voice-session:2', seq: 2, sessionId: 'voice-session', type: 'capture.started', timestamp: '2026-06-06T00:00:01.000Z', payload: { audioBlob: 'blob:super-secret-audio' } },
       { id: 'voice-session:3', seq: 3, sessionId: 'voice-session', type: 'capture.stopped', timestamp: '2026-06-06T00:00:02.000Z' },
-      { id: 'voice-session:4', seq: 4, sessionId: 'voice-session', type: 'transcript.done', timestamp: '2026-06-06T00:00:03.000Z', payload: { apiKey: 'secret-api-key-123' } },
+      { id: 'voice-session:4', seq: 4, sessionId: 'voice-session', type: 'transcript.done', timestamp: '2026-06-06T00:00:03.000Z', payload: { apiKey: 'test-key' } },
       { id: 'voice-session:5', seq: 5, sessionId: 'voice-session', type: 'turn.started', timestamp: '2026-06-06T00:00:04.000Z', payload: { audioBlob: 'blob:super-secret-audio' } },
-      { id: 'voice-session:6', seq: 6, sessionId: 'voice-session', type: 'turn.ended', timestamp: '2026-06-06T00:00:05.000Z', payload: { apiKey: 'secret-api-key-123', audioBlob: 'blob:super-secret-audio' } },
+      { id: 'voice-session:6', seq: 6, sessionId: 'voice-session', type: 'turn.ended', timestamp: '2026-06-06T00:00:05.000Z', payload: { apiKey: 'test-key', audioBlob: 'blob:super-secret-audio' } },
     ]
 
     useVoiceDialogueOverride.value = () => ({
@@ -520,7 +522,7 @@ describe('VoiceDialogueControls', () => {
       'turn.started',
       'turn.ended',
     ])
-    expect(wrapper.text()).not.toContain('secret-api-key-123')
+    expect(wrapper.text()).not.toContain('test-key')
     expect(wrapper.text()).not.toContain('blob:super-secret-audio')
   })
 

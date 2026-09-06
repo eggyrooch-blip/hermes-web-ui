@@ -18,6 +18,7 @@ const readFileMock = vi.hoisted(() => vi.fn())
 const fetchFeedbackMock = vi.hoisted(() => vi.fn())
 const putFeedbackMock = vi.hoisted(() => vi.fn())
 const deleteFeedbackMock = vi.hoisted(() => vi.fn())
+const fetchLinkPreviewsMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/hermes/sessions', () => ({
   fetchWorkspaceRunChangeFile: fetchWorkspaceRunChangeFileMock,
@@ -31,6 +32,11 @@ vi.mock('@/api/hermes/feedback', () => ({
   fetchFeedback: fetchFeedbackMock,
   putFeedback: putFeedbackMock,
   deleteFeedback: deleteFeedbackMock,
+}))
+
+vi.mock('@/api/hermes/link-previews', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/hermes/link-previews')>()),
+  fetchLinkPreviews: fetchLinkPreviewsMock,
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -96,11 +102,65 @@ describe('MessageItem tool details', () => {
     fetchFeedbackMock.mockReset()
     putFeedbackMock.mockReset()
     deleteFeedbackMock.mockReset()
+    fetchLinkPreviewsMock.mockReset()
     fetchFeedbackMock.mockResolvedValue([])
     putFeedbackMock.mockImplementation(async (_sessionId: string, runId: string, rating: string, reason: string | null) => ({
       run_id: runId, rating, reason,
     }))
     deleteFeedbackMock.mockResolvedValue(undefined)
+  })
+
+  it('shows a Feishu preview in a sent user message while preserving the original URL', async () => {
+    const url = 'https://tenant.feishu.cn/base/base_token?table=table_id&view=view_id'
+    fetchLinkPreviewsMock.mockResolvedValue({
+      previews: [{
+        kind: 'base',
+        title: '你的月度数据大屏 Copy',
+        type_label: '多维表格',
+        url,
+        status: 'resolved',
+      }],
+    })
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: { id: 'user-base-link', role: 'user', content: url, timestamp: Date.now() } satisfies Message,
+        session: { id: 'session-1', profile: 'default' } as any,
+      },
+      global: {
+        stubs: {
+          MarkdownRenderer: { props: ['content'], template: '<div class="markdown-stub">{{ content }}</div>' },
+        },
+      },
+    })
+
+    await vi.waitFor(() => expect(fetchLinkPreviewsMock).toHaveBeenCalledWith([url], 'default'))
+    expect(wrapper.get('.message-feishu-link-preview').text()).toContain('你的月度数据大屏 Copy')
+    expect(wrapper.get('.message-feishu-link-preview').text()).toContain('多维表格')
+    expect(wrapper.get('.feishu-link-preview-card__header').text()).toContain('你的月度数据大屏 Copy')
+    expect(wrapper.get('.feishu-link-preview-card__body').text()).toContain('多维表格')
+    expect(wrapper.get('.feishu-link-preview-card__footer').text()).toBe('在飞书中打开')
+    expect(wrapper.find('.markdown-stub').exists()).toBe(false)
+    expect(wrapper.props('message').content).toBe(url)
+  })
+
+  it('keeps a Markdown link label and target while also rendering its preview', async () => {
+    const url = 'https://tenant.feishu.cn/docx/token'
+    fetchLinkPreviewsMock.mockResolvedValue({
+      previews: [{ kind: 'docx', title: '需求文档', type_label: '飞书文档', url, status: 'resolved' }],
+    })
+    const content = `[需求文档](${url})`
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: { id: 'user-markdown-link', role: 'user', content, timestamp: Date.now() } satisfies Message,
+        session: { id: 'session-1', profile: 'default' } as any,
+      },
+      global: {
+        stubs: { MarkdownRenderer: { props: ['content'], template: '<div class="markdown-stub">{{ content }}</div>' } },
+      },
+    })
+
+    await vi.waitFor(() => expect(wrapper.find('.message-feishu-link-preview').exists()).toBe(true))
+    expect(wrapper.get('.markdown-stub').text()).toBe(content)
   })
 
   it('renders final-answer feedback, changes rating, and removes the active rating', async () => {

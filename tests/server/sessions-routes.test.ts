@@ -18,6 +18,7 @@ const renameMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const archiveSessionMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true, archived: true } })
 const unarchiveSessionMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true, archived: false } })
 const setWorkspaceMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
+const setExpertMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const setModelMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const listWorkspaceFoldersMock = vi.fn(async (ctx: any) => { ctx.body = { folders: [] } })
 const createWorkspaceFolderMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
@@ -53,6 +54,7 @@ vi.mock('../../packages/server/src/controllers/hermes/sessions', () => ({
   archiveSession: archiveSessionMock,
   unarchiveSession: unarchiveSessionMock,
   setWorkspace: setWorkspaceMock,
+  setExpert: setExpertMock,
   setModel: setModelMock,
   listWorkspaceFolders: listWorkspaceFoldersMock,
   createWorkspaceFolder: createWorkspaceFolderMock,
@@ -90,6 +92,7 @@ describe('session routes', () => {
     renameMock.mockClear()
     archiveSessionMock.mockClear()
     unarchiveSessionMock.mockClear()
+    setExpertMock.mockClear()
     setModelMock.mockClear()
     listWorkspaceFoldersMock.mockClear()
     createWorkspaceFolderMock.mockClear()

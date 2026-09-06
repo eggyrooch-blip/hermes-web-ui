@@ -24,6 +24,7 @@ describe('JSON fallback store', () => {
     expect(typeof jsonGetAll).toBe('function')
     expect(typeof jsonDelete).toBe('function')
   })
+
 })
 
 // Test ensureTable with a real in-memory SQLite (Node 22+)

@@ -31,5 +31,13 @@ describe('api docs controller', () => {
     expect(
       ctx.body.paths['/api/chat-run/runs'].post.requestBody.content['application/json'].schema.properties.source.enum,
     ).toEqual(['cli', 'coding_agent', 'global_agent'])
+    const catalogConnect = ctx.body.paths['/api/auth/skill-credentials/catalog/connect'].post
+      .requestBody.content['application/json'].schema
+    expect(catalogConnect.properties.row_key.type).toBe('string')
+    expect(catalogConnect.properties.fields.maxProperties).toBe(32)
+    expect(ctx.body.paths['/api/auth/skill-credentials/catalog/status'].post
+      .requestBody.content['application/json'].schema.properties.row_key.type).toBe('string')
+    expect(ctx.body.paths['/api/auth/skill-credentials/catalog/oauth/callback'].get.security).toEqual([])
+    expect(ctx.body.paths['/api/auth/skill-credentials/catalog'].get.parameters.map((item: any) => item.name)).toEqual(['view'])
   })
 })

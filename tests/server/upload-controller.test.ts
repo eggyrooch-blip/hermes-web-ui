@@ -92,6 +92,62 @@ describe('upload controller', () => {
     expect(ctx.body.files[0]).toMatchObject({ name: 'daily report.txt', path: savedPath })
   })
 
+  it('returns 413 only after draining a request that exceeds the configured limit', async () => {
+    vi.stubEnv('HERMES_MAX_UPLOAD_SIZE', String(1024 * 1024))
+    try {
+      const boundary = 'test-boundary'
+      const chunk = Buffer.alloc(600 * 1024, 0x61)
+      const sent: number[] = []
+      const req = new Readable({
+        read() {
+          if (sent.length === 3) return this.push(null)
+          sent.push(chunk.length)
+          this.push(chunk)
+        },
+      })
+      const { handleUpload } = await import('../../packages/server/src/controllers/upload')
+      const ctx: any = {
+        get: vi.fn((header: string) => header === 'content-type' ? `multipart/form-data; boundary=${boundary}` : ''),
+        req,
+        state: { profile: { name: 'research' } },
+        body: undefined,
+        status: 200,
+      }
+
+      await handleUpload(ctx)
+
+      expect(ctx.status).toBe(413)
+      expect(ctx.body).toEqual({ error: 'File too large (max 1MB)' })
+      expect(sent).toHaveLength(3)
+      expect(req.readableEnded).toBe(true)
+      expect(writeFileMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it.each(['1e6', '0x10'])('ignores non-decimal upload limits (%s)', async (configured) => {
+    vi.stubEnv('HERMES_MAX_UPLOAD_SIZE', configured)
+    try {
+      const boundary = 'test-boundary'
+      const { handleUpload } = await import('../../packages/server/src/controllers/upload')
+      const ctx: any = {
+        get: vi.fn((header: string) => header === 'content-type' ? `multipart/form-data; boundary=${boundary}` : ''),
+        req: Readable.from([multipartBody(boundary, { filename: 'large.txt', content: 'x'.repeat(2 * 1024 * 1024) })]),
+        state: { profile: { name: 'research' } },
+        body: undefined,
+        status: 200,
+      }
+
+      await handleUpload(ctx)
+
+      expect(ctx.status).toBe(200)
+      expect(writeFileMock).toHaveBeenCalledOnce()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('returns 400 for malformed RFC 5987 filenames', async () => {
     const boundary = 'test-boundary'
     const { handleUpload } = await import('../../packages/server/src/controllers/upload')

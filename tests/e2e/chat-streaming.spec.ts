@@ -474,11 +474,12 @@ test('renders tool trace and sends explicit approval decisions over the chat-run
   await expect(page.getByText('Writing approved file')).toBeVisible()
   await expect(page.locator('.message.tool .tool-line')).toHaveCount(0)
   await expect(page.locator('.tool-calls-panel .tool-call-name').filter({ hasText: 'write_file' })).toBeVisible()
+  await expect(page.locator('.approval-float-panel')).toContainText('Review command before running')
   await expect(page.getByText('Allow write_file to create /tmp/approved.txt')).toBeVisible()
   await expect(page.getByText('write_file /tmp/approved.txt')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Allow once' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Allow once' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Deny' })).toBeEnabled()
   await expect(page.getByRole('button', { name: 'Allow session' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Deny' })).toBeVisible()
 
   await page.evaluate((sid) => {
     const socket = (window as any).__PW_CHAT_SOCKET__.latest
@@ -496,8 +497,11 @@ test('renders tool trace and sends explicit approval decisions over the chat-run
 
   await page.getByRole('button', { name: 'Allow once' }).click()
 
-  await expect(page.getByText('Allow write_file to create /tmp/approved.txt')).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Allow once' })).toHaveCount(0)
+  // The card stays up, submitting, until the server acknowledges — a rejected
+  // decision restores it with an error. See the chat store unit test
+  // "keeps an approval card until the server acknowledges success".
+  await expect(page.getByText('Allow write_file to create /tmp/approved.txt')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Allow once' })).toBeDisabled()
   await expect.poll(async () => page.evaluate(() => {
     const emitted = (window as any).__PW_CHAT_SOCKET__.emitted
     return emitted.filter((item: any) => item.event === 'approval.respond')
@@ -508,6 +512,7 @@ test('renders tool trace and sends explicit approval decisions over the chat-run
         session_id: run.session_id,
         approval_id: 'approval-1',
         choice: 'once',
+        comment: '',
       },
     },
   ])
@@ -544,6 +549,9 @@ test('renders tool trace and sends explicit approval decisions over the chat-run
       output: 'Completion fallback should stay hidden.',
     })
   }, run.session_id)
+
+  await expect(page.getByText('Allow write_file to create /tmp/approved.txt')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Allow once' })).toHaveCount(0)
 
   const persistedToolTrace = page.locator('.message.tool .tool-line').filter({ hasText: 'write_file' })
   await expect(persistedToolTrace).toHaveCount(1)

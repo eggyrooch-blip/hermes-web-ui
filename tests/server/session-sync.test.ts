@@ -88,9 +88,6 @@ describe('session-sync', () => {
       profile: 'research',
       source: 'cli',
       title: 'resource delivery run',
-    } as any)
-
-    updateSession('expert-session-1', {
       expert_id: 'keep-resource-delivery',
       expert_label: '资源投放专家',
       expert_avatar: expertAvatar,
@@ -186,6 +183,20 @@ describe('session-sync', () => {
     // A later switch on the same session never re-claims.
     expect(claimFamilySwitchNotice('family-switch-session-1')).toBe(false)
     expect(claimFamilySwitchNotice('no-such-session')).toBe(false)
+  })
+
+  it('persists boolean session fields through SQLite updates', async () => {
+    await initTestDb()
+    const { createSession, getSession, updateSession } =
+      await import('../../packages/server/src/db/hermes/session-store')
+
+    createSession({ id: 'project-binding-session', profile: 'research' })
+
+    updateSession('project-binding-session', { project_bound: true })
+    expect(getSession('project-binding-session')?.project_bound).toBe(true)
+
+    updateSession('project-binding-session', { project_bound: false })
+    expect(getSession('project-binding-session')?.project_bound).toBe(false)
   })
 
   it('searches archived agent sessions on empty query when includeArchived is set', async () => {

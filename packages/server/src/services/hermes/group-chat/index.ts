@@ -9,7 +9,7 @@ import { SessionDeleter } from '../session-deleter'
 import { countTokens, SUMMARY_PREFIX } from '../../../lib/context-compressor'
 import { AgentBridgeClient } from '../agent-bridge'
 import { authenticateUserToken, isAuthEnabled, type AuthenticatedUser } from '../../../middleware/user-auth'
-import { findUserByUsername, getUserAvatar } from '../../../db/hermes/users-store'
+import { findUserById, findUserByUsername, getUserAvatar, userCanAccessProfile } from '../../../db/hermes/users-store'
 import {
     extractFeishuSessionFromCookieHeader,
     parseFeishuSessionCookie,
@@ -90,6 +90,7 @@ interface RoomInfo {
     tailMessageCount: number
     totalTokens: number
     sessionSeed: string
+    ownerAuthUserId: number | null
 }
 
 interface Member {
@@ -100,14 +101,17 @@ interface Member {
     joinedAt: number
     online: boolean
     socketId: string
+    socketIds?: Set<string>
     source?: 'human' | 'agent'
     avatar: string
     authUserId?: number | null
 }
 
-function authenticatedGroupUserId(authUserId: number): string {
+export function authenticatedGroupUserId(authUserId: number): string {
     return `auth:${authUserId}`
 }
+
+const ROOM_SELECT_COLUMNS = 'id, name, inviteCode, triggerTokens, maxHistoryTokens, tailMessageCount, totalTokens, sessionSeed, ownerAuthUserId'
 
 let _tablesEnsured = false
 
@@ -199,7 +203,7 @@ function sortGroupMessages<T extends { id: string; timestamp: number }>(messages
     })
 }
 
-class ChatStorage {
+export class ChatStorage {
     private db() { return getDb() }
 
     init(): void {
@@ -311,15 +315,15 @@ class ChatStorage {
     // ─── Rooms ────────────────────────────────────────────────
 
     getRoom(roomId: string): RoomInfo | undefined {
-        return this.db()?.prepare('SELECT id, name, inviteCode, triggerTokens, maxHistoryTokens, tailMessageCount, totalTokens, sessionSeed FROM gc_rooms WHERE id = ?').get(roomId) as any
+        return this.db()?.prepare(`SELECT ${ROOM_SELECT_COLUMNS} FROM gc_rooms WHERE id = ?`).get(roomId) as any
     }
 
     getRoomByInviteCode(code: string): RoomInfo | undefined {
-        return this.db()?.prepare('SELECT id, name, inviteCode, triggerTokens, maxHistoryTokens, tailMessageCount, totalTokens, sessionSeed FROM gc_rooms WHERE inviteCode = ?').get(code) as any
+        return this.db()?.prepare(`SELECT ${ROOM_SELECT_COLUMNS} FROM gc_rooms WHERE inviteCode = ?`).get(code) as any
     }
 
     getAllRooms(): RoomInfo[] {
-        return (this.db()?.prepare('SELECT id, name, inviteCode, triggerTokens, maxHistoryTokens, tailMessageCount, totalTokens, sessionSeed FROM gc_rooms ORDER BY id').all() || []) as any[]
+        return (this.db()?.prepare(`SELECT ${ROOM_SELECT_COLUMNS} FROM gc_rooms ORDER BY id`).all() || []) as any[]
     }
 
     getRoomsForProfiles(profiles: string[]): RoomInfo[] {
@@ -327,7 +331,7 @@ class ChatStorage {
         if (!uniqueProfiles.length) return []
         const placeholders = uniqueProfiles.map(() => '?').join(', ')
         return (this.db()?.prepare(
-            `SELECT DISTINCT r.id, r.name, r.inviteCode, r.triggerTokens, r.maxHistoryTokens, r.tailMessageCount, r.totalTokens, r.sessionSeed
+            `SELECT DISTINCT r.id, r.name, r.inviteCode, r.triggerTokens, r.maxHistoryTokens, r.tailMessageCount, r.totalTokens, r.sessionSeed, r.ownerAuthUserId
              FROM gc_rooms r
              INNER JOIN gc_room_agents a ON a.roomId = r.id
              WHERE a.profile IN (${placeholders})
@@ -335,10 +339,53 @@ class ChatStorage {
         ).all(...uniqueProfiles) || []) as any[]
     }
 
-    saveRoom(id: string, name: string, inviteCode?: string, config?: { triggerTokens?: number; maxHistoryTokens?: number; tailMessageCount?: number }): void {
+    getRoomsForAuthUser(authUserId: number): RoomInfo[] {
+        if (!Number.isSafeInteger(authUserId) || authUserId <= 0) return []
+        return (this.db()?.prepare(
+            `SELECT DISTINCT r.id, r.name, r.inviteCode, r.triggerTokens, r.maxHistoryTokens, r.tailMessageCount, r.totalTokens, r.sessionSeed, r.ownerAuthUserId
+             FROM gc_rooms r
+             LEFT JOIN gc_room_members m ON m.roomId = r.id
+             WHERE r.ownerAuthUserId = ? OR m.authUserId = ?
+             ORDER BY r.id`
+        ).all(authUserId, authUserId) || []) as any[]
+    }
+
+    isRoomProfileAuthorized(roomId: string, profile: string): boolean {
+        const ownerAuthUserId = this.getRoom(roomId)?.ownerAuthUserId
+        if (!ownerAuthUserId) return false
+        const owner = findUserById(ownerAuthUserId)
+        return Boolean(owner && owner.status === 'active' && (
+            owner.role === 'super_admin' || userCanAccessProfile(owner.id, profile)
+        ))
+    }
+
+    joinRoomByInviteCode(code: string, authUserId: number, userName: string): RoomInfo | undefined {
+        if (!Number.isSafeInteger(authUserId) || authUserId <= 0) return undefined
+        const db = this.db()
+        if (!db) return undefined
+        db.exec('BEGIN IMMEDIATE')
+        try {
+            const room = db.prepare(`SELECT ${ROOM_SELECT_COLUMNS} FROM gc_rooms WHERE inviteCode = ?`).get(code) as RoomInfo | undefined
+            if (!room?.ownerAuthUserId) {
+                db.exec('ROLLBACK')
+                return undefined
+            }
+            this.addRoomMember(room.id, authenticatedGroupUserId(authUserId), userName, '', '', authUserId)
+            db.exec('COMMIT')
+            return room
+        } catch (error) {
+            try { db.exec('ROLLBACK') } catch { /* ignore */ }
+            throw error
+        }
+    }
+
+    saveRoom(id: string, name: string, inviteCode?: string, config?: { triggerTokens?: number; maxHistoryTokens?: number; tailMessageCount?: number; ownerAuthUserId?: number | null }): void {
+        const ownerAuthUserId = Number.isSafeInteger(config?.ownerAuthUserId) && Number(config?.ownerAuthUserId) > 0
+            ? Number(config?.ownerAuthUserId)
+            : null
         this.db()?.prepare(
-            'INSERT OR IGNORE INTO gc_rooms (id, name, inviteCode, triggerTokens, maxHistoryTokens, tailMessageCount) VALUES (?, ?, ?, ?, ?, ?)'
-        ).run(id, name, inviteCode || null, config?.triggerTokens ?? 100000, config?.maxHistoryTokens ?? 32000, config?.tailMessageCount ?? 10)
+            'INSERT OR IGNORE INTO gc_rooms (id, name, inviteCode, triggerTokens, maxHistoryTokens, tailMessageCount, ownerAuthUserId) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).run(id, name, inviteCode || null, config?.triggerTokens ?? 100000, config?.maxHistoryTokens ?? 32000, config?.tailMessageCount ?? 10, ownerAuthUserId)
     }
 
     updateRoomConfig(roomId: string, config: { triggerTokens?: number; maxHistoryTokens?: number; tailMessageCount?: number }): void {
@@ -689,6 +736,29 @@ export async function drainPendingSessionDeletes(profileName: string): Promise<P
     }
 }
 
+export function canReadGroupChatRoom(storage: ChatStorage, roomId: string, user: AuthenticatedUser | undefined): boolean {
+    if (!user || !Number.isSafeInteger(user.id) || user.id <= 0) return false
+    const room = storage.getRoom(roomId)
+    if (!room) return false
+    if (user.role === 'super_admin' || room.ownerAuthUserId === user.id) return true
+    return Boolean(storage.getMemberByAuthUserId(roomId, user.id))
+}
+
+export function canManageGroupChatRoom(storage: ChatStorage, roomId: string, user: AuthenticatedUser | undefined): boolean {
+    if (!user || !Number.isSafeInteger(user.id) || user.id <= 0) return false
+    const room = storage.getRoom(roomId)
+    if (!room?.ownerAuthUserId) return false
+    return user.role === 'super_admin' || room.ownerAuthUserId === user.id
+}
+
+export function serializeGroupChatRoom(room: RoomInfo, canManage: boolean): Omit<RoomInfo, 'ownerAuthUserId'> {
+    const { ownerAuthUserId: _ownerAuthUserId, ...visible } = room
+    return {
+        ...visible,
+        inviteCode: canManage ? room.inviteCode : null,
+    }
+}
+
 // ─── ChatRoom (in-memory, for online members) ─────────────────
 
 class ChatRoom {
@@ -708,31 +778,39 @@ class ChatRoom {
             existing.description = description
             existing.online = true
             existing.socketId = socketId
+            if (!existing.socketIds) existing.socketIds = new Set()
+            existing.socketIds.add(socketId)
             existing.source = source
             if (avatar) existing.avatar = avatar
             return existing
         }
-        const member: Member = { id: socketId, userId, name, description, joinedAt: Date.now(), online: true, socketId, source, avatar }
+        const member: Member = { id: socketId, userId, name, description, joinedAt: Date.now(), online: true, socketId, socketIds: new Set([socketId]), source, avatar }
         this.members.set(userId, member)
         return member
     }
 
-    removeMember(socketId: string): void {
+    removeMember(socketId: string): boolean {
         for (const member of this.members.values()) {
-            if (member.socketId === socketId) {
-                member.online = false
-                break
+            const socketIds = member.socketIds || new Set([member.socketId])
+            if (socketIds.delete(socketId)) {
+                member.socketIds = socketIds
+                member.online = socketIds.size > 0
+                member.socketId = socketIds.values().next().value || ''
+                return !member.online
             }
         }
+        return false
     }
 
     getMembersList(): Member[] {
-        return Array.from(this.members.values()).filter(member => member.source !== 'agent')
+        return Array.from(this.members.values())
+            .filter(member => member.source !== 'agent')
+            .map(({ socketIds: _socketIds, ...member }) => member)
     }
 
     getOnlineMemberBySocketId(socketId: string): Member | undefined {
         for (const member of this.members.values()) {
-            if (member.socketId === socketId && member.online) return member
+            if (member.online && (member.socketIds?.has(socketId) || member.socketId === socketId)) return member
         }
         return undefined
     }
@@ -834,8 +912,8 @@ export class GroupChatServer {
     readonly agentClients = new AgentClients()
     private _contextEngine: ContextEngine | null = null
     private _restoreScheduled = false
-    /** roomId -> (userId -> { userName, timer }) */
-    private typingState = new Map<string, Map<string, { userName: string; timer: ReturnType<typeof setTimeout> }>>()
+    /** roomId -> (userId -> socket-owned typing state) */
+    private typingState = new Map<string, Map<string, { userName: string; socketId: string; timer: ReturnType<typeof setTimeout> }>>()
     /** roomId -> (agentName -> { agentName, status }) */
     private contextStatusState = new Map<string, Map<string, { agentName: string; status: string }>>()
 
@@ -945,8 +1023,10 @@ export class GroupChatServer {
         let total = 0
 
         for (const room of rooms) {
+            if (!room.ownerAuthUserId) continue
             const agents = this.storage.getRoomAgents(room.id)
             for (const agent of agents) {
+                if (!this.storage.isRoomProfileAuthorized(room.id, agent.profile)) continue
                 try {
                     const client = await this.agentClients.createAgent({
                         agentId: agent.agentId,
@@ -988,9 +1068,7 @@ export class GroupChatServer {
         const auth = socket.handshake.auth as { userId?: string; name?: string; description?: string; source?: string; agentSocketSecret?: string; authUserId?: number }
         const requestedSource = auth.source === 'agent' && auth.agentSocketSecret === GROUP_CHAT_AGENT_SOCKET_SECRET ? 'agent' : 'human'
         const authenticatedUser = socket.data.authUser as AuthenticatedUser | undefined
-        const authUserId = requestedSource === 'human'
-            ? authenticatedUser?.id ?? (typeof auth.authUserId === 'number' && auth.authUserId > 0 ? auth.authUserId : undefined)
-            : undefined
+        const authUserId = requestedSource === 'human' ? authenticatedUser?.id : undefined
         const userId = authUserId ? authenticatedGroupUserId(authUserId) : auth.userId || socket.id
         const userName = auth.name || authenticatedUser?.username || `User-${userId.slice(0, 6)}`
         const description = auth.description || ''
@@ -1027,8 +1105,17 @@ export class GroupChatServer {
         const userId = this.socketUserMap.get(socketId) || socketId
         const requestedSource = this.socketRequestedSourceMap.get(socketId) || 'human'
         const roomId = data.roomId || 'general'
+        const storedRoom = this.storage.getRoom(roomId)
+        if (!storedRoom?.ownerAuthUserId) {
+            ack?.({ error: 'Forbidden' })
+            return
+        }
         const roomAgent = this.storage.getRoomAgentByAgentId(roomId, userId)
         const source = requestedSource === 'agent' && roomAgent ? 'agent' : 'human'
+        if (requestedSource === 'agent' && !roomAgent) {
+            ack?.({ error: 'Forbidden' })
+            return
+        }
         if (source === 'human' && roomAgent) {
             ack?.({ error: 'Reserved member identity' })
             return
@@ -1036,6 +1123,11 @@ export class GroupChatServer {
         const socketAuthUserId = this.socketAuthUserIdMap.get(socket.id)
         const existingMember = this.storage.getMemberByUserId(roomId, userId) ||
             (typeof socketAuthUserId === 'number' ? this.storage.getMemberByAuthUserId(roomId, socketAuthUserId) : null)
+        const authUser = socket.data.authUser as AuthenticatedUser | undefined
+        if (source === 'human' && !canReadGroupChatRoom(this.storage, roomId, authUser)) {
+            ack?.({ error: 'Forbidden' })
+            return
+        }
         const userInfo = this.userInfoMap.get(userId) || {
             name: existingMember?.name || `User-${userId.slice(0, 6)}`,
             description: existingMember?.description || '',
@@ -1048,11 +1140,10 @@ export class GroupChatServer {
         // Update stored user info
         this.userInfoMap.set(userId, { name: userName, description })
 
-        let room = this.rooms.get(roomId)
-        if (!room) {
-            room = new ChatRoom(roomId)
-            this.rooms.set(roomId, room)
-            this.storage.saveRoom(roomId, roomId)
+        let runtimeRoom = this.rooms.get(roomId)
+        if (!runtimeRoom) {
+            runtimeRoom = new ChatRoom(roomId, storedRoom.name)
+            this.rooms.set(roomId, runtimeRoom)
         }
 
         // Look up the user's avatar via their numeric users.id from the web UI session.
@@ -1080,12 +1171,12 @@ export class GroupChatServer {
         // Persist only human members. Agent sockets are runtime participants
         // tracked through gc_room_agents and AgentClients; storing them in
         // gc_room_members makes member counts grow on reconnect/restore.
-        if (source !== 'agent') {
+        if (source !== 'agent' && (storedRoom.ownerAuthUserId === authUserId || existingMember)) {
             this.storage.addRoomMember(roomId, userId, userName, description, userAvatar, authUserId)
         }
 
         // Add to in-memory online participants (keyed by userId)
-        room.addOrUpdateMember(socketId, userId, userName, description, source, userAvatar)
+        runtimeRoom.addOrUpdateMember(socketId, userId, userName, description, source, userAvatar)
         socket.join(roomId)
 
         if (source !== 'agent') {
@@ -1093,7 +1184,7 @@ export class GroupChatServer {
                 roomId,
                 memberId: userId,
                 memberName: userName,
-                members: room.getMembersList(),
+                members: runtimeRoom.getMembersList(),
             })
         }
 
@@ -1103,8 +1194,8 @@ export class GroupChatServer {
 
         ack?.({
             roomId,
-            roomName: room.name,
-            members: room.getMembersList(),
+            roomName: runtimeRoom.name,
+            members: runtimeRoom.getMembersList(),
             messages,
             agents,
             rooms: this.getRoomIds(),
@@ -1136,7 +1227,7 @@ export class GroupChatServer {
             senderName: userName,
             content: contentToStorageString(data.content),
             timestamp: this.normalizeMessageTimestamp(data.timestamp, data.role),
-            role: normalizeMessageRole(data.role),
+            role: member?.source === 'agent' ? normalizeMessageRole(data.role) : 'user',
             tool_call_id: data.tool_call_id ?? null,
             tool_calls: Array.isArray(data.tool_calls) ? data.tool_calls : null,
             tool_name: data.tool_name ?? null,
@@ -1160,6 +1251,15 @@ export class GroupChatServer {
             (isAgentReply && mentionDepth < maxAgentMentionDepth())
 
         if (shouldRouteMentions) {
+            let authorizedAgentCount = 0
+            for (const agent of this.agentClients.getAgents(roomId)) {
+                if (!this.storage.isRoomProfileAuthorized(roomId, agent.profile)) {
+                    this.agentClients.removeAgentFromRoom(roomId, agent.agentId)
+                } else {
+                    authorizedAgentCount++
+                }
+            }
+            if (authorizedAgentCount === 0) return
             // Server-side @mention routing — parse mentions and invoke agents directly.
             // Agent replies are allowed to mention other agents, but mentionDepth
             // bounds chained agent-to-agent handoffs so one prompt cannot loop forever.
@@ -1179,7 +1279,7 @@ export class GroupChatServer {
     private handleMessageStreamStart(socket: Socket, data: { roomId?: string; id?: string; senderId?: string; senderName?: string; timestamp?: number }): void {
         const roomId = data.roomId || 'general'
         const room = this.rooms.get(roomId)
-        if (!room || !room.hasOnlineMember(socket.id)) return
+        if (room?.getOnlineMemberBySocketId(socket.id)?.source !== 'agent') return
         const id = this.normalizeClientMessageId(data.id)
         if (!id) return
 
@@ -1199,7 +1299,7 @@ export class GroupChatServer {
     private handleMessageStreamDelta(socket: Socket, data: { roomId?: string; id?: string; delta?: string }): void {
         const roomId = data.roomId || 'general'
         const room = this.rooms.get(roomId)
-        if (!room || !room.hasOnlineMember(socket.id)) return
+        if (room?.getOnlineMemberBySocketId(socket.id)?.source !== 'agent') return
         const id = this.normalizeClientMessageId(data.id)
         if (!id || !data.delta) return
         this.nsp.to(roomId).emit('message_stream_delta', {
@@ -1212,7 +1312,7 @@ export class GroupChatServer {
     private handleMessageReasoningDelta(socket: Socket, data: { roomId?: string; id?: string; delta?: string }): void {
         const roomId = data.roomId || 'general'
         const room = this.rooms.get(roomId)
-        if (!room || !room.hasOnlineMember(socket.id)) return
+        if (room?.getOnlineMemberBySocketId(socket.id)?.source !== 'agent') return
         const id = this.normalizeClientMessageId(data.id)
         if (!id || !data.delta) return
         this.nsp.to(roomId).emit('message_reasoning_delta', {
@@ -1225,7 +1325,7 @@ export class GroupChatServer {
     private handleMessageStreamEnd(socket: Socket, data: { roomId?: string; id?: string }): void {
         const roomId = data.roomId || 'general'
         const room = this.rooms.get(roomId)
-        if (!room || !room.hasOnlineMember(socket.id)) return
+        if (room?.getOnlineMemberBySocketId(socket.id)?.source !== 'agent') return
         const id = this.normalizeClientMessageId(data.id)
         if (!id) return
         this.nsp.to(roomId).emit('message_stream_end', { roomId, id })
@@ -1233,8 +1333,10 @@ export class GroupChatServer {
 
     private handleTyping(socket: Socket, data: { roomId?: string }): void {
         const roomId = data.roomId || 'general'
-        const userId = this.socketUserMap.get(socket.id) || socket.id
-        const userName = this.userInfoMap.get(userId)?.name || `User-${socket.id.slice(0, 6)}`
+        const member = this.rooms.get(roomId)?.getOnlineMemberBySocketId(socket.id)
+        if (!member) return
+        const userId = member.userId
+        const userName = member.name
 
         // Track typing state for rejoin recovery
         let roomTyping = this.typingState.get(roomId)
@@ -1246,8 +1348,9 @@ export class GroupChatServer {
         if (existing) clearTimeout(existing.timer)
         roomTyping.set(userId, {
             userName,
+            socketId: socket.id,
             timer: setTimeout(() => {
-                roomTyping!.delete(userId)
+                if (roomTyping!.get(userId)?.socketId === socket.id) roomTyping!.delete(userId)
                 if (roomTyping!.size === 0) this.typingState.delete(roomId)
             }, 30000),
         })
@@ -1261,13 +1364,16 @@ export class GroupChatServer {
 
     private handleStopTyping(socket: Socket, data: { roomId?: string }): void {
         const roomId = data.roomId || 'general'
-        const userId = this.socketUserMap.get(socket.id) || socket.id
+        const member = this.rooms.get(roomId)?.getOnlineMemberBySocketId(socket.id)
+        if (!member) return
+        const userId = member.userId
 
         // Remove from typing state
         const roomTyping = this.typingState.get(roomId)
         if (roomTyping) {
             const entry = roomTyping.get(userId)
-            if (entry) clearTimeout(entry.timer)
+            if (!entry || entry.socketId !== socket.id) return
+            clearTimeout(entry.timer)
             roomTyping.delete(userId)
             if (roomTyping.size === 0) this.typingState.delete(roomId)
         }
@@ -1283,7 +1389,7 @@ export class GroupChatServer {
         const agentName = data.agentName || ''
         const status = data.status || ''
 
-        if (!agentName) return
+        if (!agentName || this.rooms.get(roomId)?.getOnlineMemberBySocketId(socket.id)?.source !== 'agent') return
 
         let roomStatuses = this.contextStatusState.get(roomId)
         if (!roomStatuses) {
@@ -1311,6 +1417,10 @@ export class GroupChatServer {
         }
     }
 
+    private canSocketManageRoom(socket: Socket, roomId: string): boolean {
+        return canManageGroupChatRoom(this.storage, roomId, socket.data.authUser as AuthenticatedUser | undefined)
+    }
+
     private async handleInterruptAgent(socket: Socket, data: { roomId?: string; agentName?: string }, ack?: (response?: unknown) => void): Promise<void> {
         const roomId = data.roomId
         const agentName = data.agentName
@@ -1318,9 +1428,8 @@ export class GroupChatServer {
             ack?.({ error: 'roomId and agentName are required' })
             return
         }
-        const room = this.rooms.get(roomId)
-        if (!room?.hasOnlineMember(socket.id)) {
-            ack?.({ error: 'Not in room' })
+        if (!this.canSocketManageRoom(socket, roomId)) {
+            ack?.({ error: 'Forbidden' })
             return
         }
         try {
@@ -1335,7 +1444,7 @@ export class GroupChatServer {
 
     private handleApprovalRequested(socket: Socket, data: { roomId?: string; agentName?: string; approval_id?: string; command?: string; description?: string; choices?: string[]; allow_permanent?: boolean }): void {
         const roomId = data.roomId
-        if (!roomId || !data.approval_id) return
+        if (!roomId || !data.approval_id || this.rooms.get(roomId)?.getOnlineMemberBySocketId(socket.id)?.source !== 'agent') return
         this.nsp.to(roomId).emit('approval.requested', {
             event: 'approval.requested',
             roomId,
@@ -1350,7 +1459,7 @@ export class GroupChatServer {
 
     private handleApprovalResolved(socket: Socket, data: { roomId?: string; agentName?: string; approval_id?: string; choice?: string }): void {
         const roomId = data.roomId
-        if (!roomId || !data.approval_id) return
+        if (!roomId || !data.approval_id || this.rooms.get(roomId)?.getOnlineMemberBySocketId(socket.id)?.source !== 'agent') return
         this.nsp.to(roomId).emit('approval.resolved', {
             event: 'approval.resolved',
             roomId,
@@ -1366,9 +1475,8 @@ export class GroupChatServer {
             ack?.({ error: 'roomId and approval_id are required' })
             return
         }
-        const room = this.rooms.get(roomId)
-        if (!room?.hasOnlineMember(socket.id)) {
-            ack?.({ error: 'Not in room' })
+        if (!this.canSocketManageRoom(socket, roomId)) {
+            ack?.({ error: 'Forbidden' })
             return
         }
         try {
@@ -1390,10 +1498,11 @@ export class GroupChatServer {
         // Clean up typing state for this socket
         for (const [roomId, roomTyping] of this.typingState) {
             const entry = roomTyping.get(userId || socketId)
-            if (entry) {
+            if (entry?.socketId === socketId) {
                 clearTimeout(entry.timer)
                 roomTyping.delete(userId || socketId)
                 if (roomTyping.size === 0) this.typingState.delete(roomId)
+                this.nsp.to(roomId).emit('stop_typing', { roomId, userId: userId || socketId })
             }
         }
 
@@ -1422,9 +1531,9 @@ export class GroupChatServer {
         this.rooms.forEach((room, rid) => {
             if (room.hasOnlineMember(socketId)) {
                 const member = room.getOnlineMemberBySocketId(socketId)
-                room.removeMember(socketId)
+                const wentOffline = room.removeMember(socketId)
                 socket.leave(rid)
-                if (member?.source !== 'agent') {
+                if (wentOffline && member?.source !== 'agent') {
                     this.nsp.to(rid).emit('member_left', {
                         roomId: rid,
                         memberId: member?.userId || socketId,

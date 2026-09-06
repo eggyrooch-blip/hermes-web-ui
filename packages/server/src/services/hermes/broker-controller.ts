@@ -38,11 +38,20 @@ import {
 } from '../feishu-oauth'
 import { ownerOwnsProfile, resolveOwnedProfileAgentId } from './agent-ownership'
 import { ensureWebUserForFeishu } from '../compat-user'
+import {
+  resolveProfileForOpenId,
+  verifyTrustedFeishuSocketHeaders,
+  type WebUser,
+} from '../request-context'
 import { authenticateUserToken, isAuthEnabled } from '../../middleware/user-auth'
 import { userCanAccessProfile } from '../../db/hermes/users-store'
 import {
   handleBrokerRun as handleRunChatBrokerRun,
+  fetchBrokerHarnessWorkflowSnapshot,
   parseBrokerSessionCommand,
+  rememberBrokerWorkflowEvent,
+  resumeBrokerHarnessCredential,
+  respondToBrokerApproval,
   respondToBrokerClarify,
   runBrokerGoalEvaluate,
   runBrokerSessionCommand,
@@ -52,7 +61,7 @@ import {
 import { extractResponseText, responseFunctionCallToToolCall, summarizeToolArguments } from './run-chat/response-utils'
 import { readSseFrames } from './run-chat/sse-utils'
 import type { ChatRunSource, ParkedCredentialRun, PendingResumeEvent } from './run-chat/types'
-import { rewriteAssistantMediaDirectives } from './media-directives'
+import { publishRunAssistantMedia, rewriteAssistantMediaDirectives } from './media-directives'
 import {
   bindSessionGeneration,
   createSessionAndBind,
@@ -64,6 +73,8 @@ import {
 } from './run-chat/session-generation'
 import { acknowledgeResumeEvents, forgetResumeEventAcknowledgement } from './run-chat/pending-resume-events'
 import { fetchExpertCatalog } from './expert-registry-client'
+import { isHarnessEnabledForProfile } from './harness-admission'
+import { normalizeHermesSessionWorkspace, normalizeStoredHermesSessionWorkspace } from './run-chat/workspace'
 import { authorizeSourceRefs } from './source-refs'
 
 /**
@@ -413,8 +424,10 @@ interface QueuedRun {
   workspace?: string | null
   instructions?: string
   expert_id?: string
+  project_id?: string
   expert_label?: string
   expert_avatar?: string
+  execution_engine?: 'hermes' | 'harness'
   goalContinuation?: boolean
   profile: string
   // Principal that enqueued this item. Verified against the row owner AND the
@@ -454,6 +467,52 @@ interface AuthoritativeExpert {
   id: string
   label: string
   avatar: string | null
+}
+
+function resolveExecutionEngine(
+  requestedValue: unknown,
+  existingSession: ReturnType<typeof getSession>,
+  hasAuthorizedExpert: boolean,
+  profile: string,
+): 'hermes' | 'harness' {
+  const requested = String(requestedValue || '').trim()
+  if (requested && requested !== 'hermes' && requested !== 'harness') {
+    throw new Error('Unsupported execution engine')
+  }
+  const persisted = existingSession?.execution_engine === 'harness' ? 'harness' : 'hermes'
+  const authoritative = existingSession ? persisted : (requested === 'harness' ? 'harness' : 'hermes')
+  if (requested && requested !== authoritative) {
+    throw new Error('Session is already bound to a different execution engine')
+  }
+  if (authoritative === 'harness') {
+    if (!isHarnessEnabledForProfile(profile)) {
+      throw new Error('Harness engine is unavailable')
+    }
+    if (!hasAuthorizedExpert) {
+      throw new Error('Harness is only available for an authorized expert session')
+    }
+  }
+  return authoritative
+}
+
+async function resolveSessionWorkspace(
+  profile: string,
+  requestedValue: string | null | undefined,
+  existingSession: ReturnType<typeof getSession>,
+  engine: 'hermes' | 'harness',
+): Promise<string | null> {
+  const persisted = existingSession
+    ? await normalizeStoredHermesSessionWorkspace(profile, existingSession.workspace)
+    : null
+  if (engine === 'harness' && existingSession?.workspace && persisted === null) {
+    throw new Error('Session workspace is unavailable')
+  }
+  if (requestedValue === undefined) return persisted
+  const requested = await normalizeHermesSessionWorkspace(profile, requestedValue)
+  if (engine === 'harness' && existingSession && requested !== persisted) {
+    throw new Error('Session is already bound to a different workspace')
+  }
+  return requested
 }
 
 function buildBrokerMessagesForSession(messages: SessionMessage[]): Array<Record<string, any>> {
@@ -533,10 +592,21 @@ export class BrokerRunController {
   // --- Auth middleware ---
 
   private async authMiddleware(socket: Socket, next: (err?: Error) => void) {
+    let feishuUser: WebUser | null = null
     if (config.authMode === 'feishu-oauth-dev') {
       const sessionCookie = extractFeishuSessionFromCookieHeader(socket.handshake.headers?.cookie)
-      const user = parseFeishuSessionCookie(sessionCookie, { secret: getFeishuSessionSecret() })
-      if (!user) return next(new Error('Authentication failed'))
+      feishuUser = parseFeishuSessionCookie(sessionCookie, { secret: getFeishuSessionSecret() })
+      if (!feishuUser) return next(new Error('Authentication failed'))
+    } else if (config.authMode === 'trusted-feishu') {
+      const verified = verifyTrustedFeishuSocketHeaders(socket.handshake.headers)
+      if (!verified.ok) return next(new Error('Authentication failed'))
+      const profile = resolveProfileForOpenId(verified.openid)
+      if (!profile) return next(new Error('Authentication failed'))
+      feishuUser = { ...verified, profile, role: 'user' }
+    }
+
+    if (feishuUser) {
+      const user = feishuUser
       const requestedProfile = typeof socket.handshake.query?.profile === 'string'
         ? socket.handshake.query.profile.trim()
         : ''
@@ -602,8 +672,10 @@ export class BrokerRunController {
       workspace?: string | null
       instructions?: string
       expert_id?: string
+      project_id?: string
       expert_label?: string
       expert_avatar?: string
+      execution_engine?: 'hermes' | 'harness'
       queue_id?: string
     }) => {
       // Before ANY state or transcript write: a socket may only drive a session row
@@ -653,8 +725,10 @@ export class BrokerRunController {
             workspace: data.workspace,
             instructions: data.instructions,
             expert_id: data.expert_id,
+            project_id: data.project_id,
             expert_label: data.expert_label,
             expert_avatar: data.expert_avatar,
+            execution_engine: data.execution_engine,
             profile,
           })
           admittedState.goalEvaluationAbortController?.abort()
@@ -764,11 +838,48 @@ export class BrokerRunController {
       }
     })
 
+    socket.on('approval.respond', async (data: { session_id?: string; approval_id?: string; choice?: string; comment?: string }) => {
+      const sessionId = String(data.session_id || '').trim()
+      const approvalId = String(data.approval_id || '').trim()
+      if (!sessionId || !approvalId) return
+      if (this.rejectsUnauthorizedSession(socket, sessionId, profile, undefined, { requireExistingRow: true })) return
+      const choice = String(data.choice || 'deny')
+      try {
+        await respondToBrokerApproval({
+          socket,
+          profile,
+          agentId: (socket.data?.agentId as string | undefined)?.trim(),
+          sessionId,
+          approvalId,
+          choice,
+          comment: String(data.comment || ''),
+        })
+        const approvalState = this.getSessionState(sessionId, profile)
+        if (approvalState) {
+          rememberBrokerWorkflowEvent(approvalState, 'approval.resolved', { approval_id: approvalId })
+        }
+        this.nsp.to(this.sessionRoom(sessionId, profile)).emit('approval.resolved', {
+          event: 'approval.resolved', session_id: sessionId, approval_id: approvalId, choice, resolved: true,
+        })
+      } catch (err: any) {
+        socket.emit('approval.resolved', {
+          event: 'approval.resolved', session_id: sessionId, approval_id: approvalId,
+          choice, resolved: false, error: err?.message || String(err),
+        })
+      }
+    })
+
     // Re-auth loop: after the user re-authorizes an expired connector, replay the
     // parked request through the SAME socket-run relay so the answer streams back
     // into this chat session (the broker holds the original request; we do not
     // resend it from the client).
-    socket.on('credential.replay', async (data: { session_id?: string; run_id?: string }) => {
+    socket.on('credential.replay', async (data: {
+      session_id?: string
+      run_id?: string
+      workflow_id?: string
+      credential_kind?: string
+      connector_id?: string
+    }) => {
       const sessionId = String(data.session_id || '').trim()
       const runId = String(data.run_id || '').trim()
       if (!sessionId || !runId) return
@@ -784,6 +895,56 @@ export class BrokerRunController {
           'Replay failed because this session was deleted or replaced.',
         )
         return
+      }
+      const workflowId = String(data.workflow_id || '').trim()
+      const credentialKind = String(data.credential_kind || '').trim()
+      const connectorId = String(data.connector_id || '').trim()
+      const harnessSession = getSession(sessionId)?.execution_engine === 'harness'
+      if (workflowId && !harnessSession) {
+        this.emitReplayFailure(
+          socket,
+          sessionId,
+          runId,
+          profile,
+          'Session is not bound to Harness',
+          'Credential replay does not match this session engine.',
+        )
+        return
+      }
+      if (harnessSession) {
+        try {
+          if (!workflowId || !credentialKind || !connectorId) throw new Error('Harness credential binding is missing')
+          await resumeBrokerHarnessCredential({
+            socket,
+            profile,
+            agentId: (socket.data?.agentId as string | undefined)?.trim(),
+            sessionId,
+            workflowId,
+            credentialKind,
+            connectorId,
+          })
+          const state = this.getSessionState(sessionId, profile)
+          const resolved = {
+            event: 'auth.resolved', session_id: sessionId, run_id: runId,
+            workflow_id: workflowId, credential_kind: credentialKind,
+            connector_id: connectorId,
+          }
+          if (state) rememberBrokerWorkflowEvent(state, 'auth.resolved', resolved)
+          this.nsp.to(this.sessionRoom(sessionId, profile)).emit('auth.resolved', resolved)
+          // Harness owns the durable workflow/thread. There is no ordinary
+          // parked broker request to replay after a process/WebUI restart;
+          // the next turn resumes the same workflow normally.
+          return
+        } catch (err) {
+          logger.warn({ err, sessionId, runId, workflowId }, '[chat-run-socket] Harness credential resume failed')
+          socket.emit('auth.required', {
+            event: 'auth.required', session_id: sessionId, run_id: runId,
+            workflow_id: workflowId, credential_kind: credentialKind,
+            connector_id: connectorId, provider: 'harness',
+            error: 'Credential resume failed. Please try again.',
+          })
+          return
+        }
       }
       try {
         await this.handleReplay(socket, sessionId, runId, profile)
@@ -959,8 +1120,57 @@ export class BrokerRunController {
       },
       loadState: () => this.loadSessionStateFromDb(sid, profile),
     })
+    const session = getSession(sid)
+    if (
+      session?.execution_engine === 'harness'
+      && (!profile || session.profile === this.profileKey(profile))
+    ) {
+      try {
+        const snapshot = await fetchBrokerHarnessWorkflowSnapshot({
+          socket,
+          profile: this.profileKey(profile),
+          sessionId: sid,
+          agentId: String(socket.data?.agentId || '').trim() || undefined,
+        })
+        state.events = state.events.filter(item => (
+          item.event !== 'workflow.stage'
+          && !(item.event === 'approval.requested' && item.data?.gate)
+          && !(item.event === 'auth.required' && item.data?.workflow_id)
+        ))
+        if (snapshot.stage) {
+          rememberBrokerWorkflowEvent(state, 'workflow.stage', {
+            event: 'workflow.stage', session_id: sid,
+            stage: snapshot.stage, status: snapshot.stage_status,
+            summary: snapshot.summary, related_ids: snapshot.related_ids,
+            audit_id: snapshot.audit_id,
+          })
+        }
+        if (snapshot.pending_gate) {
+          rememberBrokerWorkflowEvent(state, 'approval.requested', {
+            event: 'approval.requested', session_id: sid,
+            approval_id: snapshot.pending_gate.approval_id,
+            gate: snapshot.pending_gate.gate,
+            checklist: snapshot.pending_gate.checklist,
+            choices: ['approve', 'reject', 'rework'],
+            allow_permanent: false,
+          })
+        }
+        if (snapshot.status === 'waiting_credential' && snapshot.credential_kind) {
+          rememberBrokerWorkflowEvent(state, 'auth.required', {
+            event: 'auth.required', session_id: sid,
+            run_id: snapshot.workflow_id,
+            workflow_id: snapshot.workflow_id,
+            credential_kind: snapshot.credential_kind,
+            connector_id: snapshot.connector_id,
+            provider: 'harness',
+          })
+        }
+      } catch (err) {
+        logger.warn({ err, sid }, '[chat-run-socket] Harness workflow restore failed')
+      }
+    }
     const replayEvents = [
-      ...(state.isWorking ? state.events : []),
+      ...state.events,
       ...[
         ...(state.pendingTerminalEvents || []),
         ...Array.from(state.parkedCredentialRuns?.values() || [], parked => parked.resumeEvent),
@@ -1170,7 +1380,7 @@ export class BrokerRunController {
 
   private async handleRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; source?: ChatRunSource; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; expert_label?: string; expert_avatar?: string; queue_id?: string },
+    data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; source?: ChatRunSource; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; project_id?: string; expert_label?: string; expert_avatar?: string; execution_engine?: 'hermes' | 'harness'; queue_id?: string },
     profile: string,
     skipUserMessage = false,
   ) {
@@ -1197,6 +1407,8 @@ export class BrokerRunController {
     const now = Math.floor(Date.now() / 1000)
     let state: SessionState | undefined
     let authoritativeExpert: AuthoritativeExpert | undefined
+    let authoritativeEngine: 'hermes' | 'harness' = 'hermes'
+    let authoritativeWorkspace: string | null = null
     // Reserve the session SYNCHRONOUSLY, before the catalog await below: two
     // concurrent submits must never both observe an idle session (duplicate
     // dispatch, activeRunMarker overwrite). The later one queues instead.
@@ -1234,8 +1446,10 @@ export class BrokerRunController {
           workspace: data.workspace,
           instructions,
           expert_id: data.expert_id,
+          project_id: data.project_id,
           expert_label: data.expert_label,
           expert_avatar: data.expert_avatar,
+          execution_engine: data.execution_engine,
           profile,
         })
         state.goalEvaluationAbortController?.abort()
@@ -1307,6 +1521,26 @@ export class BrokerRunController {
       }
       const existingSession = resolved.existingSession
       authoritativeExpert = resolved.expert
+      try {
+        authoritativeEngine = resolveExecutionEngine(
+          data.execution_engine,
+          existingSession,
+          !!authoritativeExpert,
+          profile,
+        )
+        authoritativeWorkspace = await resolveSessionWorkspace(
+          profile, data.workspace, existingSession, authoritativeEngine,
+        )
+      } catch (err) {
+        releaseRunReservation()
+        socket.emit('run.rejected', {
+          event: 'run.rejected',
+          session_id,
+          queue_id: data.queue_id,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        return
+      }
       if (session_id && state) {
         if (!data.__hideUserMessage) {
           // Convert ContentBlock[] to string for storage
@@ -1335,6 +1569,8 @@ export class BrokerRunController {
               model,
               provider,
               title: preview,
+              workspace: authoritativeWorkspace || undefined,
+              execution_engine: authoritativeEngine,
             })
           }
 
@@ -1395,9 +1631,11 @@ export class BrokerRunController {
         session_id,
         model,
         provider,
-        workspace: data.workspace,
+        workspace: authoritativeWorkspace,
         instructions,
         expert_id: authoritativeExpert?.id,
+        project_id: data.project_id,
+        execution_engine: authoritativeEngine,
       }, profile, runMarker, emit)
       return
     }
@@ -1471,22 +1709,12 @@ export class BrokerRunController {
   ): string | undefined {
     const state = this.getSessionState(sessionId, profile)
     if (!state) return fallbackContent
-    const profileDir = getProfileDir(profile)
-    let latestAssistant: SessionMessage | undefined
-    for (let i = state.messages.length - 1; i >= 0; i -= 1) {
-      const msg = state.messages[i]
-      if (msg.runMarker !== runMarker || msg.role !== 'assistant' || msg.tool_calls?.length) continue
-      latestAssistant = msg
-      break
-    }
-    if (!latestAssistant) {
-      return rewriteAssistantMediaDirectives({ content: fallbackContent, profileDir })
-    }
-    latestAssistant.content = rewriteAssistantMediaDirectives({
-      content: latestAssistant.content || fallbackContent,
-      profileDir,
+    return publishRunAssistantMedia({
+      messages: state.messages,
+      runMarker,
+      profileDir: getProfileDir(profile),
+      fallbackContent,
     })
-    return latestAssistant.content
   }
 
   private persistCommandMessage(
@@ -1564,10 +1792,13 @@ export class BrokerRunController {
       source?: ChatRunSource
       model?: string
       provider?: string
+      workspace?: string | null
       instructions?: string
       expert_id?: string
+      project_id?: string
       expert_label?: string
       expert_avatar?: string
+      execution_engine?: 'hermes' | 'harness'
       queue_id?: string
     },
     profile: string,
@@ -1623,12 +1854,15 @@ export class BrokerRunController {
         source: data.source,
         model: data.model,
         provider: data.provider,
+        workspace: data.workspace,
         instructions: data.instructions,
         // Raw request id on purpose: the drain re-enters this handler, which
         // re-resolves against the then-current catalog before any dispatch.
         expert_id: data.expert_id,
+        project_id: data.project_id,
         expert_label: data.expert_label,
         expert_avatar: data.expert_avatar,
+        execution_engine: data.execution_engine,
         profile,
       })
       state.goalEvaluationAbortController?.abort()
@@ -1664,11 +1898,22 @@ export class BrokerRunController {
       state!.events = []
     }
     let resolvedExpert: AuthoritativeExpert | undefined
+    let authoritativeEngine: 'hermes' | 'harness' = 'hermes'
+    let authoritativeWorkspace: string | null = null
     let existingSession: ReturnType<typeof getSession>
     try {
       const resolved = await this.resolveRunExpert(socket, sessionId, profile, data.expert_id, data.source)
       existingSession = resolved.existingSession
       resolvedExpert = resolved.expert
+      authoritativeEngine = resolveExecutionEngine(
+        data.execution_engine,
+        existingSession,
+        !!resolvedExpert,
+        profile,
+      )
+      authoritativeWorkspace = await resolveSessionWorkspace(
+        profile, data.workspace, existingSession, authoritativeEngine,
+      )
     } catch (err) {
       releaseCommandReservation()
       socket.emit('run.rejected', {
@@ -1737,6 +1982,8 @@ export class BrokerRunController {
           model: data.model,
           provider: data.provider,
           title: parsed.raw.replace(/[\r\n]/g, ' ').slice(0, 100),
+          workspace: authoritativeWorkspace || undefined,
+          execution_engine: authoritativeEngine,
         })
         updateSession(sessionId, {
           expert_id: resolvedExpert.id,
@@ -1816,8 +2063,10 @@ export class BrokerRunController {
           source: data.source,
           model: data.model,
           provider: data.provider,
+          workspace: authoritativeWorkspace,
           instructions: data.instructions,
           expert_id: resolvedExpert?.id,
+          project_id: data.project_id,
           expert_label: data.expert_label,
           expert_avatar: data.expert_avatar,
         }, profile)
@@ -2183,8 +2432,10 @@ export class BrokerRunController {
       workspace: next.workspace,
       instructions: next.instructions,
       expert_id: next.expert_id,
+      project_id: next.project_id,
       expert_label: next.expert_label,
       expert_avatar: next.expert_avatar,
+      execution_engine: next.execution_engine,
       __skipSessionCommand: next.goalContinuation,
       __hideUserMessage: next.goalContinuation,
     }
@@ -2247,7 +2498,7 @@ export class BrokerRunController {
 
   private async handleBrokerRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; replay_run_id?: string },
+    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; project_id?: string; execution_engine?: 'hermes' | 'harness'; replay_run_id?: string },
     profile: string,
     runMarker: string | undefined,
     emit: (event: string, payload: any) => void,
@@ -2266,6 +2517,9 @@ export class BrokerRunController {
         this.dequeueNextQueuedRun(socket, sessionId, profile, state)
       ),
       buildInput: buildResponsesInput,
+      publishRunAssistantMedia: (sessionId, marker, runProfile, fallbackContent) => (
+        this.rewriteRunAssistantMedia(sessionId, marker, runProfile, fallbackContent)
+      ),
     })
   }
 

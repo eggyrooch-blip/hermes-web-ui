@@ -2,18 +2,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { nextTick, reactive } from 'vue'
 
 const chatStoreMock = vi.hoisted(() => ({
   activeSession: null as any,
   activeSessionId: null as string | null,
+  sessions: [] as any[],
   activeExpertId: null as string | null,
+  runtimeMode: 'agent',
   isStreaming: false,
   isAborting: false,
   setAutoPlaySpeech: vi.fn(),
   setActiveExpert: vi.fn(),
+  selectActiveExpert: vi.fn(),
+  refreshSessionListOnly: vi.fn(),
   setActiveExpertDisplay: vi.fn(),
   sendMessage: vi.fn(),
   stopStreaming: vi.fn(),
+  newChat: vi.fn(),
+  setSessionProject: vi.fn(),
 }))
 
 const appStoreMock = vi.hoisted(() => ({
@@ -45,6 +52,11 @@ vi.mock('@/api/hermes/model-context', () => ({
   setModelContext: vi.fn(),
 }))
 
+const getCoworkProjectMock = vi.hoisted(() => vi.fn())
+vi.mock('@/api/hermes/cowork', () => ({
+  getCoworkProject: getCoworkProjectMock,
+}))
+
 const fetchExpertsMock = vi.hoisted(() => vi.fn())
 vi.mock('@/api/hermes/experts', () => ({
   fetchExperts: fetchExpertsMock,
@@ -74,7 +86,9 @@ vi.mock('naive-ui', () => ({
     template: '<input />',
   },
   NPopselect: {
-    props: ['value', 'options'],
+    name: 'NPopselect',
+    props: ['value', 'options', 'disabled'],
+    emits: ['update:value'],
     template: '<div><slot /></div>',
   },
   useMessage: () => ({
@@ -92,8 +106,13 @@ describe('ChatInput model selector placement', () => {
     localStorage.clear()
     chatStoreMock.activeSession = null
     chatStoreMock.activeSessionId = null
+    chatStoreMock.sessions = []
     chatStoreMock.activeExpertId = null
+    chatStoreMock.selectActiveExpert.mockResolvedValue(true)
+    chatStoreMock.refreshSessionListOnly.mockResolvedValue(undefined)
+    chatStoreMock.runtimeMode = 'agent'
     fetchExpertsMock.mockResolvedValue({ experts: [] })
+    chatStoreMock.setSessionProject.mockReturnValue(null)
   })
 
   it('does not render the model selector in the chat input toolbar', () => {
@@ -108,6 +127,58 @@ describe('ChatInput model selector placement', () => {
     })
 
     expect(wrapper.find('[data-testid="model-selector"]').exists()).toBe(false)
+  })
+
+  it('uses the existing chat toolbar for Project selection', async () => {
+    const wrapper = shallowMount(ChatInput)
+
+    expect(wrapper.findComponent({ name: 'CoworkProjectPicker' }).exists()).toBe(true)
+    wrapper.unmount()
+
+    chatStoreMock.activeSession = { id: 'coding', source: 'coding_agent', messages: [] }
+    const coding = shallowMount(ChatInput)
+    expect(coding.findComponent({ name: 'CoworkProjectPicker' }).exists()).toBe(false)
+    coding.unmount()
+
+    chatStoreMock.activeSession = null
+    chatStoreMock.runtimeMode = 'global_agent'
+    const global = shallowMount(ChatInput)
+    expect(global.findComponent({ name: 'CoworkProjectPicker' }).exists()).toBe(false)
+  })
+
+  it('ignores an older Project query response after the route changes', async () => {
+    const route = reactive({ query: { project: 'project-a' } })
+    const routerPush = vi.fn()
+    const session = { id: 'session-1', source: 'cli', messages: [] }
+    let resolveA!: (value: any) => void
+    let resolveB!: (value: any) => void
+    getCoworkProjectMock
+      .mockImplementationOnce(() => new Promise(resolve => { resolveA = resolve }))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveB = resolve }))
+    chatStoreMock.activeSession = session
+    chatStoreMock.activeSessionId = session.id
+    chatStoreMock.sessions = [session]
+    chatStoreMock.setSessionProject.mockReturnValue(session.id)
+
+    const wrapper = shallowMount(ChatInput, {
+      global: { config: { globalProperties: { $route: route, $router: { push: routerPush } } } },
+    })
+    await nextTick()
+    expect(getCoworkProjectMock).toHaveBeenCalledWith('project-a')
+
+    route.query.project = 'project-b'
+    await nextTick()
+    expect(getCoworkProjectMock).toHaveBeenCalledWith('project-b')
+
+    resolveB({ id: 'project-b', name: 'Beta' })
+    await flushPromises()
+    resolveA({ id: 'project-a', name: 'Alpha' })
+    await flushPromises()
+
+    expect(chatStoreMock.setSessionProject).toHaveBeenCalledTimes(1)
+    expect(chatStoreMock.setSessionProject).toHaveBeenCalledWith(session.id, expect.objectContaining({ id: 'project-b' }))
+    expect(chatStoreMock.setSessionProject).not.toHaveBeenCalledWith(session.id, expect.objectContaining({ id: 'project-a' }))
+    wrapper.unmount()
   })
 
   it.each([
@@ -134,5 +205,24 @@ describe('ChatInput model selector placement', () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="scheduled-entry"]').exists()).toBe(visible)
     wrapper.unmount()
+  })
+
+  it('allows the user to clear a selected expert before the first run', async () => {
+    chatStoreMock.activeSession = {
+      id: 'expert-draft', source: 'cli', expertId: 'expert-a', messageCount: 0, messages: [],
+    }
+    chatStoreMock.activeSessionId = 'expert-draft'
+    chatStoreMock.activeExpertId = 'expert-a'
+    fetchExpertsMock.mockResolvedValue({ experts: [{ id: 'expert-a', name: 'Expert A' }] })
+    const wrapper = shallowMount(ChatInput)
+    await flushPromises()
+
+    const picker = wrapper.findAllComponents({ name: 'NPopselect' })
+      .find(component => (component.props('options') as any[])?.some(option => option.value === 'expert-a'))!
+    expect(picker.props('disabled')).not.toBe(true)
+    picker.vm.$emit('update:value', '')
+    await flushPromises()
+
+    expect(chatStoreMock.selectActiveExpert).toHaveBeenCalledWith(null, undefined)
   })
 })

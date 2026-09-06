@@ -7,6 +7,7 @@ import { join } from 'node:path'
 
 const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
 const isStoredSuperAdminMock = vi.hoisted(() => vi.fn(() => false))
+const getWebPlaneMock = vi.hoisted(() => vi.fn(() => 'chat'))
 const routerPushMock = vi.hoisted(() => vi.fn(() => Promise.resolve()))
 const routerReplaceMock = vi.hoisted(() => vi.fn(() => Promise.resolve()))
 const routerResolveMock = vi.hoisted(() => vi.fn((to: any) => {
@@ -82,6 +83,7 @@ vi.mock('@/api/client', () => ({
   isUserMode: isUserModeMock,
   // Upstream-rebaseline drift: ChatPanel gates admin-only UI on this.
   isStoredSuperAdmin: isStoredSuperAdminMock,
+  getWebPlane: getWebPlaneMock,
 }))
 
 vi.mock('@/stores/hermes/chat', () => ({
@@ -142,19 +144,22 @@ vi.mock('naive-ui', () => ({
     template: '<button class="n-button" :disabled="disabled" @click="$emit(\'click\')"><slot name="icon" /><slot /></button>',
   },
   NDropdown: {
-    template: '<div />',
+    props: ['options'],
+    emits: ['select'],
+    template: '<button class="n-dropdown-stub" :data-option-keys="options.map(option => option.key).join(\',\')" @click="$emit(\'select\', \'rename\')" />',
   },
   NInput: {
     props: ['value', 'placeholder'],
     emits: ['update:value', 'keydown'],
+    methods: { focus() {} },
     template: '<input class="n-input-stub" :value="value" @input="$emit(\'update:value\', $event.target.value)" />',
   },
   NModal: {
-    props: ['show'],
+    props: ['show', 'title'],
     emits: ['positive-click'],
     // preset="dialog" modals confirm through @positive-click, not a slotted button —
     // the stub needs to offer that affordance or those flows are untestable.
-    template: '<div v-if="show"><slot /><button class="n-modal-positive" @click="$emit(\'positive-click\')" /></div>',
+    template: '<div v-if="show"><span class="n-modal-title">{{ title }}</span><slot /><button class="n-modal-positive" @click="$emit(\'positive-click\')" /></div>',
   },
   NPopconfirm: {
     template: '<div><slot name="trigger" /><slot /></div>',
@@ -206,8 +211,8 @@ vi.mock('@/components/hermes/chat/MessageList.vue', () => ({
 vi.mock('@/components/hermes/chat/SessionListItem.vue', () => ({
   default: {
     props: ['session', 'to'],
-    emits: ['select'],
-    template: '<a class="session-item-stub" :href="to" @click.prevent="$emit(\'select\')">{{ session.title }}</a>',
+    emits: ['select', 'contextmenu'],
+    template: '<a class="session-item-stub" :href="to" @click.prevent="$emit(\'select\')" @contextmenu.prevent="$emit(\'contextmenu\', $event)">{{ session.title }}</a>',
   },
 }))
 
@@ -284,6 +289,7 @@ describe('ChatPanel user-mode gateway state', () => {
   beforeEach(() => {
     isUserModeMock.mockReturnValue(false)
     isStoredSuperAdminMock.mockReturnValue(false)
+    getWebPlaneMock.mockReturnValue('chat')
     appStoreMock.connected = true
     appStoreMock.modelGroups = []
     appStoreMock.profileModelGroups = []
@@ -649,148 +655,39 @@ describe('ChatPanel user-mode gateway state', () => {
     expect(wrapper.find('.folder-picker-stub').exists()).toBe(false)
   })
 
-  it('groups workspace sessions and carries the selected group into a new chat', async () => {
-    profilesStoreMock.profiles = [{ name: 'user_a' }]
-    appStoreMock.profileModelGroups = [{
-      profile: 'user_a',
-      groups: [{ provider: 'openai', label: 'OpenAI', models: ['gpt-4.1'] }],
-      default_provider: 'openai',
-      default: 'gpt-4.1',
-    }]
-    chatStoreMock.sessions = [
-      { id: 'a1', profile: 'user_a', title: 'A1', source: 'cli', workspace: 'project-a', messages: [], createdAt: 1, updatedAt: 3 },
-      { id: 'a2', profile: 'user_a', title: 'A2', source: 'cli', workspace: 'project-a', messages: [], createdAt: 1, updatedAt: 2 },
-      { id: 'plain', profile: 'user_a', title: 'Plain', source: 'cli', workspace: null, messages: [], createdAt: 1, updatedAt: 1 },
-    ]
-
-    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
-    const project = wrapper.findAll('.workspace-group-item').find(button => button.text().includes('project-a'))
-    expect(project?.text()).toContain('2')
-
-    await project!.trigger('click')
-    await wrapper.get('.page-sidebar-nav-stub').trigger('click')
-    await flushPromises()
-
-    expect(chatStoreMock.newChat).toHaveBeenCalledWith(expect.objectContaining({
-      profile: 'user_a',
-      workspace: 'project-a',
-      source: 'cli',
-    }))
-  })
-
-  it('ignores legacy absolute workspace rows when grouping', async () => {
-    // Pre-feature rows hold the absolute host workspace root, not a user binding.
+  it('keeps Workspace selection out of the unified Chat UI', async () => {
+    isStoredSuperAdminMock.mockReturnValue(true)
     profilesStoreMock.profiles = [{ name: 'user_a' }]
     chatStoreMock.sessions = [
-      { id: 'l1', profile: 'user_a', title: 'L1', source: 'cli', workspace: '/Users/x/.hermes/profiles/user_a/workspace', messages: [], createdAt: 1, updatedAt: 3 },
-      { id: 'l2', profile: 'user_a', title: 'L2', source: 'cli', workspace: '/Users/x/.hermes/profiles/user_a/workspace', messages: [], createdAt: 1, updatedAt: 2 },
-    ]
-
-    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
-
-    expect(wrapper.findAll('.workspace-group-item')).toHaveLength(0)
-  })
-
-  it('collapses and restores the workspace group list', async () => {
-    profilesStoreMock.profiles = [{ name: 'user_a' }]
-    chatStoreMock.sessions = [
-      { id: 'a1', profile: 'user_a', title: 'A1', source: 'cli', workspace: 'project-a', messages: [], createdAt: 1, updatedAt: 3 },
-    ]
-
-    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
-    const hiddenStyle = () => wrapper.findAll('.workspace-group-item')
-      .find(button => button.text().includes('project-a'))!
-      .attributes('style') || ''
-    const toggle = () => wrapper.get('.workspace-group-toggle')
-    expect(hiddenStyle()).not.toContain('display: none')
-    expect(toggle().attributes('aria-expanded')).toBe('true')
-
-    await toggle().trigger('click')
-    expect(hiddenStyle()).toContain('display: none')
-    expect(toggle().attributes('aria-expanded')).toBe('false')
-
-    await toggle().trigger('click')
-    expect(hiddenStyle()).not.toContain('display: none')
-  })
-
-  it('does not show a workspace chip for an unbound session while a workspace filter is active', async () => {
-    // The chip states this session's own binding; borrowing the sidebar filter
-    // would advertise — and one blind OK would persist — a folder never chosen.
-    profilesStoreMock.profiles = [{ name: 'user_a' }]
-    chatStoreMock.sessions = [
-      { id: 'a1', profile: 'user_a', title: 'A1', source: 'cli', workspace: 'project-a', messages: [], createdAt: 1, updatedAt: 3 },
-      { id: 'plain', profile: 'user_a', title: 'Plain', source: 'cli', workspace: null, messages: [], createdAt: 1, updatedAt: 1 },
-    ]
-    chatStoreMock.activeSession = chatStoreMock.sessions[1]
-
-    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
-    const project = wrapper.findAll('.workspace-group-item').find(button => button.text().includes('project-a'))
-    await project!.trigger('click')
-    chatStoreMock.activeSession = chatStoreMock.sessions[1]
-    await flushPromises()
-
-    expect(wrapper.get('.composer-workspace-button').text()).not.toContain('project-a')
-  })
-
-  it('shows the workspace entry point on a server-hydrated api_server session', async () => {
-    // The WebUI creates sessions as source:"cli" client-side, but the SERVER persists
-    // them as "api_server" — so this is the shape every session has after a refresh or
-    // when opened from history. The entry point must survive that round-trip.
-    profilesStoreMock.profiles = [{ name: 'user_a' }]
-    chatStoreMock.sessions = [
-      { id: 'a1', profile: 'user_a', title: 'A1', source: 'api_server', workspace: null, messages: [], createdAt: 1, updatedAt: 3 },
+      { id: 'a1', profile: 'user_a', title: 'A1', source: 'api_server', workspace: 'legacy-folder', messages: [], createdAt: 1, updatedAt: 3 },
     ]
     chatStoreMock.activeSession = chatStoreMock.sessions[0]
 
     const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
 
-    expect(wrapper.find('.composer-workspace-button').exists()).toBe(true)
+    expect(wrapper.find('.composer-workspace-button').exists()).toBe(false)
+    expect(wrapper.find('.workspace-groups').exists()).toBe(false)
+    expect(wrapper.find('.folder-picker-stub').exists()).toBe(false)
+    expect(wrapper.find('.workspace-badge').exists()).toBe(false)
+    expect(wrapper.get('.n-dropdown-stub').attributes('data-option-keys')).not.toContain('workspace')
   })
 
-  it('shows the bound folder name on a server-hydrated api_server session', async () => {
-    profilesStoreMock.profiles = [{ name: 'user_a' }]
+  it('keeps session Rename available while Workspace selection is hidden', async () => {
     chatStoreMock.sessions = [
-      { id: 'a1', profile: 'user_a', title: 'A1', source: 'api_server', workspace: 'media-probe', messages: [], createdAt: 1, updatedAt: 3 },
+      { id: 'a1', profile: 'user_a', title: 'A1', source: 'api_server', messages: [], createdAt: 1, updatedAt: 3 },
     ]
     chatStoreMock.activeSession = chatStoreMock.sessions[0]
+    chatStoreMock.activeSessionId = 'a1'
 
     const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
 
-    expect(wrapper.get('.composer-workspace-button').text()).toContain('media-probe')
-  })
-
-  it('forks a new session instead of rebinding an api_server session that has messages', async () => {
-    // Same predicate gates the fork branch. If it regresses, this path falls through to
-    // an in-place rebind and the user gets the server's 409 instead of a new session.
-    const { setSessionWorkspace } = await import('@/api/hermes/sessions')
-    profilesStoreMock.profiles = [{ name: 'user_a' }]
-    chatStoreMock.sessions = [
-      { id: 'a1', profile: 'user_a', title: 'A1', source: 'api_server', workspace: 'media-probe', messageCount: 3, messages: [], createdAt: 1, updatedAt: 3 },
-    ]
-    chatStoreMock.activeSession = chatStoreMock.sessions[0]
-
-    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
-    await wrapper.get('.composer-workspace-button').trigger('click')
-    await wrapper.get('.folder-picker-stub').trigger('click')
-    await wrapper.get('.n-modal-positive').trigger('click')
+    await wrapper.get('.session-item-stub').trigger('contextmenu')
+    await wrapper.get('.n-dropdown-stub').trigger('click')
     await flushPromises()
 
-    expect(chatStoreMock.newChat).toHaveBeenCalled()
-    expect(setSessionWorkspace).not.toHaveBeenCalled()
-  })
-
-  it('keeps the workspace entry point off coding-agent and global-agent sessions', async () => {
-    profilesStoreMock.profiles = [{ name: 'user_a' }]
-    for (const source of ['coding_agent', 'global_agent']) {
-      chatStoreMock.sessions = [
-        { id: `s-${source}`, profile: 'user_a', title: source, source, workspace: null, messages: [], createdAt: 1, updatedAt: 3 },
-      ]
-      chatStoreMock.activeSession = chatStoreMock.sessions[0]
-
-      const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
-
-      expect(wrapper.find('.composer-workspace-button').exists()).toBe(false)
-    }
+    expect(wrapper.get('.n-modal-title').text()).toBe('chat.renameSession')
+    expect(wrapper.find('.n-input-stub').exists()).toBe(true)
+    expect(wrapper.find('.folder-picker-stub').exists()).toBe(false)
   })
 
   it('does not pair a custom selected model with an unrelated fallback provider for new chats', async () => {

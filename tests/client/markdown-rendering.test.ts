@@ -58,7 +58,8 @@ vi.mock('naive-ui', () => ({
   }),
 }))
 
-vi.mock('@/api/hermes/download', () => ({
+vi.mock('@/api/hermes/download', async importOriginal => ({
+  ...await importOriginal<typeof import('@/api/hermes/download')>(),
   downloadFile: downloadApiMock.downloadFile,
   fetchFileText: downloadApiMock.fetchFileText,
   getDownloadUrl: downloadApiMock.getDownloadUrl,
@@ -94,6 +95,14 @@ describe('MarkdownRenderer', () => {
         writeText: vi.fn().mockResolvedValue(undefined),
       },
     })
+  })
+
+  it('preserves ASCII quotes in commands and prose', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: `Run "deploy" with 'safe-mode' --verbose ...` },
+    })
+
+    expect(wrapper.find('.markdown-body').text()).toContain(`"deploy" with 'safe-mode' --verbose ...`)
   })
 
   it('highlights vue fenced blocks instead of rendering them as plain text', () => {

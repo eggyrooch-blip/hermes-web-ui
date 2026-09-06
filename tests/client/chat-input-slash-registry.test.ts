@@ -340,6 +340,30 @@ describe('ChatInput slash registry', () => {
     expect(chatStoreMock.sendMessage).toHaveBeenCalledWith('/unknown do not scan paths', undefined)
   })
 
+  it('focuses the exposed composer on desktop without opening the mobile keyboard', async () => {
+    const desktop = shallowMount(ChatInput, { attachTo: document.body })
+    ;(desktop.vm as any).focusComposer()
+    await flushPromises()
+    expect(document.activeElement).toBe(desktop.find('textarea').element)
+    desktop.unmount()
+
+    const originalMatchMedia = window.matchMedia
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }) as any
+    try {
+      const mobile = shallowMount(ChatInput, { attachTo: document.body })
+      ;(mobile.vm as any).focusComposer()
+      await flushPromises()
+      expect(document.activeElement).not.toBe(mobile.find('textarea').element)
+      mobile.unmount()
+    } finally {
+      window.matchMedia = originalMatchMedia
+    }
+  })
+
   it('keeps slash suggestions above the message list stacking context', () => {
     const source = readFileSync(
       `${process.cwd()}/packages/client/src/components/hermes/chat/ChatInput.vue`,

@@ -21,6 +21,7 @@ export interface HermesSessionRow {
   expert_id: string | null
   expert_label: string | null
   expert_avatar: string | null
+  execution_engine: 'hermes' | 'harness'
   is_archived: boolean
   user_id: string | null
   model: string
@@ -43,6 +44,9 @@ export interface HermesSessionRow {
   preview: string
   last_active: number
   workspace: string | null
+  project_id: string | null
+  project_name: string | null
+  project_bound: boolean
   /** This session already showed the cross-model-family switch notice. */
   family_switch_noticed: boolean
 }
@@ -128,6 +132,7 @@ function mapSessionRow(row: Record<string, unknown>): HermesSessionRow {
     expert_id: row.expert_id != null ? String(row.expert_id) : null,
     expert_label: row.expert_label != null ? String(row.expert_label) : null,
     expert_avatar: row.expert_avatar != null ? String(row.expert_avatar) : null,
+    execution_engine: row.execution_engine === 'harness' ? 'harness' : 'hermes',
     is_archived: Number(row.is_archived || 0) === 1,
     user_id: row.user_id != null ? String(row.user_id) : null,
     model: String(row.model || ''),
@@ -150,6 +155,9 @@ function mapSessionRow(row: Record<string, unknown>): HermesSessionRow {
     preview: String(row.preview || ''),
     last_active: Number(row.last_active || 0),
     workspace: row.workspace != null ? String(row.workspace) : null,
+    project_id: row.project_id != null ? String(row.project_id) : null,
+    project_name: row.project_name != null ? String(row.project_name) : null,
+    project_bound: Number(row.project_bound || 0) === 1,
     family_switch_noticed: Number(row.family_switch_noticed || 0) === 1,
   }
 }
@@ -187,11 +195,15 @@ export function createSession(data: {
   agent_mode?: string
   agent_session_id?: string
   agent_native_session_id?: string
+  expert_id?: string | null
+  expert_label?: string | null
+  expert_avatar?: string | null
   user_id?: string | null
   model?: string
   provider?: string
   title?: string
   workspace?: string
+  execution_engine?: 'hermes' | 'harness'
 }): HermesSessionRow {
   const now = Math.floor(Date.now() / 1000)
   const source = data.source || 'api_server'
@@ -201,21 +213,25 @@ export function createSession(data: {
       id: data.id, profile: data.profile || 'default', source, agent,
       agent_mode: data.agent_mode || '',
       agent_session_id: data.agent_session_id || '', agent_native_session_id: data.agent_native_session_id || '',
-      expert_id: null, expert_label: null, expert_avatar: null,
+      expert_id: data.expert_id || null,
+      expert_label: data.expert_label || null,
+      expert_avatar: data.expert_avatar || null,
+      execution_engine: data.execution_engine === 'harness' ? 'harness' : 'hermes',
       is_archived: false,
-      user_id: null, model: data.model || '', provider: data.provider || '', title: data.title || null,
+      user_id: data.user_id || null, model: data.model || '', provider: data.provider || '', title: data.title || null,
       started_at: now, ended_at: null, end_reason: null,
       message_count: 0, tool_call_count: 0,
       input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0,
       billing_provider: null, estimated_cost_usd: 0, actual_cost_usd: null,
       cost_status: '', preview: '', last_active: now, workspace: data.workspace || null,
+      project_id: null, project_name: null, project_bound: false,
       family_switch_noticed: false,
     }
   }
   const db = getDb()!
   db.prepare(
-    `INSERT INTO ${SESSIONS_TABLE} (id, profile, source, agent, agent_mode, agent_session_id, agent_native_session_id, user_id, model, provider, title, started_at, last_active, workspace)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO ${SESSIONS_TABLE} (id, profile, source, agent, agent_mode, agent_session_id, agent_native_session_id, expert_id, expert_label, expert_avatar, user_id, model, provider, title, started_at, last_active, workspace, execution_engine)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     data.id,
     data.profile || 'default',
@@ -224,6 +240,9 @@ export function createSession(data: {
     data.agent_mode || '',
     data.agent_session_id || '',
     data.agent_native_session_id || '',
+    data.expert_id || null,
+    data.expert_label || null,
+    data.expert_avatar || null,
     data.user_id || null,
     data.model || '',
     data.provider || '',
@@ -231,6 +250,7 @@ export function createSession(data: {
     now,
     now,
     data.workspace || null,
+    data.execution_engine === 'harness' ? 'harness' : 'hermes',
   )
   renewSessionIncarnation(data.id)
   return getSession(data.id)!
@@ -269,7 +289,7 @@ export function updateSession(id: string, data: Partial<Omit<HermesSessionRow, '
     // Skip last_active and ended_at - handle them separately below
     if (key === 'last_active' || key === 'ended_at') continue
     fields.push(`"${key}" = ?`)
-    values.push(val)
+    values.push(typeof val === 'boolean' ? Number(val) : val)
   }
 
   // Handle ended_at - only update if provided, otherwise keep existing value

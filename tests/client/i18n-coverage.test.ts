@@ -5,6 +5,15 @@ import { join, relative } from 'path'
 import { changelog } from '@/data/changelog'
 import { messages, supportedLocales } from '@/i18n/messages'
 import en from '@/i18n/locales/en'
+import de from '@/i18n/locales/de'
+import es from '@/i18n/locales/es'
+import fr from '@/i18n/locales/fr'
+import ja from '@/i18n/locales/ja'
+import ko from '@/i18n/locales/ko'
+import pt from '@/i18n/locales/pt'
+import ru from '@/i18n/locales/ru'
+import zh from '@/i18n/locales/zh'
+import zhTW from '@/i18n/locales/zh-TW'
 import { createI18n } from 'vue-i18n'
 
 const SOURCE_ROOT = join(process.cwd(), 'packages/client/src')
@@ -123,6 +132,17 @@ describe('i18n locale coverage', () => {
     for (const l of supportedLocales) {
       if (l !== 'en' && messages[l]) {
         allMessages[l] = messages[l]
+      }
+    }
+  })
+
+  it('keeps Cowork locale keys aligned and core task copy localized', () => {
+    const locales = { de, es, fr, ja, ko, pt, ru, zh, 'zh-TW': zhTW }
+    const keys = Object.keys(en.cowork).sort()
+    for (const [locale, messages] of Object.entries(locales)) {
+      expect(Object.keys(messages.cowork).sort(), locale).toEqual(keys)
+      for (const key of ['newTask', 'fixedForTask', 'unavailable', 'retry', 'searchResults'] as const) {
+        expect(messages.cowork[key], `${locale}.${key}`).not.toBe(en.cowork[key])
       }
     }
   })

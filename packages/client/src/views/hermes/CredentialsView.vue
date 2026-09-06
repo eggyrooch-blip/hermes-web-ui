@@ -4,10 +4,11 @@ import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { NAlert, NButton, NFormItem, NInput, NModal, NSelect, NSpin, useMessage } from 'naive-ui'
 import { completeSkillCredentialAuth, fetchSkillCredentials, pollFeishuUatSession, startSkillCredentialAuth } from '@/api/skillCredentials'
-import { submitGitlabToken } from '@/api/skillCredentials'
+import { revokeGithubToken, submitGithubToken, submitGitlabToken } from '@/api/skillCredentials'
 import type { SkillCredentialEntry, SkillCredentialsResponse } from '@/api/skillCredentials'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { readCachedConnectorStatus, writeCachedConnectorStatus } from '@/utils/connector-status-cache'
+import ConnectorCatalogPanel from '@/components/hermes/connectors/ConnectorCatalogPanel.vue'
 
 const message = useMessage()
 const { t } = useI18n()
@@ -53,6 +54,7 @@ let loadSeq = 0
 const credentials = computed(() => data.value?.credentials || [])
 const routeProfile = computed(() => typeof route.query.profile === 'string' ? route.query.profile.trim() : '')
 const requestedCredentialId = computed(() => typeof route.query.open_credential === 'string' ? route.query.open_credential.trim() : '')
+const larkAuthRequired = computed(() => route.query.lark_auth === 'required')
 const requestedProfile = computed(() => {
   const activeProfile = profilesStore.activeProfileName || ''
   return props.preferActiveProfile ? activeProfile : routeProfile.value || activeProfile
@@ -234,6 +236,13 @@ const gitlabTokenUrl = computed(() => {
 const gitlabForm = ref({ tier: 'read' as 'read' | 'write', token: '' })
 const gitlabSubmitting = ref(false)
 const gitlabError = ref('')
+const githubDialog = ref<{ title: string } | null>(null)
+const githubToken = ref('')
+const githubSubmitting = ref(false)
+const githubRevoking = ref(false)
+const githubRevokeDialog = ref(false)
+const githubError = ref('')
+let githubAttempt = 0
 
 /** Which entries open the personal-token form instead of an interactive auth flow.
  *
@@ -253,6 +262,10 @@ function isGitlabTokenEntry(entry: SkillCredentialEntry) {
   return entry.provider === 'gitlab'
 }
 
+function isGithubTokenEntry(entry: SkillCredentialEntry) {
+  return entry.id === 'github-mcp' && entry.provider === 'github'
+}
+
 /** 一颗按钮三种去处 —— 这里是唯一的分流点。
  *
  *  `retry` 排在最前：broker 挂掉时 failSafeResult 把每一行都变成这种卡，按钮语义是
@@ -270,7 +283,84 @@ function onCredentialAction(entry: SkillCredentialEntry) {
     openGitlabDialog(entry)
     return
   }
+  if (isGithubTokenEntry(entry)) {
+    openGithubDialog(entry)
+    return
+  }
   void startCredential(entry)
+}
+
+function openGithubDialog(entry: SkillCredentialEntry) {
+  githubAttempt += 1
+  githubSubmitting.value = false
+  githubToken.value = ''
+  githubError.value = ''
+  githubDialog.value = { title: entry.title }
+}
+
+function closeGithubDialog() {
+  githubAttempt += 1
+  githubSubmitting.value = false
+  githubToken.value = ''
+  githubError.value = ''
+  githubDialog.value = null
+}
+
+async function confirmGithubToken() {
+  if (githubSubmitting.value) return
+  const token = githubToken.value.trim()
+  if (!token) return
+  const attempt = githubAttempt
+  const profile = requestedProfile.value
+  githubSubmitting.value = true
+  githubError.value = ''
+  try {
+    const result = await submitGithubToken(token, profile)
+    if (attempt !== githubAttempt || profile !== requestedProfile.value) return
+    if (!result?.ok) {
+      githubError.value = result?.error || t('skillCredentials.github.failed')
+      return
+    }
+    closeGithubDialog()
+    await loadCredentials({ fresh: true })
+  } catch (err: any) {
+    if (attempt !== githubAttempt || profile !== requestedProfile.value) return
+    githubError.value = err?.data?.error || err?.message || t('skillCredentials.github.failed')
+  } finally {
+    if (attempt === githubAttempt) githubSubmitting.value = false
+  }
+}
+
+function openGithubRevokeDialog() {
+  githubRevokeDialog.value = true
+}
+
+function closeGithubRevokeDialog() {
+  githubRevokeDialog.value = false
+  githubRevoking.value = false
+}
+
+async function confirmGithubRevoke() {
+  if (githubRevoking.value) return
+  const attempt = githubAttempt
+  const profile = requestedProfile.value
+  githubRevoking.value = true
+  try {
+    const result = await revokeGithubToken(profile)
+    if (attempt !== githubAttempt || profile !== requestedProfile.value) return
+    if (!result?.ok) {
+      message.error(result?.error || t('skillCredentials.github.failed'))
+      return
+    }
+    closeGithubRevokeDialog()
+    message.success(t('skillCredentials.github.revoked'))
+    await loadCredentials({ fresh: true })
+  } catch (err: any) {
+    if (attempt !== githubAttempt || profile !== requestedProfile.value) return
+    message.error(err?.data?.error || err?.message || t('skillCredentials.github.failed'))
+  } finally {
+    if (attempt === githubAttempt) githubRevoking.value = false
+  }
 }
 
 /** GitLab has no interactive auth flow — the employee supplies the token, so
@@ -445,6 +535,8 @@ watch(requestedProfile, async (profile, previous) => {
   // without this it would poll the NEW profile and could mis-close (or never close)
   // the old profile's popup.
   attemptSeq += 1
+  closeGithubDialog()
+  closeGithubRevokeDialog()
   closeAuthWindow()
   oauthPollingId.value = ''
   // 这里必须显式清：startCredential 的 finally 只清"自己那次"，而上面刚把 attemptSeq
@@ -463,6 +555,15 @@ watch(requestedProfile, async (profile, previous) => {
       <h2 class="header-title">{{ t('sidebar.connectors') }}</h2>
       <NButton size="small" quaternary :loading="loading" @click="() => loadCredentials({ fresh: true })">刷新</NButton>
     </header>
+
+    <NAlert
+      v-if="larkAuthRequired"
+      data-testid="lark-auth-required"
+      type="warning"
+      :show-icon="false"
+    >
+      {{ t('skillCredentials.larkAuthRequired') }}
+    </NAlert>
 
     <NSpin :show="loading && !data">
       <div v-if="error" class="credentials-error">{{ error }}</div>
@@ -497,23 +598,35 @@ watch(requestedProfile, async (profile, previous) => {
                    为空：那个暗号分不清「没有操作」和「有操作但忘了填标签」，后者会静默变成
                    一张点不动的卡。broker 侧对无操作送 null，适配层 coerceAction 如实返回
                    undefined。 -->
-              <NButton
-                v-if="entry.action"
-                size="small"
-                :loading="startingId === entry.id"
-                :disabled="entry.status === 'missing'"
-                :data-credential-action="entry.id"
-                @click="onCredentialAction(entry)"
-              >
-                <!-- 兜底只管文案，不当渲染开关：渲不渲染由上面的 v-if="entry.action" 决定。
-                     有 action 却缺 label 是数据问题，宁可显示「连接」也别渲染一颗空白按钮。 -->
-                {{ entry.action.label || '连接' }}
-              </NButton>
+              <div class="credential-actions">
+                <NButton
+                  v-if="isGithubTokenEntry(entry) && entry.status === 'authenticated'"
+                  size="small"
+                  secondary
+                  :loading="githubRevoking"
+                  data-credential-revoke="github-mcp"
+                  @click="openGithubRevokeDialog"
+                >{{ t('skillCredentials.github.revoke') }}</NButton>
+                <NButton
+                  v-if="entry.action"
+                  size="small"
+                  :loading="startingId === entry.id"
+                  :disabled="entry.status === 'missing'"
+                  :data-credential-action="entry.id"
+                  @click="onCredentialAction(entry)"
+                >
+                  <!-- 兜底只管文案，不当渲染开关：渲不渲染由上面的 v-if="entry.action" 决定。
+                       有 action 却缺 label 是数据问题，宁可显示「连接」也别渲染一颗空白按钮。 -->
+                  {{ entry.action.label || '连接' }}
+                </NButton>
+              </div>
             </article>
           </div>
         </section>
       </div>
     </NSpin>
+
+    <ConnectorCatalogPanel :profile="requestedProfile" />
 
     <NModal
       :show="!!gitlabDialog"
@@ -589,6 +702,77 @@ watch(requestedProfile, async (profile, previous) => {
           >
             提交
           </NButton>
+        </div>
+      </template>
+    </NModal>
+
+    <NModal
+      :show="!!githubDialog"
+      preset="card"
+      style="max-width: 520px"
+      :title="t('skillCredentials.github.title')"
+      @update:show="(v: boolean) => { if (!v && !githubSubmitting) closeGithubDialog() }"
+    >
+      <div class="gitlab-form">
+        <p>{{ t('skillCredentials.github.hint') }}</p>
+        <NAlert type="info" :show-icon="false">{{ t('skillCredentials.github.readonly') }}</NAlert>
+        <ol class="github-pat-guide">
+          <li>
+            <a
+              class="github-pat-create-link"
+              data-testid="github-pat-create-link"
+              href="https://github.com/settings/personal-access-tokens/new?name=Hermes%20MCP&amp;description=Read-only%20GitHub%20MCP%20connector&amp;expires_in=30&amp;contents=read&amp;issues=read&amp;pull_requests=read&amp;metadata=read"
+              target="_blank"
+              rel="noopener noreferrer"
+            >{{ t('skillCredentials.github.create') }}</a>
+          </li>
+          <li>{{ t('skillCredentials.github.repositoryAccess') }}</li>
+          <li>{{ t('skillCredentials.github.permissions') }}</li>
+          <li>{{ t('skillCredentials.github.returnToPaste') }}</li>
+        </ol>
+        <NFormItem :label="t('skillCredentials.github.token')">
+          <NInput
+            v-model:value="githubToken"
+            type="password"
+            show-password-on="click"
+            :placeholder="t('skillCredentials.github.placeholder')"
+          />
+        </NFormItem>
+        <NAlert v-if="githubError" type="warning" :show-icon="false">{{ githubError }}</NAlert>
+      </div>
+      <template #footer>
+        <div class="gitlab-actions">
+          <NButton size="small" :disabled="githubSubmitting" @click="closeGithubDialog">{{ t('skillCredentials.github.cancel') }}</NButton>
+          <NButton
+            size="small"
+            type="primary"
+            :loading="githubSubmitting"
+            :disabled="!githubToken.trim()"
+            data-testid="github-submit"
+            @click="confirmGithubToken"
+          >{{ t('skillCredentials.github.connect') }}</NButton>
+        </div>
+      </template>
+    </NModal>
+
+    <NModal
+      :show="githubRevokeDialog"
+      preset="card"
+      style="max-width: 420px"
+      :title="t('skillCredentials.github.revoke')"
+      @update:show="(v: boolean) => { if (!v && !githubRevoking) closeGithubRevokeDialog() }"
+    >
+      <p>{{ t('skillCredentials.github.revokeConfirm') }}</p>
+      <template #footer>
+        <div class="gitlab-actions">
+          <NButton size="small" :disabled="githubRevoking" @click="closeGithubRevokeDialog">{{ t('skillCredentials.github.cancel') }}</NButton>
+          <NButton
+            size="small"
+            type="error"
+            :loading="githubRevoking"
+            data-testid="github-revoke-confirm"
+            @click="confirmGithubRevoke"
+          >{{ t('skillCredentials.github.revoke') }}</NButton>
         </div>
       </template>
     </NModal>
@@ -685,9 +869,10 @@ watch(requestedProfile, async (profile, previous) => {
   gap: 12px;
 }
 
-.credential-card > .n-button {
+.credential-actions {
   align-self: flex-end;
-  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
 }
 
 .credential-icon {
@@ -769,6 +954,19 @@ watch(requestedProfile, async (profile, previous) => {
 
 .gitlab-open-link:hover {
   text-decoration: underline;
+}
+
+.github-pat-guide {
+  margin: 12px 0 14px;
+  padding-left: 22px;
+  color: $text-secondary;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.github-pat-create-link {
+  color: $accent-primary;
+  font-weight: 600;
 }
 
 .gitlab-scope {

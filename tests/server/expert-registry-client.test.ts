@@ -185,6 +185,21 @@ describe('expert asset controller', () => {
     expect(init.headers['X-Hermes-User-Key']).toBe('ou_1')
   })
 
+  it('uses the authenticated local account id when no Feishu openid exists', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ profile_name: 'sunke', experts: [] }),
+    })
+    const { list } = await import(CONTROLLER)
+    const ctx = mockCtx({})
+    ctx.state.user = { id: 7, role: 'super_admin' }
+
+    await list(ctx)
+
+    expect((globalThis.fetch as any).mock.calls[0][0]).toContain('user_key=7')
+  })
+
   it('rejects unsafe asset path components before touching the broker', async () => {
     const { asset } = await import(CONTROLLER)
     const ctx = mockCtx({ pluginId: 'keep-resource-delivery', assetName: '../secret.png' })

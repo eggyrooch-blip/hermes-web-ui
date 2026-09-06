@@ -27,10 +27,6 @@ export const CHAT_PLANE_CONFIG_SECTIONS = new Set([
   'privacy',
 ])
 
-function headerValue(ctx: Context, name: string): string {
-  return ctx.get(name) || ''
-}
-
 function safeEqual(a: string, b: string): boolean {
   const left = Buffer.from(a)
   const right = Buffer.from(b)
@@ -64,16 +60,16 @@ export function signTrustedFeishuHeader(
 
 type TrustedFeishuIdentity = Pick<WebUser, 'openid'> & Partial<Pick<WebUser, 'name' | 'avatarUrl'>>
 
-export function verifyTrustedFeishuHeaders(ctx: Context): ({ ok: true } & TrustedFeishuIdentity) | { ok: false; status: number; error: string } {
+function verifyTrustedFeishuHeaderValues(getHeader: (name: string) => string): ({ ok: true } & TrustedFeishuIdentity) | { ok: false; status: number; error: string } {
   if (!config.trustedHeaderSecret) {
     return { ok: false, status: 500, error: 'Trusted Feishu auth is not configured' }
   }
 
-  const openid = headerValue(ctx, config.trustedHeaderOpenId).trim()
-  const name = headerValue(ctx, config.trustedHeaderName).trim()
-  const avatarUrl = headerValue(ctx, config.trustedHeaderAvatarUrl).trim()
-  const timestamp = headerValue(ctx, config.trustedHeaderTimestamp).trim()
-  const signature = headerValue(ctx, config.trustedHeaderSignature).trim()
+  const openid = getHeader(config.trustedHeaderOpenId).trim()
+  const name = getHeader(config.trustedHeaderName).trim()
+  const avatarUrl = getHeader(config.trustedHeaderAvatarUrl).trim()
+  const timestamp = getHeader(config.trustedHeaderTimestamp).trim()
+  const signature = getHeader(config.trustedHeaderSignature).trim()
   if (!openid || !timestamp || !signature) {
     return { ok: false, status: 401, error: 'Missing trusted Feishu auth headers' }
   }
@@ -103,6 +99,19 @@ export function verifyTrustedFeishuHeaders(ctx: Context): ({ ok: true } & Truste
     ...(name ? { name } : {}),
     ...(avatarUrl ? { avatarUrl } : {}),
   }
+}
+
+export function verifyTrustedFeishuHeaders(ctx: Context): ReturnType<typeof verifyTrustedFeishuHeaderValues> {
+  return verifyTrustedFeishuHeaderValues(name => ctx.get(name) || '')
+}
+
+export function verifyTrustedFeishuSocketHeaders(
+  headers: Record<string, string | string[] | undefined>,
+): ReturnType<typeof verifyTrustedFeishuHeaderValues> {
+  return verifyTrustedFeishuHeaderValues(name => {
+    const value = headers[name.toLowerCase()]
+    return Array.isArray(value) ? value[0] || '' : value || ''
+  })
 }
 
 export function candidateMultitenancyDbs(): string[] {
@@ -251,6 +260,15 @@ function isChatPlaneKanbanTaskAction(path: string, method: string): boolean {
   }
 }
 
+function isChatPlaneCoworkRequest(path: string, method: string): boolean {
+  const id = '[^/]{1,256}'
+  if (path === '/api/hermes/cowork/projects') return method === 'GET' || method === 'POST'
+  if (new RegExp(`^/api/hermes/cowork/projects/${id}$`).test(path)) return ['GET', 'PATCH', 'DELETE'].includes(method)
+  if (new RegExp(`^/api/hermes/cowork/projects/${id}/sessions$`).test(path)) return method === 'GET'
+  if (new RegExp(`^/api/hermes/cowork/sessions/${id}/project$`).test(path)) return method === 'GET'
+  return false
+}
+
 function forbiddenInChatPlane(ctx: Context): boolean {
   if (config.webPlane !== 'chat') return false
   // 路径必须先小写归一再比较：@koa/router 的 `sensitive` 默认 false（匹配不区分大小写），
@@ -262,6 +280,8 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   if (path === '/api/auth/status' || path === '/api/auth/me' || path === '/api/auth/feishu/logout' || path === '/health' || path === '/upload') return false
   if (path.startsWith('/api/auth/feishu/uat/')) return false
   if (path.startsWith('/api/auth/skill-credentials')) return false
+  if (path === '/api/auth/mcp-oauth/approve' && method === 'POST') return false
+  if (/^\/api\/auth\/mcp-oauth\/requests\/[^/]{1,128}$/.test(path) && method === 'GET') return false
   // Expert catalog (专家广场) — read-only, audience-filtered per the caller's own
   // profile by the broker; safe for chat-plane users (GET only).
   if (path.startsWith('/api/hermes/experts')) return method !== 'GET'
@@ -273,6 +293,7 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   if (path.startsWith('/api/hermes/jobs')) return false
   if (path.startsWith('/api/hermes/files')) return false
   if (path.startsWith('/api/hermes/group-chat')) return false
+  if (isChatPlaneCoworkRequest(path, method)) return false
   if (path === '/api/hermes/kanban' && (method === 'GET' || method === 'POST')) return false
   if (path === '/api/hermes/kanban/boards' && method === 'GET') return false
   if (path === '/api/hermes/kanban/capabilities' && method === 'GET') return false
@@ -284,6 +305,7 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   if (isChatPlaneKanbanTaskAction(path, method)) return false
   if (path === '/api/hermes/profiles' && (method === 'GET' || method === 'POST')) return false
   if (path === '/api/hermes/slash/commands' && method === 'GET') return false
+  if (path === '/api/hermes/link-previews' && method === 'POST') return false
   if (path === '/api/hermes/config/model' && method === 'PUT') return false
   // 员工提交自己的 GitLab token —— 这个端点的目标用户**就是** chat 面的员工，
   // 却因为落到本函数结尾的 catch-all 而一直被拒（403 not available in chat plane），
@@ -292,6 +314,7 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   // 服务端盖 X-Hermes-Owner-Open-Id，无身份仍自行 403 —— 与 kanban/jobs 同款写法。
   // 只放 POST：这个路径没有别的动词。
   if (path === '/api/hermes/credentials/gitlab' && method === 'POST') return false
+  if (path === '/api/hermes/credentials/github' && (method === 'POST' || method === 'DELETE')) return false
   if (path === '/api/hermes/config/credentials') return true
   if (config.chatPlaneAllowSettings && path === '/api/hermes/config' && (method === 'GET' || method === 'PUT')) return false
   if (path === '/api/hermes/skills/skillhub/install' && method === 'POST') return false

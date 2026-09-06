@@ -736,7 +736,7 @@ export async function completeKeepRecordAuth(options: SkillCredentialStartOption
 function larkCliStatus(options: ListSkillCredentialOptions, requiredBy?: string[]): SkillCredentialEntry {
   const status = options.larkStatus || {}
   const larkCli = status.lark_cli || {}
-  const localUat = localFeishuUatStatus(options.profileDir)
+  const localUat = localFeishuUatStatus(options.profileDir, options.user?.openid)
   const hasUserAuthorization = status.status === 'valid' || localUat.connected || larkCli.default_identity === 'user'
   const connected = options.user ? hasUserAuthorization : hasUserAuthorization || Boolean(larkCli.available)
   const defaultIdentity = connected
@@ -763,21 +763,20 @@ function larkCliStatus(options: ListSkillCredentialOptions, requiredBy?: string[
   }
 }
 
-function localFeishuUatStatus(profileDir: string): { connected: boolean } {
+function localFeishuUatStatus(profileDir: string, actorOpenId?: string): { connected: boolean } {
+  if (!actorOpenId || !/^[A-Za-z0-9_-]{1,128}$/.test(actorOpenId)) return { connected: false }
   const dir = join(profileDir, 'feishu_uat')
-  for (const name of safeList(dir)) {
-    if (!name.endsWith('.json')) continue
-    const raw = readSmallText(join(dir, name))
-    if (!raw) continue
-    try {
-      const parsed = JSON.parse(raw)
-      const expiresAt = Number(parsed.expires_at || 0)
-      const hasAccessToken = typeof parsed.access_token === 'string' && parsed.access_token.length > 0
-      const validExpiry = !expiresAt || expiresAt > Date.now() + 60_000
-      if (hasAccessToken && validExpiry) return { connected: true }
-    } catch {
-      // Ignore malformed credential cache files.
-    }
+  const raw = readSmallText(join(dir, `${actorOpenId}.json`))
+  if (!raw) return { connected: false }
+  try {
+    const parsed = JSON.parse(raw)
+    if (String(parsed.user_open_id || parsed.open_id || '') !== actorOpenId) return { connected: false }
+    const expiresAt = Number(parsed.expires_at || 0)
+    const hasAccessToken = typeof parsed.access_token === 'string' && parsed.access_token.length > 0
+    const validExpiry = !expiresAt || expiresAt > Date.now() + 60_000
+    if (hasAccessToken && validExpiry) return { connected: true }
+  } catch {
+    // Ignore malformed credential cache files.
   }
   return { connected: false }
 }

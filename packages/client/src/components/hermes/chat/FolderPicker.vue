@@ -2,11 +2,12 @@
 import { ref, computed, nextTick, onMounted, watch } from 'vue'
 import { NButton, NDropdown, NInput, NModal, NSpace, NSpin, useDialog, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
+import { getWebPlane } from '@/api/client'
 import { copyToClipboard } from '@/utils/clipboard'
 import {
   createWorkspaceFolder,
   deleteWorkspaceFolder,
-  listWorkspaceFolders,
+  listWorkspacePickerFolders,
   renameWorkspaceFolder,
   type FolderEntry,
   type FolderListResponse,
@@ -30,6 +31,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const chatPlane = computed(() => getWebPlane() === 'chat')
 const dialog = useDialog()
 const message = useMessage()
 const loading = ref(false)
@@ -48,6 +50,8 @@ const renameModalVisible = ref(false)
 const renameMode = ref<'create' | 'rename'>('create')
 const renameInput = ref('')
 const actionLoading = ref(false)
+const workspacePlaceholder = computed(() => t(chatPlane.value ? 'chat.workspaceCloudPlaceholder' : 'chat.workspacePlaceholder'))
+const rootLabel = computed(() => chatPlane.value ? t('chat.folderPickerDefault') : basePath.value || '/')
 
 watch(() => props.modelValue, (v) => { selectedPath.value = v || '' })
 
@@ -59,7 +63,7 @@ function updateSelectedPath(value: string | null) {
 
 async function loadFolders(subPath = ''): Promise<FolderListResponse | null> {
   try {
-    return await listWorkspaceFolders(subPath)
+    return await listWorkspacePickerFolders(subPath)
   } catch {
     return null
   }
@@ -280,7 +284,7 @@ const flatNodes = computed<FlatNode[]>(() => {
   <div class="folder-picker">
     <NInput
       :value="selectedPath"
-      :placeholder="t('chat.workspacePlaceholder')"
+      :placeholder="workspacePlaceholder"
       clearable
       size="small"
       class="folder-path-input"
@@ -292,14 +296,14 @@ const flatNodes = computed<FlatNode[]>(() => {
     <div v-else class="folder-tree">
       <!-- Base path as root -->
       <div
-        v-if="basePath"
+        v-if="basePath || chatPlane"
         class="folder-item root"
         :class="{ selected: selectedPath === basePath }"
         @click="selectBase"
         @contextmenu="showContextMenu($event, null)"
       >
         <span class="folder-icon">📂</span>
-        <span class="folder-name">{{ basePath || '/' }}</span>
+        <span class="folder-name">{{ rootLabel }}</span>
       </div>
 
       <!-- Flat rendered tree -->

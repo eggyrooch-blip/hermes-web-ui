@@ -87,3 +87,72 @@ export async function submitGitlabToken(ctx: Context) {
   // string and never contains the submitted token.
   ctx.body = parsed ?? { error: '凭据服务返回了无法解析的响应' }
 }
+
+async function githubCredential(ctx: Context, method: 'POST' | 'DELETE') {
+  if (!isChatPlaneRequest(ctx)) {
+    ctx.status = 404
+    ctx.body = { error: 'not found' }
+    return
+  }
+  if (!config.runBrokerUrl) {
+    ctx.status = 503
+    ctx.body = { error: 'HERMES_RUN_BROKER_URL is required to configure GitHub credentials' }
+    return
+  }
+  const openid = (ctx.state?.user as WebUser | undefined)?.openid?.trim()
+  if (!openid) {
+    ctx.status = 403
+    ctx.body = { error: '无法确认你的身份，请重新登录后再试' }
+    return
+  }
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Hermes-Owner-Open-Id': openid,
+  }
+  const requestedProfile = String(
+    (Array.isArray(ctx.query?.profile) ? ctx.query.profile[0] : ctx.query?.profile) ?? '',
+  ).trim()
+  if (requestedProfile) headers['X-Hermes-Profile'] = requestedProfile
+  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
+  const rawToken = ((ctx.request.body || {}) as Record<string, unknown>).token
+  const token = typeof rawToken === 'string' ? rawToken.trim() : ''
+  if (method === 'POST' && (!token || token.length > 512 || /\s/.test(token))) {
+    ctx.status = 400
+    ctx.body = { ok: false, error: 'GitHub token 格式不正确' }
+    return
+  }
+  try {
+    const res = await fetch(`${config.runBrokerUrl}/api/run-broker/credentials/github`, {
+      method,
+      headers,
+      ...(method === 'POST' ? { body: JSON.stringify({ token }) } : {}),
+    })
+    const text = await res.text()
+    let parsed: Record<string, unknown> = {}
+    try {
+      const value = text ? JSON.parse(text) : {}
+      if (value && typeof value === 'object' && !Array.isArray(value)) parsed = value
+    } catch { /* response is sanitized below */ }
+    const ok = res.ok && (parsed.ok === true || (method === 'DELETE' && res.status === 204))
+    ctx.status = res.status === 204 ? 200 : res.status
+    ctx.body = {
+      ok,
+      ...(ok && typeof parsed.account_hint === 'string'
+        ? { account_hint: parsed.account_hint.trim().slice(0, 80) }
+        : {}),
+      ...(ok && parsed.revoked === true ? { revoked: true } : {}),
+      ...(!ok ? { error: 'GitHub 凭据未通过验证' } : {}),
+    }
+  } catch {
+    ctx.status = 502
+    ctx.body = { error: '暂时联系不上凭据服务，请稍后重试' }
+  }
+}
+
+export async function submitGithubToken(ctx: Context) {
+  return githubCredential(ctx, 'POST')
+}
+
+export async function revokeGithubToken(ctx: Context) {
+  return githubCredential(ctx, 'DELETE')
+}

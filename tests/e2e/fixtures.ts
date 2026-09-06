@@ -15,6 +15,7 @@ interface MockHermesApiOptions {
   initialProfileName?: 'default' | 'research'
   sessions?: unknown[]
   experts?: unknown[]
+  harnessEnabled?: boolean
   expertWorkRecords?: Record<string, unknown>
 }
 
@@ -98,6 +99,8 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
   const tokenValidationStatus = options.tokenValidationStatus ?? 200
   let activeProfileName = options.initialProfileName ?? 'research'
   const feedback = new Map<string, Record<string, unknown>>()
+  const sessions = (options.sessions ?? []) as Array<Record<string, any>>
+  const experts = (options.experts ?? []) as Array<Record<string, any>>
 
   await page.route('**/*', async (route: Route) => {
     const request = route.request()
@@ -164,7 +167,7 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
     }
 
     if (pathname === '/api/hermes/sessions') {
-      await route.fulfill(jsonResponse({ sessions: options.sessions ?? [] }, tokenValidationStatus))
+      await route.fulfill(jsonResponse({ sessions }, tokenValidationStatus))
       return
     }
 
@@ -175,6 +178,62 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
 
     if (pathname === '/api/hermes/sessions/context-length') {
       await route.fulfill(jsonResponse({ context_length: 256000 }))
+      return
+    }
+
+    const expertMutationMatch = pathname.match(/^\/api\/hermes\/sessions\/([^/]+)\/expert$/)
+    if (expertMutationMatch && request.method() === 'POST') {
+      const body = JSON.parse(request.postData() || '{}') as {
+        expert_id?: string | null
+        execution_engine?: string
+      }
+      const sessionId = decodeURIComponent(expertMutationMatch[1])
+      let session = sessions.find(item => item.id === sessionId)
+      const expert = experts.find(item => item.id === body.expert_id)
+      if (!session) {
+        session = {
+          id: sessionId,
+          profile: url.searchParams.get('profile') || activeProfileName,
+          source: 'cli',
+          model: '',
+          provider: '',
+          title: null,
+          preview: '',
+          started_at: 1,
+          ended_at: null,
+          last_active: 1,
+          message_count: 0,
+          tool_call_count: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          reasoning_tokens: 0,
+          billing_provider: null,
+          estimated_cost_usd: 0,
+          actual_cost_usd: null,
+          cost_status: '',
+        }
+        sessions.unshift(session)
+      }
+      session.expert_id = body.expert_id ?? null
+      session.expert_label = expert?.title || expert?.name || body.expert_id || null
+      session.expert_avatar = expert?.avatar || null
+      session.execution_engine = body.execution_engine ?? 'hermes'
+      await route.fulfill(jsonResponse({ success: true, session }))
+      return
+    }
+
+    const modelMutationMatch = pathname.match(/^\/api\/hermes\/sessions\/([^/]+)\/model$/)
+    if (modelMutationMatch && request.method() === 'POST') {
+      const body = JSON.parse(request.postData() || '{}') as { model?: string; provider?: string }
+      const sessionId = decodeURIComponent(modelMutationMatch[1])
+      const session = sessions.find(item => item.id === sessionId)
+      if (session) {
+        session.model = body.model || ''
+        session.provider = body.provider || ''
+      }
+      await route.fulfill(jsonResponse({ ok: true }))
       return
     }
 
@@ -275,6 +334,27 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
       return
     }
 
+    if (pathname === '/api/auth/skill-credentials/catalog') {
+      await route.fulfill(jsonResponse({
+        profile_name: activeProfileName,
+        subject_id: 'playwright-owner',
+        view: url.searchParams.get('view') === 'canonical' ? 'canonical' : 'source',
+        source_count: 642,
+        canonical_count: 330,
+        connectors: [],
+      }))
+      return
+    }
+
+    if (pathname === '/api/auth/skill-credentials/custom') {
+      await route.fulfill(jsonResponse({
+        profile_name: activeProfileName,
+        subject_id: 'playwright-owner',
+        connectors: [],
+      }))
+      return
+    }
+
     if (pathname === '/api/hermes/skills') {
       await route.fulfill(jsonResponse({
         categories: [
@@ -298,8 +378,9 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
 
     if (pathname === '/api/hermes/experts') {
       await route.fulfill(jsonResponse({
-        experts: options.experts ?? [],
+        experts,
         profile_name: activeProfileName,
+        harness_enabled: options.harnessEnabled === true,
       }))
       return
     }

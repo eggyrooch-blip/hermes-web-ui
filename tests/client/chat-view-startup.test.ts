@@ -13,7 +13,7 @@ const chatState = vi.hoisted(() => ({
   activeSessionId: null as string | null,
   activeSession: null as { title?: string } | null,
   sessionsLoaded: false,
-  sessions: [] as Array<{ id: string }>,
+  sessions: [] as Array<{ id: string; localCreated?: boolean }>,
 }))
 const fetchProfilesMock = vi.hoisted(() => vi.fn())
 const isStoredSuperAdminMock = vi.hoisted(() => vi.fn(() => false))
@@ -140,6 +140,17 @@ describe('ChatView startup', () => {
     await Promise.resolve()
 
     expect(loadSessionsMock).toHaveBeenCalledWith('tester', 'session-9')
+  })
+
+  it('keeps a just-created expert session while crossing into ChatView', async () => {
+    routeState.params = { sessionId: 'expert-local' }
+    chatState.sessions = [{ id: 'expert-local', localCreated: true }]
+
+    mount(ChatView)
+    await vi.waitFor(() => expect(switchSessionMock).toHaveBeenCalledWith('expert-local'))
+
+    expect(loadSessionsMock).not.toHaveBeenCalled()
+    expect(routerReplaceMock).not.toHaveBeenCalled()
   })
 
   it('defaults employee chat sessions to the active frontend profile', async () => {

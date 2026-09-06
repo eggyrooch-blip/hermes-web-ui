@@ -9,13 +9,25 @@ import { setModelContext } from '@/api/hermes/model-context'
 import { fetchSkills, type SkillCategory, type SkillInfo } from '@/api/hermes/skills'
 import { fetchExperts, type ExpertInfo } from '@/api/hermes/experts'
 import { fetchSlashCommands, type SlashCommand } from '@/api/hermes/slash'
+import {
+  cardifyFeishuUrls,
+  extractFeishuUrls,
+  fetchLinkPreviews,
+  restoreFeishuUrlSlots,
+  revealCardifiedUrl,
+  type FeishuLinkPreview,
+} from '@/api/hermes/link-previews'
 import { isStoredSuperAdmin } from '@/api/client'
 import { NButton, NTooltip, NSwitch, NModal, NInputNumber, NPopselect, useMessage } from 'naive-ui'
-import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { computed, ref, nextTick, onMounted, onUnmounted, watch, getCurrentInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToolTraceVisibility } from '@/composables/useToolTraceVisibility'
 import AgentPicker from '@/components/hermes/agents/AgentPicker.vue'
+import CoworkProjectPicker from './CoworkProjectPicker.vue'
+import { getCoworkProject, type CoworkProject } from '@/api/hermes/cowork'
+import type { RouteLocationNormalizedLoaded } from 'vue-router'
 import ChatScheduledEntry from './ChatScheduledEntry.vue'
+import FeishuLinkPreviewCard from './FeishuLinkPreviewCard.vue'
 import VoiceDialogueControls from './VoiceDialogueControls.vue'
 import { useMicRecorder } from '@/composables/useMicRecorder'
 import { useGlobalSpeech } from '@/composables/useSpeech'
@@ -30,10 +42,79 @@ const chatStore = useChatStore()
 const appStore = useAppStore()
 const profilesStore = useProfilesStore()
 const settingsStore = useSettingsStore()
+const component = getCurrentInstance()
+const currentRoute = computed(() => component?.appContext.config.globalProperties.$route as RouteLocationNormalizedLoaded | undefined)
 const { t } = useI18n()
 const message = useMessage()
 const { toolTraceVisible, toggleToolTraceVisible } = useToolTraceVisibility()
 const isSuperAdmin = computed(() => isStoredSuperAdmin())
+
+function selectProject(project: CoworkProject | null) {
+  const current = chatStore.activeSession
+  const sessionId = current?.source === 'coding_agent' || current?.source === 'global_agent'
+    ? chatStore.newChat({ source: 'cli', agent: 'hermes' }).id
+    : chatStore.activeSessionId || (project ? chatStore.newChat({ source: 'cli', agent: 'hermes' }).id : null)
+  if (!sessionId) return
+  const targetSessionId = chatStore.setSessionProject(sessionId, project)
+  const target = chatStore.sessions.find(session => session.id === targetSessionId)
+  const router = component?.appContext.config.globalProperties.$router
+  if (targetSessionId && router) {
+    void router.push({
+      name: 'hermes.session',
+      params: { sessionId: targetSessionId },
+      query: target?.profile ? { profile: target.profile } : undefined,
+    })
+  }
+}
+
+const activeProject = computed<CoworkProject | null>({
+  get: () => {
+    const session = chatStore.activeSession
+    if (!session?.projectId) return null
+    return {
+      id: session.projectId,
+      name: session.projectName || session.projectId,
+      description: '',
+      instructions: '',
+      icon: '',
+      color: '',
+      primary_folder: session.workspace || null,
+      status: 'active',
+      created_at: 0,
+      updated_at: 0,
+    } satisfies CoworkProject
+  },
+  set: selectProject,
+})
+const projectSelectionLocked = computed(() => Boolean(chatStore.activeSession?.projectBound))
+const canPickProject = computed(() => (
+  chatStore.runtimeMode !== 'global_agent'
+  && chatStore.activeSession?.source !== 'coding_agent'
+  && chatStore.activeSession?.source !== 'global_agent'
+))
+let appliedQuerySelection = ''
+
+watch(
+  () => ({
+    projectId: typeof currentRoute.value?.query.project === 'string' ? currentRoute.value.query.project : '',
+    sessionId: chatStore.activeSessionId,
+  }),
+  async ({ projectId, sessionId }) => {
+    if (!projectId || projectId === appliedQuerySelection) return
+    try {
+      const project = await getCoworkProject(projectId)
+      const currentProjectId = typeof currentRoute.value?.query.project === 'string'
+        ? currentRoute.value.query.project
+        : ''
+      if (chatStore.activeSessionId !== sessionId || currentProjectId !== projectId) return
+      selectProject(project)
+      appliedQuerySelection = projectId
+    } catch {
+      message.error(t('cowork.loadFailed'))
+    }
+  },
+  { immediate: true },
+)
 
 const reasoningEffortOptions = computed(() => [
   { label: t('chat.reasoningEffort.options.default'), value: '' },
@@ -87,19 +168,25 @@ const expertOptions = computed(() => [
   { label: t('chat.expertSlot.none'), value: '' },
   ...experts.value.map(e => ({ label: e.title || e.name, value: e.id })),
 ])
-const expertSelectionLocked = computed(() => Boolean(chatStore.activeSession?.expertId))
+const expertSelectionLocked = computed(() => Boolean(
+  chatStore.activeSession?.expertId && (chatStore.activeSession.messageCount || chatStore.activeSession.messages.length),
+))
 const scheduledExpert = computed(() => {
   const session = chatStore.activeSession
   if (!session?.id || !session.expertId || session.source === 'coding_agent' || session.source === 'global_agent') return null
   return activeExpert.value?.id === session.expertId ? activeExpert.value : null
 })
-function onExpertChange(value: string | null | undefined) {
+async function onExpertChange(value: string | null | undefined) {
   if (expertSelectionLocked.value) return
   const expert = experts.value.find(e => e.id === value)
-  chatStore.setActiveExpert(value || null, expert ? {
+  const saved = await chatStore.selectActiveExpert(value || null, expert ? {
     avatar: expert.avatar || '',
     label: expert.title || expert.name || expert.id,
   } : undefined)
+  if (!saved) {
+    await chatStore.refreshSessionListOnly()
+    message.error(t('common.saveFailed'))
+  }
 }
 async function loadExpertsForSlot() {
   try {
@@ -117,6 +204,11 @@ const textareaRef = ref<HTMLTextAreaElement>()
 const commandDropdownRef = ref<HTMLDivElement>()
 const fileInputRef = ref<HTMLInputElement>()
 const attachments = ref<Attachment[]>([])
+const linkPreviews = ref<FeishuLinkPreview[]>([])
+const linkPreviewSlots = ref<string[]>([])
+let linkPreviewRequest = 0
+let linkPreviewTimer: ReturnType<typeof setTimeout> | undefined
+let linkPreviewKey = ''
 const isDragging = ref(false)
 const dragCounter = ref(0)
 const isComposing = ref(false)
@@ -514,6 +606,7 @@ onMounted(() => {
 onUnmounted(() => {
   mobileInputQuery?.removeEventListener?.('change', syncMobileInputState)
   mobileInputQuery = null
+  if (linkPreviewTimer) clearTimeout(linkPreviewTimer)
 })
 
 // 监听变化并保存
@@ -524,7 +617,8 @@ watch(autoPlaySpeech, (value) => {
 })
 
 watch(inputText, (value) => {
-  saveDraftForActiveSession(value)
+  saveDraftForActiveSession(composedMessageText())
+  queueLinkPreviews(value)
 })
 
 watch(() => settingsStore.display.chat_input_height, () => {
@@ -535,9 +629,14 @@ watch(() => chatStore.activeSession?.id, (_newId, oldId) => {
   // Agent swap: the picker replaces the session id underneath us. Anything the
   // user already typed belongs to the task they are composing, not to the old
   // session, so carry it over instead of loading the new session's empty draft.
-  if (chatStore.agentSwitching && inputText.value.trim()) {
-    const carried = inputText.value
+  const carried = chatStore.agentSwitching ? composedMessageText() : ''
+  linkPreviewRequest++
+  linkPreviewKey = ''
+  linkPreviews.value = []
+  linkPreviewSlots.value = []
+  if (carried.trim()) {
     if (oldId) saveDraftForSession(oldId, '')
+    inputText.value = carried
     saveDraftForActiveSession(carried)
     return
   }
@@ -547,6 +646,13 @@ watch(() => chatStore.activeSession?.id, (_newId, oldId) => {
 watch(
   () => [chatStore.activeSession?.profile, profilesStore.activeProfileName],
   () => {
+    const draft = composedMessageText()
+    linkPreviewRequest++
+    linkPreviewKey = ''
+    linkPreviews.value = []
+    linkPreviewSlots.value = []
+    inputText.value = draft
+    queueLinkPreviews(draft)
     skillsLoadedKey = ''
     skillCategories.value = []
     // drop the previous profile's slash commands so the picker never shows another
@@ -586,7 +692,7 @@ watch(
 
 // `agentSwitching` participates: between switchProfile() and the new session
 // being bound, a send would go out on the old session under the new profile.
-const canSend = computed(() => !chatStore.agentSwitching && (inputText.value.trim() || attachments.value.length > 0))
+const canSend = computed(() => !chatStore.agentSwitching && (inputText.value.trim() || linkPreviews.value.length > 0 || attachments.value.length > 0))
 
 function scrollCommandIntoView() {
   nextTick(() => {
@@ -826,7 +932,65 @@ function handleFileChange(e: Event) {
   input.value = ''
 }
 
-// --- Paste image ---
+// --- Paste image / Feishu link ---
+
+function pastedFeishuUrls(text: string): string[] {
+  return extractFeishuUrls(text)
+}
+
+async function loadLinkPreviews(urls: string[]) {
+  const requestId = ++linkPreviewRequest
+  try {
+    const profile = chatStore.activeSession?.profile || profilesStore.activeProfileName || undefined
+    const result = await fetchLinkPreviews(urls, profile)
+    if (requestId === linkPreviewRequest) applyLinkPreviews(result.previews, urls)
+  } catch {
+    if (requestId === linkPreviewRequest) {
+      applyLinkPreviews(urls.map(url => ({
+        kind: 'feishu', title: '', type_label: '飞书链接', url, status: 'generic',
+      })), urls)
+    }
+  }
+}
+
+function composedMessageText() {
+  return restoreFeishuUrlSlots(inputText.value, linkPreviewSlots.value).trim()
+}
+
+function applyLinkPreviews(previews: FeishuLinkPreview[], urls: string[]) {
+  const merged = new Map(linkPreviews.value.map(preview => [preview.url, preview]))
+  previews.forEach(preview => merged.set(preview.url, preview))
+  linkPreviews.value = [...merged.values()]
+  const cardified = cardifyFeishuUrls(inputText.value, urls, linkPreviewSlots.value)
+  inputText.value = cardified.text
+  linkPreviewSlots.value = cardified.slots
+  linkPreviewKey = ''
+  saveDraftForActiveSession(composedMessageText())
+}
+
+function removeLinkPreview(url: string) {
+  const revealed = revealCardifiedUrl(inputText.value, linkPreviewSlots.value, url)
+  inputText.value = revealed.text
+  linkPreviewSlots.value = revealed.slots
+  linkPreviews.value = linkPreviews.value.filter(preview => preview.url !== url)
+  saveDraftForActiveSession(composedMessageText())
+}
+
+function queueLinkPreviews(value: string) {
+  const urls = pastedFeishuUrls(value)
+  const key = urls.join('\n')
+  if (key === linkPreviewKey) return
+  linkPreviewKey = key
+  if (linkPreviewTimer) clearTimeout(linkPreviewTimer)
+  if (!urls.length) {
+    if (!linkPreviews.value.length) linkPreviewRequest++
+    return
+  }
+  linkPreviewTimer = setTimeout(() => {
+    linkPreviewTimer = undefined
+    void loadLinkPreviews(urls)
+  }, 250)
+}
 
 function handlePaste(e: ClipboardEvent) {
   const items = Array.from(e.clipboardData?.items || [])
@@ -879,7 +1043,7 @@ function handleDrop(e: DragEvent) {
 function handleSend() {
   // Enter bypasses the disabled send button, so the swap guard is re-checked here.
   if (chatStore.agentSwitching) return
-  const text = inputText.value.trim()
+  const text = composedMessageText()
   if (!text && attachments.value.length === 0) return
   if (isBridgeSession.value && text === '/skill' && attachments.value.length === 0) {
     void openSkillPicker()
@@ -888,6 +1052,8 @@ function handleSend() {
 
   chatStore.sendMessage(text, attachments.value.length > 0 ? attachments.value : undefined)
   inputText.value = ''
+  linkPreviews.value = []
+  linkPreviewSlots.value = []
   saveDraftForActiveSession('')
   attachments.value = []
   slashActive.value = false
@@ -1054,6 +1220,13 @@ function onDocumentMousedown(e: MouseEvent) {
   }
 }
 
+function focusComposer() {
+  if (isMobileInput.value) return
+  void nextTick(() => textareaRef.value?.focus())
+}
+
+defineExpose({ focusComposer })
+
 onMounted(() => {
   document.addEventListener('mousedown', onDocumentMousedown)
 })
@@ -1087,7 +1260,7 @@ function isImage(type: string): boolean {
     <div class="input-top-bar">
       <NTooltip trigger="hover">
         <template #trigger>
-          <NButton quaternary size="tiny" @click="handleAttachClick" circle>
+          <NButton :aria-label="t('chat.attachFiles')" quaternary size="tiny" @click="handleAttachClick" circle>
             <template #icon>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
             </template>
@@ -1273,6 +1446,12 @@ function isImage(type: string): boolean {
         @change="handleFileChange"
       />
       <div class="resize-handle" @mousedown="startResize"></div>
+      <div v-if="linkPreviews.length" class="feishu-link-previews">
+        <div v-for="preview in linkPreviews" :key="preview.url" class="input-feishu-link-preview">
+          <FeishuLinkPreviewCard class="feishu-link-preview" :preview="preview" compact />
+          <button type="button" class="input-feishu-link-preview__remove" aria-label="移除链接" @click="removeLinkPreview(preview.url)">×</button>
+        </div>
+      </div>
       <textarea
         ref="textareaRef"
         v-model="inputText"
@@ -1307,6 +1486,11 @@ function isImage(type: string): boolean {
         </div>
       </Transition>
       <div class="input-actions">
+        <CoworkProjectPicker
+          v-if="canPickProject"
+          v-model="activeProject"
+          :frozen="projectSelectionLocked"
+        />
         <AgentPicker v-if="canPickAgent" class="agent-picker-slot" />
         <VoiceDialogueControls
           :status="voiceDialogue.status.value"
@@ -1626,6 +1810,14 @@ function isImage(type: string): boolean {
   padding: 0 0 10px;
 }
 
+.feishu-link-previews {
+  display: flex;
+  flex: 1 0 100%;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
 .attachment-preview {
   position: relative;
   border-radius: $radius-sm;
@@ -1698,6 +1890,7 @@ function isImage(type: string): boolean {
 
 .input-wrapper {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   box-sizing: border-box;
@@ -1757,6 +1950,23 @@ function isImage(type: string): boolean {
     overflow: hidden;
     text-overflow: ellipsis;
   }
+}
+
+.input-feishu-link-preview {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.input-feishu-link-preview__remove {
+  flex: 0 0 auto;
+  border: 0;
+  color: $text-muted;
+  background: transparent;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
 }
 
 .agent-picker-slot {

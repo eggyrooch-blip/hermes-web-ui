@@ -138,10 +138,9 @@ export const useAppStore = defineStore('app', () => {
       !hiddenByVisibility
     )
 
-    if (explicitGroup || inferredGroup) {
-      const selectedGroup = explicitGroup || inferredGroup!
+    if (explicitGroup) {
       selectedModel.value = defaultModel
-      selectedProvider.value = selectedGroup.provider
+      selectedProvider.value = explicitGroup.provider
     } else if (unlistedDefault) {
       selectedModel.value = defaultModel
       selectedProvider.value = defaultProvider
@@ -149,6 +148,9 @@ export const useAppStore = defineStore('app', () => {
         ...customModels.value,
         [defaultProvider]: Array.from(new Set([...(customModels.value[defaultProvider] || []), defaultModel])),
       }
+    } else if (inferredGroup) {
+      selectedModel.value = defaultModel
+      selectedProvider.value = inferredGroup.provider
     } else if (fallbackGroup) {
       selectedModel.value = fallbackGroup.models[0]
       selectedProvider.value = fallbackGroup.provider

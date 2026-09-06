@@ -64,7 +64,9 @@ describe('flushResponseRunToDb media publishing', () => {
 
     expect(addMessageMock).toHaveBeenCalledTimes(1)
     const persisted = addMessageMock.mock.calls[0][0]
-    expect(persisted.content).toContain('[a.pptx](/workspace/Downloads/a.pptx)')
+    expect(persisted.content).toContain('[a.pptx](/workspace/Downloads/a.pptx?')
+    expect(persisted.content).toContain('hermes_mime=application%2Fvnd.openxmlformats-officedocument.presentationml.presentation')
+    expect(persisted.content).toContain('hermes_bytes=10')
     expect(persisted.content).not.toContain('MEDIA:')
     // The artifact is published into the workspace for the download route.
     expect(existsSync(join(profileDir, 'workspace', 'Downloads', 'a.pptx'))).toBe(true)

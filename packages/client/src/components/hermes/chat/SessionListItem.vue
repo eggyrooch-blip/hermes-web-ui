@@ -45,6 +45,7 @@ const profileModelsMissing = computed(() =>
 )
 const isGlobalAgentSession = computed(() => props.session.source === 'global_agent')
 const workspaceLabel = computed(() => sessionWorkspaceLabel(props.session.workspace))
+const projectLabel = computed(() => props.session.projectId ? (props.session.projectName || t('cowork.project')) : '')
 // Upstream design (multi-agent): each row shows the AGENT's own logo (per agent —
 // Hermes / Codex / Claude) AND the USER's avatar — two distinct identities, never the
 // user's avatar masquerading as the agent.
@@ -165,7 +166,8 @@ onUnmounted(() => {
         <span v-if="props.showProfile" class="session-item-profile">
           <ProfileAvatar class="session-item-profile-avatar" :name="profileName" :avatar="profileAvatar" :size="16" />
         </span>
-        <span v-if="workspaceLabel" class="session-item-workspace">📁 {{ workspaceLabel }}</span>
+        <span v-if="projectLabel" class="session-item-project"><span aria-hidden="true">P</span>{{ projectLabel }}</span>
+        <span v-else-if="workspaceLabel" class="session-item-workspace">📁 {{ workspaceLabel }}</span>
       </span>
     </div>
     <svg
@@ -188,7 +190,7 @@ onUnmounted(() => {
     </svg>
     <NPopconfirm v-if="canDelete && !selectable" @positive-click="emit('delete')">
       <template #trigger>
-        <button class="session-item-delete" @click.stop.prevent>
+        <button class="session-item-delete" :aria-label="t('chat.deleteSession')" @click.stop.prevent>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </template>
@@ -396,6 +398,31 @@ onUnmounted(() => {
   white-space: nowrap;
   color: var(--text-muted);
   font-size: 11px;
+}
+
+.session-item-project {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.session-item-project > span {
+  display: grid;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 4px;
+  background: rgba(var(--accent-primary-rgb), 0.12);
+  color: var(--accent-primary);
+  font-size: 9px;
+  font-weight: 700;
 }
 
 .session-item-agent-logo-wrap {

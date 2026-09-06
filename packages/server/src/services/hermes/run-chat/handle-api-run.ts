@@ -18,6 +18,8 @@ import { convertHistoryFormat } from './message-format'
 import { readSseFrames } from './sse-utils'
 import { extractResponseText } from './response-utils'
 import { applyResponseStreamEvent, flushResponseRunToDb } from './response-stream'
+import { getProfileDir } from '../hermes-profile'
+import { publishRunAssistantMedia } from '../media-directives'
 import { buildCompressedHistory, buildDbHistory, buildSnapshotAwareHistory } from './compression'
 import { calcAndUpdateUsage, estimateUsageTokensFromMessages } from './usage'
 import { handleMessage } from './message-format'
@@ -347,12 +349,20 @@ export async function handleApiRun(
           return
         }
         const queueLen = runOwnership?.state.queue?.length ?? 0
+        const finalOutput = parsed.response || parsed
+        const finalText = extractResponseText(finalOutput)
         const completion = runOwnership
           ? await prepareApiCompletion(sessionMap, runOwnership, emit, upstreamAbortController)
           : { completed: true }
         if (!completion.completed || !guardRun()) return
-        const finalOutput = parsed.response || parsed
-        const finalText = extractResponseText(finalOutput)
+        const parsedContent = upstreamEvent === 'response.completed' && runOwnership
+          ? publishRunAssistantMedia({
+              messages: runOwnership.state.messages,
+              runMarker,
+              profileDir: getProfileDir(profile),
+              fallbackContent: finalText,
+            })
+          : undefined
         if (completion.error) {
           failAndRelease(
             `API run finalization failed: ${completion.error instanceof Error ? completion.error.message : String(completion.error)}`,
@@ -388,6 +398,7 @@ export async function handleApiRun(
           run_id: responseId || finalOutput.id,
           response_id: responseId || finalOutput.id,
           output: finalText,
+          ...(parsedContent !== undefined ? { parsed_content: parsedContent } : {}),
           usage: finalOutput.usage,
           error: finalOutput.error || parsed.error,
           queue_remaining: queueLen,

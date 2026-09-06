@@ -168,6 +168,8 @@ const visibleApproval = computed(() => chatStore.activePendingApproval);
 const visibleClarify = computed(() => chatStore.activePendingClarify);
 const visibleReauth = computed(() => chatStore.activePendingReauth);
 const clarifyResponse = ref("");
+const approvalComment = ref("");
+watch(() => visibleApproval.value?.approvalId, () => { approvalComment.value = ""; });
 const hasFloatingPrompt = computed(() => !!visibleApproval.value || !!visibleClarify.value || !!visibleReauth.value);
 
 const CONNECTOR_DISPLAY_NAMES: Record<string, string> = {
@@ -236,8 +238,8 @@ const historyArchiveHref = computed(() => {
   return `#/hermes/history/session/${encodeURIComponent(session.id)}${profileQuery}`;
 });
 
-function handleApproval(choice: "once" | "session" | "always" | "deny") {
-  chatStore.respondApproval(choice);
+function handleApproval(choice: "once" | "session" | "always" | "deny" | "approve" | "reject" | "rework") {
+  chatStore.respondApproval(choice, approvalComment.value.trim());
 }
 
 function handleClarify(response?: string) {
@@ -516,6 +518,7 @@ defineExpose({
               <span class="thinking-status-time">{{ formattedThinkingElapsed }}</span>
             </div>
           </div>
+          <div v-if="chatStore.runStatusText" class="run-status-line">{{ chatStore.runStatusText }}</div>
           <div v-if="visibleToolCalls.length > 0 || chatStore.compressionState || chatStore.abortState" class="tool-calls-panel">
             <!-- Abort indicator -->
             <div v-if="chatStore.abortState" class="tool-call-item compression-item">
@@ -725,11 +728,28 @@ defineExpose({
           <div class="approval-float-title">{{ t("chat.approvalTitle") }}</div>
           <div class="approval-float-desc">{{ visibleApproval.description }}</div>
           <code class="approval-float-command">{{ visibleApproval.command }}</code>
+          <div v-if="visibleApproval.gate" class="approval-float-meta">
+            {{ t("chat.approvalGate", { gate: visibleApproval.gate }) }} · {{ t("chat.approvalId") }} <code>{{ visibleApproval.approvalId }}</code>
+          </div>
+          <ul v-if="visibleApproval.checklist.length" class="approval-float-checklist">
+            <li v-for="item in visibleApproval.checklist" :key="item">{{ item }}</li>
+          </ul>
+          <NInput
+            v-if="visibleApproval.choices.some(choice => ['approve', 'reject', 'rework'].includes(choice))"
+            v-model:value="approvalComment"
+            type="textarea"
+            :autosize="{ minRows: 1, maxRows: 3 }"
+            :placeholder="t('chat.approvalComment')"
+          />
+          <div v-if="visibleApproval.error || visibleApproval.errorFallback" class="approval-float-error">
+            {{ visibleApproval.error || t("common.saveFailed") }}
+          </div>
           <div class="approval-float-actions">
             <NButton
               v-if="visibleApproval.isMemoryWrite"
               size="small"
               type="primary"
+              :disabled="visibleApproval.submitting"
               @click="handleApproval('once')"
             >
               {{ t("chat.approvalAgree") }}
@@ -738,6 +758,7 @@ defineExpose({
               v-if="!visibleApproval.isMemoryWrite && visibleApproval.choices.includes('once')"
               size="small"
               type="primary"
+              :disabled="visibleApproval.submitting"
               @click="handleApproval('once')"
             >
               {{ t("chat.approvalAllowOnce") }}
@@ -746,6 +767,7 @@ defineExpose({
               v-if="!visibleApproval.isMemoryWrite && visibleApproval.choices.includes('session')"
               size="small"
               secondary
+              :disabled="visibleApproval.submitting"
               @click="handleApproval('session')"
             >
               {{ t("chat.approvalAllowSession") }}
@@ -754,15 +776,45 @@ defineExpose({
               v-if="!visibleApproval.isMemoryWrite && visibleApproval.choices.includes('always')"
               size="small"
               secondary
+              :disabled="visibleApproval.submitting"
               @click="handleApproval('always')"
             >
               {{ t("chat.approvalAlways") }}
+            </NButton>
+            <NButton
+              v-if="visibleApproval.choices.includes('approve')"
+              size="small"
+              type="primary"
+              :disabled="visibleApproval.submitting"
+              @click="handleApproval('approve')"
+            >
+              {{ t("chat.approvalAgree") }}
+            </NButton>
+            <NButton
+              v-if="visibleApproval.choices.includes('rework')"
+              size="small"
+              secondary
+              :disabled="visibleApproval.submitting"
+              @click="handleApproval('rework')"
+            >
+              {{ t("chat.approvalRework") }}
+            </NButton>
+            <NButton
+              v-if="visibleApproval.choices.includes('reject')"
+              size="small"
+              type="error"
+              secondary
+              :disabled="visibleApproval.submitting"
+              @click="handleApproval('reject')"
+            >
+              {{ t("chat.approvalDeny") }}
             </NButton>
             <NButton
               v-if="visibleApproval.isMemoryWrite || visibleApproval.choices.includes('deny')"
               size="small"
               type="error"
               secondary
+              :disabled="visibleApproval.submitting"
               @click="handleApproval('deny')"
             >
               {{ t("chat.approvalDeny") }}
@@ -1028,6 +1080,23 @@ defineExpose({
   .dark & {
     background: rgba(255, 255, 255, 0.08);
   }
+}
+
+.approval-float-meta,
+.approval-float-checklist {
+  margin: 6px 0 0;
+  color: $text-muted;
+  font-size: 12px;
+}
+
+.approval-float-checklist {
+  padding-left: 18px;
+}
+
+.approval-float-error {
+  margin-top: 6px;
+  color: $error;
+  font-size: 12px;
 }
 
 .approval-float-actions {
@@ -1426,6 +1495,13 @@ defineExpose({
   font-variant-numeric: tabular-nums;
   line-height: 20px;
   min-width: 44px;
+}
+
+.run-status-line {
+  margin-top: 2px;
+  color: $text-muted;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 @keyframes thinking-label-shimmer {

@@ -43,7 +43,7 @@
     "harness:check": "node scripts/harness-check.mjs",
     "prepare": "[ -d dist ] || npm run build",
     "preview": "NODE_ENV=production vite preview",
-    "test": "vitest run",
+    "test": "node scripts/run-tests.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",

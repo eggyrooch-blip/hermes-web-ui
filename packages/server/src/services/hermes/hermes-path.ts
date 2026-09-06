@@ -82,7 +82,8 @@ export function isPathWithin(targetPath: string, basePath: string): boolean {
   const base = resolve(basePath)
   const target = resolve(targetPath)
   const rel = relative(comparablePath(base), comparablePath(target))
-  return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel))
+  const firstSegment = rel.split(/[\\/]/, 1)[0]
+  return rel === '' || (!!rel && firstSegment !== '..' && !isAbsolute(rel))
 }
 
 export async function realPathOrResolved(path: string): Promise<string> {

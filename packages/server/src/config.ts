@@ -152,8 +152,12 @@ export const config = {
   feishuAppId: process.env.FEISHU_APP_ID || '',
   feishuAppSecret: process.env.FEISHU_APP_SECRET || '',
   feishuRedirectUri: process.env.FEISHU_REDIRECT_URI || '',
-  feishuAuthorizeUrl: process.env.FEISHU_AUTHORIZE_URL || 'https://open.feishu.cn/open-apis/authen/v1/index',
+  feishuAuthorizeUrl: process.env.FEISHU_AUTHORIZE_URL || 'https://accounts.feishu.cn/open-apis/authen/v1/authorize',
   feishuApiBaseUrl: process.env.FEISHU_API_BASE_URL || 'https://open.feishu.cn',
+  // OAuth v3 code→token endpoint. Configurable because it is a DIFFERENT host from
+  // feishuApiBaseUrl (accounts.* vs open.*) — a deployment whose egress allowlist or
+  // region differs must be able to point it without a code change.
+  feishuTokenUrl: process.env.FEISHU_TOKEN_URL || 'https://accounts.feishu.cn/oauth/v3/token',
   feishuSessionSecret: process.env.FEISHU_SESSION_SECRET || '',
   feishuSessionMaxAgeSeconds: parseInt(process.env.FEISHU_SESSION_MAX_AGE_SECONDS || String(30 * 24 * 60 * 60), 10),
   feishuCallbackRedirect: getFeishuCallbackRedirect(),
@@ -161,6 +165,7 @@ export const config = {
   webuiJobsBroker: getJobsBrokerEnabled(),
   runBrokerUrl: getRunBrokerUrl(),
   runBrokerKey: getRunBrokerKey(),
+  // Hermes WebUI uses the profile-scoped Run Broker as the Project source of truth.
   // Connector Registry Phase 2: serve skill-credentials status from the Run Broker
   // connector registry — the SINGLE SOURCE OF TRUTH. It decodes the real token exp
   // (the local TS reader trusts a blind `kep-auth status` and falsely reports an

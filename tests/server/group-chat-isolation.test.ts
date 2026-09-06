@@ -1,43 +1,36 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DatabaseSync } from 'node:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { groupChatRoutes, setGroupChatServer } from '../../packages/server/src/routes/hermes/group-chat'
+import { GC_ROOMS_SCHEMA } from '../../packages/server/src/db/hermes/schemas'
+import { canReadGroupChatRoom } from '../../packages/server/src/services/hermes/group-chat'
 
-// ---------------------------------------------------------------------------
-// Upstream-rebaseline note (2026-06-17)
-//
-// The fork used to enforce group-chat isolation with a per-room `owner_open_id`
-// column on `gc_rooms` plus route-level ownership guards (403 on adding an
-// un-owned agent profile, 404 on non-owner room read/delete/config/clone, and an
-// owner-scoped room list keyed on the requester's Feishu openid).
-//
-// The upstream EKKOLearnAI rebaseline REPLACED that model:
-//   - `gc_rooms` (packages/server/src/db/hermes/schemas.ts) has NO owner_open_id.
-//   - `ChatStorage` (packages/server/src/services/hermes/group-chat/index.ts)
-//     exposes `getAllRooms()` + `getRoomsForProfiles(profiles)` — there is no
-//     `getRoomsByOwner` and `saveRoom` takes no owner argument.
-//   - The group-chat routes (packages/server/src/routes/hermes/group-chat.ts)
-//     carry NO ownership guards: create/get/delete/config/clone/add-agent never
-//     consult openid and never return 403/404-for-non-owner; the room list is
-//     scoped by `ctx.state.user.profiles` / `role === 'super_admin'` via
-//     `getRoomsForProfiles`, not by openid ownership.
-//
-// The 8 fork-era cases (room owner_open_id persistence, 403 add-agent, 404
-// non-owner read/delete/config/clone, owner-scoped list, regression sentinel)
-// therefore tested a feature that no longer exists, via a `createStorage`
-// helper that reimplemented the deleted owner_open_id column. They were deleted
-// rather than rewritten because the route deliberately implements a different
-// isolation model — there is no behaviour left for them to assert.
-//
-// What survives is the profile-ownership service `agent-ownership.ts`, which is
-// still wired into the upstream isolation path (broker-controller / slash /
-// request-context). The one real, still-meaningful isolation assertion is kept
-// below: ownerOwnsProfile must enforce profile ownership across multitenancy
-// schemas both with and without the optional owner_open_id/provenance columns.
-// ---------------------------------------------------------------------------
+// Group chat is bound to the trusted numeric WebUI principal. Feishu open_id is
+// deliberately not copied into this store or exposed by these tests.
 
 const originalEnv = process.env
+
+function routeHandler(path: string, method: string) {
+  const layer = (groupChatRoutes as any).stack.find((item: any) => item.path === path && item.methods.includes(method))
+  if (!layer) throw new Error(`Missing ${method} ${path}`)
+  return layer.stack[0]
+}
+
+function room(id = 'room-a', ownerAuthUserId: number | null = 1) {
+  return {
+    id,
+    name: 'Private room',
+    inviteCode: 'JOINME88',
+    ownerAuthUserId,
+    triggerTokens: 100000,
+    maxHistoryTokens: 32000,
+    tailMessageCount: 10,
+    totalTokens: 0,
+    sessionSeed: '0',
+  }
+}
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix))
@@ -124,5 +117,253 @@ describe('group-chat isolation', () => {
 
     rmSync(join(legacyDbPath, '..'), { recursive: true, force: true })
     rmSync(join(currentDbPath, '..'), { recursive: true, force: true })
+  })
+
+  it('persists the trusted WebUI creator id on every new room', async () => {
+    expect(GC_ROOMS_SCHEMA.ownerAuthUserId).toBe('INTEGER')
+    const storage = {
+      saveRoom: vi.fn(),
+      addRoomMember: vi.fn(),
+      getRoomByInviteCode: vi.fn(() => null),
+      getRoom: vi.fn(() => room()),
+    }
+    const createAgent = vi.fn()
+    setGroupChatServer({
+      getStorage: () => storage,
+      agentClients: { createAgent },
+    } as any)
+    const ctx: any = {
+      state: { user: { id: 1, username: 'alice', role: 'user', profiles: ['profile-a'] } },
+      request: { body: { name: 'Private room', inviteCode: 'JOINME88', agents: [] } },
+      status: 200,
+    }
+
+    await routeHandler('/api/hermes/group-chat/rooms', 'POST')(ctx)
+
+    expect(storage.saveRoom).toHaveBeenCalledWith(
+      expect.any(String),
+      'Private room',
+      'JOINME88',
+      expect.objectContaining({ ownerAuthUserId: 1 }),
+    )
+    expect(storage.addRoomMember).toHaveBeenCalledWith(
+      expect.any(String),
+      'auth:1',
+      'alice',
+      '',
+      '',
+      1,
+    )
+  })
+
+  it('resolves two identities to self=2, cross=0, ambiguous=0', () => {
+    const rooms = new Map([
+      ['room-a', room('room-a', 1)],
+      ['room-b', room('room-b', 2)],
+    ])
+    const storage = {
+      getRoom: vi.fn((id: string) => rooms.get(id)),
+      getMemberByAuthUserId: vi.fn(() => null),
+    }
+    const alice = { id: 1, username: 'alice', role: 'user' }
+    const bob = { id: 2, username: 'bob', role: 'user' }
+
+    const self = Number(canReadGroupChatRoom(storage as any, 'room-a', alice)) +
+      Number(canReadGroupChatRoom(storage as any, 'room-b', bob))
+    const cross = Number(canReadGroupChatRoom(storage as any, 'room-b', alice)) +
+      Number(canReadGroupChatRoom(storage as any, 'room-a', bob))
+    const ambiguous = Number(canReadGroupChatRoom(storage as any, 'room-a', undefined)) +
+      Number(canReadGroupChatRoom(storage as any, 'room-a', { ...alice, id: 0 }))
+
+    expect({ self, cross, ambiguous }).toEqual({ self: 2, cross: 0, ambiguous: 0 })
+  })
+
+  it('does not trust a legacy string member id without a numeric principal binding', () => {
+    const storage = {
+      getRoom: vi.fn(() => room()),
+      getMemberByAuthUserId: vi.fn(() => null),
+      getMemberByUserId: vi.fn(() => ({ userId: 'auth:7', authUserId: null })),
+    }
+
+    expect(canReadGroupChatRoom(storage as any, 'room-a', {
+      id: 7, username: 'legacy', role: 'user',
+    })).toBe(false)
+    expect(storage.getMemberByUserId).not.toHaveBeenCalled()
+  })
+
+  it('rejects malformed agent input before creating room or runtime state', async () => {
+    const storage = { saveRoom: vi.fn(), addRoomMember: vi.fn(), getRoomByInviteCode: vi.fn() }
+    setGroupChatServer({ getStorage: () => storage, agentClients: { createAgent: vi.fn() } } as any)
+    const ctx: any = {
+      state: { user: { id: 1, username: 'alice', role: 'user', profiles: ['profile-a'] } },
+      request: { body: { name: 'Private room', inviteCode: 'JOINME88', agents: [null] } },
+      status: 200,
+    }
+
+    await routeHandler('/api/hermes/group-chat/rooms', 'POST')(ctx)
+
+    expect(ctx.status).toBe(400)
+    expect(storage.saveRoom).not.toHaveBeenCalled()
+  })
+
+  it('returns 400 instead of throwing on non-string clone fields', async () => {
+    const storage = {
+      getRoom: vi.fn(() => room()),
+      getMemberByAuthUserId: vi.fn(() => null),
+      getRoomAgents: vi.fn(() => []),
+      saveRoom: vi.fn(),
+    }
+    setGroupChatServer({ getStorage: () => storage } as any)
+    const ctx: any = {
+      state: { user: { id: 1, username: 'alice', role: 'user', profiles: [] } },
+      params: { roomId: 'room-a' },
+      request: { body: { inviteCode: 123 } },
+      status: 200,
+    }
+
+    await routeHandler('/api/hermes/group-chat/rooms/:roomId/clone', 'POST')(ctx)
+
+    expect(ctx.status).toBe(400)
+    expect(storage.saveRoom).not.toHaveBeenCalled()
+
+    ctx.request.body = { name: 123 }
+    ctx.status = 200
+    await routeHandler('/api/hermes/group-chat/rooms/:roomId/clone', 'POST')(ctx)
+    expect(ctx.status).toBe(400)
+    expect(storage.saveRoom).not.toHaveBeenCalled()
+  })
+
+  it('fails closed before room data is read for a non-member', async () => {
+    const storage = {
+      getRoom: vi.fn(() => room()),
+      getMemberByAuthUserId: vi.fn(() => null),
+      getMessages: vi.fn(),
+      getMessageCount: vi.fn(),
+      getRoomAgents: vi.fn(),
+      getRoomMembers: vi.fn(),
+    }
+    setGroupChatServer({ getStorage: () => storage } as any)
+    const ctx: any = {
+      state: { user: { id: 2, username: 'bob', role: 'user', profiles: ['profile-b'] } },
+      params: { roomId: 'room-a' },
+      query: {},
+      status: 200,
+    }
+
+    await routeHandler('/api/hermes/group-chat/rooms/:roomId', 'GET')(ctx)
+
+    expect(ctx.status).toBe(404)
+    expect(ctx.body).toEqual({ error: 'Room not found' })
+    expect(storage.getMessages).not.toHaveBeenCalled()
+  })
+
+  it('atomically records an invited user as a read-only member', async () => {
+    const storage = {
+      joinRoomByInviteCode: vi.fn(() => room()),
+    }
+    setGroupChatServer({ getStorage: () => storage } as any)
+    const ctx: any = {
+      state: { user: { id: 2, username: 'bob', role: 'user', profiles: ['profile-b'] } },
+      params: { code: 'JOINME88' },
+      status: 200,
+    }
+
+    await routeHandler('/api/hermes/group-chat/rooms/join/:code', 'POST')(ctx)
+
+    expect(storage.joinRoomByInviteCode).toHaveBeenCalledWith('JOINME88', 2, 'bob')
+    expect(ctx.body.room).toEqual(expect.objectContaining({ id: 'room-a', inviteCode: null }))
+    expect(ctx.body.room).not.toHaveProperty('ownerAuthUserId')
+  })
+
+  it('fails closed when an invite code resolves to an ownerless legacy room', async () => {
+    const storage = {
+      joinRoomByInviteCode: vi.fn(() => room('legacy-room', null)),
+    }
+    setGroupChatServer({ getStorage: () => storage } as any)
+    const ctx: any = {
+      state: { user: { id: 2, username: 'bob', role: 'user', profiles: [] } },
+      params: { code: 'LEGACY88' },
+      status: 200,
+    }
+
+    await routeHandler('/api/hermes/group-chat/rooms/join/:code', 'POST')(ctx)
+
+    expect(ctx.status).toBe(404)
+    expect(ctx.body).toEqual({ error: 'Room not found' })
+  })
+
+  it('lets members read but never manage room or agent configuration', async () => {
+    const storage = {
+      getRoom: vi.fn(() => room()),
+      getMemberByAuthUserId: vi.fn(() => ({ id: 'member-b', authUserId: 2 })),
+      updateRoomConfig: vi.fn(),
+    }
+    setGroupChatServer({ getStorage: () => storage } as any)
+    const ctx: any = {
+      state: { user: { id: 2, username: 'bob', role: 'user', profiles: ['profile-b'] } },
+      params: { roomId: 'room-a' },
+      request: { body: { triggerTokens: 1 } },
+      status: 200,
+    }
+
+    await routeHandler('/api/hermes/group-chat/rooms/:roomId/config', 'PUT')(ctx)
+
+    expect(ctx.status).toBe(404)
+    expect(storage.updateRoomConfig).not.toHaveBeenCalled()
+  })
+
+  it('does not connect an agent profile the owner cannot access', async () => {
+    const storage = {
+      getRoom: vi.fn(() => room()),
+      getMemberByAuthUserId: vi.fn(() => null),
+      getRoomAgents: vi.fn(() => []),
+      isRoomProfileAuthorized: vi.fn(() => false),
+    }
+    const createAgent = vi.fn()
+    setGroupChatServer({
+      getStorage: () => storage,
+      agentClients: { createAgent },
+    } as any)
+    const ctx: any = {
+      state: { user: { id: 1, username: 'alice', role: 'user', profiles: ['profile-a'] } },
+      params: { roomId: 'room-a' },
+      request: { body: { profile: 'profile-b' } },
+      status: 200,
+    }
+
+    await routeHandler('/api/hermes/group-chat/rooms/:roomId/agents', 'POST')(ctx)
+
+    expect(ctx.status).toBe(403)
+    expect(ctx.body).toEqual({ error: 'Profile unavailable to room owner' })
+    expect(createAgent).not.toHaveBeenCalled()
+  })
+
+  it('keeps ownerless legacy rooms read-only for super admins and hidden from users', async () => {
+    const legacy = room('legacy-room', null)
+    const storage = {
+      getRoom: vi.fn(() => legacy),
+      getMemberByAuthUserId: vi.fn(() => null),
+      getMessages: vi.fn(() => []),
+      getMessageCount: vi.fn(() => 0),
+      getRoomAgents: vi.fn(() => []),
+      getRoomMembers: vi.fn(() => []),
+      updateRoomConfig: vi.fn(),
+    }
+    setGroupChatServer({ getStorage: () => storage } as any)
+    const admin: any = {
+      state: { user: { id: 9, username: 'root', role: 'super_admin' } },
+      params: { roomId: 'legacy-room' },
+      query: {},
+      request: { body: { triggerTokens: 1 } },
+      status: 200,
+    }
+
+    await routeHandler('/api/hermes/group-chat/rooms/:roomId', 'GET')(admin)
+    expect(admin.status).toBe(200)
+    expect(admin.body.room).toEqual(expect.objectContaining({ id: 'legacy-room', inviteCode: null }))
+
+    await routeHandler('/api/hermes/group-chat/rooms/:roomId/config', 'PUT')(admin)
+    expect(admin.status).toBe(404)
+    expect(storage.updateRoomConfig).not.toHaveBeenCalled()
   })
 })

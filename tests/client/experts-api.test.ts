@@ -34,9 +34,21 @@ describe('experts api client', () => {
 
     const data = await fetchExperts('sunke')
 
-    expect(data.experts).toEqual(experts)
+    expect(data.experts).toEqual(experts.map(expert => ({
+      ...expert,
+      harness_available: false,
+    })))
     // persona (agent_md) is never part of the surfaced shape
     expect(data.experts.every(e => !('agent_md' in e))).toBe(true)
+  })
+
+  it('offers Harness to every returned expert for a non-allowlisted profile', async () => {
+    const experts = [{ id: 'server-dev', name: 'Server Dev' }, { id: 'hr', name: 'HR' }]
+    mockFetch.mockResolvedValue(jsonResponse({ experts, profile_name: 'zhaozhiguang', harness_enabled: true }))
+
+    const data = await fetchExperts('zhaozhiguang')
+
+    expect(data.experts.map(expert => expert.harness_available)).toEqual([true, true])
   })
 
   it('encodes the profile into the query string', async () => {

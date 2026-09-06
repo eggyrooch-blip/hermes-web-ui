@@ -166,6 +166,52 @@ describe('BrokerRunController cross-profile session fence', () => {
     expect(handleBrokerRun).toHaveBeenCalled()
   })
 
+  it('keeps two interleaved profile and session canaries at zero cross-match', async () => {
+    const { controller } = await setup()
+    const { createSession } = await import('../../packages/server/src/db/hermes/session-store')
+    createSession({ id: 'b-session', profile: 'user_b' })
+    const socketA = fakeSocket()
+    const socketB = fakeSocket()
+
+    await controller.handleRun(socketA, {
+      input: 'A_CANARY_1',
+      session_id: 'a-session',
+      queue_id: 'a-1',
+    }, 'user_a')
+    controller.getOrCreateSession('a-session', 'user_a').isWorking = false
+    controller.getOrCreateSession('a-session', 'user_a').activeRunMarker = undefined
+    await controller.handleRun(socketB, {
+      input: 'B_CANARY_1',
+      session_id: 'b-session',
+      queue_id: 'b-1',
+    }, 'user_b')
+    controller.getOrCreateSession('b-session', 'user_b').isWorking = false
+    controller.getOrCreateSession('b-session', 'user_b').activeRunMarker = undefined
+    await controller.handleRun(socketA, {
+      input: 'A_CANARY_2',
+      session_id: 'a-session',
+      queue_id: 'a-2',
+    }, 'user_a')
+    controller.getOrCreateSession('a-session', 'user_a').isWorking = false
+    controller.getOrCreateSession('a-session', 'user_a').activeRunMarker = undefined
+    await controller.handleRun(socketB, {
+      input: 'B_CANARY_2',
+      session_id: 'b-session',
+      queue_id: 'b-2',
+    }, 'user_b')
+
+    const contentsFor = (sessionId: string) => (db.prepare(
+      'SELECT content FROM messages WHERE session_id = ? ORDER BY id',
+    ).all(sessionId) as Array<{ content: string }>).map(row => row.content)
+    const aContents = contentsFor('a-session')
+    const bContents = contentsFor('b-session')
+
+    expect(aContents).toEqual(['A_CANARY_1', 'A_CANARY_2'])
+    expect(bContents).toEqual(['B_CANARY_1', 'B_CANARY_2'])
+    expect(aContents.filter(content => content.includes('B_CANARY'))).toHaveLength(0)
+    expect(bContents.filter(content => content.includes('A_CANARY'))).toHaveLength(0)
+  })
+
   it('rejects the socket run event before the queue branch can enqueue', async () => {
     const { controller, handleBrokerRun } = await setup()
     const socket = fakeSocket()

@@ -43,7 +43,9 @@ test('ordinary users see files in the app sidebar and no technical sidebar contr
 
   await page.goto('/#/hermes/plugins')
   await expect(page).toHaveURL(/#\/hermes\/connectors$/)
-  await expect(page.getByRole('heading', { name: 'Connectors' })).toBeVisible()
+  // The connector catalog panel carries its own h3 "Connectors" heading, so
+  // pin this to the page header instead of matching both.
+  await expect(page.getByRole('heading', { name: 'Connectors', level: 2 })).toBeVisible()
   await expect(page.getByText('Lark CLI')).toBeVisible()
 
   await page.goto('/#/hermes/mcp')
@@ -110,7 +112,7 @@ test('ordinary users open expert and automation directly from the home sidebar',
   const labels = await pageSidebar.evaluate(element =>
     Array.from(element.querySelectorAll('.page-sidebar-tab span')).map(node => node.textContent?.trim() || ''),
   )
-  expect(labels.slice(0, 5)).toEqual(['New Chat', 'Search', 'Expert', 'Automation', 'History'])
+  expect(labels.slice(0, 6)).toEqual(['New Chat', 'Search', 'Expert', 'Agents', 'Automation', 'History'])
 
   await pageSidebar.getByRole('button', { name: /^Expert$/ }).click()
   await expect(page).toHaveURL(/#\/hermes\/chat\?surface=expert$/)
@@ -260,6 +262,16 @@ test('stale GitLab handoff opens the token form on equal connector cards', async
             required_by: ['hidden-gitlab-skill'],
             action: { kind: 'manual', label: 'Bind my GitLab' },
           },
+          {
+            id: 'github-mcp',
+            title: 'GitHub',
+            provider: 'github',
+            installed: true,
+            status: 'needs_auth',
+            detail: 'Connect the official GitHub MCP server with my personal read-only credential.',
+            required_by: ['github-mcp'],
+            action: { kind: 'manual', label: 'Connect' },
+          },
         ],
       }),
     })
@@ -275,8 +287,19 @@ test('stale GitLab handoff opens the token form on equal connector cards', async
   await expect(page.locator('[data-credential-action="gitlab"]')).toHaveCount(0)
   await page.getByRole('button', { name: '取消' }).click()
 
+  await expect(page.getByRole('heading', { name: 'GitHub' })).toBeVisible()
+  await expect(page.getByText('Connect the official GitHub MCP server with my personal read-only credential.')).toBeVisible()
+  await page.locator('[data-credential-action="github-mcp"]').click()
+  const githubToken = page.getByPlaceholder('Paste your GitHub PAT')
+  await expect(githubToken).toHaveAttribute('type', 'password')
+  await githubToken.fill('github_pat_browser_secret')
+  await expect(page.locator('body')).not.toContainText('github_pat_browser_secret')
+  expect(await page.evaluate(() => JSON.stringify(window.localStorage))).not.toContain('github_pat_browser_secret')
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await expect(githubToken).toHaveCount(0)
+
   const cards = page.locator('.credential-card')
-  await expect(cards).toHaveCount(7)
+  await expect(cards).toHaveCount(8)
   const boxes = await cards.evaluateAll(elements => elements.map((element) => {
     const rect = element.getBoundingClientRect()
     return {
@@ -303,6 +326,105 @@ test('stale GitLab handoff opens the token form on equal connector cards', async
     expect(narrowBoxes.every(box => !box.overflow)).toBe(true)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
   }
+})
+
+test('connector catalog renders 642 rows and imports only owner-safe remote MCP config', async ({ page }) => {
+  await authenticate(page, USER_ACCESS_KEY, 'research')
+  await mockHermesApi(page)
+  const imported: Array<Record<string, unknown>> = []
+  let catalogInstallation: Record<string, unknown> | null = null
+
+  await page.route('**/api/auth/skill-credentials/catalog/icon?*', async route => {
+    await route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"missing"}' })
+  })
+
+  await page.route('**/api/auth/skill-credentials/catalog?*', async (route) => {
+    const url = new URL(route.request().url())
+    const count = url.searchParams.get('view') === 'canonical' ? 330 : 642
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        profile_name: 'research', subject_id: 'owner-a',
+        view: count === 330 ? 'canonical' : 'source', source_count: 642, canonical_count: 330,
+        connectors: Array.from({ length: count }, (_, index) => ({
+          row_key: `row-${index}`, canonical_key: `connector-${index}`,
+          name: `Connector ${index}`, product: 'Example',
+          final_verdict: index % 2 ? 'needs_auth' : 'pass',
+          next_action: index % 2 ? 'Complete personal authorization' : 'Ready to connect',
+          action: catalogInstallation && index === 0
+            ? { kind: 'revoke', label: 'Disconnect', available: true, installation_name: 'catalog-row-0', connector_id: 'custom-aaaaaaaaaaaaaaaaaaaaaaaa', status: 'ready' }
+            : index % 2
+            ? { kind: 'authorize', label: 'Authorization required', available: false }
+            : { kind: 'connect', label: 'Connect', available: true, installation_name: `catalog-row-${index}` },
+          download_count: index === 641 ? null : index,
+          ...(index === 0 ? { icon: { url: '/api/auth/skill-credentials/catalog/icon?row_key=row-0' } } : {}),
+        })),
+      }),
+    })
+  })
+  await page.route('**/api/auth/skill-credentials/catalog/connect', async (route) => {
+    const { row_key: rowKey } = JSON.parse(route.request().postData() || '{}')
+    catalogInstallation = {
+      connector_id: 'custom-aaaaaaaaaaaaaaaaaaaaaaaa', name: `catalog-${rowKey}`,
+      transport: 'streamable_http', endpoint: 'https://example.com/mcp',
+      credential_fields: [], state: 'active', updated_at: 1,
+    }
+    await route.fulfill({
+      status: 201, contentType: 'application/json',
+      body: JSON.stringify({ profile_name: 'research', subject_id: 'owner-a', connectors: [catalogInstallation] }),
+    })
+  })
+  await page.route('**/api/auth/skill-credentials/custom**', async (route) => {
+    if (route.request().method() === 'DELETE') catalogInstallation = null
+    if (route.request().method() === 'POST') imported.push(JSON.parse(route.request().postData() || '{}'))
+    await route.fulfill({
+      status: route.request().method() === 'POST' ? 201 : 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        profile_name: 'research', subject_id: 'owner-a',
+        connectors: catalogInstallation ? [catalogInstallation] : imported.length ? [{
+          connector_id: 'custom-0123456789abcdef01234567', name: 'demo',
+          transport: 'streamable_http', endpoint: 'https://example.com/mcp',
+          credential_fields: [], state: 'configured', updated_at: 1,
+        }] : [],
+      }),
+    })
+  })
+
+  await page.goto('/#/hermes/chat?surface=expert&tab=connectors')
+  const panel = page.getByTestId('connector-catalog')
+  await expect(panel.locator('.catalog-card')).toHaveCount(642, { timeout: 30_000 })
+  await expect(panel.locator('.catalog-card').first().locator('.catalog-fallback')).toHaveText('C')
+  await panel.locator('.catalog-card').first().click()
+  const detail = page.locator('.n-modal').filter({ hasText: 'Connector 0' })
+  await detail.getByRole('button', { name: 'Add', exact: true }).click()
+  await expect(detail.getByRole('button', { name: 'Remove', exact: true })).toBeVisible()
+  await detail.getByRole('button', { name: 'Remove', exact: true }).click()
+  await expect(detail.getByRole('button', { name: 'Add', exact: true })).toBeVisible()
+  await detail.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await panel.getByPlaceholder('Search servers...').fill('Connector 641')
+  await expect(panel.locator('.catalog-card')).toHaveCount(1)
+  await expect(panel.locator('.catalog-card')).toContainText('↓ Not provided')
+  await panel.getByRole('button', { name: '330' }).click()
+  await expect(panel.locator('.catalog-card')).toHaveCount(0)
+  await panel.getByPlaceholder('Search servers...').fill('')
+  await expect(panel.locator('.catalog-card')).toHaveCount(330)
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+
+  await panel.getByTestId('custom-connector-open').click()
+  const modal = page.locator('.n-modal')
+  const textarea = modal.locator('textarea')
+  const save = modal.getByRole('button', { name: 'Save' })
+  await textarea.fill('{"mcpServers":{"unsafe":{"command":"npx"}}}')
+  await expect(save).toBeDisabled()
+  const config = '{"mcpServers":{"demo":{"type":"streamableHttp","url":"https://example.com/mcp"}}}'
+  await textarea.fill(config)
+  await expect(save).toBeEnabled()
+  await save.click()
+  await expect(panel.getByText('demo', { exact: true })).toBeVisible()
+  expect(imported).toEqual([{ config }])
 })
 
 test('super-admins keep access to technical inventory and sidebar controls', async ({ page }) => {

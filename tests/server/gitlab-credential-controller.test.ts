@@ -136,3 +136,93 @@ describe('submitGitlabToken controller (credential WRITE path)', () => {
     expect(JSON.parse(init.body)).toEqual({ token: 'glpat-x', tier: 'read' })
   })
 })
+
+describe('GitHub credential controller', () => {
+  const fetchMock = vi.fn()
+
+  beforeEach(() => {
+    fetchMock.mockReset()
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    process.env = originalEnv
+  })
+
+  it('stamps verified identity and strips body-supplied identity on connect', async () => {
+    fetchMock.mockResolvedValue({ status: 200, ok: true, text: async () => JSON.stringify({ ok: true }) })
+    const { submitGithubToken } = await loadController()
+    const ctx = mockCtx({ openid: 'ou_alice' })
+    ctx.request.body.token = 'github_pat_x'
+    await submitGithubToken(ctx)
+    const [url, init] = fetchMock.mock.calls[0] as [string, any]
+    expect(url).toContain('/api/run-broker/credentials/github')
+    expect(init.headers['X-Hermes-Owner-Open-Id']).toBe('ou_alice')
+    expect(JSON.parse(init.body)).toEqual({ token: 'github_pat_x' })
+    expect(ctx.body).toEqual({ ok: true })
+  })
+
+  it('validates and trims the token before the broker boundary', async () => {
+    fetchMock.mockResolvedValue({ status: 200, ok: true, text: async () => JSON.stringify({ ok: true }) })
+    const { submitGithubToken } = await loadController()
+    const valid = mockCtx({ openid: 'ou_alice' })
+    valid.request.body.token = '  github_pat_x  '
+    await submitGithubToken(valid)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ token: 'github_pat_x' })
+
+    for (const token of ['', { token: true }, 'x'.repeat(513), 'github pat']) {
+      fetchMock.mockClear()
+      const invalid = mockCtx({ openid: 'ou_alice' })
+      invalid.request.body.token = token
+      await submitGithubToken(invalid)
+      expect(invalid.status).toBe(400)
+      expect(fetchMock).not.toHaveBeenCalled()
+    }
+  })
+
+  it('forwards the selected profile only as an owner-checked target hint', async () => {
+    fetchMock.mockResolvedValue({ status: 200, ok: true, text: async () => JSON.stringify({ ok: true }) })
+    const { submitGithubToken } = await loadController()
+    const ctx = mockCtx({ openid: 'ou_alice' }, { profile: 'profile_b' })
+    ctx.request.body.token = 'github_pat_x'
+    await submitGithubToken(ctx)
+    const [, init] = fetchMock.mock.calls[0] as [string, any]
+    expect(init.headers['X-Hermes-Profile']).toBe('profile_b')
+    expect(init.headers['X-Hermes-Owner-Open-Id']).toBe('ou_alice')
+  })
+
+  it('whitelists the broker response and never relays echoed secret material', async () => {
+    fetchMock.mockResolvedValue({
+      status: 400,
+      ok: false,
+      text: async () => JSON.stringify({ ok: false, error: 'bad github_pat_leaked', token: 'github_pat_leaked' }),
+    })
+    const { submitGithubToken } = await loadController()
+    const ctx = mockCtx({ openid: 'ou_alice' })
+    ctx.request.body.token = 'github_pat_x'
+    await submitGithubToken(ctx)
+    expect(JSON.stringify(ctx.body)).not.toContain('github_pat_')
+    expect(ctx.body).toEqual({ ok: false, error: 'GitHub 凭据未通过验证' })
+  })
+
+  it('fails closed without verified identity for connect and revoke', async () => {
+    const { revokeGithubToken, submitGithubToken } = await loadController()
+    for (const handler of [submitGithubToken, revokeGithubToken]) {
+      const ctx = mockCtx(undefined)
+      await handler(ctx)
+      expect(ctx.status).toBe(403)
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('revokes only through the owner-stamped DELETE request', async () => {
+    fetchMock.mockResolvedValue({ status: 200, ok: true, text: async () => JSON.stringify({ ok: true, revoked: true }) })
+    const { revokeGithubToken } = await loadController()
+    const ctx = mockCtx({ openid: 'ou_alice' })
+    await revokeGithubToken(ctx)
+    const [, init] = fetchMock.mock.calls[0] as [string, any]
+    expect(init.method).toBe('DELETE')
+    expect(init.headers['X-Hermes-Owner-Open-Id']).toBe('ou_alice')
+    expect(init.body).toBeUndefined()
+  })
+})

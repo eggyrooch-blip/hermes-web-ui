@@ -30,6 +30,16 @@ const router = createRouter({
       component: () => import('@/views/hermes/HistoryView.vue'),
     },
     {
+      path: '/hermes/cowork',
+      name: 'hermes.cowork',
+      redirect: { name: 'hermes.chat' },
+    },
+    {
+      path: '/hermes/projects/:projectId?',
+      name: 'hermes.coworkProject',
+      component: () => import('@/views/hermes/CoworkProjectsView.vue'),
+    },
+    {
       path: '/hermes/history/session/:sessionId',
       name: 'hermes.historySession',
       component: () => import('@/views/hermes/HistoryView.vue'),
@@ -194,11 +204,39 @@ const router = createRouter({
       component: () => import('@/views/hermes/McpManagerView.vue'),
       meta: { requiresSuperAdmin: true, nonAdminRedirect: 'hermes.connectors' },
     },
+    {
+      path: '/mcp/oauth/approve',
+      name: 'mcp.oauth.approve',
+      component: () => import('@/views/McpOAuthApprovalView.vue'),
+    },
   ],
 })
 
 let serverSessionVerified = false
 let serverSessionCheck: Promise<boolean> | null = null
+const PENDING_MCP_OAUTH_REDIRECT = 'hermes_pending_mcp_oauth_redirect'
+
+function rememberMcpOAuthRedirect(to: { name?: unknown; fullPath: string }) {
+  if (to.name !== 'mcp.oauth.approve') return
+  try { sessionStorage.setItem(PENDING_MCP_OAUTH_REDIRECT, to.fullPath) } catch { /* storage unavailable */ }
+}
+
+function takeMcpOAuthRedirect(): string | null {
+  let value = ''
+  try {
+    value = sessionStorage.getItem(PENDING_MCP_OAUTH_REDIRECT) || ''
+    sessionStorage.removeItem(PENDING_MCP_OAUTH_REDIRECT)
+  } catch { return null }
+  try {
+    const url = new URL(value, window.location.origin)
+    const requestId = url.searchParams.get('request_id') || ''
+    return url.pathname === '/mcp/oauth/approve' && /^hma_[A-Za-z0-9_-]{6,120}$/.test(requestId)
+      ? `${url.pathname}${url.search}`
+      : null
+  } catch {
+    return null
+  }
+}
 
 function isServerSessionAuthModeValue(value: unknown): value is 'feishu-oauth-dev' | 'trusted-feishu' {
   return value === 'feishu-oauth-dev' || value === 'trusted-feishu'
@@ -288,17 +326,26 @@ router.beforeEach(async (to, _from, next) => {
   if (!canAccessProtectedRoutes()) {
     discoveredServerSession = await discoverServerSessionMode()
     if (!discoveredServerSession) {
+      rememberMcpOAuthRedirect(to)
       next({ name: 'login' })
       return
     }
   }
 
   if (!(await hasValidServerSession())) {
+    rememberMcpOAuthRedirect(to)
     next({ name: 'login' })
     return
   }
 
   authNavigationReady.value = true
+  if (to.name !== 'mcp.oauth.approve') {
+    const pendingMcpOAuth = takeMcpOAuthRedirect()
+    if (pendingMcpOAuth) {
+      next(pendingMcpOAuth)
+      return
+    }
+  }
   if (to.meta.requiresSuperAdmin && !isStoredSuperAdmin()) {
     routeContentReady.value = false
     next(nonAdminRedirectTarget(to))

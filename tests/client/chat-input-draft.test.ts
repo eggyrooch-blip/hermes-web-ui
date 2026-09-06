@@ -9,12 +9,14 @@ import ChatInput from '@/components/hermes/chat/ChatInput.vue'
 
 const {
   fetchSkillsMock,
+  fetchLinkPreviewsMock,
   micRecorderState,
   micStopMock,
   voiceStatus,
   voiceTranscribeAndSendMock,
 } = vi.hoisted(() => ({
   fetchSkillsMock: vi.fn(),
+  fetchLinkPreviewsMock: vi.fn(),
   micRecorderState: {
     value: {
       status: 'idle' as 'idle' | 'requesting' | 'recording' | 'stopping' | 'error',
@@ -32,6 +34,8 @@ vi.mock('vue-i18n', () => ({
 
 vi.mock('naive-ui', () => ({
   NButton: { template: '<button type="button" v-bind="$attrs"><slot /><slot name="icon" /></button>' },
+  NInput: { template: '<input />' },
+  NPopover: { template: '<div><slot name="trigger" /></div>' },
   NTooltip: { template: '<div><slot name="trigger" /><slot /></div>' },
   NSwitch: { template: '<button type="button"></button>' },
   NModal: { template: '<div><slot /><slot name="footer" /></div>' },
@@ -68,6 +72,11 @@ vi.mock('@/api/hermes/model-context', () => ({
 
 vi.mock('@/api/hermes/skills', () => ({
   fetchSkills: fetchSkillsMock,
+}))
+
+vi.mock('@/api/hermes/link-previews', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/hermes/link-previews')>()),
+  fetchLinkPreviews: fetchLinkPreviewsMock,
 }))
 
 vi.mock('@/composables/useToolTraceVisibility', () => ({
@@ -169,6 +178,8 @@ describe('ChatInput draft persistence', () => {
     mockViewport(false)
     fetchSkillsMock.mockReset()
     fetchSkillsMock.mockResolvedValue({ categories: [], archived: [] })
+    fetchLinkPreviewsMock.mockReset()
+    fetchLinkPreviewsMock.mockResolvedValue({ previews: [] })
   })
 
   it('restores unsent text for the active session after the chat view is remounted', async () => {
@@ -183,6 +194,142 @@ describe('ChatInput draft persistence', () => {
     await nextTick()
 
     expect((remounted.get('textarea').element as HTMLTextAreaElement).value).toBe('draft before tab switch')
+  })
+
+  it('previews a pasted link from any Feishu tenant without changing the draft URL', async () => {
+    const url = 'https://acme.feishu.cn/wiki/Q9mXwXqfhi2j5SkR6HjctEpEncf'
+    fetchLinkPreviewsMock.mockResolvedValue({
+      previews: [{
+        kind: 'wiki',
+        title: 'Hermes 2026 H2 产品规划',
+        type_label: '知识库文档',
+        url,
+        status: 'resolved',
+      }],
+    })
+    const wrapper = mountForSession('session-feishu', { profile: 'default' })
+    const textarea = wrapper.get('textarea')
+
+    await textarea.setValue(url)
+    await textarea.trigger('paste', {
+      clipboardData: {
+        items: [],
+        getData: (type: string) => type === 'text/plain' ? url : '',
+      },
+    })
+    await vi.waitFor(() => expect(fetchLinkPreviewsMock).toHaveBeenCalledWith([url], 'default'))
+    expect(wrapper.get('.feishu-link-preview').text()).toContain('Hermes 2026 H2 产品规划')
+    expect(wrapper.find('.feishu-link-preview-card__body').exists()).toBe(false)
+    expect(wrapper.find('.feishu-link-preview-card__footer').exists()).toBe(false)
+    expect((textarea.element as HTMLTextAreaElement).value).toBe('\u2063')
+
+    await textarea.setValue('\u2063补充说明')
+    await textarea.trigger('keydown', { key: 'Enter' })
+    expect(useChatStore().sendMessage).toHaveBeenCalledWith(`${url}补充说明`, undefined)
+    expect(wrapper.find('.feishu-link-preview').exists()).toBe(false)
+  })
+
+  it('preserves a cardified URL at its original position in the sent body', async () => {
+    const url = 'https://acme.feishu.cn/wiki/token'
+    const original = `帮我看 ${url} 里的第三章`
+    fetchLinkPreviewsMock.mockResolvedValue({
+      previews: [{ kind: 'wiki', title: '需求文档', type_label: '知识库文档', url, status: 'resolved' }],
+    })
+    const wrapper = mountForSession('session-inline', { profile: 'default' })
+    const textarea = wrapper.get('textarea')
+
+    await textarea.setValue(original)
+    await vi.waitFor(() => expect(wrapper.get('.feishu-link-preview').text()).toContain('需求文档'))
+    expect((textarea.element as HTMLTextAreaElement).value).toBe('帮我看 \u2063 里的第三章')
+
+    await textarea.trigger('keydown', { key: 'Enter' })
+    expect(useChatStore().sendMessage).toHaveBeenCalledWith(original, undefined)
+  })
+
+  it('does not carry a previous session preview URL into a new session draft', async () => {
+    const url = 'https://acme.feishu.cn/wiki/token'
+    localStorage.setItem('hermes_chat_input_drafts_v1', JSON.stringify({ 'session-b': 'session b draft' }))
+    fetchLinkPreviewsMock.mockResolvedValue({
+      previews: [{ kind: 'wiki', title: 'A 文档', type_label: '知识库文档', url, status: 'resolved' }],
+    })
+    const wrapper = mountForSession('session-a', { profile: 'profile-a' })
+    await wrapper.get('textarea').setValue(url)
+    await vi.waitFor(() => expect(wrapper.find('.feishu-link-preview').exists()).toBe(true))
+
+    const store = useChatStore()
+    const sessionB = { id: 'session-b', title: 'B', source: 'cli', profile: 'profile-b', messages: [], createdAt: Date.now(), updatedAt: Date.now() } as any
+    store.sessions.push(sessionB)
+    store.activeSessionId = 'session-b'
+    store.activeSession = sessionB
+    await nextTick()
+
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('session b draft')
+    expect((localStorage.getItem('hermes_chat_input_drafts_v1') || '')).not.toContain(`session b draft${url}`)
+  })
+
+  it('previews a restored Feishu draft without requiring another paste event', async () => {
+    const url = 'https://tenant.feishu.cn/base/base_token?table=table_id&view=view_id'
+    localStorage.setItem('hermes_chat_input_drafts_v1', JSON.stringify({ 'session-restored': url }))
+    fetchLinkPreviewsMock.mockResolvedValue({
+      previews: [{ kind: 'base', title: '月度数据大屏', type_label: '多维表格', url, status: 'resolved' }],
+    })
+
+    const wrapper = mountForSession('session-restored', { profile: 'default' })
+
+    await vi.waitFor(() => expect(fetchLinkPreviewsMock).toHaveBeenCalledWith([url], 'default'))
+    expect(wrapper.get('.feishu-link-preview').text()).toContain('月度数据大屏')
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('\u2063')
+  })
+
+  it('shows the resolved title for a public Open Platform document page', async () => {
+    const url = 'https://open.feishu.cn/document/server-docs/docs/drive-v1/file/batch_query'
+    fetchLinkPreviewsMock.mockResolvedValue({
+      previews: [{
+        kind: 'open_platform',
+        title: '获取文件元数据 - 服务端 API - 飞书开放平台',
+        type_label: '开放平台文档',
+        url,
+        status: 'resolved',
+      }],
+    })
+    const wrapper = mountForSession('session-open-platform', { profile: 'default' })
+    const textarea = wrapper.get('textarea')
+
+    await textarea.setValue(url)
+    await textarea.trigger('paste', {
+      clipboardData: { items: [], getData: () => url },
+    })
+
+    await vi.waitFor(() => expect(fetchLinkPreviewsMock).toHaveBeenCalledWith([url], 'default'))
+    expect(wrapper.get('.feishu-link-preview').text()).toContain('获取文件元数据 - 服务端 API - 飞书开放平台')
+    expect((textarea.element as HTMLTextAreaElement).value).toBe('\u2063')
+  })
+
+  it('shows a generic Feishu chip when metadata lookup is unavailable', async () => {
+    const url = 'https://globex.larksuite.com/client/todo/task?guid=task-1'
+    fetchLinkPreviewsMock.mockRejectedValue(new Error('fetch failed'))
+    const wrapper = mountForSession('session-generic', { profile: 'default' })
+
+    await wrapper.get('textarea').setValue(url)
+    await wrapper.get('textarea').trigger('paste', {
+      clipboardData: { items: [], getData: () => url },
+    })
+    await vi.waitFor(() => expect(wrapper.get('.feishu-link-preview').text()).toContain('飞书链接'))
+    expect(wrapper.text()).not.toContain('fetch failed')
+  })
+
+  it('does not preview a domain that merely contains the Feishu name', async () => {
+    const url = 'https://evilfeishu.cn/wiki/token'
+    const wrapper = mountForSession('session-spoof')
+
+    await wrapper.get('textarea').setValue(url)
+    await wrapper.get('textarea').trigger('paste', {
+      clipboardData: { items: [], getData: () => url },
+    })
+    await flushPromises()
+
+    expect(fetchLinkPreviewsMock).not.toHaveBeenCalled()
+    expect(wrapper.find('.feishu-link-preview').exists()).toBe(false)
   })
 
   it('stores drafts under one localStorage key mapped by session id', async () => {

@@ -11,6 +11,11 @@ const sessionStore = vi.hoisted(() => ({
   getSessionIncarnation: vi.fn(() => 1),
   updateSession: vi.fn(),
 }))
+const workspaceDiffTracker = vi.hoisted(() => ({
+  start: vi.fn(() => ({ key: 'checkpoint-1' })),
+  discard: vi.fn(),
+  complete: vi.fn(() => null),
+}))
 
 vi.mock('../../packages/server/src/config', () => ({
   config: { runBrokerUrl: 'http://broker.test', runBrokerKey: 'k' },
@@ -23,9 +28,9 @@ vi.mock('../../packages/server/src/services/hermes/hermes-path', () => ({
   isNearestExistingRealPathWithin: vi.fn(async () => true),
 }))
 vi.mock('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker', () => ({
-  startWorkspaceRunCheckpoint: vi.fn(() => ({ key: 'checkpoint-1' })),
-  discardWorkspaceRunCheckpoint: vi.fn(),
-  completeWorkspaceRunCheckpoint: vi.fn(() => null),
+  startWorkspaceRunCheckpoint: workspaceDiffTracker.start,
+  discardWorkspaceRunCheckpoint: workspaceDiffTracker.discard,
+  completeWorkspaceRunCheckpoint: workspaceDiffTracker.complete,
 }))
 
 import { handleBrokerRun } from '../../packages/server/src/services/hermes/run-chat/handle-broker-run'
@@ -53,22 +58,24 @@ function fakeContext() {
   } as any
 }
 
-function fakeSocket() {
-  return { data: { user: { openid: 'ou_alice' } }, join: vi.fn(), emit: vi.fn(), connected: true } as any
+function fakeSocket(user: Record<string, unknown> = { openid: 'ou_alice' }) {
+  return { data: { user }, join: vi.fn(), emit: vi.fn(), connected: true } as any
 }
 
 /** Runs one broker turn and hands back everything the assertions need. */
-async function runTurn(data: Record<string, any>, profile = 'default') {
+async function runTurn(data: Record<string, any>, profile = 'default', user?: Record<string, unknown>) {
   let body: any
+  let headers: Record<string, string> = {}
   const fetchMock = vi.fn(async (_url: string, init: any) => {
     body = JSON.parse(String(init?.body || '{}'))
+    headers = init?.headers || {}
     return { ok: true, body: sseStream('event: done\ndata: {"kind":"done","run_id":"r"}\n\n'), status: 200 } as any
   })
   vi.stubGlobal('fetch', fetchMock)
-  const socket = fakeSocket()
+  const socket = fakeSocket(user)
   const context = fakeContext()
   await handleBrokerRun(socket, { input: 'hi', session_id: 's1', ...data } as any, profile, 'rm', vi.fn(), context)
-  return { fetchMock, socket, context, metadata: (body?.metadata || {}) as Record<string, any> }
+  return { fetchMock, socket, context, headers, metadata: (body?.metadata || {}) as Record<string, any> }
 }
 
 /** Runs a broker turn and returns the metadata block the broker actually received. */
@@ -81,9 +88,20 @@ afterEach(() => {
   sessionStore.getSession.mockReset()
   sessionStore.getSession.mockReturnValue({ id: 's1', profile: 'default', workspace: null, model: '', provider: '' })
   sessionStore.updateSession.mockClear()
+  workspaceDiffTracker.start.mockClear()
 })
 
 describe('broker run model stickiness', () => {
+  it('uses the persisted Harness engine binding for the broker header', async () => {
+    sessionStore.getSession.mockReturnValue({
+      id: 's1', profile: 'default', workspace: null, model: '', provider: '', execution_engine: 'harness',
+    } as any)
+
+    const { headers } = await runTurn({ execution_engine: 'hermes' })
+
+    expect(headers['X-Hermes-Expert-Engine']).toBe('harness')
+  })
+
   it('uses the request model/provider when the turn carries them', async () => {
     sessionStore.getSession.mockReturnValue({
       id: 's1', profile: 'default', workspace: null, model: 'stored-model', provider: 'stored-provider',
@@ -122,6 +140,45 @@ describe('broker run model stickiness', () => {
 
     expect('model' in metadata).toBe(false)
     expect('provider' in metadata).toBe(false)
+  })
+})
+
+describe('broker run execution-engine stickiness', () => {
+  it('leaves workspace diff tracking to Harness isolated workflows', async () => {
+    sessionStore.getSession.mockReturnValue({
+      id: 's1', profile: 'default', workspace: null, model: '', provider: '', execution_engine: 'harness',
+    } as any)
+
+    await runTurn({})
+
+    expect(workspaceDiffTracker.start).not.toHaveBeenCalled()
+  })
+
+  it('uses the authenticated local account id as the broker actor', async () => {
+    const { headers, metadata } = await runTurn({}, 'default', { id: 7 })
+
+    expect(headers['X-Hermes-Owner-Open-Id']).toBe('7')
+    expect(metadata.conversation).toBe('webui:s1')
+  })
+
+  it('stamps Harness only from the persisted session binding', async () => {
+    sessionStore.getSession.mockReturnValue({
+      id: 's1', profile: 'default', workspace: null, model: '', provider: '', execution_engine: 'harness',
+    } as any)
+
+    const { headers } = await runTurn({ execution_engine: 'hermes' })
+
+    expect(headers['X-Hermes-Expert-Engine']).toBe('harness')
+  })
+
+  it('does not add a Harness header to an ordinary Hermes session', async () => {
+    sessionStore.getSession.mockReturnValue({
+      id: 's1', profile: 'default', workspace: null, model: '', provider: '', execution_engine: 'hermes',
+    } as any)
+
+    const { headers } = await runTurn({ execution_engine: 'harness' })
+
+    expect(headers['X-Hermes-Expert-Engine']).toBeUndefined()
   })
 })
 

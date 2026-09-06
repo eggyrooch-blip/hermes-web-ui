@@ -40,6 +40,7 @@ import { defaultHermesWorkspace, ensureHermesRunWorkspace, normalizeHermesSessio
 import { readSessionGeneration } from '../../services/hermes/run-chat/session-generation'
 import { getChatRunServer } from '../../routes/hermes/chat-run'
 import { authorizePrivateTargets, authorizeSourceRefs, normalizeSourceRefs } from '../../services/hermes/source-refs'
+import { persistSessionExpert, SessionExpertError } from '../../services/hermes/session-expert'
 
 function getPendingDeletedSessionIds(): Set<string> {
   return getGroupChatServer()?.getStorage().getPendingDeletedSessionIds() || new Set<string>()
@@ -506,6 +507,7 @@ export async function listConversations(ctx: any) {
         expert_id: s.expert_id || null,
         expert_label: s.expert_label || null,
         expert_avatar: s.expert_avatar || null,
+        execution_engine: s.execution_engine,
         is_archived: s.is_archived,
         model: s.model,
         provider: s.provider,
@@ -553,6 +555,7 @@ export async function listConversations(ctx: any) {
     expert_id: s.expert_id || null,
     expert_label: s.expert_label || null,
     expert_avatar: s.expert_avatar || null,
+    execution_engine: s.execution_engine,
     is_archived: s.is_archived,
     model: s.model,
     provider: s.provider,
@@ -716,6 +719,7 @@ export async function listHermesSessions(ctx: any) {
               expert_id: localSession.expert_id || null,
               expert_label: localSession.expert_label || null,
               expert_avatar: localSession.expert_avatar || null,
+              execution_engine: localSession.execution_engine,
               title: localSession.title ?? (ownersConflict ? null : (session as any).title),
               preview: ownersConflict ? null : (session as any).preview,
             }
@@ -1167,6 +1171,14 @@ export async function setWorkspace(ctx: any) {
   const id = ctx.params.id
   const existing = getSession(id)
   if (await denySessionAccessAsync(ctx, existing)) return
+  if (
+    existing?.execution_engine === 'harness'
+    && (existing.workspace || null) !== (workspace || null)
+  ) {
+    ctx.status = 409
+    ctx.body = { error: 'Harness session workspace is fixed' }
+    return
+  }
   if (isCodingAgentSession(existing)) {
     updateSession(id, { workspace: workspace || null } as any)
     ctx.body = { ok: true, workspace: workspace || null }
@@ -1208,6 +1220,53 @@ export async function setWorkspace(ctx: any) {
   }
   updateSession(id, { workspace: normalized } as any)
   ctx.body = { ok: true, workspace: normalized }
+}
+
+export async function setExpert(ctx: any) {
+  const body = ctx.request.body as { expert_id?: string | null; execution_engine?: string }
+  if (body.expert_id !== null && body.expert_id !== undefined && typeof body.expert_id !== 'string') {
+    ctx.status = 400
+    ctx.body = { error: 'expert_id must be a string or null' }
+    return
+  }
+  if (body.execution_engine !== 'hermes' && body.execution_engine !== 'harness') {
+    ctx.status = 400
+    ctx.body = { error: 'execution_engine must be hermes or harness' }
+    return
+  }
+  const id = ctx.params.id
+  const existing = localGetSession(id)
+  if (await denySessionAccessAsync(ctx, existing)) return
+  const owner = actorSessionOwnerId(ctx)
+  if (!owner) {
+    ctx.status = 401
+    ctx.body = { error: 'Verified user identity is required' }
+    return
+  }
+  const profile = existing?.profile
+    || (isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : requestedProfile(ctx))
+    || 'default'
+  if (!existing && !canAccessProfile(ctx, profile)) {
+    ctx.status = 403
+    ctx.body = { error: `Profile "${profile}" is not available for this user` }
+    return
+  }
+  const expertId = body.expert_id?.trim() || null
+  try {
+    const persistedExpertId = await persistSessionExpert({
+      id,
+      existing,
+      owner,
+      profile,
+      expertId,
+      executionEngine: body.execution_engine,
+    })
+    ctx.body = { ok: true, expert_id: persistedExpertId }
+  } catch (err) {
+    if (!(err instanceof SessionExpertError)) throw err
+    ctx.status = err.status
+    ctx.body = { error: err.message }
+  }
 }
 
 export async function setModel(ctx: any) {
@@ -1650,6 +1709,7 @@ export async function getConversationMessagesPaginated(ctx: any) {
     expert_id?: string | null
     expert_label?: string | null
     expert_avatar?: string | null
+    execution_engine?: 'hermes' | 'harness'
   }
   if (await denySessionAccessAsync(ctx, session)) return
 
@@ -1670,6 +1730,7 @@ export async function getConversationMessagesPaginated(ctx: any) {
       expert_id: expertSession.expert_id ?? null,
       expert_label: expertSession.expert_label ?? null,
       expert_avatar: expertSession.expert_avatar ?? null,
+      execution_engine: expertSession.execution_engine === 'harness' ? 'harness' : 'hermes',
     },
     messages: result.messages.map(message => ({ ...message, source_refs: sources.get(String(message.id)) || null })),
     total: result.total,

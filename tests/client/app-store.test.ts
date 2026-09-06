@@ -449,6 +449,25 @@ describe('App Store', () => {
     expect(store.customModels).toEqual({ deepseek: ['manually-supported-id'] })
   })
 
+  it('keeps the declared default provider when another provider lists the same unlisted model', async () => {
+    mockSystemApi.fetchAvailableModels.mockResolvedValue({
+      default: 'zai/glm-5.2',
+      default_provider: 'zai',
+      groups: [
+        { provider: 'zai', label: 'Z.AI', base_url: '', models: ['glm-5.1'], api_key: '' },
+        { provider: 'custom:litellm-sre', label: 'LiteLLM', base_url: '', models: ['zai/glm-5.2'], api_key: '' },
+      ],
+      allProviders: [],
+    })
+    const store = useAppStore()
+
+    await store.loadModels()
+
+    expect(store.selectedModel).toBe('zai/glm-5.2')
+    expect(store.selectedProvider).toBe('zai')
+    expect(store.customModels).toEqual({ zai: ['zai/glm-5.2'] })
+  })
+
   it('loads persisted custom models from the server response', async () => {
     mockSystemApi.fetchAvailableModels.mockResolvedValue({
       default: 'gemma-4-26b-a4b-it',

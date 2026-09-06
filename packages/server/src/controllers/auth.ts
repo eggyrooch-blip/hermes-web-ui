@@ -38,6 +38,7 @@ import {
   setFeishuCookie,
   FEISHU_SESSION_COOKIE,
   FEISHU_STATE_COOKIE,
+  FEISHU_SCOPE_DEGRADED_COOKIE,
 } from '../services/feishu-oauth'
 import { getGatewayManagerInstance } from '../services/gateway-bootstrap'
 import type { WebUser } from '../services/request-context'
@@ -52,9 +53,19 @@ import {
   startKeepRecordAuth,
 } from '../services/hermes/skill-credentials'
 import type { SkillCredentialsResult } from '../services/hermes/skill-credentials'
+import { connectorRequestHasOnly } from '../services/hermes/connector-request-shape'
 import {
+  connectCatalogConnector,
+  completeCatalogOAuth,
+  deleteCustomConnector,
   failSafeResult,
+  fetchConnectorCatalog,
+  fetchCatalogConnectorStatus,
+  fetchConnectorIcon,
   fetchConnectorStatuses,
+  importCustomConnectors,
+  isKnownConnectorIconKey,
+  listCustomConnectors,
   runShadowCompare,
 } from '../services/hermes/connector-registry-client'
 
@@ -822,6 +833,63 @@ async function fetchFeishuUatStatusForUser(user: WebUser, requiredScopes = ''): 
   return body
 }
 
+async function fetchFeishuLoginScope(): Promise<string> {
+  const res = await fetch(brokerUrl('/api/run-broker/internal/feishu/oauth-scope'), {
+    method: 'GET',
+    headers: brokerHeaders(),
+  })
+  const body = await res.json().catch(() => ({}))
+  const scope = typeof body?.scope === 'string' ? body.scope.trim() : ''
+  if (!res.ok || !scope) {
+    const err: any = new Error('Feishu OAuth scope is unavailable')
+    err.status = res.status
+    throw err
+  }
+  const scopes = new Set(scope.split(/\s+/).filter(Boolean))
+  scopes.add('offline_access')
+  return [...scopes].join(' ')
+}
+
+async function importFeishuLoginUat(
+  user: WebUser,
+  token: Awaited<ReturnType<typeof exchangeFeishuCode>>,
+): Promise<void> {
+  if (!token.refreshToken) throw new Error('Feishu OAuth refresh token is unavailable')
+  const res = await fetch(brokerUrl('/api/run-broker/internal/feishu/uat/import'), {
+    method: 'POST',
+    headers: {
+      ...brokerHeaders(),
+      'X-Hermes-Owner-Open-Id': user.openid,
+    },
+    body: JSON.stringify({
+      profile_name: user.profile,
+      token: {
+        app_id: config.feishuAppId,
+        access_token: token.accessToken,
+        refresh_token: token.refreshToken,
+        expires_in: token.expiresIn,
+        refresh_token_expires_in: token.refreshTokenExpiresIn,
+        scope: token.scope,
+      },
+    }),
+  })
+  if (!res.ok) {
+    const err: any = new Error('Feishu OAuth credential import failed')
+    err.status = res.status
+    throw err
+  }
+}
+
+function feishuUatWarningRedirect(): string {
+  try {
+    const url = new URL(config.feishuCallbackRedirect)
+    url.hash = '/hermes/connectors?lark_auth=required'
+    return url.toString()
+  } catch {
+    return '/#/hermes/connectors?lark_auth=required'
+  }
+}
+
 /**
  * GET /api/auth/feishu/login
  * Local-dev Feishu OAuth entrypoint. Production can replace this with a
@@ -844,9 +912,22 @@ export async function feishuLogin(ctx: Context) {
     return
   }
 
+  // The broker supplies the full Lark-cli scope set, but it must NEVER gate login:
+  // before this merge the login entrypoint did not touch the broker at all, and a
+  // broker restart taking every employee's login down is a far worse failure than
+  // one login that skips the credential import. Degrade instead: request the
+  // minimal scope and mark the round trip so the callback skips the import.
+  let scope = ''
+  try {
+    scope = await fetchFeishuLoginScope()
+  } catch {
+    logger.warn('Feishu OAuth scope lookup failed; degrading login and skipping UAT import')
+  }
+  const scopeDegraded = !scope
   const state = createFeishuState()
   setFeishuCookie(ctx, FEISHU_STATE_COOKIE, state, 10 * 60)
-  ctx.redirect(buildFeishuAuthorizeUrl(state))
+  setFeishuCookie(ctx, FEISHU_SCOPE_DEGRADED_COOKIE, scopeDegraded ? '1' : '', 10 * 60)
+  ctx.redirect(buildFeishuAuthorizeUrl(state, scope || 'offline_access'))
 }
 
 /**
@@ -893,20 +974,43 @@ export async function feishuCallback(ctx: Context) {
       return
     }
 
+    // A degraded (minimal-scope) round trip must not import: the resulting token
+    // would carry a narrower scope than the credential already on file and
+    // overwrite a working Lark-cli authorization. Land on Connectors instead.
+    let uatImportFailed = ctx.cookies.get(FEISHU_SCOPE_DEGRADED_COOKIE) === '1'
+    if (uatImportFailed) {
+      logger.warn('Feishu OAuth login used a degraded scope; skipping UAT import')
+    } else {
+      try {
+        await importFeishuLoginUat(bound.user, token)
+      } catch (err: any) {
+        uatImportFailed = true
+        logger.warn({ status: Number(err?.status) || 500 }, 'Feishu OAuth login succeeded but UAT import failed')
+      }
+    }
+
     logger.info({ openid: maskOpenId(token.openid), profile: bound.user.profile }, 'Feishu OAuth login bound to Hermes profile')
     await wakeBoundProfileGateway(bound.user.profile)
     setFeishuCookie(ctx, FEISHU_SESSION_COOKIE, bound.cookie, config.feishuSessionMaxAgeSeconds)
-    ctx.cookies.set(FEISHU_STATE_COOKIE, '', {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: cookieSecure(ctx),
-      maxAge: 0,
-      overwrite: true,
-    })
-    ctx.redirect(config.feishuCallbackRedirect)
+    for (const name of [FEISHU_STATE_COOKIE, FEISHU_SCOPE_DEGRADED_COOKIE]) {
+      ctx.cookies.set(name, '', {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: cookieSecure(ctx),
+        maxAge: 0,
+        overwrite: true,
+      })
+    }
+    ctx.redirect(uatImportFailed ? feishuUatWarningRedirect() : config.feishuCallbackRedirect)
   } catch (err: any) {
+    // The non-exposure guard covers logs as well as the browser, so NEITHER
+    // surface gets the thrown message: an upstream that embeds token material in
+    // Error.message would otherwise land it in the log sink. The error class is
+    // enough to bucket a failure here; the specific cause is already logged at
+    // the point it is known (import logs its broker status, exchange its own).
+    logger.warn({ reason: 'callback_failed', errName: String(err?.name || 'Error') }, 'Feishu OAuth callback failed')
     ctx.status = 502
-    ctx.body = { error: err?.message || 'Feishu OAuth failed' }
+    ctx.body = { error: 'Feishu OAuth failed' }
   }
 }
 
@@ -1067,6 +1171,201 @@ export async function skillCredentialsStatus(ctx: Context) {
     ctx.body = served
   } catch (err: any) {
     handleUatProxyError(ctx, err)
+  }
+}
+
+function connectorOwner(ctx: Context): { profileName: string; ownerOpenId: string } | null {
+  const body = ctx.request.body as Record<string, unknown> | undefined
+  const identityKeys = ['profile', 'profile_name', 'owner_open_id', 'subject_id']
+  if (identityKeys.some(key => ctx.query?.[key] != null) || (body && identityKeys.some(key => key in body))) {
+    ctx.status = 400
+    ctx.body = { error: '连接器身份只能来自当前登录会话' }
+    return null
+  }
+  const user = getOptionalFeishuUser(ctx)
+  if (!user) {
+    ctx.status = 403
+    ctx.body = { error: '无法确认你的连接器身份，请重新登录后再试' }
+    return null
+  }
+  return { profileName: getRequestProfile(ctx), ownerOpenId: user.openid }
+}
+
+function handleConnectorCatalogError(ctx: Context, err: any): void {
+  ctx.status = typeof err?.status === 'number' ? err.status : 502
+  ctx.body = { error: err?.message || '连接器目录暂时不可用' }
+}
+
+function requireConnectorRequestShape(ctx: Context, query: readonly string[], body: readonly string[]): boolean {
+  if (connectorRequestHasOnly(ctx.query, ctx.request.body, query, body)) return true
+  ctx.status = 400
+  ctx.body = { error: '连接器请求包含未允许的字段' }
+  return false
+}
+
+export async function connectorCatalog(ctx: Context) {
+  if (!requireConnectorRequestShape(ctx, ['view'], [])) return
+  const owner = connectorOwner(ctx)
+  if (!owner) return
+  const rawView = String(ctx.query?.view || 'source')
+  if (rawView !== 'source' && rawView !== 'canonical') {
+    ctx.status = 400
+    ctx.body = { error: 'invalid connector catalog view' }
+    return
+  }
+  const view = rawView
+  try {
+    ctx.body = await fetchConnectorCatalog({ ...owner, view })
+  } catch (err) {
+    handleConnectorCatalogError(ctx, err)
+  }
+}
+
+export async function connectorCatalogConnect(ctx: Context) {
+  if (!requireConnectorRequestShape(ctx, [], ['row_key', 'fields'])) return
+  const owner = connectorOwner(ctx)
+  if (!owner) return
+  const requestBody = ctx.request.body as { row_key?: string; fields?: unknown } | undefined
+  const rowKey = requestBody?.row_key
+  if (typeof rowKey !== 'string' || !rowKey || rowKey.length > 256) {
+    ctx.status = 400
+    ctx.body = { error: 'invalid connector catalog row key' }
+    return
+  }
+  const fields = requestBody?.fields
+  if (fields !== undefined && (!fields || typeof fields !== 'object' || Array.isArray(fields))) {
+    ctx.status = 400
+    ctx.body = { error: 'invalid connector credential fields' }
+    return
+  }
+  try {
+    const body = await connectCatalogConnector({
+      ...owner,
+      rowKey,
+      ...(fields ? { fields: fields as Record<string, string> } : {}),
+    })
+    ctx.status = 201
+    ctx.body = body
+  } catch (err) {
+    handleConnectorCatalogError(ctx, err)
+  }
+}
+
+export async function connectorCatalogStatus(ctx: Context) {
+  if (!requireConnectorRequestShape(ctx, [], ['row_key'])) return
+  const owner = connectorOwner(ctx)
+  if (!owner) return
+  const rowKey = (ctx.request.body as { row_key?: unknown } | undefined)?.row_key
+  if (typeof rowKey !== 'string' || !rowKey || rowKey.length > 256) {
+    ctx.status = 400
+    ctx.body = { error: 'invalid connector catalog row key' }
+    return
+  }
+  try {
+    ctx.body = await fetchCatalogConnectorStatus({ ...owner, rowKey })
+  } catch (err) {
+    handleConnectorCatalogError(ctx, err)
+  }
+}
+
+export async function connectorCatalogOAuthCallback(ctx: Context) {
+  if (!requireConnectorRequestShape(ctx, ['state', 'code'], [])) return
+  const state = String(ctx.query?.state || '')
+  const code = String(ctx.query?.code || '')
+  if (!state || state.length > 512 || !code || code.length > 8192) {
+    ctx.status = 400
+    ctx.body = { error: 'invalid catalog OAuth callback' }
+    return
+  }
+  try {
+    await completeCatalogOAuth({ state, code })
+    ctx.redirect('/hermes/connectors?catalog_oauth=success')
+  } catch (err) {
+    handleConnectorCatalogError(ctx, err)
+  }
+}
+
+export async function connectorCatalogIcon(ctx: Context) {
+  const rowKey = String(ctx.query?.row_key || '').trim()
+  // This public image route never forwards an arbitrary key with broker credentials:
+  // fetchConnectorCatalog first registers only rows from a valid 642/330 catalog.
+  const exactCatalogMatch = isKnownConnectorIconKey(rowKey)
+  if (!rowKey || rowKey.length > 256 || /[\u0000-\u001f\u007f]/.test(rowKey) || !exactCatalogMatch) {
+    ctx.status = 404
+    ctx.body = { error: 'connector icon unavailable' }
+    return
+  }
+  try {
+    const response = await fetchConnectorIcon(rowKey)
+    if (!response.ok) {
+      ctx.status = response.status === 404 ? 404 : 502
+      ctx.body = { error: 'connector icon unavailable' }
+      return
+    }
+    const contentType = String(response.headers.get('content-type') || '').split(';')[0]
+    if (!['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml'].includes(contentType)) {
+      ctx.status = 502
+      ctx.body = { error: 'connector icon type is invalid' }
+      return
+    }
+    const bytes = await response.arrayBuffer()
+    if (bytes.byteLength > 2 * 1024 * 1024) {
+      ctx.status = 502
+      ctx.body = { error: 'connector icon is too large' }
+      return
+    }
+    ctx.set('Cache-Control', 'public, max-age=86400, immutable')
+    ctx.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+    ctx.type = contentType
+    ctx.body = Buffer.from(bytes)
+  } catch (err) {
+    handleConnectorCatalogError(ctx, err)
+  }
+}
+
+export async function customConnectors(ctx: Context) {
+  if (!requireConnectorRequestShape(ctx, [], [])) return
+  const owner = connectorOwner(ctx)
+  if (!owner) return
+  try {
+    ctx.body = await listCustomConnectors(owner)
+  } catch (err) {
+    handleConnectorCatalogError(ctx, err)
+  }
+}
+
+export async function customConnectorImport(ctx: Context) {
+  if (!requireConnectorRequestShape(ctx, [], ['config'])) return
+  const owner = connectorOwner(ctx)
+  if (!owner) return
+  const { config: configValue } = (ctx.request.body || {}) as { config: string }
+  if (typeof configValue !== 'string' || !configValue || Buffer.byteLength(configValue) > 64 * 1024) {
+    ctx.status = 400
+    ctx.body = { error: '连接器配置为空或过大' }
+    return
+  }
+  try {
+    ctx.status = 201
+    ctx.body = await importCustomConnectors({ ...owner, config: configValue })
+  } catch (err) {
+    handleConnectorCatalogError(ctx, err)
+  }
+}
+
+export async function customConnectorDelete(ctx: Context) {
+  if (!requireConnectorRequestShape(ctx, [], [])) return
+  const owner = connectorOwner(ctx)
+  if (!owner) return
+  const connectorId = String(ctx.params?.connectorId || '')
+  if (!/^custom-[a-f0-9]{24}$/.test(connectorId)) {
+    ctx.status = 400
+    ctx.body = { error: 'invalid connector id' }
+    return
+  }
+  try {
+    ctx.body = await deleteCustomConnector({ ...owner, connectorId })
+  } catch (err) {
+    handleConnectorCatalogError(ctx, err)
   }
 }
 

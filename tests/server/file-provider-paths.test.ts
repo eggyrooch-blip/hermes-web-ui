@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { join, resolve } from 'path'
 import { tmpdir } from 'os'
-import { normalizePlatformPath, validatePath } from '../../packages/server/src/services/hermes/file-provider'
+import { normalizePlatformPath, resolveHermesPath, validatePath } from '../../packages/server/src/services/hermes/file-provider'
 import {
   isNearestExistingRealPathWithin,
   isPathWithin,
@@ -43,12 +43,25 @@ describe('file provider platform path normalization', () => {
 
     expect(() => validatePath(filePath)).toThrow('Invalid file path')
   })
+
+  it('rejects Windows separators before resolving a relative Hermes path', () => {
+    expect(() => resolveHermesPath('..\\..\\etc\\passwd')).toThrow('Invalid file path')
+    expect(() => resolveHermesPath('safe\\..\\..\\secret.txt')).toThrow('Invalid file path')
+  })
 })
 
 describe('Hermes path containment helpers', () => {
   it('does not treat sibling paths with the same prefix as inside the base', () => {
     expect(isPathWithin('/tmp/hermes-profile2/state.db', '/tmp/hermes-profile')).toBe(false)
     expect(isPathWithin('/tmp/hermes-profile/state.db', '/tmp/hermes-profile')).toBe(true)
+  })
+
+  it('allows child names beginning with dots while rejecting the exact parent segment', () => {
+    const base = '/tmp/hermes-profile'
+
+    expect(isPathWithin(join(base, '..hidden', 'state.db'), base)).toBe(true)
+    expect(isPathWithin(join(base, '...', 'state.db'), base)).toBe(true)
+    expect(isPathWithin(join(base, '..', 'state.db'), base)).toBe(false)
   })
 
   it('returns normalized relative paths only for children', () => {

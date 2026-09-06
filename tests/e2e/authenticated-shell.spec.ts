@@ -7,7 +7,7 @@ test('renders authenticated shell and navigates between key product routes', asy
 
   await page.goto('/#/hermes/jobs')
 
-  await expect(page.getByRole('heading', { name: 'Scheduled Jobs' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Automation' })).toBeVisible()
   await expect(page.getByText('Nightly Smoke')).toBeVisible()
 
   const jobsRequest = api.requests.find((request) => request.pathname === '/api/hermes/jobs')

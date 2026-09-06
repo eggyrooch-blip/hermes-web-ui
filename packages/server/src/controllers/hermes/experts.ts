@@ -9,11 +9,13 @@ import {
 } from '../../services/hermes/expert-registry-client'
 import { isSessionStorageAvailable, listSessions } from '../../db/hermes/session-store'
 import { listFeedback } from '../../db/hermes/feedback-store'
+import { isHarnessEnabledForProfile } from '../../services/hermes/harness-admission'
 
 const ASSET_COMPONENT_RE = /^[A-Za-z0-9_.:-]{1,180}$/
 const IMAGE_CONTENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
 interface WebUser {
+  id?: string | number
   openid?: string
   profile?: string
 }
@@ -22,11 +24,20 @@ const WORK_RECORD_LIMIT = 20
 const WORK_RECORD_SCAN_LIMIT = 2000
 const WORK_RECORD_WINDOW_DAYS = 30
 
+function brokerUserKey(user?: WebUser): string {
+  return user?.openid?.trim() || String(user?.id || '').trim()
+}
+
 function principal(ctx: Context): { openid: string; profile: string; subject: string } | null {
   const user = ctx.state?.user as WebUser | undefined
-  const openid = user?.openid?.trim() || ''
-  const profile = user?.profile?.trim() || ''
-  return openid && profile ? { openid, profile, subject: `feishu:${openid}` } : null
+  const openid = brokerUserKey(user)
+  const profile = user?.profile?.trim() || getRequestProfile(ctx)
+  if (!openid || !profile) return null
+  return {
+    openid,
+    profile,
+    subject: user?.openid ? `feishu:${openid}` : `webui:${openid}`,
+  }
 }
 
 function unavailable(items = false) {
@@ -268,13 +279,16 @@ export async function list(ctx: Context): Promise<void> {
   const profileName = getRequestProfile(ctx)
   const user = ctx.state?.user as WebUser | undefined
   try {
-    ctx.body = await fetchExpertCatalog({ profileName, userKey: user?.openid })
+    ctx.body = {
+      ...await fetchExpertCatalog({ profileName, userKey: brokerUserKey(user) }),
+      harness_enabled: isHarnessEnabledForProfile(profileName),
+    }
   } catch (err: any) {
     logger.warn(
       { profile: profileName, err: err?.message || String(err) },
       'Expert broker unavailable; serving empty catalog',
     )
-    ctx.body = emptyCatalog(profileName)
+    ctx.body = { ...emptyCatalog(profileName), harness_enabled: false }
   }
 }
 
@@ -304,13 +318,14 @@ export async function asset(ctx: Context): Promise<void> {
 
   const profileName = getRequestProfile(ctx)
   const user = ctx.state?.user as WebUser | undefined
+  const userKey = brokerUserKey(user)
   const params = new URLSearchParams()
   params.set('profile_name', profileName)
-  if (user?.openid) params.set('user_key', user.openid)
+  if (userKey) params.set('user_key', userKey)
   const headers: Record<string, string> = {}
   if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
   headers['X-Hermes-Profile'] = profileName
-  if (user?.openid) headers['X-Hermes-User-Key'] = user.openid
+  if (userKey) headers['X-Hermes-User-Key'] = userKey
   const url = `${config.runBrokerUrl}/api/run-broker/plugin-assets/${encodeURIComponent(pluginId)}/${encodeURIComponent(assetName)}?${params.toString()}`
 
   let res: Response

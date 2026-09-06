@@ -1,23 +1,183 @@
-stages:
-  - policy
-  - test
-  - leak
+# ftask:managed ci-tiering v1 — generated from .ftask/ci.yml by `ftask ci sync`.
+# Edit the manifest and re-run `ftask ci sync`; hand edits here are overwritten.
+# Tiers: MR = quick + changed modules (unmapped code → catch-all full; docs-only
+#        MRs skip the test tier); main + nightly schedule = full regression.
+#        Gate jobs (policy/leak) come from the manifest's extra_jobs block.
+
+stages: ["policy", "test", "full-test", "leak"]
 
 default:
+  image: "docker.io/library/node:24-bookworm"
+  interruptible: true
   tags:
-    - hermes
+    - "hermes"
 
 variables:
-  GIT_DEPTH: "0"
-  NPM_CONFIG_CACHE: "$CI_PROJECT_DIR/.npm"
+  "GIT_DEPTH": "0"
+  "NPM_CONFIG_CACHE": "$CI_PROJECT_DIR/.npm"
 
 cache:
   key:
     files:
-      - package-lock.json
+      - "package-lock.json"
   paths:
-    - .npm/
+    - ".npm/"
 
+test-quick:
+  stage: test
+  before_script:
+    - "npm ci --ignore-scripts --no-audit --no-fund"
+    - "npm rebuild node-pty"
+  script:
+    - "npm run harness:check"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - "packages/client/**/*"
+        - "tests/client/**/*"
+        - "packages/server/**/*"
+        - "tests/server/**/*"
+        - "packages/desktop/**/*"
+        - "tests/desktop/**/*"
+        - "packages/website/**/*"
+        - "vite.config.website.ts"
+        - "package-lock.json"
+        - "package.json"
+        - "vitest.config.ts"
+        - "vite.config.ts"
+        - "tests/shared/**/*"
+        - "tests/fixtures/**/*"
+        - "tests/setup.ts"
+        - "scripts/**/*"
+
+test-client:
+  stage: test
+  before_script:
+    - "npm ci --ignore-scripts --no-audit --no-fund"
+    - "npm rebuild node-pty"
+  script:
+    - "npm test -- tests/client"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - "packages/client/**/*"
+        - "tests/client/**/*"
+        - "package-lock.json"
+        - "package.json"
+        - "vitest.config.ts"
+        - "vite.config.ts"
+        - "tests/shared/**/*"
+        - "tests/fixtures/**/*"
+        - "tests/setup.ts"
+        - "scripts/**/*"
+
+test-server:
+  stage: test
+  before_script:
+    - "npm ci --ignore-scripts --no-audit --no-fund"
+    - "npm rebuild node-pty"
+  script:
+    - "npm test -- tests/server"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - "packages/server/**/*"
+        - "tests/server/**/*"
+        - "package-lock.json"
+        - "package.json"
+        - "vitest.config.ts"
+        - "vite.config.ts"
+        - "tests/shared/**/*"
+        - "tests/fixtures/**/*"
+        - "tests/setup.ts"
+        - "scripts/**/*"
+
+test-desktop:
+  stage: test
+  before_script:
+    - "npm ci --ignore-scripts --no-audit --no-fund"
+    - "npm rebuild node-pty"
+  script:
+    - "npm test -- tests/desktop"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - "packages/desktop/**/*"
+        - "tests/desktop/**/*"
+        - "package-lock.json"
+        - "package.json"
+        - "vitest.config.ts"
+        - "vite.config.ts"
+        - "tests/shared/**/*"
+        - "tests/fixtures/**/*"
+        - "tests/setup.ts"
+        - "scripts/**/*"
+
+test-website:
+  stage: test
+  before_script:
+    - "npm ci --ignore-scripts --no-audit --no-fund"
+    - "npm rebuild node-pty"
+  script:
+    - "npm run build:website"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - "packages/website/**/*"
+        - "vite.config.website.ts"
+        - "package-lock.json"
+        - "package.json"
+        - "vitest.config.ts"
+        - "vite.config.ts"
+        - "tests/shared/**/*"
+        - "tests/fixtures/**/*"
+        - "tests/setup.ts"
+        - "scripts/**/*"
+
+test-unmapped:
+  stage: test
+  variables:
+    GIT_DEPTH: "0"
+    FTASK_MAPPED_RE: "packages/client/(.*/)?[^/]*|tests/client/(.*/)?[^/]*|packages/server/(.*/)?[^/]*|tests/server/(.*/)?[^/]*|packages/desktop/(.*/)?[^/]*|tests/desktop/(.*/)?[^/]*|packages/website/(.*/)?[^/]*|vite\\.config\\.website\\.ts|package-lock\\.json|package\\.json|vitest\\.config\\.ts|vite\\.config\\.ts|tests/shared/(.*/)?[^/]*|tests/fixtures/(.*/)?[^/]*|tests/setup\\.ts|scripts/(.*/)?[^/]*|(.*/)?[^/]*\\.md"
+  script:
+    - |
+      BASE="${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}"
+      if [ -z "$BASE" ]; then
+        git fetch -q origin "refs/heads/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-main}" || true
+        BASE=$(git merge-base FETCH_HEAD HEAD 2>/dev/null || true)
+      fi
+      if [ -n "$BASE" ]; then
+        changed=$(git diff --name-only "$BASE" "$CI_COMMIT_SHA") || changed=""
+      else
+        changed=""
+      fi
+      if [ -z "$changed" ]; then
+        echo "unmapped-guard: diff base undeterminable or diff empty - failing closed into the full suite"
+        changed="__undeterminable__"
+      fi
+      unmapped=$(printf '%s\n' "$changed" | grep -Ev "^($FTASK_MAPPED_RE)$" || true)
+      if [ -z "$unmapped" ]; then
+        echo "unmapped-guard: every changed path is mapped or docs - nothing to do"
+        exit 0
+      fi
+      echo "unmapped-guard: unmapped changes detected - running the full suite:"
+      printf '%s\n' "$unmapped"
+      npm ci --ignore-scripts --no-audit --no-fund && npm rebuild node-pty && npm run harness:check && npm test -- --maxWorkers=4 && npm run build
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+test-full:
+  stage: full-test
+  before_script:
+    - "npm ci --ignore-scripts --no-audit --no-fund"
+    - "npm rebuild node-pty"
+  script:
+    - "npm run harness:check && npm test -- --maxWorkers=4 && npm run build"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+
+# --- repo-specific gate jobs, from manifest extra_jobs (validated, verbatim) ---
 policy:
   stage: policy
   image:
@@ -27,28 +187,13 @@ policy:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   script:
     - |
-      # Bootstrap is allowed once because target main has no policy yet. After merge,
-      # GitLab reads CI from protected main and this job rejects attempts to weaken it.
-      if git cat-file -e "$CI_MERGE_REQUEST_DIFF_BASE_SHA:.gitlab-ci.yml" 2>/dev/null; then
+      # Bootstrap: only enforce once the policy job itself is on the base ref.
+      # Before that (this MR introduces it), any base .gitlab-ci.yml must not block us.
+      if git show "$CI_MERGE_REQUEST_DIFF_BASE_SHA:.gitlab-ci.yml" 2>/dev/null | grep -q '^policy:'; then
         changed=$(git diff --name-only "$CI_MERGE_REQUEST_DIFF_BASE_SHA" "$CI_COMMIT_SHA" -- \
-          .gitlab-ci.yml .gitleaks.toml .gitleaksignore)
+          .gitlab-ci.yml .gitleaks.toml .gitleaksignore .ftask/ci.yml)
         test -z "$changed" || { echo "Protected CI policy changed:"; echo "$changed"; exit 1; }
       fi
-
-test:
-  stage: test
-  image: docker.io/library/node:24-bookworm
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-  before_script:
-    - npm ci --ignore-scripts --no-audit --no-fund
-    - npm rebuild node-pty
-  script:
-    - npm run harness:check
-    # ponytail: cap workers below the 8-CPU runner quota; raise only with measured headroom.
-    - npm test -- --maxWorkers=4
-    - npm run build
 
 leak:
   stage: leak

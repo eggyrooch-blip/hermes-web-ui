@@ -56,6 +56,13 @@ function applyPreferredSessionProfileFilter(): string | null {
 
 async function loadRouteSession() {
   const profile = applyPreferredSessionProfileFilter()
+  const pendingLocalSession = routeSessionId.value
+    ? chatStore.sessions.find(session => session.id === routeSessionId.value && session.localCreated)
+    : null
+  if (pendingLocalSession) {
+    await chatStore.switchSession(pendingLocalSession.id)
+    return
+  }
   await chatStore.loadSessions(profile, routeSessionId.value)
   if (routeSessionId.value && chatStore.activeSessionId !== routeSessionId.value) {
     await router.replace({ name: 'hermes.chat' })

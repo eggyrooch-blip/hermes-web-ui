@@ -54,6 +54,7 @@ const listFeedbackRowsMock = vi.fn()
 const upsertFeedbackMock = vi.fn()
 const deleteFeedbackRowMock = vi.fn()
 const hasFinalAnswerMock = vi.fn()
+const fetchExpertCatalogMock = vi.fn()
 
 vi.mock('../../packages/server/src/db/hermes/conversations-db', () => ({
   listConversationSummariesFromDb: listConversationSummariesFromDbMock,
@@ -137,6 +138,10 @@ vi.mock('../../packages/server/src/routes/hermes/chat-run', () => ({
 
 vi.mock('../../packages/server/src/services/hermes/model-context', () => ({
   getModelContextLength: vi.fn(),
+}))
+
+vi.mock('../../packages/server/src/services/hermes/expert-registry-client', () => ({
+  fetchExpertCatalog: fetchExpertCatalogMock,
 }))
 
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
@@ -254,6 +259,7 @@ describe('session conversations controller', () => {
     upsertFeedbackMock.mockReset()
     deleteFeedbackRowMock.mockReset()
     hasFinalAnswerMock.mockReset()
+    fetchExpertCatalogMock.mockReset()
     delete process.env.HERMES_RUN_BROKER_URL
     delete process.env.HERMES_RUN_BROKER_KEY
     vi.unstubAllGlobals()
@@ -804,6 +810,29 @@ describe('session conversations controller', () => {
 
     expect(ctx.status).toBeUndefined()
     expect(ctx.body).toEqual({ ok: true, workspace: 'project' })
+  })
+
+  it('never rebinds a Harness session workspace through the sessions API', async () => {
+    stubSharedAgentRole('manager')
+    isChatPlaneRequestMock.mockReturnValue(true)
+    getSessionMock.mockReturnValue(sharedAgentSession({
+      id: 'harness-session',
+      user_id: 'ou_manager',
+      workspace: 'project',
+      execution_engine: 'harness',
+      message_count: 0,
+    }))
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = sharedAgentCtx('ou_manager', {
+      params: { id: 'harness-session' },
+      request: { body: { workspace: 'other' } },
+    })
+    await mod.setWorkspace(ctx)
+
+    expect(ctx.status).toBe(409)
+    expect(ctx.body).toEqual({ error: 'Harness session workspace is fixed' })
+    expect(localUpdateSessionMock).not.toHaveBeenCalled()
   })
 
   it('keeps coding-agent workspaces on their existing absolute-path contract', async () => {
@@ -1984,6 +2013,117 @@ describe('session conversations controller', () => {
       profile: 'profile-a',
       user_id: 'ou_a',
     }))
+  })
+
+  it('persists an authorized expert on a new owner-bound chat session', async () => {
+    getSessionMock.mockReturnValue(null)
+    isChatPlaneRequestMock.mockReturnValue(true)
+    getRequestProfileMock.mockReturnValue('profile-a')
+    fetchExpertCatalogMock.mockResolvedValue({
+      profile_name: 'profile-a',
+      experts: [{ id: 'expert-a', name: 'Expert A', title: 'Reviewer', avatar: '/expert-a.png' }],
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'new-expert-session' },
+      request: { body: { expert_id: 'expert-a', execution_engine: 'harness' } },
+      state: { user: { id: 7, openid: 'ou_a', profile: 'profile-a' } },
+      body: null,
+    }
+    await mod.setExpert(ctx)
+
+    expect(fetchExpertCatalogMock).toHaveBeenCalledWith({ profileName: 'profile-a', userKey: 'ou_a' })
+    expect(localCreateSessionMock).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'new-expert-session', profile: 'profile-a', user_id: 'ou_a', execution_engine: 'harness',
+      expert_id: 'expert-a', expert_label: 'Reviewer', expert_avatar: '/expert-a.png',
+    }))
+    expect(localUpdateSessionMock).not.toHaveBeenCalled()
+    expect(ctx.body).toEqual({ ok: true, expert_id: 'expert-a' })
+  })
+
+  it('fails closed before clearing another user\'s expert session', async () => {
+    getSessionMock.mockReturnValue({
+      id: 'owned-by-a', profile: 'profile-a', user_id: 'ou_a', expert_id: 'expert-a', message_count: 0,
+    })
+    isChatPlaneRequestMock.mockReturnValue(true)
+    getRequestProfileMock.mockReturnValue('profile-a')
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'owned-by-a' },
+      request: { body: { expert_id: null, execution_engine: 'hermes' } },
+      state: { user: { id: 8, openid: 'ou_b', profile: 'profile-a' } },
+      body: null,
+    }
+    await mod.setExpert(ctx)
+
+    expect(ctx.status).toBe(403)
+    expect(localUpdateSessionMock).not.toHaveBeenCalled()
+    expect(fetchExpertCatalogMock).not.toHaveBeenCalled()
+  })
+
+  it('does not let a shared-agent manager mutate the owner expert binding', async () => {
+    stubSharedAgentRole('manager')
+    getSessionMock.mockReturnValue(sharedAgentSession({
+      expert_id: 'expert-a',
+      message_count: 0,
+      execution_engine: 'hermes',
+    }))
+    isChatPlaneRequestMock.mockReturnValue(true)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = sharedAgentCtx('ou_manager', {
+      params: { id: 'shared-session' },
+      request: { body: { expert_id: null, execution_engine: 'hermes' } },
+    })
+    await mod.setExpert(ctx)
+
+    expect(ctx.status).toBe(403)
+    expect(localUpdateSessionMock).not.toHaveBeenCalled()
+    expect(fetchExpertCatalogMock).not.toHaveBeenCalled()
+  })
+
+  it('does not persist an expert when the actor-bound catalog is unavailable', async () => {
+    getSessionMock.mockReturnValue(null)
+    isChatPlaneRequestMock.mockReturnValue(true)
+    getRequestProfileMock.mockReturnValue('profile-a')
+    fetchExpertCatalogMock.mockRejectedValue(new Error('broker unavailable'))
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'new-expert-session' },
+      request: { body: { expert_id: 'expert-a', execution_engine: 'hermes' } },
+      state: { user: { id: 7, openid: 'ou_a', profile: 'profile-a' } },
+      body: null,
+    }
+    await mod.setExpert(ctx)
+
+    expect(ctx.status).toBe(503)
+    expect(localCreateSessionMock).not.toHaveBeenCalled()
+    expect(localUpdateSessionMock).not.toHaveBeenCalled()
+  })
+
+  it('persists an explicit pre-run expert clear and resets the engine', async () => {
+    getSessionMock.mockReturnValue({
+      id: 'owned-by-a', profile: 'profile-a', user_id: 'ou_a', expert_id: 'expert-a', message_count: 0,
+    })
+    isChatPlaneRequestMock.mockReturnValue(true)
+    getRequestProfileMock.mockReturnValue('profile-a')
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'owned-by-a' },
+      request: { body: { expert_id: null, execution_engine: 'hermes' } },
+      state: { user: { id: 7, openid: 'ou_a', profile: 'profile-a' } },
+      body: null,
+    }
+    await mod.setExpert(ctx)
+
+    expect(localUpdateSessionMock).toHaveBeenCalledWith('owned-by-a', {
+      expert_id: null, expert_label: null, expert_avatar: null, execution_engine: 'hermes',
+    })
+    expect(ctx.body).toEqual({ ok: true, expert_id: null })
   })
 
   it('claims the cross-family switch notice atomically instead of trusting the pre-await read', async () => {

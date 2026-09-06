@@ -41,8 +41,10 @@ export interface StartRunRequest {
    *  the default Hermes persona. Also forwarded as the `X-Hermes-Expert-Id`
    *  request header by the run transport. */
   expert_id?: string
+  project_id?: string
   expert_label?: string
   expert_avatar?: string
+  execution_engine?: 'hermes' | 'harness'
 }
 
 export interface StartRunResponse {
@@ -176,10 +178,12 @@ const sessionEventHandlers = new Map<string, {
   onReasoningDelta: (event: RunEvent) => void
   onThinkingDelta: (event: RunEvent) => void
   onReasoningAvailable: (event: RunEvent) => void
+  onRunStatus?: (event: RunEvent) => void
   onToolStarted: (event: RunEvent) => void
   onToolCompleted: (event: RunEvent) => void
   onSubagentEvent?: (event: RunEvent) => void
   onRunStarted: (event: RunEvent) => void
+  onProjectBound?: (event: RunEvent) => void
   onRunCompleted: (event: RunEvent) => void
   onRunFailed: (event: RunEvent) => void
   onCompressionStarted: (event: RunEvent) => void
@@ -195,6 +199,7 @@ const sessionEventHandlers = new Map<string, {
   onRunRejected?: (event: RunEvent) => void
   onApprovalRequested?: (event: RunEvent) => void
   onApprovalResolved?: (event: RunEvent) => void
+  onWorkflowStage?: (event: RunEvent) => void
   onPeerUserMessage?: (event: RunEvent) => void
   onClarifyRequested?: (event: RunEvent) => void
   onClarifyResolved?: (event: RunEvent) => void
@@ -326,6 +331,12 @@ function globalRunStartedHandler(event: RunEvent): void {
   if (handlers?.onRunStarted) {
     handlers.onRunStarted(event)
   }
+}
+
+function globalProjectBoundHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+  sessionEventHandlers.get(sid)?.onProjectBound?.(event)
 }
 
 /**
@@ -531,6 +542,18 @@ function globalApprovalResolvedHandler(event: RunEvent): void {
   }
 }
 
+function globalWorkflowStageHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+  sessionEventHandlers.get(sid)?.onWorkflowStage?.(event)
+}
+
+function globalRunStatusHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+  sessionEventHandlers.get(sid)?.onRunStatus?.(event)
+}
+
 function globalPeerUserMessageHandler(event: RunEvent): void {
   const sid = event.session_id
   if (!sid) return
@@ -605,10 +628,12 @@ export function registerSessionHandlers(
     onReasoningDelta: (event: RunEvent) => void
     onThinkingDelta: (event: RunEvent) => void
     onReasoningAvailable: (event: RunEvent) => void
+    onRunStatus?: (event: RunEvent) => void
     onToolStarted: (event: RunEvent) => void
     onToolCompleted: (event: RunEvent) => void
     onSubagentEvent?: (event: RunEvent) => void
     onRunStarted: (event: RunEvent) => void
+    onProjectBound?: (event: RunEvent) => void
     onRunCompleted: (event: RunEvent) => void
     onRunFailed: (event: RunEvent) => void
     onCompressionStarted: (event: RunEvent) => void
@@ -624,6 +649,7 @@ export function registerSessionHandlers(
     onRunRejected?: (event: RunEvent) => void
     onApprovalRequested?: (event: RunEvent) => void
     onApprovalResolved?: (event: RunEvent) => void
+    onWorkflowStage?: (event: RunEvent) => void
     onPeerUserMessage?: (event: RunEvent) => void
     onClarifyRequested?: (event: RunEvent) => void
     onClarifyResolved?: (event: RunEvent) => void
@@ -787,7 +813,8 @@ export function respondClarify(
 export function respondToolApproval(
   sessionId: string,
   approvalId: string,
-  choice: 'once' | 'session' | 'always' | 'deny',
+  choice: 'once' | 'session' | 'always' | 'deny' | 'approve' | 'reject' | 'rework',
+  comment = '',
   transport: ChatRunTransport = 'chat-run',
 ): void {
   const socket = connectChatRun(null, transport)
@@ -795,6 +822,7 @@ export function respondToolApproval(
     session_id: sessionId,
     approval_id: approvalId,
     choice,
+    comment,
   })
 }
 
@@ -877,6 +905,7 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
     chatRunSocket.on('reasoning.delta', globalReasoningDeltaHandler)
     chatRunSocket.on('thinking.delta', globalThinkingDeltaHandler)
     chatRunSocket.on('reasoning.available', globalReasoningAvailableHandler)
+    chatRunSocket.on('run.status', globalRunStatusHandler)
 
     // Tool events
     chatRunSocket.on('tool.started', globalToolStartedHandler)
@@ -888,12 +917,14 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
 
     // Run lifecycle events
     chatRunSocket.on('run.started', globalRunStartedHandler)
+    chatRunSocket.on('project.bound', globalProjectBoundHandler)
     chatRunSocket.on('run.failed', globalRunFailedHandler)
     chatRunSocket.on('run.completed', globalRunCompletedHandler)
     chatRunSocket.on('run.queued', globalRunQueuedHandler)
     chatRunSocket.on('run.rejected', globalRunRejectedHandler)
     chatRunSocket.on('approval.requested', globalApprovalRequestedHandler)
     chatRunSocket.on('approval.resolved', globalApprovalResolvedHandler)
+    chatRunSocket.on('workflow.stage', globalWorkflowStageHandler)
     chatRunSocket.on('run.peer_user_message', globalPeerUserMessageHandler)
     chatRunSocket.on('clarify.requested', globalClarifyRequestedHandler)
     chatRunSocket.on('auth.required', globalAuthRequiredHandler)
@@ -1209,6 +1240,10 @@ export function startRunViaSocket(
       onEvent(evt)
       onStarted?.(evt.run_id || '')
     },
+    onProjectBound: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
     onRunCompleted: (evt: RunEvent) => {
       if (closed) return
       onEvent(evt)
@@ -1288,6 +1323,14 @@ export function startRunViaSocket(
       onEvent(evt)
     },
     onApprovalResolved: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
+    onWorkflowStage: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
+    onRunStatus: (evt: RunEvent) => {
       if (closed) return
       onEvent(evt)
     },

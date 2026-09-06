@@ -1174,6 +1174,7 @@ describe('skill credential status', () => {
     const result = await listSkillCredentialStatuses({
       profileName: 'feishu_user_a',
       profileDir,
+      user: { openid: 'ou_user_a', profile: 'feishu_user_a', role: 'user' },
     })
 
     expect(result.credentials.find(item => item.id === 'lark-cli')).toMatchObject({
@@ -1182,6 +1183,45 @@ describe('skill credential status', () => {
     })
     expect(JSON.stringify(result)).not.toContain('lark-secret-token')
     expect(JSON.stringify(result)).not.toContain('ou_user_a')
+  })
+
+  it('does not scan profile-local Lark authorization files without a trusted actor', async () => {
+    const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = makeProfile()
+    mkdirSync(join(profileDir, 'feishu_uat'), { recursive: true })
+    writeFileSync(
+      join(profileDir, 'feishu_uat', 'ou_other.json'),
+      JSON.stringify({ user_open_id: 'ou_other', access_token: 'other-token', expires_at: Date.now() + 5 * 60_000 }),
+      'utf-8',
+    )
+
+    const result = await listSkillCredentialStatuses({
+      profileName: 'user_a',
+      profileDir,
+    })
+
+    expect(result.credentials.find(item => item.id === 'lark-cli')?.status).toBe('needs_auth')
+    expect(JSON.stringify(result)).not.toContain('other-token')
+  })
+
+  it('does not use another actor\'s profile-local Lark authorization', async () => {
+    const { listSkillCredentialStatuses } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = makeProfile()
+    mkdirSync(join(profileDir, 'feishu_uat'), { recursive: true })
+    writeFileSync(
+      join(profileDir, 'feishu_uat', 'ou_other.json'),
+      JSON.stringify({ user_open_id: 'ou_other', access_token: 'other-token', expires_at: Date.now() + 60_000 }),
+      'utf-8',
+    )
+
+    const result = await listSkillCredentialStatuses({
+      profileName: 'user_a',
+      profileDir,
+      user: { openid: 'ou_user_a', profile: 'user_a', role: 'user' },
+    })
+
+    expect(result.credentials.find(item => item.id === 'lark-cli')?.status).toBe('needs_auth')
+    expect(JSON.stringify(result)).not.toContain('other-token')
   })
 
   it('does not treat bot-only Lark-cli runtime availability as personal user authorization', async () => {
@@ -1442,6 +1482,37 @@ describe('skill credential status', () => {
       status: 'configured',
     })
     expect(JSON.stringify(ctx.body)).not.toContain('gitlab-secret-token')
+  })
+
+  it('rejects connector identity fields supplied by the browser before broker dispatch', async () => {
+    vi.resetModules()
+    const { connectorCatalogConnect, customConnectors, customConnectorImport } = await import('../../packages/server/src/controllers/auth')
+    const user = { openid: 'ou_user_a', profile: 'feishu_user_a', role: 'user' }
+    const forgedQuery: any = { state: { user }, query: { profile: 'feishu_user_b' }, request: {}, get: () => '' }
+    await customConnectors(forgedQuery)
+    expect(forgedQuery.status).toBe(400)
+
+    const forgedBody: any = {
+      state: { user }, query: {}, get: () => '',
+      request: { body: { profile_name: 'feishu_user_b', config: '{}' } },
+    }
+    await customConnectorImport(forgedBody)
+    expect(forgedBody.status).toBe(400)
+    expect(JSON.stringify(forgedBody.body)).not.toContain('ou_user_a')
+
+    const forgedConnect: any = {
+      state: { user }, query: {}, get: () => '',
+      request: { body: { row_key: 'workbuddy:ready', subject_id: 'other' } },
+    }
+    await connectorCatalogConnect(forgedConnect)
+    expect(forgedConnect.status).toBe(400)
+
+    const malformedFields: any = {
+      state: { user }, query: {}, get: () => '',
+      request: { body: { row_key: 'workbuddy:ready', fields: 'secret' } },
+    }
+    await connectorCatalogConnect(malformedFields)
+    expect(malformedFields.status).toBe(400)
   })
 
   it('loads credential status from an owner-scoped selected profile for a Feishu session', async () => {

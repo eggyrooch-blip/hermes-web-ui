@@ -166,6 +166,19 @@ describe('AppSidebar navigation', () => {
     expect(logoLink.find('img').attributes('alt')).toBe('Hermes')
   })
 
+  it('opens Projects for the active profile', () => {
+    const wrapper = mount(AppSidebar, {
+      global: { stubs: { ProfileSelector: true, ModelSelector: true, LanguageSwitch: true, ThemeSwitch: true, NButton: true } },
+    })
+
+    const projects = wrapper.findAllComponents({ name: 'RouteLinkItem' })
+      .find(link => link.text().includes('sidebar.projects'))
+
+    expect(projects?.props('to')).toEqual({
+      name: 'hermes.coworkProject', query: { profile: 'feishu_user_a' },
+    })
+  })
+
   it('keeps page-sidebar-only actions out of the app sidebar', () => {
     mockAppStore.serverVersion = '0.6.15'
     mockAppStore.latestVersion = '0.6.17'
@@ -197,6 +210,8 @@ describe('AppSidebar navigation', () => {
     expect(wrapper.text()).not.toContain('sidebar.plugins')
     expect(wrapper.text()).not.toContain('sidebar.codingAgents')
     expect(wrapper.text()).toContain('sidebar.files')
+    expect(wrapper.text()).toContain('sidebar.projects')
+    expect(wrapper.text()).not.toContain('sidebar.cowork')
     expect(wrapper.text()).not.toContain('sidebar.expert')
     expect(wrapper.text()).not.toContain('sidebar.jobs')
     expect(wrapper.text()).not.toContain('sidebar.connectors')

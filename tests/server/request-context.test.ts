@@ -44,6 +44,39 @@ describe('chat plane access control', () => {
     expect(ctx.status).toBe(200)
   })
 
+  it.each(['POST', 'DELETE'])('lets a chat-plane employee %s their OWN GitHub credential', async (method) => {
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const ctx = mockCtx('/api/hermes/credentials/github', method)
+    const next = vi.fn(async () => {})
+    await enforcePlaneAccess(ctx, next)
+    expect(next).toHaveBeenCalledOnce()
+  })
+
+  it('lets a chat-plane employee approve their own MCP OAuth request only', async () => {
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const allowed = mockCtx('/api/auth/mcp-oauth/approve', 'POST')
+    const blocked = mockCtx('/api/auth/mcp-oauth/approve', 'GET')
+    const next = vi.fn(async () => {})
+
+    await enforcePlaneAccess(allowed, next)
+    await enforcePlaneAccess(blocked, next)
+
+    expect(next).toHaveBeenCalledOnce()
+    expect(allowed.status).toBe(200)
+    expect(blocked.status).toBe(403)
+  })
+
+  it('lets a chat-plane employee read only one pending MCP consent request', async () => {
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const allowed = mockCtx('/api/auth/mcp-oauth/requests/hma_request', 'GET')
+    const blocked = mockCtx('/api/auth/mcp-oauth/requests/hma_request', 'POST')
+    const next = vi.fn(async () => {})
+    await enforcePlaneAccess(allowed, next)
+    await enforcePlaneAccess(blocked, next)
+    expect(next).toHaveBeenCalledOnce()
+    expect(blocked.status).toBe(403)
+  })
+
   it('does not widen the hole: only POST on that exact path, neighbours stay blocked', async () => {
     // 放行一条路径最怕顺手放宽了一片。逐条钉死：动词、路径前缀、以及相邻的 ops 端点。
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
@@ -698,6 +731,7 @@ describe('multitenancy profile resolution', () => {
     const {
       signTrustedFeishuHeader,
       trustedFeishuAuth,
+      verifyTrustedFeishuSocketHeaders,
     } = await loadRequestContext({
       HERMES_MULTITENANCY_DB: dbPath,
       HERMES_TRUSTED_HEADER_SECRET: 'trusted-secret',
@@ -734,6 +768,11 @@ describe('multitenancy profile resolution', () => {
       name: '孙可',
       avatarUrl: 'https://example.com/feishu-avatar.png',
       profiles: ['feishu_user_a'],
+    })
+    expect(verifyTrustedFeishuSocketHeaders(headers)).toMatchObject({
+      ok: true,
+      openid: 'ou_user_a',
+      name: '孙可',
     })
   })
 

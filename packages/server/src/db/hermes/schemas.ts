@@ -39,6 +39,7 @@ export const SESSIONS_SCHEMA: Record<string, string> = {
   expert_id: 'TEXT',
   expert_label: 'TEXT',
   expert_avatar: 'TEXT',
+  execution_engine: "TEXT NOT NULL DEFAULT 'hermes'",
   is_archived: 'INTEGER NOT NULL DEFAULT 0',
   user_id: 'TEXT',
   model: 'TEXT NOT NULL DEFAULT \'\'',
@@ -61,6 +62,9 @@ export const SESSIONS_SCHEMA: Record<string, string> = {
   preview: 'TEXT NOT NULL DEFAULT \'\'',
   last_active: 'INTEGER NOT NULL',
   workspace: 'TEXT',
+  project_id: 'TEXT',
+  project_name: 'TEXT',
+  project_bound: 'INTEGER NOT NULL DEFAULT 0',
   // One-shot marker: this session already showed the cross-model-family switch
   // notice. INTEGER + DEFAULT so addMissingSafeColumns() can ALTER it onto
   // existing databases.
@@ -317,6 +321,7 @@ export const GC_ROOMS_SCHEMA: Record<string, string> = {
   tailMessageCount: 'INTEGER NOT NULL DEFAULT 10',
   totalTokens: 'INTEGER NOT NULL DEFAULT 0',
   sessionSeed: "TEXT NOT NULL DEFAULT '0'",
+  ownerAuthUserId: 'INTEGER',
 }
 
 export const GC_MESSAGES_TABLE = 'gc_messages'

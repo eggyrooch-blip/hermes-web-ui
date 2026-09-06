@@ -1,10 +1,12 @@
 import Router from '@koa/router'
 import type { Context } from 'koa'
+import { createReadStream } from 'fs'
 import { mkdir } from 'fs/promises'
-import { basename, extname, isAbsolute, join, normalize } from 'path'
+import { basename, isAbsolute, join, normalize } from 'path'
 import {
   createFileProvider,
   localProvider,
+  MAX_DOWNLOAD_SIZE,
   isInUploadDir,
   isSensitivePath,
   validatePath,
@@ -16,60 +18,9 @@ import {
 } from '../../services/request-context'
 import { getActiveProfileName } from '../../services/hermes/hermes-profile'
 import { isNearestExistingRealPathWithin, isPathWithin } from '../../services/hermes/hermes-path'
+import { getArtifactMimeType } from '../../services/hermes/artifact-publication'
 
 export const downloadRoutes = new Router()
-
-// MIME type mapping for common extensions
-const MIME_MAP: Record<string, string> = {
-  '.txt': 'text/plain',
-  '.html': 'text/html',
-  '.htm': 'text/html',
-  '.css': 'text/css',
-  '.js': 'application/javascript',
-  '.json': 'application/json',
-  '.xml': 'application/xml',
-  '.csv': 'text/csv',
-  '.md': 'text/markdown',
-  '.pdf': 'application/pdf',
-  '.zip': 'application/zip',
-  '.gz': 'application/gzip',
-  '.tar': 'application/x-tar',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.svg': 'image/svg+xml',
-  '.webp': 'image/webp',
-  '.mp3': 'audio/mpeg',
-  '.wav': 'audio/wav',
-  '.mp4': 'video/mp4',
-  '.webm': 'video/webm',
-  '.doc': 'application/msword',
-  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  '.xls': 'application/vnd.ms-excel',
-  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  '.ppt': 'application/vnd.ms-powerpoint',
-  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  '.py': 'text/x-python',
-  '.ts': 'text/typescript',
-  '.tsx': 'text/typescript',
-  '.rs': 'text/x-rust',
-  '.go': 'text/x-go',
-  '.java': 'text/x-java',
-  '.c': 'text/x-c',
-  '.cpp': 'text/x-c++',
-  '.h': 'text/x-c',
-  '.sh': 'text/x-shellscript',
-  '.yaml': 'text/yaml',
-  '.yml': 'text/yaml',
-  '.toml': 'text/toml',
-  '.log': 'text/plain',
-}
-
-function getMimeType(fileName: string): string {
-  const ext = extname(fileName).toLowerCase()
-  return MIME_MAP[ext] || 'application/octet-stream'
-}
 
 const statusMap: Record<string, number> = {
   missing_path: 400,
@@ -170,7 +121,7 @@ async function resolveAndReadHermesFile(
   ctx: Context,
   filePath: string,
   fileName?: string,
-): Promise<{ data: Buffer, name: string, mime: string }> {
+): Promise<{ body: Buffer | ReturnType<typeof createReadStream>, length: number, name: string, mime: string }> {
   // Chat-plane display paths (MEDIA rewrites / file cards / embedded browser)
   // arrive as `/workspace/<rel>`. Normalize to a workspace-relative path HERE,
   // before the sensitive-path checks below, so the blocklist and traversal
@@ -198,19 +149,30 @@ async function resolveAndReadHermesFile(
 
   const target = await getDownloadTarget(ctx, filePath)
 
-  let data: Buffer
-  if (target.useLocalUploadProvider || target.forceLocalRoot) {
-    data = await localProvider.readFile(target.validPath)
+  const provider = target.useLocalUploadProvider || target.forceLocalRoot
+    ? localProvider
+    : await createFileProvider(legacyProfile(ctx))
+  let body: Buffer | ReturnType<typeof createReadStream>
+  let length: number
+  if (provider.type === 'local') {
+    const file = await provider.stat(target.validPath)
+    if (file.isDir) throw Object.assign(new Error('Not a file'), { code: 'not_found' })
+    if (file.size > MAX_DOWNLOAD_SIZE) {
+      throw Object.assign(new Error(`File too large: ${file.size} bytes`), { code: 'file_too_large' })
+    }
+    body = createReadStream(target.validPath)
+    length = file.size
   } else {
-    const provider = await createFileProvider(legacyProfile(ctx))
-    data = await provider.readFile(target.validPath)
+    body = await provider.readFile(target.validPath)
+    length = body.length
   }
 
   const name = fileName || basename(target.validPath)
   return {
-    data,
+    body,
+    length,
     name,
-    mime: getMimeType(name),
+    mime: getArtifactMimeType(name),
   }
 }
 
@@ -231,12 +193,12 @@ downloadRoutes.get('/api/hermes/download', async (ctx) => {
   }
 
   try {
-    const { data, name, mime } = await resolveAndReadHermesFile(ctx, filePath, fileName)
+    const { body, length, name, mime } = await resolveAndReadHermesFile(ctx, filePath, fileName)
     ctx.set('Content-Type', mime)
     ctx.set('Content-Disposition', `attachment; filename="${encodeURIComponent(name)}"; filename*=UTF-8''${encodeURIComponent(name)}`)
-    ctx.set('Content-Length', String(data.length))
+    ctx.set('Content-Length', String(length))
     ctx.set('Cache-Control', 'no-cache')
-    ctx.body = data
+    ctx.body = body
   } catch (err: any) {
     applyDownloadRouteError(ctx, err)
   }
@@ -253,14 +215,14 @@ downloadRoutes.get('/api/hermes/preview', async (ctx) => {
   }
 
   try {
-    const { data, mime } = await resolveAndReadHermesFile(ctx, filePath, fileName)
+    const { body, length, mime } = await resolveAndReadHermesFile(ctx, filePath, fileName)
     ctx.set('Content-Type', mime)
     ctx.set('Content-Disposition', 'inline')
-    ctx.set('Content-Length', String(data.length))
+    ctx.set('Content-Length', String(length))
     ctx.set('X-Frame-Options', 'SAMEORIGIN')
     ctx.set('Content-Security-Policy', "frame-ancestors 'self'")
     ctx.set('Cache-Control', 'no-cache')
-    ctx.body = data
+    ctx.body = body
   } catch (err: any) {
     applyDownloadRouteError(ctx, err)
   }

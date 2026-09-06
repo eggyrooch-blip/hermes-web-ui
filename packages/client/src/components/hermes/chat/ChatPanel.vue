@@ -8,7 +8,7 @@ import {
   type CodingAgentApiMode,
   type CodingAgentId,
 } from "@/api/coding-agents";
-import { useChatStore, type Session } from "@/stores/hermes/chat";
+import { isCodexModel, useChatStore, type Session } from "@/stores/hermes/chat";
 import { useAppStore } from "@/stores/hermes/app";
 import { useFilesStore } from "@/stores/hermes/files";
 import { useProfilesStore } from "@/stores/hermes/profiles";
@@ -46,7 +46,7 @@ import SidebarUserCard from "@/components/layout/SidebarUserCard.vue";
 import ExpertView from "@/views/hermes/ExpertView.vue";
 import AgentsView from "@/views/hermes/AgentsView.vue";
 import JobsView from "@/views/hermes/JobsView.vue";
-import { isStoredSuperAdmin } from "@/api/client";
+import { getWebPlane, isStoredSuperAdmin } from "@/api/client";
 import { agentDisplayName } from "@/utils/hermes/agent-identity";
 
 const chatStore = useChatStore();
@@ -56,12 +56,16 @@ const profilesStore = useProfilesStore();
 const sessionBrowserPrefsStore = useSessionBrowserPrefsStore();
 const route = useRoute();
 const router = useRouter();
+const isCoworkRoute = computed(() => route.name === "hermes.cowork");
+const showWorkspaceSelection = false;
 const message = useMessage();
 const { t } = useI18n();
 const isSuperAdmin = computed(() => isStoredSuperAdmin());
+const workspaceDialogTitle = computed(() => t(getWebPlane() === "chat" ? "chat.selectCloudWorkspaceTitle" : "chat.setWorkspaceTitle"));
 
 const showOutline = ref(false);
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
+const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
 const chatContentWrapperRef = ref<HTMLElement | null>(null);
 const showToolPanel = ref(false);
 const toolPanelMounted = ref(false);
@@ -185,6 +189,11 @@ function startToolResize(event: PointerEvent) {
 
 async function handleSessionClick(session: Session) {
   chatStore.clearSessionCompletedUnread(session.id);
+  if (isCoworkRoute.value && chatStore.runtimeMode !== "global_agent") {
+    await chatStore.switchSession(session.id);
+    if (mobileQuery?.matches) showSessions.value = false;
+    return;
+  }
   await router.push({
     name: chatStore.runtimeMode === "global_agent" ? "hermes.globalAgentSession" : "hermes.session",
     params: { sessionId: session.id },
@@ -293,12 +302,14 @@ function sortSessionsForSidebar(items: Session[]): Session[] {
 }
 
 function matchesWorkspaceFilter(session: Session) {
+  if (isCoworkRoute.value) return true;
   const filter = workspaceFilter.value;
   return !filter || ((session.profile || "default") === filter.profile
     && explicitSessionWorkspace(session.workspace) === filter.workspace);
 }
 
 const workspaceGroups = computed(() => {
+  if (isCoworkRoute.value) return [];
   const groups = new Map<string, { profile: string; workspace: string; count: number; latest: Session }>();
   for (const session of chatStore.sessions) {
     const workspace = explicitSessionWorkspace(session.workspace);
@@ -353,6 +364,13 @@ const activeSessionTitle = computed(
   () => chatStore.activeSession?.title || t("chat.newChat"),
 );
 
+watch(() => chatStore.activeSessionId, (sessionId) => {
+  if (!sessionId) return;
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active.matches("input, textarea, [contenteditable='true']")) return;
+  void nextTick(() => chatInputRef.value?.focusComposer());
+});
+
 // Avatars whose <img> failed to load (deleted/404 catalog asset): fall back to
 // the initial instead of a broken image.
 const failedExpertAvatars = ref(new Set<string>());
@@ -393,6 +411,18 @@ const headerTitle = computed(() =>
         ? t("jobs.title")
     : activeSessionTitle.value,
 );
+const activeWorkflowEvidence = computed(() => {
+  const stage = chatStore.activeWorkflowStage;
+  if (!stage) return "";
+  return [
+    stage.summary,
+    ...Object.entries(stage.relatedIds).map(([key, value]) => `${key}:${value}`),
+    stage.auditId ? `audit:${stage.auditId}` : "",
+  ].filter(Boolean).join(" · ");
+});
+const harnessBadge = computed(() => `Codex · ${
+  sessionWorkspaceLabel(chatStore.activeSession?.workspace) || t('chat.folderPickerDefault')
+}`);
 
 const showNewChatModal = ref(false);
 const newChatAgent = ref<"hermes" | "claude-code" | "codex">("hermes");
@@ -643,6 +673,7 @@ async function createNewChatSession(options: {
   const routeName = options.source === "global_agent" || (!options.source && chatStore.runtimeMode === "global_agent")
     ? "hermes.globalAgentSession"
     : "hermes.session";
+  if (isCoworkRoute.value && routeName === "hermes.session") return session;
   await router.push({
     name: routeName,
     params: { sessionId: session.id },
@@ -656,7 +687,7 @@ async function createDefaultUserChat() {
   newChatLoading.value = true;
   try {
     await ensureNewChatDefaultsLoaded();
-    const profile = workspaceFilter.value?.profile || resolveDefaultNewChatProfile();
+    const profile = (isCoworkRoute.value ? null : workspaceFilter.value)?.profile || resolveDefaultNewChatProfile();
     if (!profile) return;
     const defaults = getDefaultModelForProfile(profile);
     await createNewChatSession({
@@ -665,7 +696,7 @@ async function createDefaultUserChat() {
       model: defaults.model || undefined,
       source: "cli",
       agent: "hermes",
-      workspace: workspaceFilter.value?.workspace || null,
+      workspace: isCoworkRoute.value ? null : workspaceFilter.value?.workspace || null,
     });
   } finally {
     newChatLoading.value = false;
@@ -747,7 +778,7 @@ async function confirmNewChat() {
     agent,
     codingAgentId: newChatAgent.value === "hermes" ? undefined : newChatAgent.value,
     codingAgentMode: source === "coding_agent" ? newChatAgentMode.value : undefined,
-    workspace: newChatWorkspace.value || null,
+    workspace: isCoworkRoute.value ? null : newChatWorkspace.value || null,
     baseUrl: source === "coding_agent" && !isGlobalCodingAgent ? group?.base_url || newChatBaseUrl.value.trim() || undefined : undefined,
     apiKey: source === "coding_agent" && !isGlobalCodingAgent ? group?.api_key || newChatApiKey.value.trim() || undefined : undefined,
     apiMode: source === "coding_agent" && !isGlobalCodingAgent ? newChatApiMode.value : undefined,
@@ -904,8 +935,11 @@ const contextMenuOptions = computed(() => {
     label: t(contextSessionPinned.value ? "chat.unpin" : "chat.pin"),
     key: "pin",
   },
-  { label: t("chat.rename"), key: "rename" },
-  { label: t("chat.setWorkspace"), key: "workspace" }]
+  { label: t("chat.rename"), key: "rename" }]
+
+  if (showWorkspaceSelection && !isCoworkRoute.value) {
+    options.push({ label: t("chat.setWorkspace"), key: "workspace" })
+  }
 
   if (contextSession.value?.source === "cli" || contextSession.value?.source === "coding_agent") {
     options.push({ label: t("chat.setModel"), key: "model" })
@@ -996,7 +1030,7 @@ async function handleContextMenuSelect(key: string) {
       loadingMsg?.destroy();
       message.error(t("chat.exportFailed"));
     }
-  } else if (key === "workspace") {
+  } else if (key === "workspace" && !isCoworkRoute.value) {
     const session = chatStore.sessions.find(
       (s) => s.id === contextSessionId.value,
     );
@@ -1046,6 +1080,12 @@ async function handleRenameConfirm() {
 const showWorkspaceModal = ref(false);
 const workspaceValue = ref("");
 const workspaceSessionId = ref<string | null>(null);
+watch(isCoworkRoute, (cowork) => {
+  if (!cowork) return;
+  workspaceFilter.value = null;
+  newChatWorkspace.value = "";
+  showWorkspaceModal.value = false;
+}, { immediate: true });
 // The chip states what THIS session is bound to and nothing else. It must not
 // borrow the sidebar filter: an unbound session opened while a workspace filter is
 // active would otherwise advertise a binding that does not exist, and the picker
@@ -1068,7 +1108,7 @@ function isHermesChatSession(session?: { source?: string | null } | null): boole
 
 function openComposerWorkspacePicker() {
   const session = chatStore.activeSession;
-  if (!isHermesChatSession(session)) return;
+  if (isCoworkRoute.value || !isHermesChatSession(session)) return;
   workspaceSessionId.value = session?.id || null;
   workspaceValue.value = composerWorkspace.value || (session?.id ? "" : workspaceFilter.value?.workspace || "");
   showWorkspaceModal.value = true;
@@ -1160,13 +1200,14 @@ const isSessionModelScopedCodingAgent = computed(() =>
   sessionModelSession.value?.codingAgentMode !== "global",
 );
 
-const sessionModelBaseGroups = computed(() =>
-  sessionModelProfile.value
-    ? getModelGroupsForProfile(sessionModelProfile.value).filter((group) => (
-        !isSessionModelScopedCodingAgent.value || !isCodingAgentAuthProvider(group.provider)
-      ))
-    : [],
-);
+const sessionModelBaseGroups = computed(() => {
+  if (!sessionModelProfile.value) return [];
+  const codex = sessionModelSession.value?.executionEngine === "harness";
+  return getModelGroupsForProfile(sessionModelProfile.value)
+    .filter((group) => !isSessionModelScopedCodingAgent.value || !isCodingAgentAuthProvider(group.provider))
+    .map((group) => codex ? { ...group, models: group.models.filter(isCodexModel) } : group)
+    .filter((group) => !codex || group.models.length > 0);
+});
 
 const sessionModelProviderOptions = computed(() =>
   sessionModelBaseGroups.value.map((group) => ({ label: group.label, value: group.provider })),
@@ -1178,7 +1219,8 @@ const sessionModelGroupsWithCustom = computed(() =>
     models: [
       ...group.models,
       ...(appStore.customModels[group.provider] || []).filter(
-        (model) => !group.models.includes(model),
+        (model) => !group.models.includes(model)
+          && (sessionModelSession.value?.executionEngine !== "harness" || isCodexModel(model)),
       ),
     ],
   })),
@@ -1302,6 +1344,7 @@ async function applySessionModelSwitch(model: string, provider: string, apiMode?
 }
 
 async function selectSessionModel(model: string, provider: string) {
+  if (sessionModelSession.value?.executionEngine === "harness" && !isCodexModel(model)) return;
   const meta = sessionModelBaseGroups.value.find((group) => group.provider === provider)?.model_meta?.[model];
   if (meta?.disabled || !sessionModelSessionId.value) return;
   if (isSessionModelScopedCodingAgent.value) {
@@ -1468,7 +1511,7 @@ async function handleSessionModelCustomSubmit() {
         </div>
       </div>
       <div v-if="showSessions" class="session-items">
-        <div v-if="workspaceGroups.length" class="workspace-groups">
+        <div v-if="showWorkspaceSelection && workspaceGroups.length" class="workspace-groups">
           <button
             type="button"
             class="workspace-group-item"
@@ -1600,9 +1643,10 @@ async function handleSessionModelCustomSubmit() {
     </NModal>
 
     <NModal
+      v-if="showWorkspaceSelection"
       v-model:show="showWorkspaceModal"
       preset="dialog"
-      :title="t('chat.setWorkspaceTitle')"
+      :title="workspaceDialogTitle"
       :positive-text="t('common.ok')"
       :negative-text="t('common.cancel')"
       style="width: 520px"
@@ -1704,7 +1748,7 @@ async function handleSessionModelCustomSubmit() {
         <div v-if="filteredSessionModelGroups.length === 0" class="session-model-empty">
           {{ sessionModelSearch ? 'No results' : 'No models' }}
         </div>
-        <div class="session-model-custom">
+        <div v-if="sessionModelSession?.executionEngine !== 'harness'" class="session-model-custom">
           <div class="session-model-custom-row">
             <NSelect
               v-model:value="sessionModelCustomProvider"
@@ -1829,7 +1873,7 @@ async function handleSessionModelCustomSubmit() {
               :placeholder="t('models.apiKeyPlaceholder')"
             />
           </label>
-          <div class="new-chat-field">
+          <div v-if="showWorkspaceSelection" class="new-chat-field">
             <span class="new-chat-label">{{ t("chat.workspace") }}</span>
             <FolderPicker v-model="newChatWorkspace" />
           </div>
@@ -1857,6 +1901,7 @@ async function handleSessionModelCustomSubmit() {
             class="header-sidebar-toggle"
             quaternary
             size="small"
+            :aria-label="t('chat.sessions')"
             @click="showSessions = !showSessions"
             circle
           >
@@ -1897,7 +1942,22 @@ async function handleSessionModelCustomSubmit() {
           </div>
           <span v-else class="header-session-title">{{ headerTitle }}</span>
           <span
-            v-if="chatStore.activeSession?.workspace"
+            v-if="chatStore.activeSession?.executionEngine === 'harness'"
+            class="harness-engine-badge"
+            :title="harnessBadge"
+          >{{ harnessBadge }}</span>
+          <span
+            v-if="chatStore.activeWorkflowStage"
+            class="harness-engine-badge"
+            :title="activeWorkflowEvidence"
+          >{{ chatStore.activeWorkflowStage.stage }} · {{ chatStore.activeWorkflowStage.status }}</span>
+          <span
+            v-if="activeWorkflowEvidence"
+            class="harness-workflow-evidence"
+            :title="activeWorkflowEvidence"
+          >{{ activeWorkflowEvidence }}</span>
+          <span
+            v-if="showWorkspaceSelection && chatStore.activeSession?.workspace"
             class="workspace-badge"
             :title="chatStore.activeSession.workspace"
             >📁
@@ -1943,6 +2003,7 @@ async function handleSessionModelCustomSubmit() {
                 <NButton
                   quaternary
                   size="small"
+                  :aria-label="t('chat.outlineTitle')"
                   @click="showOutline = !showOutline"
                   circle
                 >
@@ -1967,6 +2028,7 @@ async function handleSessionModelCustomSubmit() {
                 <NButton
                   quaternary
                   size="small"
+                  :aria-label="t('chat.copySessionId')"
                   @click="copySessionId()"
                   circle
                 >
@@ -2037,9 +2099,9 @@ async function handleSessionModelCustomSubmit() {
           </div>
           <div v-else class="chat-main-content">
             <MessageList ref="messageListRef" />
-            <ChatInput />
+            <ChatInput ref="chatInputRef" />
             <button
-              v-if="isHermesChatSession(chatStore.activeSession)"
+              v-if="showWorkspaceSelection && !isCoworkRoute && isHermesChatSession(chatStore.activeSession)"
               type="button"
               class="composer-workspace-button"
               :title="composerWorkspace || t('chat.setWorkspace')"
@@ -2776,6 +2838,27 @@ async function handleSessionModelCustomSubmit() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.harness-engine-badge {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.35);
+  border-radius: 999px;
+  background: rgba(var(--accent-primary-rgb), 0.1);
+  color: var(--accent-primary);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.harness-workflow-evidence {
+  min-width: 0;
+  overflow: hidden;
+  color: $text-muted;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .expert-session-identity {

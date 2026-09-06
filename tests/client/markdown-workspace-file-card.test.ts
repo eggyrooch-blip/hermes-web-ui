@@ -21,10 +21,22 @@ vi.mock('naive-ui', async (importOriginal) => {
 })
 
 const downloadFile = vi.hoisted(() => vi.fn(() => Promise.resolve()))
+const readbackWorkspaceArtifact = vi.hoisted(() => vi.fn())
 vi.mock('@/api/hermes/download', () => ({
   downloadFile,
   getDownloadUrl: vi.fn((path: string) => `/download?path=${encodeURIComponent(path)}`),
   fetchFileText: vi.fn(),
+  readbackWorkspaceArtifact,
+  parseArtifactPublication: (value: string) => {
+    const [path, query = ''] = value.split('?', 2)
+    const params = new URLSearchParams(query)
+    const mime = params.get('hermes_mime')
+    const bytes = Number(params.get('hermes_bytes'))
+    return {
+      path,
+      publication: mime && Number.isSafeInteger(bytes) ? { mime, bytes } : null,
+    }
+  },
 }))
 
 const previewByDisplayPath = vi.fn()
@@ -38,6 +50,88 @@ vi.mock('@/stores/hermes/files', () => ({
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
 
 describe('MarkdownRenderer workspace artifact file card', () => {
+  it('only marks a published artifact complete after authenticated MIME/byte readback', async () => {
+    readbackWorkspaceArtifact.mockResolvedValueOnce({ complete: true })
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '[report.html](/workspace/report.html?hermes_mime=text%2Fhtml&hermes_bytes=13)',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(wrapper.find('.markdown-file-card').attributes('data-artifact-state')).toBe('complete')
+    })
+    expect(readbackWorkspaceArtifact).toHaveBeenCalledWith('/workspace/report.html', {
+      mime: 'text/html',
+      bytes: 13,
+    })
+  })
+
+  it('reuses one readback when the same publication survives a markdown re-render', async () => {
+    readbackWorkspaceArtifact.mockClear()
+    readbackWorkspaceArtifact.mockResolvedValue({ complete: true })
+    const publication = '[report.html](/workspace/report.html?hermes_mime=text%2Fhtml&hermes_bytes=13)'
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: publication },
+    })
+
+    await vi.waitFor(() => {
+      expect(wrapper.find('.markdown-file-card').attributes('data-artifact-state')).toBe('complete')
+    })
+    await wrapper.setProps({ content: `已生成\n\n${publication}` })
+    await vi.waitFor(() => {
+      expect(wrapper.find('.markdown-file-card').attributes('data-artifact-state')).toBe('complete')
+    })
+
+    expect(readbackWorkspaceArtifact).toHaveBeenCalledTimes(1)
+  })
+
+  it('caps publication readbacks at 20 cards', async () => {
+    readbackWorkspaceArtifact.mockClear()
+    readbackWorkspaceArtifact.mockResolvedValue({ complete: true })
+    const content = Array.from({ length: 25 }, (_, index) => (
+      `[file-${index}.txt](/workspace/file-${index}.txt?hermes_mime=text%2Fplain&hermes_bytes=1)`
+    )).join('\n\n')
+    const wrapper = mount(MarkdownRenderer, { props: { content } })
+
+    await vi.waitFor(() => expect(readbackWorkspaceArtifact).toHaveBeenCalledTimes(20))
+    expect(wrapper.findAll('[data-artifact-state="incomplete"]')).toHaveLength(5)
+  })
+
+  it('runs at most three publication readbacks concurrently', async () => {
+    readbackWorkspaceArtifact.mockClear()
+    const releases: Array<() => void> = []
+    readbackWorkspaceArtifact.mockImplementation(() => new Promise((resolve) => {
+      releases.push(() => resolve({ complete: true }))
+    }))
+    const content = Array.from({ length: 4 }, (_, index) => (
+      `[file-${index}.txt](/workspace/file-${index}.txt?hermes_mime=text%2Fplain&hermes_bytes=1)`
+    )).join('\n\n')
+    mount(MarkdownRenderer, { props: { content } })
+
+    await vi.waitFor(() => expect(readbackWorkspaceArtifact).toHaveBeenCalledTimes(3))
+    releases.splice(0).forEach(release => release())
+    await vi.waitFor(() => expect(readbackWorkspaceArtifact).toHaveBeenCalledTimes(4))
+  })
+
+  it.each([
+    ['404', { complete: false, reason: 'http', status: 404 }],
+    ['403', { complete: false, reason: 'http', status: 403 }],
+    ['MIME mismatch', { complete: false, reason: 'mime' }],
+    ['byte mismatch', { complete: false, reason: 'bytes' }],
+  ])('keeps a published artifact incomplete after %s readback', async (_label, result) => {
+    readbackWorkspaceArtifact.mockResolvedValueOnce(result)
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: '[report.html](/workspace/report.html?hermes_mime=text%2Fhtml&hermes_bytes=13)',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(wrapper.find('.markdown-file-card').attributes('data-artifact-state')).toBe('incomplete')
+    })
+  })
+
   it('renders an inline absolute workspace path as a display-path file card', () => {
     const wrapper = mount(MarkdownRenderer, {
       props: {
@@ -50,6 +144,18 @@ describe('MarkdownRenderer workspace artifact file card', () => {
     expect(card.attributes('data-path')).toBe('/workspace/reports/report.html')
     expect(card.attributes('data-filename')).toBe('report.html')
     expect(wrapper.text()).not.toContain('/Users/dev/.hermes')
+  })
+
+  it('strips numeric line and column suffixes from workspace file references', () => {
+    const wrapper = mount(MarkdownRenderer, {
+      props: {
+        content: 'Open `/Users/dev/.hermes/profiles/sunke/workspace/src/app.ts:12:3` now.',
+      },
+    })
+
+    const card = wrapper.find('.markdown-file-card')
+    expect(card.attributes('data-path')).toBe('/workspace/src/app.ts')
+    expect(card.attributes('data-filename')).toBe('app.ts')
   })
 
   it('renders an inline /workspace/ display path as a file card and escapes attributes', () => {

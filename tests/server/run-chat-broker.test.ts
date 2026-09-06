@@ -8,6 +8,7 @@ import {
   buildRunBrokerHeaders,
   mapRunBrokerFrameForChat,
   readSseFrames,
+  resolveProjectRunBinding,
 } from '../../packages/server/src/services/hermes/run-chat/handle-broker-run'
 
 describe('run-chat broker compatibility module', () => {
@@ -68,6 +69,18 @@ describe('run-chat broker compatibility module', () => {
       'This skill mentions Meegle CLI as background only.',
     ].join('\n'), 'utf-8')
   }
+
+  it('freezes Project intent and ignores client workspace for Project runs', () => {
+    const first = resolveProjectRunBinding({ project_id: null, project_bound: false, message_count: 1 }, 'project-a', '/tampered')
+    expect(first).toEqual({ projectId: 'project-a', workspace: null, persistProjectId: true })
+
+    const retry = resolveProjectRunBinding({ project_id: 'project-a', project_bound: false, message_count: 3 }, 'project-a', 'other')
+    expect(retry).toEqual({ projectId: 'project-a', workspace: null, persistProjectId: false })
+    expect(() => resolveProjectRunBinding({ project_id: 'project-a', project_bound: true, message_count: 3 }, 'project-b', null))
+      .toThrow('different Project')
+    expect(() => resolveProjectRunBinding({ project_id: null, project_bound: false, message_count: 2 }, 'project-a', null))
+      .toThrow('after the first turn')
+  })
 
   it('builds broker requests with owner identity, channel, session history and metadata', async () => {
     const request = await buildRunBrokerRequest({
@@ -256,6 +269,26 @@ describe('run-chat broker compatibility module', () => {
     })
   })
 
+  it('forwards only the server-authoritative Harness engine header', () => {
+    expect(buildRunBrokerHeaders({ executionEngine: 'harness' }))
+      .toMatchObject({ 'X-Hermes-Expert-Engine': 'harness' })
+    expect(buildRunBrokerHeaders({ executionEngine: 'hermes' }))
+      .not.toHaveProperty('X-Hermes-Expert-Engine')
+  })
+
+  it('maps Harness gate and heartbeat frames onto existing chat events', () => {
+    expect(mapRunBrokerFrameForChat({
+      kind: 'gate_required', run_id: 'r1',
+      payload: { approval_id: 'gate_1', gate: 'D', description: 'review' },
+    })).toMatchObject({
+      type: 'emit', event: 'approval.requested',
+      payload: { approval_id: 'gate_1', choices: ['approve', 'reject', 'rework'] },
+    })
+    expect(mapRunBrokerFrameForChat({
+      kind: 'heartbeat', run_id: 'r1', payload: { state: 'waiting_gate', text: 'still working' },
+    })).toMatchObject({ type: 'emit', event: 'run.status', payload: { text: 'still working' } })
+  })
+
   it('maps broker tool frames and persists useful preview as arguments', () => {
     expect(mapRunBrokerFrameForChat({
       kind: 'tool_started',
@@ -289,9 +322,30 @@ describe('run-chat broker compatibility module', () => {
     }))
   })
 
-  it('ignores an auth_required frame without a connector_id', () => {
-    expect(mapRunBrokerFrameForChat({ kind: 'auth_required', run_id: 'r', payload: {} }))
-      .toEqual({ type: 'ignore' })
+  it('keeps Harness credential kind separate from its verified connector id', () => {
+    expect(mapRunBrokerFrameForChat({
+      kind: 'auth_required', run_id: 'r',
+      payload: {
+        workflow_id: 'wf-1', credential_kind: 'mobius',
+        connector_id: 'kep-cli-online',
+      },
+    })).toMatchObject({
+      type: 'emit', event: 'auth.required',
+      payload: { connector_id: 'kep-cli-online', provider: 'harness', workflow_id: 'wf-1' },
+    })
+    expect(mapRunBrokerFrameForChat({
+      kind: 'auth_resolved', payload: {
+        workflow_id: 'wf-1', credential_kind: 'mobius',
+        connector_id: 'kep-cli-online',
+      },
+    })).toMatchObject({
+      type: 'emit', event: 'auth.resolved',
+      payload: { connector_id: 'kep-cli-online', workflow_id: 'wf-1' },
+    })
+    expect(mapRunBrokerFrameForChat({
+      kind: 'auth_required', run_id: 'r',
+      payload: { workflow_id: 'wf-1', credential_kind: 'mobius' },
+    })).toEqual({ type: 'ignore' })
   })
 
   it('does not emit auth.required for a normal content frame', () => {

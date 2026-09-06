@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const workspaceDiffTracker = vi.hoisted(() => ({
   start: vi.fn(() => ({ key: 'checkpoint-1' })),
@@ -20,6 +23,7 @@ const sessionStore = vi.hoisted(() => ({
 const pathSecurity = vi.hoisted(() => ({
   isNearestExistingRealPathWithin: vi.fn(async () => true),
 }))
+const profileRoot = vi.hoisted(() => ({ value: '/tmp' }))
 const workspaceNormalize = vi.hoisted(() => async (value?: string | null) => {
   const raw = String(value || '').trim()
   if (!raw) return null
@@ -53,7 +57,7 @@ vi.mock('../../packages/server/src/config', () => ({
 // Keep DB + input builders inert — replay mode doesn't touch them.
 vi.mock('../../packages/server/src/db/hermes/session-store', () => sessionStore)
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
-  getProfileDir: () => '/tmp',
+  getProfileDir: () => profileRoot.value,
 }))
 vi.mock('../../packages/server/src/services/hermes/hermes-path', () => pathSecurity)
 vi.mock('../../packages/server/src/services/hermes/run-chat/workspace', () => ({
@@ -68,6 +72,7 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/workspace-diff-track
 }))
 
 import { handleBrokerRun } from '../../packages/server/src/services/hermes/run-chat/handle-broker-run'
+import { publishRunAssistantMedia } from '../../packages/server/src/services/hermes/media-directives'
 
 function sseStream(...frames: string[]): ReadableStream<Uint8Array> {
   const enc = new TextEncoder()
@@ -110,6 +115,8 @@ afterEach(() => {
   pathSecurity.isNearestExistingRealPathWithin.mockResolvedValue(true)
   workspace.normalize.mockClear()
   workspace.ensure.mockClear()
+  if (profileRoot.value !== '/tmp') rmSync(profileRoot.value, { recursive: true, force: true })
+  profileRoot.value = '/tmp'
 })
 
 describe('handleBrokerRun replay mode', () => {
@@ -267,6 +274,47 @@ describe('handleBrokerRun replay mode', () => {
     expect(state.messages).toEqual([
       expect.objectContaining({ role: 'assistant', content: 'hello', run_id: 'run-live', finish_reason: 'stop' }),
     ])
+  })
+
+  it('publishes a terminal MEDIA artifact into persisted state and the live completion payload', async () => {
+    profileRoot.value = mkdtempSync(join(tmpdir(), 'broker-publication-'))
+    mkdirSync(join(profileRoot.value, 'workspace'), { recursive: true })
+    writeFileSync(join(profileRoot.value, 'workspace', 'live.html'), '<p>live</p>')
+    const state = { messages: [], isWorking: false, events: [], queue: [], runId: undefined, abortController: undefined } as any
+    let persistedContent = ''
+    const context = {
+      sessionMap: new Map([['s1', state]]),
+      getOrCreateSession: () => state,
+      getResponseRunState: () => ({ runMarker: 'rm', responseId: undefined, insertedKeys: new Set(), toolCalls: new Map() }),
+      markCompleted: vi.fn(async () => {
+        persistedContent = state.messages.at(-1)?.content || ''
+        return { finalized: true }
+      }),
+      abandonRun: vi.fn(() => true),
+      dequeueNextQueuedRun: vi.fn(() => true),
+      buildInput: (value: any) => value,
+      publishRunAssistantMedia: (_sid: string, marker: string, _profile: string, fallback: string) => (
+        publishRunAssistantMedia({ messages: state.messages, runMarker: marker, profileDir: profileRoot.value, fallbackContent: fallback })
+      ),
+    } as any
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body: sseStream(
+        'event: content\ndata: {"kind":"content","run_id":"run-publication","text":"MEDIA:/workspace/live.html"}\n\n',
+        'event: done\ndata: {"kind":"done","run_id":"run-publication","output":"MEDIA:/workspace/live.html"}\n\n',
+      ),
+    })))
+    const emit = vi.fn()
+
+    await handleBrokerRun(socket, { input: 'publish', session_id: 's1' }, 'default', 'rm', emit, context)
+
+    const expected = '[live.html](/workspace/live.html?hermes_mime=text%2Fhtml&hermes_bytes=11)'
+    expect(persistedContent).toBe(expected)
+    expect(emit).toHaveBeenCalledWith('run.completed', expect.objectContaining({
+      parsed_content: expected,
+      output: expected,
+    }))
   })
 
   it('tracks the default profile workspace with the webui marker when broker omits run_id', async () => {

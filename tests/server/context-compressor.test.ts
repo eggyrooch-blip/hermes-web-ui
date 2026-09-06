@@ -499,6 +499,91 @@ describe('ChatContextCompressor', () => {
     expect(result.meta.compressedStartIndex).toBe(22)
     expect(saveCompressionSnapshotMock).toHaveBeenCalledWith('s1', 'updated summary', 22, 23)
   })
+
+  it('injects the correction contract into full and incremental compaction prompts', async () => {
+    const { ChatContextCompressor, SUMMARY_PREFIX } = await import('../../packages/server/src/lib/context-compressor')
+    const compressor = new ChatContextCompressor({
+      config: { triggerTokens: 10_000, headMessageCount: 0, tailMessageCount: 0, summaryBudget: 1_000 },
+    })
+    const messages = [
+      { role: 'user', content: 'Report: accepted=8, total=10, rate=80%, title=Q2, owner=Ada.' },
+      { role: 'assistant', content: 'Recorded the initial report.' },
+      { role: 'user', content: 'Correction: accepted=6, effective total=9, rate=66.7%. Change only accepted, total, and rate; keep title and owner unchanged.' },
+      { role: 'assistant', content: 'Applied the correction.' },
+      { role: 'user', content: 'Display rate as an integer only; keep the underlying 6/9.' },
+      { role: 'assistant', content: 'The integer display is 67%.' },
+      { role: 'user', content: 'Restate the current effective rules.' },
+    ]
+    let snapshot: { summary: string; lastMessageIndex: number; messageCountAtTime: number } | null = null
+    getCompressionSnapshotMock.mockImplementation(() => snapshot)
+    saveCompressionSnapshotMock.mockImplementation((
+      _sessionId: string,
+      summary: string,
+      lastMessageIndex: number,
+      messageCountAtTime: number,
+    ) => {
+      snapshot = { summary, lastMessageIndex, messageCountAtTime }
+    })
+    const prompts: string[] = []
+    bridgeRequestMock.mockImplementation(async (request: any) => {
+      prompts.push(String(request.conversation_history?.at(-1)?.content || ''))
+      return {
+        status: 'success',
+        result: { final_response: '## Critical Context\nCurrent report: accepted=6, total=9, rate=67%, title=Q2, owner=Ada.' },
+      }
+    })
+
+    const first = await compressor.compress(messages, 'http://upstream', undefined, 'correction-session')
+    expect(first.messages).toEqual([{
+      role: 'user',
+      content: `${SUMMARY_PREFIX}\n\n## Critical Context\nCurrent report: accepted=6, total=9, rate=67%, title=Q2, owner=Ada.`,
+    }])
+
+    const afterCompaction = await compressor.compress(
+      [...messages, { role: 'user', content: 'Give the final one-line report using the current rules.' }],
+      'http://upstream',
+      undefined,
+      'correction-session',
+    )
+    const resumedContext = String(afterCompaction.messages[0]?.content || '')
+    expect(resumedContext).toContain('accepted=6, total=9, rate=67%, title=Q2, owner=Ada.')
+    expect(prompts).toHaveLength(2)
+    for (const prompt of prompts) {
+      expect(prompt).toContain('Later explicit corrections override earlier values field by field.')
+      expect(prompt).toContain('A presentation-only correction changes formatting, not the underlying value.')
+      expect(prompt).toContain('Fields not named by a correction keep their current values.')
+    }
+  })
+
+  it('uses the same correction contract for full and incremental session exports', async () => {
+    const { ExportCompressor } = await import('../../packages/server/src/lib/context-compressor/export-compressor')
+    const compressor = new ExportCompressor({ config: { summaryBudget: 1_000 } })
+    const messages = [
+      { role: 'user', content: 'Report accepted=8, total=10, rate=80%.' },
+      { role: 'user', content: 'Correction: accepted=6, total=9, display rate=67%.' },
+    ]
+    bridgeRequestMock.mockResolvedValue({
+      status: 'success',
+      result: { final_response: 'Current report accepted=6, total=9, rate=67%.' },
+    })
+
+    getCompressionSnapshotMock.mockReturnValueOnce(null)
+    await compressor.compress(messages, 'http://upstream', undefined, 'export-full')
+    getCompressionSnapshotMock.mockReturnValueOnce({
+      summary: 'Previous report accepted=8, total=10, rate=80%.',
+      lastMessageIndex: 0,
+      messageCountAtTime: 1,
+    })
+    await compressor.compress(messages, 'http://upstream', undefined, 'export-incremental')
+
+    expect(bridgeRequestMock).toHaveBeenCalledTimes(2)
+    for (const request of bridgeRequestMock.mock.calls.map(call => call[0])) {
+      const prompt = String(request.conversation_history?.at(-1)?.content || '')
+      expect(prompt).toContain('Later explicit corrections override earlier values field by field.')
+      expect(prompt).toContain('A presentation-only correction changes formatting, not the underlying value.')
+      expect(prompt).toContain('Fields not named by a correction keep their current values.')
+    }
+  })
 })
 
 describe('countTokens', () => {

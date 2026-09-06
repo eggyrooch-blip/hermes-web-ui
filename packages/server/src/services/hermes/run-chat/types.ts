@@ -71,8 +71,10 @@ export interface QueuedRun {
   originSocketId?: string
   goalContinuation?: boolean
   expert_id?: string
+  project_id?: string
   expert_label?: string
   expert_avatar?: string
+  execution_engine?: 'hermes' | 'harness'
   sessionCommand?: QueuedSessionCommand
   commandReservation?: SessionCommandReservation
 }

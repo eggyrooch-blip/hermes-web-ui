@@ -965,8 +965,10 @@ model:
 
     await invokeDownloadRoute(ctx)
 
-    expect(Buffer.isBuffer(ctx.body)).toBe(true)
-    expect(ctx.body.toString('utf-8')).toBe('profile artifact')
+    expect(Buffer.isBuffer(ctx.body)).toBe(false)
+    const chunks: Buffer[] = []
+    for await (const chunk of ctx.body) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    expect(Buffer.concat(chunks).toString('utf-8')).toBe('profile artifact')
   })
 
   it('does not download profile or root config through chat-plane download paths', async () => {

@@ -1,4 +1,4 @@
-423 entries
+452 entries
 DENY    DELETE /api/auth/locked-ips
 DENY    DELETE /api/auth/password
 DENY    DELETE /api/auth/users/:id
@@ -64,6 +64,7 @@ DENY    GET    /api/hermes/weixin/qrcode/status
 DENY    GET    /api/hermes/workspace/folders
 DENY    HEAD   /api/auth/avatar
 DENY    HEAD   /api/auth/locked-ips
+DENY    HEAD   /api/auth/mcp-oauth/requests/:requestId
 DENY    HEAD   /api/auth/users
 DENY    HEAD   /api/coding-agents
 DENY    HEAD   /api/coding-agents/:id/config-files/:key
@@ -81,6 +82,10 @@ DENY    HEAD   /api/hermes/auth/xai/status
 DENY    HEAD   /api/hermes/config
 DENY    HEAD   /api/hermes/config/auxiliary-models
 DENY    HEAD   /api/hermes/config/models
+DENY    HEAD   /api/hermes/cowork/projects
+DENY    HEAD   /api/hermes/cowork/projects/:projectId
+DENY    HEAD   /api/hermes/cowork/projects/:projectId/sessions
+DENY    HEAD   /api/hermes/cowork/sessions/:sessionId/project
 DENY    HEAD   /api/hermes/experts
 DENY    HEAD   /api/hermes/experts/:expertId/work-record
 DENY    HEAD   /api/hermes/kanban
@@ -196,8 +201,11 @@ DENY    PUT    /api/hermes/stt/settings/:provider
 DENY    PUT    /api/hermes/stt/settings/active
 DENY    PUT    /api/hermes/tts/settings/:provider
 allow   DELETE /api/auth/feishu/uat/sessions/:sessionId
+allow   DELETE /api/auth/skill-credentials/custom/:connectorId
 allow   DELETE /api/devices/:id/request-history
 allow   DELETE /api/hermes/agents/:agentId/shares/:granteeOpenId
+allow   DELETE /api/hermes/cowork/projects/:projectId
+allow   DELETE /api/hermes/credentials/github
 allow   DELETE /api/hermes/files/delete
 allow   DELETE /api/hermes/group-chat/rooms/:roomId
 allow   DELETE /api/hermes/group-chat/rooms/:roomId/agents/:agentId
@@ -206,8 +214,11 @@ allow   DELETE /api/hermes/sessions/:id
 allow   DELETE /api/hermes/sessions/:sessionId/runs/:runId/feedback
 allow   GET    /api/auth/feishu/uat/sessions/:sessionId
 allow   GET    /api/auth/feishu/uat/status
+allow   GET    /api/auth/mcp-oauth/requests/:requestId
 allow   GET    /api/auth/me
 allow   GET    /api/auth/skill-credentials
+allow   GET    /api/auth/skill-credentials/catalog
+allow   GET    /api/auth/skill-credentials/custom
 allow   GET    /api/console/dev/me
 allow   GET    /api/console/overview
 allow   GET    /api/console/profiles
@@ -223,6 +234,10 @@ allow   GET    /api/devices/peer-connections/:connectionId/terminals
 allow   GET    /api/hermes/agents/:agentId/shares
 allow   GET    /api/hermes/agents/shared
 allow   GET    /api/hermes/available-models
+allow   GET    /api/hermes/cowork/projects
+allow   GET    /api/hermes/cowork/projects/:projectId
+allow   GET    /api/hermes/cowork/projects/:projectId/sessions
+allow   GET    /api/hermes/cowork/sessions/:sessionId/project
 allow   GET    /api/hermes/download
 allow   GET    /api/hermes/experts
 allow   GET    /api/hermes/experts/:expertId/work-record
@@ -232,7 +247,6 @@ allow   GET    /api/hermes/files/stat
 allow   GET    /api/hermes/group-chat/rooms
 allow   GET    /api/hermes/group-chat/rooms/:roomId
 allow   GET    /api/hermes/group-chat/rooms/:roomId/agents
-allow   GET    /api/hermes/group-chat/rooms/join/:code
 allow   GET    /api/hermes/jobs
 allow   GET    /api/hermes/jobs/:id
 allow   GET    /api/hermes/kanban
@@ -279,6 +293,8 @@ allow   HEAD   /api/auth/feishu/uat/sessions/:sessionId
 allow   HEAD   /api/auth/feishu/uat/status
 allow   HEAD   /api/auth/me
 allow   HEAD   /api/auth/skill-credentials
+allow   HEAD   /api/auth/skill-credentials/catalog
+allow   HEAD   /api/auth/skill-credentials/custom
 allow   HEAD   /api/console/dev/me
 allow   HEAD   /api/console/overview
 allow   HEAD   /api/console/profiles
@@ -301,7 +317,6 @@ allow   HEAD   /api/hermes/files/stat
 allow   HEAD   /api/hermes/group-chat/rooms
 allow   HEAD   /api/hermes/group-chat/rooms/:roomId
 allow   HEAD   /api/hermes/group-chat/rooms/:roomId/agents
-allow   HEAD   /api/hermes/group-chat/rooms/join/:code
 allow   HEAD   /api/hermes/jobs
 allow   HEAD   /api/hermes/jobs/:id
 allow   HEAD   /api/hermes/preview
@@ -329,11 +344,16 @@ allow   HEAD   /api/hermes/skills/external-dirs
 allow   HEAD   /api/hermes/skills/usage/stats
 allow   HEAD   /api/hermes/skills/{*path}
 allow   HEAD   /api/hermes/usage/stats
+allow   PATCH  /api/hermes/cowork/projects/:projectId
 allow   PATCH  /api/hermes/jobs/:id
 allow   POST   /api/auth/feishu/uat/start
+allow   POST   /api/auth/mcp-oauth/approve
 allow   POST   /api/auth/skill-credentials/:id/bind-token
 allow   POST   /api/auth/skill-credentials/:id/complete
 allow   POST   /api/auth/skill-credentials/:id/start
+allow   POST   /api/auth/skill-credentials/catalog/connect
+allow   POST   /api/auth/skill-credentials/catalog/status
+allow   POST   /api/auth/skill-credentials/custom/import
 allow   POST   /api/chat-run/runs
 allow   POST   /api/devices/:id/approve
 allow   POST   /api/devices/:id/block
@@ -352,6 +372,8 @@ allow   POST   /api/devices/peer-connections/:connectionId/terminal/:terminalId/
 allow   POST   /api/devices/peer-connections/:connectionId/upload
 allow   POST   /api/devices/scan
 allow   POST   /api/hermes/agents/:agentId/shares
+allow   POST   /api/hermes/cowork/projects
+allow   POST   /api/hermes/credentials/github
 allow   POST   /api/hermes/credentials/gitlab
 allow   POST   /api/hermes/files/copy
 allow   POST   /api/hermes/files/mkdir
@@ -362,6 +384,7 @@ allow   POST   /api/hermes/group-chat/rooms/:roomId/agents
 allow   POST   /api/hermes/group-chat/rooms/:roomId/clear-context
 allow   POST   /api/hermes/group-chat/rooms/:roomId/clone
 allow   POST   /api/hermes/group-chat/rooms/:roomId/compress
+allow   POST   /api/hermes/group-chat/rooms/join/:code
 allow   POST   /api/hermes/jobs
 allow   POST   /api/hermes/jobs/:id/pause
 allow   POST   /api/hermes/jobs/:id/resume
@@ -372,9 +395,11 @@ allow   POST   /api/hermes/kanban/:id/block  [id=sample-id]
 allow   POST   /api/hermes/kanban/complete
 allow   POST   /api/hermes/kanban/dispatch
 allow   POST   /api/hermes/kanban/unblock
+allow   POST   /api/hermes/link-previews
 allow   POST   /api/hermes/memory
 allow   POST   /api/hermes/profiles
 allow   POST   /api/hermes/sessions/:id/archive
+allow   POST   /api/hermes/sessions/:id/expert
 allow   POST   /api/hermes/sessions/:id/model
 allow   POST   /api/hermes/sessions/:id/rename
 allow   POST   /api/hermes/sessions/:id/unarchive
@@ -395,6 +420,8 @@ allow   PUT    /api/hermes/skills/file
 ungated  GET    /api/auth/feishu/callback
 ungated  GET    /api/auth/feishu/login
 ungated  GET    /api/auth/kep-cli/callback/:sessionId
+ungated  GET    /api/auth/skill-credentials/catalog/icon
+ungated  GET    /api/auth/skill-credentials/catalog/oauth/callback
 ungated  GET    /api/auth/status
 ungated  GET    /api/claude-code-proxy/:key/v1/models
 ungated  GET    /api/codex-proxy/:key/v1/models
@@ -405,6 +432,8 @@ ungated  GET    /health
 ungated  HEAD   /api/auth/feishu/callback
 ungated  HEAD   /api/auth/feishu/login
 ungated  HEAD   /api/auth/kep-cli/callback/:sessionId
+ungated  HEAD   /api/auth/skill-credentials/catalog/icon
+ungated  HEAD   /api/auth/skill-credentials/catalog/oauth/callback
 ungated  HEAD   /api/auth/status
 ungated  HEAD   /api/claude-code-proxy/:key/v1/models
 ungated  HEAD   /api/codex-proxy/:key/v1/models

@@ -26,8 +26,9 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   (e: 'close'): void
-  (e: 'activate', expert: ExpertInfo): void
+  (e: 'activate', expert: ExpertInfo, engine: 'hermes' | 'harness'): void
 }>()
+const executionEngine = ref<'hermes' | 'harness'>('hermes')
 
 const displayTitle = computed(() => props.expert.title || props.expert.name)
 const avatarBroken = ref(false)
@@ -42,6 +43,7 @@ const envDefault = computed(() => props.expert.governance?.env_default || '')
 
 watch(() => props.expert.id, () => {
   avatarBroken.value = false
+  executionEngine.value = 'hermes'
 })
 </script>
 
@@ -101,10 +103,15 @@ watch(() => props.expert.id, () => {
     <ExpertWorkRecord :expert-id="expert.id" />
 
     <footer class="detail-actions">
+      <fieldset class="engine-picker">
+        <legend>{{ t('expert.detail.engine') }}</legend>
+        <label><input v-model="executionEngine" type="radio" value="hermes" /> {{ t('expert.detail.engineHermes') }}</label>
+        <label v-if="expert.harness_available"><input v-model="executionEngine" type="radio" value="harness" /> {{ t('expert.detail.engineHarness') }}</label>
+      </fieldset>
       <button
         class="action-primary"
         type="button"
-        @click="emit('activate', expert)"
+        @click="emit('activate', expert, executionEngine)"
       >
         {{ t('expert.detail.startChat') }}
       </button>
@@ -312,6 +319,19 @@ watch(() => props.expert.id, () => {
   display: flex;
   gap: 8px;
 }
+
+.engine-picker {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid $border-color;
+  border-radius: 8px;
+}
+
+.engine-picker legend { padding: 0 4px; }
+.engine-picker label { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; }
 
 .action-primary,
 .action-secondary {

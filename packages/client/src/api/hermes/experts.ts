@@ -56,6 +56,8 @@ export interface ExpertInfo {
   release_installed_at?: number
   /** All-channel run count (webui + feishu + cron). */
   use_count?: number
+  /** Server capability; absent/false means Harness must not be offered. */
+  harness_available?: boolean
 }
 
 const EXPERT_NEW_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -100,6 +102,7 @@ export function isAiHubExpert(expert: Pick<ExpertInfo, 'source' | 'from_aihub'>)
 export interface ExpertListResponse {
   experts: ExpertInfo[]
   profile_name?: string
+  harness_enabled?: boolean
 }
 
 export interface ExpertsData {
@@ -144,5 +147,12 @@ export async function fetchExpertWorkRecord(expertId: string, view?: 'maintainer
 export async function fetchExperts(profile?: string): Promise<ExpertsData> {
   const query = profile ? `?profile=${encodeURIComponent(profile)}` : ''
   const res = await request<ExpertListResponse>(`/api/hermes/experts${query}`)
-  return { experts: Array.isArray(res.experts) ? res.experts : [] }
+  return {
+    experts: Array.isArray(res.experts)
+      ? res.experts.map(expert => ({
+          ...expert,
+          harness_available: res.harness_enabled === true,
+        }))
+      : [],
+  }
 }

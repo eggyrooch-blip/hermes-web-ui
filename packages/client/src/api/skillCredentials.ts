@@ -129,3 +129,23 @@ export function submitGitlabToken(payload: GitlabTokenSubmitPayload, profile?: s
     body: JSON.stringify(payload),
   })
 }
+
+export interface GithubCredentialResult {
+  ok: boolean
+  account_hint?: string
+  revoked?: boolean
+  error?: string
+}
+
+export function submitGithubToken(token: string, profile?: string) {
+  return request<GithubCredentialResult>(withProfile('/api/hermes/credentials/github', profile), {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  })
+}
+
+export function revokeGithubToken(profile?: string) {
+  return request<GithubCredentialResult>(withProfile('/api/hermes/credentials/github', profile), {
+    method: 'DELETE',
+  })
+}

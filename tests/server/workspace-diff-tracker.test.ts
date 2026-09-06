@@ -77,7 +77,7 @@ describe('workspace diff tracker', () => {
     writeFileSync(join(repo, 'changed.txt'), 'old\n')
     git(repo, ['add', '.'])
     git(repo, ['commit', '-m', 'initial'])
-  })
+  }, 60_000)
 
   // The slow-path cases install a fake `git` that sleeps 4s, and this hook waits
   // for those children to settle before deleting the repo. The individual tests
@@ -1017,6 +1017,142 @@ setTimeout(() => process.exit(1), 8_000)
     expect(listWorkspaceRunChangesForSession('session-empty')).toEqual([])
   })
 
+  it('does not report unchanged files from a truncated filesystem baseline', async () => {
+    const workspace = join(root, 'plain-truncated-baseline')
+    mkdirSync(workspace)
+    writeFileSync(join(workspace, 'a-modified.txt'), 'before\n')
+    writeFileSync(join(workspace, 'm-slow.txt'), 'before\n')
+    writeFileSync(join(workspace, 'z-stale.txt'), 'before\n')
+
+    const fsPromises = await vi.importActual<typeof import('fs/promises')>('fs/promises')
+    let delayMs = 0
+    let delayBaselineRead = true
+    vi.doMock('fs/promises', () => ({
+      ...fsPromises,
+      readFile: async (...args: Parameters<typeof fsPromises.readFile>) => {
+        if (delayBaselineRead && String(args[0]).endsWith('m-slow.txt')) {
+          delayBaselineRead = false
+          await new Promise(resolve => setTimeout(resolve, delayMs))
+        }
+        return fsPromises.readFile(...args)
+      },
+    }))
+
+    try {
+      const {
+        completeWorkspaceRunCheckpoint,
+        startWorkspaceRunCheckpoint,
+        WORKSPACE_DIFF_LIMITS,
+      } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+      const {
+        getWorkspaceRunChangeFile,
+        listWorkspaceRunChangesForSession,
+      } = await import('../../packages/server/src/db/hermes/workspace-run-changes-store')
+      delayMs = WORKSPACE_DIFF_LIMITS.maxScanMs + 100
+
+      const sessionId = 'session-truncated-filesystem-baseline'
+      const runId = 'run-truncated-filesystem-baseline'
+      await createTrackedSession(sessionId)
+      const checkpoint = await startWorkspaceRunCheckpoint({ sessionId, runId, workspace })
+
+      writeFileSync(join(workspace, '000-run-created.txt'), 'created during run\n')
+      writeFileSync(join(workspace, 'a-modified.txt'), 'changed during run\n')
+      writeFileSync(join(workspace, 'm-slow.txt'), 'changed slow\n')
+      const change = await completeWorkspaceRunCheckpoint({ sessionId, runId, workspace, checkpoint })
+
+      expect(change?.truncated).toBe(true)
+      expect(change?.files.map(file => file.path)).toEqual(['000-run-created.txt', 'a-modified.txt', 'm-slow.txt'])
+      const modified = change?.files.find(file => file.path === 'a-modified.txt')
+      expect(modified).toMatchObject({
+        change_type: 'modified',
+        size_before: Buffer.byteLength('before\n'),
+        size_after: Buffer.byteLength('changed during run\n'),
+      })
+      const detail = getWorkspaceRunChangeFile(sessionId, change!.change_id, modified!.id)
+      expect(detail?.patch).toContain('-before')
+      expect(detail?.patch).toContain('+changed during run')
+      const slow = change?.files.find(file => file.path === 'm-slow.txt')
+      expect(slow).toMatchObject({
+        change_type: 'modified',
+        size_before: Buffer.byteLength('before\n'),
+        size_after: Buffer.byteLength('changed slow\n'),
+        truncated: true,
+      })
+      expect(getWorkspaceRunChangeFile(sessionId, change!.change_id, slow!.id)).not.toBeNull()
+
+      const quietRunId = `${runId}-quiet`
+      const quietCheckpoint = await startWorkspaceRunCheckpoint({ sessionId, runId: quietRunId, workspace })
+      await expect(completeWorkspaceRunCheckpoint({
+        sessionId,
+        runId: quietRunId,
+        workspace,
+        checkpoint: quietCheckpoint,
+      })).resolves.toBeNull()
+      expect(listWorkspaceRunChangesForSession(sessionId)).toHaveLength(1)
+    } finally {
+      vi.doUnmock('fs/promises')
+    }
+  })
+
+  it('fails closed for files beyond a truncated filesystem path scan', async () => {
+    const workspace = join(root, 'plain-truncated-path-scan')
+    const tail = join(workspace, 'z-tail')
+    mkdirSync(tail, { recursive: true })
+    writeFileSync(join(tail, 'stale.txt'), 'before\n')
+
+    const fsPromises = await vi.importActual<typeof import('fs/promises')>('fs/promises')
+    let delayMs = 0
+    let delayBaselineDir = true
+    vi.doMock('fs/promises', () => ({
+      ...fsPromises,
+      opendir: async (...args: Parameters<typeof fsPromises.opendir>) => {
+        if (delayBaselineDir && String(args[0]).endsWith('z-tail')) {
+          delayBaselineDir = false
+          await new Promise(resolve => setTimeout(resolve, delayMs))
+        }
+        return fsPromises.opendir(...args)
+      },
+    }))
+
+    try {
+      const {
+        completeWorkspaceRunCheckpoint,
+        startWorkspaceRunCheckpoint,
+        WORKSPACE_DIFF_LIMITS,
+      } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+      delayMs = WORKSPACE_DIFF_LIMITS.maxScanMs + 100
+
+      const sessionId = 'session-truncated-filesystem-scan'
+      const runId = 'run-truncated-filesystem-scan'
+      await createTrackedSession(sessionId)
+      const checkpoint = await startWorkspaceRunCheckpoint({ sessionId, runId, workspace })
+
+      await expect(completeWorkspaceRunCheckpoint({ sessionId, runId, workspace, checkpoint })).resolves.toBeNull()
+    } finally {
+      vi.doUnmock('fs/promises')
+    }
+  })
+
+  it('does not report historical files from an untracked Git directory when baseline content is unavailable', async () => {
+    const historicalDir = join(repo, 'notes')
+    mkdirSync(historicalDir)
+    writeFileSync(join(historicalDir, 'historical.txt'), Buffer.alloc(600 * 1024, 97))
+
+    const {
+      completeWorkspaceRunCheckpoint,
+      startWorkspaceRunCheckpoint,
+    } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
+
+    const sessionId = 'session-truncated-git-baseline'
+    const runId = 'run-truncated-git-baseline'
+    await createTrackedSession(sessionId)
+    const checkpoint = await startWorkspaceRunCheckpoint({ sessionId, runId, workspace: repo })
+    writeFileSync(join(historicalDir, 'created-during-run.txt'), 'new\n')
+
+    const change = await completeWorkspaceRunCheckpoint({ sessionId, runId, workspace: repo, checkpoint })
+    expect(change?.files.map(file => file.path)).toEqual(['notes/created-during-run.txt'])
+  })
+
   it('skips ignored directories, secret/profile paths, and binary files', async () => {
     const {
       completeWorkspaceRunCheckpoint,
@@ -1030,6 +1166,13 @@ setTimeout(() => process.exit(1), 8_000)
     mkdirSync(join(workspace, '.hermes', 'profiles', 'sunke'), { recursive: true })
     writeFileSync(join(workspace, 'src', 'app.ts'), 'old\n')
     writeFileSync(join(workspace, 'image.png'), Buffer.from([0, 1, 2, 3]))
+    writeFileSync(join(workspace, 'state.sqlite-wal'), 'before\n')
+    writeFileSync(join(workspace, 'state.sqlite-shm'), 'before\n')
+    writeFileSync(join(workspace, 'cache.db-wal'), 'before\n')
+    writeFileSync(join(workspace, 'cache.db-shm'), 'before\n')
+    writeFileSync(join(workspace, 'cache.db-journal'), 'before\n')
+    writeFileSync(join(workspace, 'state.sqlite3'), 'before\n')
+    writeFileSync(join(workspace, 'state.sqlite3-wal'), 'before\n')
     writeFileSync(join(workspace, '.env'), 'TOKEN=before\n')
     writeFileSync(join(workspace, '.hermes', 'profiles', 'sunke', 'config.yaml'), 'secret: before\n')
     writeFileSync(join(workspace, 'node_modules', 'ignored.js'), 'before\n')
@@ -1040,6 +1183,13 @@ setTimeout(() => process.exit(1), 8_000)
 
     writeFileSync(join(workspace, 'src', 'app.ts'), 'new\n')
     writeFileSync(join(workspace, 'image.png'), Buffer.from([0, 1, 2, 3, 4]))
+    writeFileSync(join(workspace, 'state.sqlite-wal'), 'after\n')
+    writeFileSync(join(workspace, 'state.sqlite-shm'), 'after\n')
+    writeFileSync(join(workspace, 'cache.db-wal'), 'after\n')
+    writeFileSync(join(workspace, 'cache.db-shm'), 'after\n')
+    writeFileSync(join(workspace, 'cache.db-journal'), 'after\n')
+    writeFileSync(join(workspace, 'state.sqlite3'), 'after\n')
+    writeFileSync(join(workspace, 'state.sqlite3-wal'), 'after\n')
     writeFileSync(join(workspace, '.env'), 'TOKEN=after\n')
     writeFileSync(join(workspace, '.hermes', 'profiles', 'sunke', 'config.yaml'), 'secret: after\n')
     writeFileSync(join(workspace, 'node_modules', 'ignored.js'), 'after\n')
@@ -1105,8 +1255,8 @@ setTimeout(() => process.exit(1), 8_000)
     } = await import('../../packages/server/src/services/hermes/run-chat/workspace-diff-tracker')
     const { getWorkspaceRunChangeFile } = await import('../../packages/server/src/db/hermes/workspace-run-changes-store')
 
-    const before = Array.from({ length: 12_000 }, (_, index) => `old-${index}`).join('\n') + '\n'
-    const after = Array.from({ length: 12_000 }, (_, index) => `新🙂-${index}`).join('\n') + '\n'
+    const before = Array.from({ length: 768 }, (_, index) => `old-${index}`).join('\n') + '\n'
+    const after = Array.from({ length: 768 }, (_, index) => `新🙂-${index}-${'界'.repeat(128)}`).join('\n') + '\n'
     writeFileSync(join(repo, 'large.txt'), before)
     git(repo, ['add', 'large.txt'])
     git(repo, ['commit', '-m', 'large'])

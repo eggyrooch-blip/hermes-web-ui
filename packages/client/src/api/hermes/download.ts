@@ -25,6 +25,27 @@ function extractDownloadPath(filePath: string): string {
   return filePath.split('?')[0].split('#')[0]
 }
 
+export interface ArtifactPublication {
+  mime: string
+  bytes: number
+}
+
+export function parseArtifactPublication(filePath: string): {
+  path: string
+  publication: ArtifactPublication | null
+} {
+  const path = extractDownloadPath(filePath)
+  const query = filePath.includes('?') ? filePath.slice(filePath.indexOf('?') + 1).split('#')[0] : ''
+  const params = new URLSearchParams(query)
+  const mime = params.get('hermes_mime')
+  const bytesText = params.has('hermes_bytes') ? params.get('hermes_bytes') : null
+  const bytes = bytesText && /^\d{1,15}$/.test(bytesText) ? Number(bytesText) : Number.NaN
+  return {
+    path,
+    publication: mime && Number.isSafeInteger(bytes) && bytes >= 0 ? { mime, bytes } : null,
+  }
+}
+
 function getPathBasename(filePath: string): string {
   const decodedPath = safeDecodeURIComponent(extractDownloadPath(filePath))
   return decodedPath.split(/[\\/]/).pop()?.trim() || ''
@@ -73,6 +94,8 @@ export function getDownloadUrl(filePath: string, fileName?: string): string {
       // fall through with original filePath
     }
   }
+
+  filePath = parseArtifactPublication(filePath).path
 
   // Decode the path first in case it's already encoded (e.g., from AI responses)
   // URLSearchParams will encode it again, so we need to start with decoded text
@@ -160,6 +183,49 @@ export function filenameFromContentDisposition(res: Response): string {
   )
   if (!match) return ''
   return safeDecodeURIComponent(match[1].trim().replace(/"/g, ''))
+}
+
+export type ArtifactReadbackResult = {
+  complete: boolean
+  reason?: 'http' | 'foreign' | 'mime' | 'bytes' | 'network'
+  status?: number
+}
+
+/** Independent current-user GET: the publication is complete only on an exact MIME/byte readback. */
+export async function readbackWorkspaceArtifact(
+  filePath: string,
+  publication: ArtifactPublication,
+): Promise<ArtifactReadbackResult> {
+  try {
+    const url = getDownloadUrl(filePath)
+    if (!isOwnDownloadUrl(url)) return { complete: false, reason: 'foreign' }
+    const res = await fetch(url)
+    if (!res.ok) return { complete: false, reason: 'http', status: res.status }
+    if (isForeignResponse(res)) return { complete: false, reason: 'foreign' }
+
+    // The authenticated Hermes route derives Content-Length from the current
+    // workspace file stat. Stop the GET body immediately: matching that
+    // authoritative length to the separately published record proves exact
+    // bytes without downloading up to 200 MB merely to count them again.
+    await res.body?.cancel().catch(() => undefined)
+
+    const actualMime = (res.headers.get('Content-Type') || '').split(';', 1)[0].trim().toLowerCase()
+    const expectedMime = publication.mime.trim().toLowerCase()
+    if (!actualMime || actualMime !== expectedMime) return { complete: false, reason: 'mime' }
+
+    const declaredLength = res.headers.get('Content-Length')
+    if (declaredLength === null) return { complete: false, reason: 'bytes' }
+    const declaredBytes = Number(declaredLength)
+    if (
+      !Number.isSafeInteger(declaredBytes)
+      || declaredBytes !== publication.bytes
+    ) {
+      return { complete: false, reason: 'bytes' }
+    }
+    return { complete: true }
+  } catch {
+    return { complete: false, reason: 'network' }
+  }
 }
 
 /**

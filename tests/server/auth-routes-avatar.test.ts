@@ -30,6 +30,14 @@ vi.mock('../../packages/server/src/controllers/auth', () => ({
   skillCredentialBindToken: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
   kepCliCallback: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
   skillCredentialComplete: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
+  connectorCatalog: vi.fn(async (ctx: any) => { ctx.body = { rows: [] } }),
+  connectorCatalogConnect: vi.fn(async (ctx: any) => { ctx.body = { connectors: [] } }),
+  connectorCatalogStatus: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
+  connectorCatalogIcon: vi.fn(async (ctx: any) => { ctx.body = null }),
+  connectorCatalogOAuthCallback: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
+  customConnectors: vi.fn(async (ctx: any) => { ctx.body = { connectors: [] } }),
+  customConnectorImport: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
+  customConnectorDelete: vi.fn(async (ctx: any) => { ctx.body = { ok: true } }),
 }))
 
 const requireSuperAdminMock = vi.fn(async (_ctx: any, next: any) => { await next() })

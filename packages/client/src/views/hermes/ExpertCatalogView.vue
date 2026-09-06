@@ -10,7 +10,7 @@ import {
   isExpertRecentlyUpdated,
   type ExpertInfo,
 } from '@/api/hermes/experts'
-import { useChatStore } from '@/stores/hermes/chat'
+import { CODEX_MODEL_UNAVAILABLE, useChatStore } from '@/stores/hermes/chat'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import ExpertDetailPanel from '@/components/hermes/expert/ExpertDetailPanel.vue'
 import { useRouter } from 'vue-router'
@@ -23,6 +23,7 @@ const router = useRouter()
 const experts = ref<ExpertInfo[]>([])
 const loading = ref(false)
 const errored = ref(false)
+const startError = ref('')
 const searchQuery = ref('')
 
 // New-badge expiry must track wall-clock, not just render time
@@ -95,12 +96,23 @@ async function loadExperts() {
 }
 
 function openDetail(expert: ExpertInfo) {
+  startError.value = ''
   selected.value = expert
   showDetail.value = true
 }
 
-async function startExpertChat(expert: ExpertInfo) {
-  const session = chatStore.newChatWithExpert(expert)
+async function startExpertChat(expert: ExpertInfo, engine: 'hermes' | 'harness') {
+  let session
+  try {
+    session = chatStore.newChatWithExpert(expert, engine)
+  } catch (err) {
+    if (err instanceof Error && err.message === CODEX_MODEL_UNAVAILABLE) {
+      startError.value = t('expert.detail.codexNoModels')
+      return
+    }
+    throw err
+  }
+  startError.value = ''
   showDetail.value = false
   await router.push({
     name: 'hermes.session',
@@ -131,6 +143,7 @@ watch(activeProfileName, () => {
     </div>
 
     <div class="catalog-body">
+      <div v-if="startError" class="catalog-state" role="alert">{{ startError }}</div>
       <div v-if="loading" class="catalog-state">{{ t('expert.catalog.loading') }}</div>
       <div v-else-if="errored" class="catalog-state">{{ t('expert.catalog.error') }}</div>
       <div v-else-if="filteredExperts.length === 0" class="catalog-state">

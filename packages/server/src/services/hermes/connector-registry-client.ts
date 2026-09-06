@@ -42,6 +42,7 @@ const CANONICAL_CONNECTORS: ReadonlyArray<{ id: string; title: string; provider:
   { id: 'kep-cli-pre', title: 'kep-cli pre', provider: 'keep' },
   { id: 'gitlab', title: 'GitLab（全局）', provider: 'gitlab' },
   { id: 'gitlab-personal', title: 'GitLab（我的）', provider: 'gitlab' },
+  { id: 'github-mcp', title: 'GitHub', provider: 'github' },
 ]
 
 const VALID_STATES: ReadonlySet<string> = new Set<SkillCredentialState>([
@@ -208,6 +209,183 @@ export async function fetchConnectorStatuses(opts: {
     profile_name: String(body?.profile_name || opts.profileName),
     credentials,
   }
+}
+
+export type ConnectorCatalogView = 'source' | 'canonical'
+
+export interface ConnectorCatalogResponse {
+  profile_name: string
+  subject_id: string
+  view: ConnectorCatalogView
+  source_count: number
+  canonical_count: number
+  connectors: Array<Record<string, any> & { icon?: { url?: string } }>
+}
+
+export interface CustomConnectorsResponse {
+  profile_name: string
+  subject_id: string
+  connectors: Array<Record<string, any>>
+}
+
+const catalogIconKeys = new Set<string>()
+
+export function isKnownConnectorIconKey(rowKey: string): boolean {
+  return rowKey.length > 0 && catalogIconKeys.has(rowKey)
+}
+
+function ownerHeaders(profileName: string, ownerOpenId: string): Record<string, string> {
+  if (!profileName.trim() || !ownerOpenId.trim()) throw new BrokerUnavailableError('trusted connector owner is required', 403)
+  return {
+    'Content-Type': 'application/json',
+    ...(config.runBrokerKey ? { Authorization: `Bearer ${config.runBrokerKey}` } : {}),
+    'X-Hermes-Owner-Open-Id': ownerOpenId,
+    'X-Hermes-Profile': profileName,
+  }
+}
+
+async function ownerBrokerJson<T>(path: string, opts: {
+  profileName: string
+  ownerOpenId: string
+  method?: string
+  body?: Record<string, unknown>
+  timeoutMs?: number
+}): Promise<T> {
+  if (!config.runBrokerUrl) throw new BrokerUnavailableError('HERMES_RUN_BROKER_URL is not configured', 503)
+  const response = await fetch(`${config.runBrokerUrl}${path}`, {
+    method: opts.method || 'GET',
+    headers: ownerHeaders(opts.profileName, opts.ownerOpenId),
+    ...(opts.body ? { body: JSON.stringify(opts.body) } : {}),
+    signal: AbortSignal.timeout(opts.timeoutMs || DEFAULT_TIMEOUT_MS),
+  }).catch((err: any) => {
+    throw new BrokerUnavailableError(`connector broker request failed: ${err?.message || err}`, 503)
+  })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new BrokerUnavailableError(String(body?.error || `connector broker returned HTTP ${response.status}`), response.status)
+  return body as T
+}
+
+export async function fetchConnectorCatalog(opts: {
+  profileName: string
+  ownerOpenId: string
+  view: ConnectorCatalogView
+}): Promise<ConnectorCatalogResponse> {
+  const body = await ownerBrokerJson<ConnectorCatalogResponse>(
+    `/api/run-broker/connector-catalog?view=${opts.view}`,
+    opts,
+  )
+  const expected = opts.view === 'canonical' ? 330 : 642
+  if (body.source_count !== 642 || body.canonical_count !== 330 || !Array.isArray(body.connectors) || body.connectors.length !== expected) {
+    throw new BrokerUnavailableError('connector catalog counts are invalid', 502)
+  }
+  for (const row of body.connectors) {
+    const rowKey = String(row.row_key || '')
+    if (rowKey) catalogIconKeys.add(rowKey)
+  }
+  body.connectors = body.connectors.map((row) => ({
+    ...row,
+    ...(row.icon ? {
+      icon: {
+        ...row.icon,
+        url: `/api/auth/skill-credentials/catalog/icon?row_key=${encodeURIComponent(String(row.row_key || ''))}`,
+      },
+    } : {}),
+  }))
+  return body
+}
+
+export function listCustomConnectors(opts: { profileName: string; ownerOpenId: string }) {
+  return ownerBrokerJson<CustomConnectorsResponse>('/api/run-broker/custom-connectors', opts)
+}
+
+export function importCustomConnectors(opts: { profileName: string; ownerOpenId: string; config: string }) {
+  if (!opts.config || Buffer.byteLength(opts.config) > 64 * 1024) {
+    throw new BrokerUnavailableError('connector config is empty or too large', 400)
+  }
+  return ownerBrokerJson<CustomConnectorsResponse>('/api/run-broker/custom-connectors/import', {
+    ...opts,
+    method: 'POST',
+    body: { config: opts.config },
+  })
+}
+
+export function connectCatalogConnector(opts: {
+  profileName: string
+  ownerOpenId: string
+  rowKey: string
+  fields?: Record<string, string>
+}) {
+  if (!opts.rowKey || opts.rowKey.length > 256) {
+    throw new BrokerUnavailableError('invalid connector catalog row key', 400)
+  }
+  if (opts.fields) {
+    const entries = Object.entries(opts.fields)
+    if (!entries.length || entries.length > 32 || entries.some(([name, value]) => (
+      !/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/.test(name)
+      || typeof value !== 'string' || !value || value.length > 8192 || /[\r\n]/.test(value)
+    ))) throw new BrokerUnavailableError('invalid connector credential fields', 400)
+  }
+  return ownerBrokerJson<CustomConnectorsResponse>('/api/run-broker/connector-catalog/connect', {
+    ...opts,
+    method: 'POST',
+    body: { row_key: opts.rowKey, ...(opts.fields ? { fields: opts.fields } : {}) },
+    timeoutMs: 180_000,
+  })
+}
+
+export function fetchCatalogConnectorStatus(opts: {
+  profileName: string
+  ownerOpenId: string
+  rowKey: string
+}) {
+  if (!opts.rowKey || opts.rowKey.length > 256) {
+    throw new BrokerUnavailableError('invalid connector catalog row key', 400)
+  }
+  return ownerBrokerJson<{ profile_name: string; subject_id: string; connector: unknown; ready: boolean }>(
+    '/api/run-broker/connector-catalog/status',
+    { ...opts, method: 'POST', body: { row_key: opts.rowKey }, timeoutMs: 60_000 },
+  )
+}
+
+export function deleteCustomConnector(opts: { profileName: string; ownerOpenId: string; connectorId: string }) {
+  return ownerBrokerJson<{ ok: true }>(`/api/run-broker/custom-connectors/${encodeURIComponent(opts.connectorId)}`, {
+    ...opts,
+    method: 'DELETE',
+  })
+}
+
+export async function completeCatalogOAuth(opts: { state: string; code: string }) {
+  if (!config.runBrokerUrl) throw new BrokerUnavailableError('HERMES_RUN_BROKER_URL is not configured', 503)
+  if (!opts.state || opts.state.length > 512 || !opts.code || opts.code.length > 8192) {
+    throw new BrokerUnavailableError('invalid catalog OAuth callback', 400)
+  }
+  const response = await fetch(`${config.runBrokerUrl}/api/run-broker/connector-catalog/oauth/callback`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(config.runBrokerKey ? { Authorization: `Bearer ${config.runBrokerKey}` } : {}),
+    },
+    body: JSON.stringify(opts),
+    signal: AbortSignal.timeout(60000),
+  }).catch((err: any) => {
+    throw new BrokerUnavailableError(`connector broker request failed: ${err?.message || err}`, 503)
+  })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new BrokerUnavailableError(String(body?.error || `connector broker returned HTTP ${response.status}`), response.status)
+  return body as { ok: true }
+}
+
+export async function fetchConnectorIcon(rowKey: string): Promise<Response> {
+  if (!config.runBrokerUrl) throw new BrokerUnavailableError('HERMES_RUN_BROKER_URL is not configured', 503)
+  const headers: Record<string, string> = config.runBrokerKey
+    ? { Authorization: `Bearer ${config.runBrokerKey}` }
+    : {}
+  return fetch(
+    `${config.runBrokerUrl}/api/run-broker/connector-catalog/icon?row_key=${encodeURIComponent(rowKey)}`,
+    { headers, signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS) },
+  ).catch((err: any) => {
+    throw new BrokerUnavailableError(`connector icon request failed: ${err?.message || err}`, 503)
+  })
 }
 
 // --- Phase 1.5 shadow compare (redacted; never logs a secret) ---------------

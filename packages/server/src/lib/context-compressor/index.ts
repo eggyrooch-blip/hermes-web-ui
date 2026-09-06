@@ -226,7 +226,16 @@ Respond ONLY to the latest user message
 that appears AFTER this summary. The current session state (files,
 config, etc.) may reflect work described here — avoid repeating it:`
 
-const TEMPLATE_SECTIONS = `Use this exact structure:
+const TEMPLATE_SECTIONS = `Apply these correction-continuity rules before writing the summary:
+- Later explicit corrections override earlier values field by field.
+- A presentation-only correction changes formatting, not the underlying value.
+- Fields not named by a correction keep their current values.
+- In current-state sections, state only the latest effective value. Older contradictory
+  values may appear only as history and must be labeled superseded.
+- Preserve backing values used to derive a displayed figure unless the user explicitly
+  changes them.
+
+Use this exact structure:
 
 ## Active Task
 [THE SINGLE MOST IMPORTANT FIELD. Copy the user's most recent request or

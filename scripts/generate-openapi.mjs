@@ -247,6 +247,82 @@ function addEndpoint(paths, method, path, controllerMethod, tagInfo, content, ma
   const requestBody = generateRequestBody(method, controllerSource)
   if (requestBody) operation.requestBody = requestBody
 
+  if (openapiPath === '/api/auth/skill-credentials/catalog/icon') {
+    operation.security = []
+    operation.parameters[0].required = true
+    delete operation.responses['400']
+    delete operation.responses['401']
+  }
+  if (openapiPath === '/api/auth/skill-credentials/catalog/oauth/callback') {
+    operation.security = []
+    delete operation.responses['401']
+    delete operation.responses['403']
+  }
+  if ((openapiPath.startsWith('/api/auth/skill-credentials/catalog')
+    && !['/api/auth/skill-credentials/catalog/icon', '/api/auth/skill-credentials/catalog/oauth/callback'].includes(openapiPath))
+    || openapiPath.startsWith('/api/auth/skill-credentials/custom')) {
+    operation.responses['400'] ||= { $ref: '#/components/responses/BadRequest' }
+    operation.responses['403'] ||= { description: 'Trusted connector identity unavailable' }
+  }
+  if (openapiPath === '/api/auth/skill-credentials/custom/import') {
+    operation.responses['201'] = { description: 'Imported' }
+    delete operation.responses['200']
+    operation.requestBody = {
+      required: true,
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: { config: { type: 'string', maxLength: 65536 } },
+            required: ['config'],
+            additionalProperties: false,
+          },
+        },
+      },
+    }
+  }
+  if (openapiPath === '/api/auth/skill-credentials/catalog/connect') {
+    operation.responses['201'] = { description: 'Connected' }
+    delete operation.responses['200']
+    operation.requestBody = {
+      required: true,
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              row_key: { type: 'string', maxLength: 256 },
+              fields: {
+                type: 'object',
+                minProperties: 1,
+                maxProperties: 32,
+                propertyNames: { pattern: '^[!#$%&\\\'*+.^_`|~0-9A-Za-z-]+$' },
+                additionalProperties: { type: 'string', minLength: 1, maxLength: 8192 },
+              },
+            },
+            required: ['row_key'],
+            additionalProperties: false,
+          },
+        },
+      },
+    }
+  }
+  if (openapiPath === '/api/auth/skill-credentials/catalog/status') {
+    operation.requestBody = {
+      required: true,
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: { row_key: { type: 'string', minLength: 1, maxLength: 256 } },
+            required: ['row_key'],
+            additionalProperties: false,
+          },
+        },
+      },
+    }
+  }
+
   paths[openapiPath][method] = operation
 }
 
@@ -364,7 +440,7 @@ function isRequiredQueryParam(name, source) {
 function inferEnumValues(name, source) {
   const escaped = escapeRegExp(name)
   const values = new Set()
-  const comparisonRegex = new RegExp(`\\b${escaped}\\b\\s*(?:===|!==)\\s*['"]([^'"]+)['"]`, 'g')
+  const comparisonRegex = new RegExp(`(?<!typeof\\s)\\b${escaped}\\b\\s*(?:===|!==)\\s*['"]([^'"]+)['"]`, 'g')
   collectMatches(source, comparisonRegex, values)
   const allowedRegex = new RegExp(`${escaped}\\s+must be\\s+([^'"\`\\n]+)`, 'i')
   const allowedMatch = source.match(allowedRegex)
@@ -375,6 +451,7 @@ function inferEnumValues(name, source) {
       .filter(value => /^[A-Za-z0-9_.-]+$/.test(value))
       .forEach(value => values.add(value))
   }
+  values.delete('string')
   return Array.from(values)
 }
 
@@ -990,7 +1067,7 @@ if (!openapi.tags.find(t => t.name === 'Terminal')) {
 
 // Write output
 const outputPath = join(rootDir, 'docs/openapi.json')
-writeFileSync(outputPath, JSON.stringify(openapi, null, 2))
+writeFileSync(outputPath, `${JSON.stringify(openapi, null, 2)}\n`)
 
 console.log(`✓ Generated OpenAPI spec: ${outputPath}`)
 console.log(`  ${Object.keys(openapi.paths).length} endpoints`)

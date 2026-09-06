@@ -134,6 +134,13 @@ onMounted(() => {
             </svg>
             <span>{{ t("sidebar.files") }}</span>
           </RouteLinkItem>
+          <RouteLinkItem class="nav-item" :to="{ name: 'hermes.coworkProject', query: { profile: profilesStore.activeProfileName } }" :active="selectedKey === 'hermes.coworkProject'">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M8 4V2M16 4V2M8 9h8M8 13h5" />
+            </svg>
+            <span>{{ t("sidebar.projects") }}</span>
+          </RouteLinkItem>
           <RouteLinkItem class="nav-item" :to="{ name: 'hermes.kanban' }" :active="selectedKey === 'hermes.kanban'">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="3" width="5" height="18" rx="1" />

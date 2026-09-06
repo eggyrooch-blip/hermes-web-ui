@@ -1,4 +1,18 @@
 export default {
+  mcpOAuthApproval: {
+    title: 'Подключить этот MCP-клиент?',
+    description: 'Разрешите клиенту использовать ваши личные коннекторы. После подтверждения вы вернетесь в клиент.',
+    invalid: 'Запрос отсутствует или недействителен. Вернитесь в MCP-клиент и повторите попытку.',
+    approve: 'Разрешить и вернуться',
+    failed: 'Ошибка авторизации',
+    client: 'Клиент',
+    callback: 'Возврат в',
+    scopes: 'Запрошенный доступ',
+  },
+
+  mcp: {
+    downloadUnknown: 'Не указано',
+  },
 
   login: {
     title: 'Hermes Web UI',
@@ -104,7 +118,15 @@ export default {
   },
 
 
+  cowork: {
+    newTask: 'Новая задача', expert: 'Эксперт', noExpert: 'Без эксперта', runState: 'Состояние запуска', approvalRequired: 'Требуется одобрение', pause: 'Приостановить', resume: 'Продолжить', approve: 'Одобрить', reject: 'Отклонить', abandon: 'Отказаться', noArtifacts: 'Нет результатов', steerPlaceholder: 'Добавьте указание к активной задаче', taskPlaceholder: 'Опишите нужный результат', steer: 'Отправить указание', start: 'Запустить задачу', runFailed: 'Не удалось запустить задачу', actionFailed: 'Не удалось обновить запуск', expertsUnavailable: 'Эксперты недоступны',
+    project: 'Проект', projects: 'Проекты', noProject: 'Без проекта', chooseProject: 'Выбрать проект', createProject: 'Новый проект', openProject: 'Открыть', fixedForTask: 'Закреплено за этой задачей', newTaskCreated: 'Создана новая задача', noFolder: 'Без папки', folder: 'Папка проекта', folderPlaceholder: 'Путь относительно рабочего пространства', archiveProject: 'Архивировать проект',
+    projectName: 'Название проекта', description: 'Описание', instructions: 'Инструкции проекта', searchProjects: 'Поиск проектов', projectSummary: '{tasks} задач · {sources} источников', noProjects: 'Проектов пока нет', tasks: 'Задачи', task: 'Задача', noTasks: 'Задач пока нет', sources: 'Источники', noSources: 'Источников пока нет', library: 'Библиотека', noLibraryItems: 'Библиотека пуста', addToProject: 'Добавить в проект', addedToProject: 'Добавлено в проект', inProject: 'В проекте', loadFailed: 'Не удалось загрузить проекты', createFailed: 'Не удалось создать проект', addFailed: 'Не удалось добавить элемент', recentProjects: 'Недавние', searchResults: 'Результаты', unavailable: 'Сервис проектов недоступен.', retry: 'Повторить', clearProject: 'Убрать проект', viewAllProjects: 'Все проекты', projectContextHint: 'Агент использует инструкции и облачные файлы проекта', temporaryTaskHint: 'Временная задача: файлы не попадут в другие задачи автоматически', projectIcon: 'Значок (необязательно)', projectColor: 'Цвет', projectMemoryNote: 'Память этого проекта остаётся в этом проекте.', searchLibrary: 'Поиск в библиотеке', libraryProjectCount: 'В {count} проектах', notInProject: 'Вне проекта', sourceType: { upload: 'Загрузка', artifact: 'Результат', saved_response: 'Сохранённый ответ', app_link: 'Ссылка приложения' },
+  },
   sidebar: {
+    cowork: 'Cowork',
+    projects: 'Projects',
+    library: 'Library',
     chat: 'Чат',
     backToChat: 'Назад',
     search: 'Поиск',
@@ -359,6 +381,10 @@ export default {
       envDefault: 'Default environment',
       approvalRequired: 'Operations requiring approval',
       startChat: 'Начать чат с сотрудником',
+      engine: 'Execution engine',
+      engineHermes: 'Hermes',
+      engineHarness: 'Codex',
+      codexNoModels: 'No compatible GPT model is available for Codex.',
       activate: 'Use this expert in chat',
       deactivate: 'Stop using this expert',
     },
@@ -493,6 +519,12 @@ export default {
     approvalAllowSession: 'Разрешить для этого сеанса',
     approvalAlways: 'Разрешить всегда',
     approvalDeny: 'Отказать',
+    approvalRework: 'Доработать',
+    approvalComment: 'Добавить комментарий (необязательно)',
+    approvalId: 'Согласование',
+    approvalGate: 'Gate {gate}',
+    harnessBadge: 'Codex · hermes-web-ui',
+    harnessBadgeTitle: 'Codex · hermes-web-ui',
     newCliChat: 'Новый CLI',
     deleteSession: 'Удалить этот сеанс?',
     sessionDeleted: 'Сеанс удалён',
@@ -536,7 +568,10 @@ export default {
     workspace: 'Рабочая область',
     setWorkspace: 'Установить рабочую область',
     setWorkspaceTitle: 'Установить рабочую область сеанса',
+    selectCloudWorkspaceTitle: 'Выбрать облачную рабочую область',
     workspacePlaceholder: 'Введите путь к проекту, например /home/user/project',
+    workspaceCloudPlaceholder: 'Оставьте пустым для рабочей области по умолчанию или выберите облачную папку',
+    folderPickerDefault: 'Рабочая область по умолчанию',
     folderPickerEmpty: '(Пусто)',
     folderPickerNoFolders: 'Нет папок рабочей области',
     folderPickerSelected: 'Выбрано:',
@@ -1858,7 +1893,19 @@ export default {
       internalSystems: 'Внутренние системы',
       otherCredentials: 'Другие учётные данные',
     },
+    larkAuthRequired: 'Авторизация Lark-cli не сохранена. Авторизуйтесь заново в карточке ниже.',
     noInteractiveFlow: '{name}: здесь нельзя запустить процесс аутентификации — следуйте инструкциям на карточке.',
+    github: {
+      title: 'GitHub — подключить личные учётные данные',
+      hint: 'Вставьте свой Personal Access Token GitHub. Он хранится в локальном multitenancy vault; Agent получает только краткосрочный broker token.',
+      readonly: 'По умолчанию только чтение: доступны лишь проверенные запросы к репозиториям, коду, issues и pull requests вместе с соответствующим Skill.',
+      create: 'Создать fine-grained PAT в GitHub (30 дней, только чтение)',
+      repositoryAccess: 'В Repository access выберите только репозитории, которые Agent может просматривать.',
+      permissions: 'Оставьте Contents, Issues и Pull requests в режиме Read-only; Metadata остаётся автоматически доступной только для чтения.',
+      returnToPaste: 'Создайте токен, скопируйте его один раз и вернитесь сюда, чтобы вставить.',
+      token: 'GitHub PAT', placeholder: 'Вставьте GitHub PAT', connect: 'Подключить', cancel: 'Отмена', revoke: 'Отозвать',
+      revokeConfirm: 'Отозвать учётные данные GitHub MCP этого пользователя?', failed: 'Не удалось сохранить. Повторите позже.', revoked: 'Учётные данные GitHub MCP отозваны',
+    },
   },
 
   

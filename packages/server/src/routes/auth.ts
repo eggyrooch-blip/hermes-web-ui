@@ -1,5 +1,6 @@
 import Router from '@koa/router'
 import * as ctrl from '../controllers/auth'
+import { approveMcpOAuth, getMcpOAuthRequest } from '../controllers/mcp-oauth-approval'
 import { requireSuperAdmin } from '../middleware/user-auth'
 
 // Public routes (no auth required)
@@ -11,6 +12,8 @@ authPublicRoutes.get('/api/auth/feishu/login', ctrl.feishuLogin)
 authPublicRoutes.get('/api/auth/feishu/callback', ctrl.feishuCallback)
 authPublicRoutes.post('/api/auth/feishu/logout', ctrl.feishuLogout)
 authPublicRoutes.get('/api/auth/kep-cli/callback/:sessionId', ctrl.kepCliCallback)
+authPublicRoutes.get('/api/auth/skill-credentials/catalog/icon', ctrl.connectorCatalogIcon)
+authPublicRoutes.get('/api/auth/skill-credentials/catalog/oauth/callback', ctrl.connectorCatalogOAuthCallback)
 
 // Protected routes (auth required)
 export const authProtectedRoutes = new Router()
@@ -30,8 +33,16 @@ authProtectedRoutes.post('/api/auth/feishu/uat/start', ctrl.feishuUatStart)
 authProtectedRoutes.get('/api/auth/feishu/uat/sessions/:sessionId', ctrl.feishuUatPoll)
 authProtectedRoutes.delete('/api/auth/feishu/uat/sessions/:sessionId', ctrl.feishuUatCancel)
 authProtectedRoutes.get('/api/auth/skill-credentials', ctrl.skillCredentialsStatus)
+authProtectedRoutes.get('/api/auth/skill-credentials/catalog', ctrl.connectorCatalog)
+authProtectedRoutes.post('/api/auth/skill-credentials/catalog/connect', ctrl.connectorCatalogConnect)
+authProtectedRoutes.post('/api/auth/skill-credentials/catalog/status', ctrl.connectorCatalogStatus)
+authProtectedRoutes.get('/api/auth/skill-credentials/custom', ctrl.customConnectors)
+authProtectedRoutes.post('/api/auth/skill-credentials/custom/import', ctrl.customConnectorImport)
+authProtectedRoutes.delete('/api/auth/skill-credentials/custom/:connectorId', ctrl.customConnectorDelete)
 authProtectedRoutes.post('/api/auth/skill-credentials/:id/start', ctrl.skillCredentialStart)
 authProtectedRoutes.post('/api/auth/skill-credentials/:id/bind-token', ctrl.skillCredentialBindToken)
 authProtectedRoutes.post('/api/auth/skill-credentials/:id/complete', ctrl.skillCredentialComplete)
+authProtectedRoutes.post('/api/auth/mcp-oauth/approve', approveMcpOAuth)
+authProtectedRoutes.get('/api/auth/mcp-oauth/requests/:requestId', getMcpOAuthRequest)
 authProtectedRoutes.get('/api/auth/locked-ips', ctrl.listLockedIps)
 authProtectedRoutes.delete('/api/auth/locked-ips', ctrl.unlockIpHandler)

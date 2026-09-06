@@ -37,6 +37,8 @@ function joinRelative(parent: string, name: string): string {
   return parent ? `${parent}/${name}` : name
 }
 
+const HIDDEN_WORKSPACE_PICKER_FOLDERS = new Set(['uploads', 'runs'])
+
 /**
  * A folder NAME is one path segment — never a path.
  *
@@ -57,7 +59,7 @@ function assertFolderName(name: string): void {
   if (invalid) throw new Error('Invalid folder name')
 }
 
-export async function listWorkspaceFolders(subPath = ''): Promise<FolderListResponse> {
+export async function listWorkspacePickerFolders(subPath = ''): Promise<FolderListResponse> {
   const query = subPath ? `?path=${encodeURIComponent(subPath)}` : ''
   if (!isChatPlane()) {
     return await request<FolderListResponse>(`/api/hermes/workspace/folders${query}`)
@@ -66,7 +68,7 @@ export async function listWorkspaceFolders(subPath = ''): Promise<FolderListResp
     `/api/hermes/files/list${query}`,
   )
   const folders = (listing.entries || [])
-    .filter(entry => entry.isDir)
+    .filter(entry => entry.isDir && !entry.name.startsWith('.') && !HIDDEN_WORKSPACE_PICKER_FOLDERS.has(entry.name))
     .map(entry => {
       const relative = joinRelative(subPath, entry.name)
       // Chat plane speaks relative paths end to end — the same shape the workspace

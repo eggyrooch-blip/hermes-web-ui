@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DatabaseSync } from 'node:sqlite'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -131,10 +131,14 @@ function harness() {
 
 describe('direct API run generation ownership', () => {
   let root: string
+  let previousHermesHome: string | undefined
 
   beforeEach(() => {
     vi.clearAllMocks()
     root = mkdtempSync(join(tmpdir(), 'hermes-api-generation-'))
+    previousHermesHome = process.env.HERMES_HOME
+    process.env.HERMES_HOME = join(root, 'hermes-home')
+    mkdirSync(join(process.env.HERMES_HOME, 'profiles', 'research', 'workspace'), { recursive: true })
     dbState.appHome = root
     dbState.db = new DatabaseSync(join(root, 'sessions.db'))
     initAllHermesTables()
@@ -146,6 +150,8 @@ describe('direct API run generation ownership', () => {
     vi.unstubAllGlobals()
     dbState.db?.close()
     dbState.db = null
+    if (previousHermesHome === undefined) delete process.env.HERMES_HOME
+    else process.env.HERMES_HOME = previousHermesHome
     rmSync(root, { recursive: true, force: true })
   })
 
@@ -271,7 +277,39 @@ describe('direct API run generation ownership', () => {
     })
   })
 
+  it('publishes a direct-API terminal MEDIA artifact before persisting and emitting completion', async () => {
+    const artifact = join(process.env.HERMES_HOME!, 'profiles', 'research', 'workspace', 'api-live.html')
+    writeFileSync(artifact, '<p>api</p>')
+    const run = await startControlledRun()
+    run.upstream.send('response.output_text.delta', {
+      type: 'response.output_text.delta',
+      delta: 'MEDIA:/workspace/api-live.html',
+    })
+    run.upstream.send('response.completed', {
+      type: 'response.completed',
+      response: {
+        id: 'api-publication',
+        status: 'completed',
+        output: [{ type: 'message', content: [{ type: 'output_text', text: 'MEDIA:/workspace/api-live.html' }] }],
+        usage: {},
+      },
+    })
+    await run.running
+
+    const expected = '[api-live.html](/workspace/api-live.html?hermes_mime=text%2Fhtml&hermes_bytes=10)'
+    expect(run.oldState.messages.at(-1)?.content).toBe(expected)
+    expect(effects.flush).toHaveBeenCalledWith(run.oldState, 'same-id')
+    expect(run.roomEvents).toContainEqual({
+      event: 'run.completed',
+      payload: expect.objectContaining({ parsed_content: expected }),
+    })
+  })
+
   it('fences terminal side effects when replacement happens during completion await', async () => {
+    const source = join(process.env.HERMES_HOME!, 'profiles', 'research', 'home', 'stale.html')
+    const published = join(process.env.HERMES_HOME!, 'profiles', 'research', 'workspace', 'Downloads', 'stale.html')
+    mkdirSync(join(process.env.HERMES_HOME!, 'profiles', 'research', 'home'), { recursive: true })
+    writeFileSync(source, '<p>stale</p>')
     const usageStarted = deferred<void>()
     const usageRelease = deferred<void>()
     effects.calcUsage.mockImplementationOnce(async (_sid, _state, emit) => {
@@ -283,7 +321,12 @@ describe('direct API run generation ownership', () => {
     const run = await startControlledRun()
     run.upstream.send('response.completed', {
       type: 'response.completed',
-      response: { id: 'old-response', status: 'completed', output: [], usage: { input_tokens: 3, output_tokens: 5 } },
+      response: {
+        id: 'old-response',
+        status: 'completed',
+        output: [{ type: 'message', content: [{ type: 'output_text', text: `MEDIA:${source}` }] }],
+        usage: { input_tokens: 3, output_tokens: 5 },
+      },
     })
     await usageStarted.promise
     const replacement = replaceSession(run.sessionMap)
@@ -305,6 +348,7 @@ describe('direct API run generation ownership', () => {
     expect(getSessionDetail('same-id')?.messages).toEqual([])
     expect(run.roomEvents).toEqual([])
     expect(run.dequeue).not.toHaveBeenCalled()
+    expect(existsSync(published)).toBe(false)
   })
 
   it('awaits and reports API failure finalization errors instead of detaching a rejection', async () => {

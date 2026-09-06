@@ -23,6 +23,9 @@ vi.mock('@/views/hermes/McpManagerView.vue', () => ({
 vi.mock('@/views/hermes/GlobalAgentView.vue', () => ({
   default: { template: '<div data-test="global-agent-view" />' },
 }))
+vi.mock('@/views/McpOAuthApprovalView.vue', () => ({
+  default: { template: '<div data-test="mcp-oauth-approval-view" />' },
+}))
 
 const fetchMock = vi.hoisted(() => vi.fn())
 
@@ -42,6 +45,7 @@ describe('router route metadata + auth gating', () => {
   beforeEach(() => {
     vi.resetModules()
     localStorage.clear()
+    sessionStorage.clear()
     Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
       configurable: true,
       value: vi.fn(() => ({})),
@@ -53,6 +57,7 @@ describe('router route metadata + auth gating', () => {
 
   afterEach(() => {
     localStorage.clear()
+    sessionStorage.clear()
     window.history.replaceState(null, '', '/')
     vi.unstubAllGlobals()
   })
@@ -87,12 +92,33 @@ describe('router route metadata + auth gating', () => {
     expect(router.getRoutes().find(route => route.name === 'hermes.groupChatRoom')?.path).toBe('/hermes/group-chat/room/:roomId')
   })
 
+  it('redirects the legacy Cowork URL to the unified Chat entry', async () => {
+    const router = (await import('@/router')).default
+    const route = router.getRoutes().find(route => route.name === 'hermes.cowork')
+
+    expect(route?.redirect).toEqual({ name: 'hermes.chat' })
+  })
+
   it('registers the connectors route for skill credentials', async () => {
     const router = (await import('@/router')).default
     const route = router.getRoutes().find(route => route.name === 'hermes.connectors')
 
     expect(route?.path).toBe('/hermes/connectors')
     expect(router.resolve('/hermes/credentials').matched.at(-1)?.name).toBe('hermes.connectors')
+  })
+
+  it('resumes an MCP OAuth approval after an expired session is restored', async () => {
+    const router = (await import('@/router')).default
+    await router.push('/mcp/oauth/approve?request_id=hma_request')
+    await router.isReady()
+    expect(router.currentRoute.value.name).toBe('login')
+
+    localStorage.setItem('hermes_auth_mode', 'feishu-oauth-dev')
+    fetchMock.mockResolvedValue({ ok: true, json: () => Promise.resolve({ user: { id: 1 } }) })
+    await router.push('/hermes/chat')
+
+    expect(router.currentRoute.value.name).toBe('mcp.oauth.approve')
+    expect(router.currentRoute.value.query.request_id).toBe('hma_request')
   })
 
   it('registers the expert route as an ordinary authenticated product surface', async () => {

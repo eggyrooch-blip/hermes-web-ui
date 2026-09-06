@@ -10,6 +10,7 @@ const registerSessionHandlersMock = vi.hoisted(() => vi.fn())
 const unregisterSessionHandlersMock = vi.hoisted(() => vi.fn())
 const getChatRunSocketMock = vi.hoisted(() => vi.fn(() => null as any))
 const respondClarifyMock = vi.hoisted(() => vi.fn())
+const respondToolApprovalMock = vi.hoisted(() => vi.fn())
 const onAuthResolvedMock = vi.hoisted(() => vi.fn(() => vi.fn()))
 const fetchSessionMock = vi.hoisted(() => vi.fn())
 const fetchSessionMessagesPageMock = vi.hoisted(() => vi.fn())
@@ -53,7 +54,7 @@ vi.mock('@/api/hermes/chat', () => ({
   registerSessionHandlers: registerSessionHandlersMock,
   unregisterSessionHandlers: unregisterSessionHandlersMock,
   getChatRunSocket: getChatRunSocketMock,
-  respondToolApproval: vi.fn(),
+  respondToolApproval: respondToolApprovalMock,
   respondClarify: respondClarifyMock,
   // Upstream rebaseline added module-level handler registrations the store
   // wires up at setup time; each returns an unsubscribe fn.
@@ -105,6 +106,77 @@ describe('chat store user-mode model selection', () => {
       onResumed({ messages: [], isWorking: false, events: [] })
       return { disconnect: vi.fn() }
     })
+  })
+
+  // switchSession registers the session's handler set first, and
+  // startRunViaSocket then reuses whatever is already registered — so any
+  // callback missing here is silently dropped for the whole session.
+  it('restores approval, workflow and title handlers when a session is resumed', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    resumeSessionMock.mockImplementation((sessionId: string, onResumed: (data: any) => void) => {
+      onResumed({ session_id: sessionId, messages: [], isWorking: true, events: [] })
+      return { disconnect: vi.fn() }
+    })
+    registerSessionHandlersMock.mockClear()
+    await store.switchSession(session.id)
+
+    const call = registerSessionHandlersMock.mock.calls.find(([sid]) => sid === session.id)
+    expect(call).toBeTruthy()
+    const handlers = call![1] as Record<string, (evt: any) => void>
+    for (const name of ['onApprovalRequested', 'onApprovalResolved', 'onWorkflowStage', 'onSessionTitleUpdated']) {
+      expect(typeof handlers[name]).toBe('function')
+    }
+
+    handlers.onApprovalRequested({
+      event: 'approval.requested', session_id: session.id,
+      approval_id: 'gate-resume', choices: ['once', 'deny'],
+    })
+    expect(store.pendingApprovals.get(session.id)).toMatchObject({ approvalId: 'gate-resume' })
+
+    handlers.onWorkflowStage({
+      event: 'workflow.stage', session_id: session.id, stage: 'review', status: 'running',
+    })
+    expect(store.workflowStages.get(session.id)).toMatchObject({ stage: 'review' })
+
+    handlers.onSessionTitleUpdated({
+      event: 'session.title.updated', session_id: session.id, title: 'Renamed by server',
+    })
+    expect(store.sessions.find(s => s.id === session.id)?.title).toBe('Renamed by server')
+
+    handlers.onApprovalResolved({
+      event: 'approval.resolved', session_id: session.id,
+      approval_id: 'gate-resume', resolved: true,
+    })
+    expect(store.pendingApprovals.has(session.id)).toBe(false)
+  })
+
+  it('keeps an approval card until the server acknowledges success', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    await store.sendMessage('approve me')
+    const [, onEvent] = startRunViaSocketMock.mock.calls[0]
+    onEvent({
+      event: 'approval.requested', session_id: session.id,
+      approval_id: 'gate-d', choices: ['approve', 'reject'],
+    })
+
+    store.respondApproval('approve')
+    expect(store.pendingApprovals.get(session.id)).toMatchObject({ submitting: true })
+    onEvent({
+      event: 'approval.resolved', session_id: session.id,
+      approval_id: 'gate-d', resolved: false, error: 'broker unavailable',
+    })
+    expect(store.pendingApprovals.get(session.id)).toMatchObject({
+      submitting: false, error: 'broker unavailable',
+    })
+
+    store.respondApproval('approve')
+    onEvent({
+      event: 'approval.resolved', session_id: session.id,
+      approval_id: 'gate-d', resolved: true,
+    })
+    expect(store.pendingApprovals.has(session.id)).toBe(false)
   })
 
   afterEach(() => {
@@ -1435,6 +1507,92 @@ describe('chat store user-mode model selection', () => {
     expect(store.isSessionLive(session.id)).toBe(false)
   })
 
+  it('settles a Harness credential replay when the workflow resume is acknowledged', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    await store.sendMessage('needs Harness credential')
+    const [, onEvent, onDone] = startRunViaSocketMock.mock.calls[0]
+    onEvent({
+      event: 'auth.required',
+      session_id: session.id,
+      run_id: 'workflow-1',
+      workflow_id: 'workflow-1',
+      credential_kind: 'mobius',
+      connector_id: 'kep-cli-online',
+      provider: 'harness',
+    })
+    onDone()
+
+    const replacementSocket = { emit: vi.fn() }
+    getChatRunSocketMock.mockReturnValue(replacementSocket)
+    store.triggerReauthReplay(session.id)
+
+    expect(replacementSocket.emit).toHaveBeenCalledWith('credential.replay', expect.objectContaining({
+      workflow_id: 'workflow-1',
+    }))
+    expect(store.isSessionLive(session.id)).toBe(true)
+
+    const applyResolved = onAuthResolvedMock.mock.calls.at(-1)?.[0] as (event: any) => void
+    applyResolved({
+      event: 'auth.resolved',
+      session_id: session.id,
+      run_id: 'workflow-1',
+      workflow_id: 'workflow-1',
+    })
+
+    expect(store.pendingReauths.has(session.id)).toBe(false)
+    expect(store.isSessionLive(session.id)).toBe(false)
+    expect(unregisterSessionHandlersMock).toHaveBeenCalledWith(session.id)
+  })
+
+  it('settles a failed Harness credential replay so the restored card can retry', async () => {
+    const store = useChatStore()
+    const session = store.newChat({ profile: 'tester' })
+    await store.sendMessage('needs Harness credential')
+    const [, onEvent, onDone] = startRunViaSocketMock.mock.calls[0]
+    const authRequired = {
+      event: 'auth.required',
+      session_id: session.id,
+      run_id: 'workflow-1',
+      workflow_id: 'workflow-1',
+      credential_kind: 'mobius',
+      connector_id: 'kep-cli-online',
+      provider: 'harness',
+    }
+    onEvent(authRequired)
+    onDone()
+
+    const replacementSocket = { emit: vi.fn() }
+    getChatRunSocketMock.mockReturnValue(replacementSocket)
+    store.triggerReauthReplay(session.id)
+
+    const registeredCall = registerSessionHandlersMock.mock.calls.findLast(call => call[0] === session.id)
+    const registered = registeredCall?.[1]
+    const registeredOptions = registeredCall?.[2]
+    registered.onAuthRequired({
+      ...authRequired,
+      error: 'Credential resume failed. Please try again.',
+    })
+
+    expect(store.pendingReauths.get(session.id)?.retrying).toBe(false)
+    expect(store.activeSession!.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: 'assistant',
+        systemType: 'error',
+        content: 'Error: Credential resume failed. Please try again.',
+      }),
+    ]))
+    expect(store.isSessionLive(session.id)).toBe(false)
+    expect(unregisterSessionHandlersMock).toHaveBeenCalledWith(session.id)
+
+    store.triggerReauthReplay(session.id)
+    expect(replacementSocket.emit).toHaveBeenCalledTimes(2)
+    expect(store.isSessionLive(session.id)).toBe(true)
+
+    registeredOptions.onDone()
+    expect(store.isSessionLive(session.id)).toBe(true)
+  })
+
   it('rolls back a credential replay attachment when no current socket exists', async () => {
     const store = useChatStore()
     const session = store.newChat({ profile: 'tester' })
@@ -1620,6 +1778,58 @@ describe('chat store user-mode model selection', () => {
     expect(store.activeSession?.profile).toBe('tester')
     // Upstream rebaseline added a transport arg ('chat-run') to resumeSession.
     expect(resumeSessionMock).toHaveBeenCalledWith('session-2', expect.any(Function), 'tester', 'chat-run')
+  })
+
+  it('keeps a new local chat selected when an older session-list request finishes', async () => {
+    const pending: Array<(sessions: any[]) => void> = []
+    fetchSessionsMock.mockImplementation(() => new Promise(resolve => pending.push(resolve)))
+    const store = useChatStore()
+
+    const loading = store.loadSessions('tester', 'server-session')
+    await vi.waitFor(() => expect(pending).toHaveLength(2))
+    const local = store.newChat({ profile: 'tester' })
+
+    pending[0]([{
+      id: 'server-session', source: 'api_server', title: 'older', profile: 'tester',
+      started_at: 100, last_active: 100, message_count: 0,
+    }])
+    pending[1]([])
+    await loading
+
+    expect(store.activeSessionId).toBe(local.id)
+    expect(store.activeSession?.id).toBe(local.id)
+    expect(store.sessions.map(session => session.id)).toEqual([local.id, 'server-session'])
+    expect(resumeSessionMock).not.toHaveBeenCalledWith('server-session', expect.anything(), expect.anything(), expect.anything())
+  })
+
+  it('falls back after the active chat is cleared during a session-list request', async () => {
+    const pending: Array<(sessions: any[]) => void> = []
+    fetchSessionsMock.mockImplementation(() => new Promise(resolve => pending.push(resolve)))
+    const store = useChatStore()
+    store.newChat({ profile: 'tester' })
+
+    const loading = store.loadSessions('tester')
+    await vi.waitFor(() => expect(pending).toHaveLength(2))
+    store.clearActiveSession()
+
+    pending[0]([{
+      id: 'server-session', source: 'api_server', title: 'latest', profile: 'tester',
+      started_at: 100, last_active: 100, message_count: 0,
+    }])
+    pending[1]([])
+    await loading
+
+    expect(store.activeSessionId).toBe('server-session')
+  })
+
+  it('does not carry an empty local chat into another profile session list', async () => {
+    fetchSessionsMock.mockResolvedValue([])
+    const store = useChatStore()
+    const local = store.newChat({ profile: 'profile-a' })
+
+    await store.loadSessions('profile-b')
+
+    expect(store.sessions.some(session => session.id === local.id)).toBe(false)
   })
 
   it('falls back to paginated messages when socket resume and summary totals are stale zero', async () => {
@@ -2778,7 +2988,9 @@ describe('chat store user-mode model selection', () => {
     await Promise.resolve()
 
     expect(fetchSessionMessagesPageMock).toHaveBeenCalledWith('session-1', 0, 150, 'tester')
-    expect(store.activeSession?.messages.map(message => message.content)).toEqual(['foreground fallback'])
+    await vi.waitFor(() => {
+      expect(store.activeSession?.messages.map(message => message.content)).toEqual(['foreground fallback'])
+    })
   })
 
   it('preserves local messages omitted from a partial foreground resume snapshot', async () => {

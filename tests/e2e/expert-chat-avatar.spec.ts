@@ -115,11 +115,12 @@ test('opens a separate fixed digital-employee session and restores it from histo
   await expect(page.locator('.expert-session-identity')).toContainText('This session is fixed to this digital employee')
   await expect(page.locator('.expert-session-avatar')).toHaveAttribute('src', expertAvatar)
   await expect(page.locator('.expert-session-capabilities')).toHaveText('Capabilities')
-  await expect(page.locator('.expert-slot-button')).toBeDisabled()
+  await expect(page.locator('.expert-slot-button')).toBeEnabled()
   await expect(page.locator('.session-item', { hasText: 'Other seeded chat' })).toBeVisible()
   await expect(page.locator('.session-item', { hasText: 'Other seeded chat' }).locator('.session-item-agent-logo')).not.toHaveAttribute('src', expertAvatar)
 
   await sendChatMessage(page, '启动资源投放')
+  await expect(page.locator('.expert-slot-button')).toBeDisabled()
   const run = await waitForRun(page)
 
   expect(run.session_id).toBe(newSessionId)
@@ -134,7 +135,7 @@ test('opens a separate fixed digital-employee session and restores it from histo
   await expect(page.locator('.thinking-avatar')).toHaveAttribute('src', expertAvatar)
   await expect(page.locator('.session-item.active .session-item-agent-logo')).toHaveAttribute('src', expertAvatar)
 
-  sessions.unshift(sessionSummary(newSessionId, 'Expert work session', 250, {
+  Object.assign(sessions.find(session => session.id === newSessionId)!, sessionSummary(newSessionId, 'Expert work session', 250, {
     expert_id: 'keep-resource-delivery',
     expert_label: '资源投放专家',
     expert_avatar: expertAvatar,

@@ -8,7 +8,7 @@ const dbState = vi.hoisted(() => ({ db: null as DatabaseSync | null, appHome: ''
 const tracker = vi.hoisted(() => ({ start: vi.fn(), complete: vi.fn(), discard: vi.fn() }))
 const remoteDelete = vi.hoisted(() => ({ inspect: vi.fn(), remove: vi.fn() }))
 const chatRun = vi.hoisted(() => ({ server: undefined as any }))
-const workspace = vi.hoisted(() => ({ ensure: vi.fn(), normalize: vi.fn() }))
+const workspace = vi.hoisted(() => ({ ensure: vi.fn(), normalize: vi.fn(), normalizeStored: vi.fn() }))
 
 vi.mock('../../packages/server/src/db/index', () => ({
   getDb: () => dbState.db,
@@ -293,6 +293,7 @@ describe('BrokerRunController session generation integration', () => {
     createSession({ id: 'same-id', profile: 'research', workspace: '/tmp/workspace' })
     workspace.ensure.mockResolvedValue('/tmp/workspace')
     workspace.normalize.mockImplementation(async (_profile: string, value?: string | null) => value || null)
+    workspace.normalizeStored.mockImplementation(async (_profile: string, value?: string | null) => value || null)
     tracker.start.mockResolvedValue({ key: 'checkpoint' })
     tracker.complete.mockResolvedValue(null)
   })

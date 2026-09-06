@@ -5,6 +5,7 @@ import {
   fetchSessions,
   fetchWorkspaceRunChanges,
   setSessionArchived as setSessionArchivedApi,
+  setSessionExpert,
   setSessionModel,
   type HermesMessage,
   type ProviderApiMode,
@@ -23,12 +24,21 @@ import { primeCompletionSound, playCompletionSound } from '@/utils/completion-so
 import { showCompletionNotification } from '@/utils/completion-notification'
 import { detectThinkingBoundary } from '@/utils/thinking-parser'
 import { responseErrorMessage } from '@/utils/http-error'
+import { collectSessionArtifacts } from '@/utils/hermes/session-artifacts'
 
 // Re-export ContentBlock for convenience
 export type ContentBlock = ContentBlockImport
 
 export const LIVE_CHAT_MESSAGE_PAGE_SIZE = 150
 export const LIVE_CHAT_MAX_LOADED_MESSAGES = 300
+export const CODEX_MODEL_UNAVAILABLE = 'CODEX_MODEL_UNAVAILABLE'
+
+export function isCodexModel(model: string): boolean {
+  const parts = model.split('/')
+  return parts.length <= 2
+    && (parts.length === 1 || parts[0].toLowerCase() === 'tencent')
+    && (parts.at(-1) || '').toLowerCase().startsWith('gpt-')
+}
 
 export interface Attachment {
   id: string
@@ -73,10 +83,15 @@ export interface PendingApproval {
   approvalId: string
   command: string
   description: string
-  choices: Array<'once' | 'session' | 'always' | 'deny'>
+  gate: string
+  checklist: string[]
+  choices: Array<'once' | 'session' | 'always' | 'deny' | 'approve' | 'reject' | 'rework'>
   allowPermanent: boolean
   isMemoryWrite: boolean
   requestedAt: number
+  submitting: boolean
+  error: string
+  errorFallback?: boolean
 }
 
 export interface PendingClarify {
@@ -93,11 +108,22 @@ export interface PendingReauth {
   runId: string
   connectorId: string
   provider: string
+  workflowId?: string
+  credentialKind?: string
   sessionRowId?: number
   sessionIncarnation?: number
   requestedAt: number
   /** true once the user authorized and the broker replay was kicked off */
   retrying: boolean
+}
+
+export interface WorkflowStage {
+  sessionId: string
+  stage: string
+  status: string
+  summary: string
+  relatedIds: Record<string, string>
+  auditId: string
 }
 
 export interface Session {
@@ -115,6 +141,7 @@ export interface Session {
   expertId?: string
   expertLabel?: string
   expertAvatar?: string
+  executionEngine?: 'hermes' | 'harness'
   messages: Message[]
   createdAt: number
   updatedAt: number
@@ -134,6 +161,9 @@ export interface Session {
   endedAt?: number | null
   lastActiveAt?: number
   workspace?: string | null
+  projectId?: string
+  projectName?: string
+  projectBound?: boolean
   isArchived?: boolean
   /** Per-session reasoning effort override.
    * Empty string / undefined = use config.yaml default.
@@ -626,6 +656,7 @@ function mapHermesSession(s: SessionSummary): Session {
     expertId: s.expert_id || undefined,
     expertLabel: s.expert_label || undefined,
     expertAvatar: s.expert_avatar || undefined,
+    executionEngine: s.execution_engine === 'harness' ? 'harness' : 'hermes',
     codingAgentId,
     codingAgentMode,
     messages: [],
@@ -642,6 +673,9 @@ function mapHermesSession(s: SessionSummary): Session {
     endedAt: s.ended_at != null ? Math.round(s.ended_at * 1000) : null,
     lastActiveAt: s.last_active != null ? Math.round(s.last_active * 1000) : undefined,
     workspace: s.workspace || null,
+    projectId: s.project_id || undefined,
+    projectName: s.project_name || undefined,
+    projectBound: s.project_bound === true,
     isArchived: s.is_archived === true,
   }
 }
@@ -765,7 +799,7 @@ export const useChatStore = defineStore('chat', () => {
   const workspaceDiffs = ref<Record<string, WorkspaceRunChangeSummary[]>>({})
   const activeSessionId = ref<string | null>(null)
   const focusMessageId = ref<string | null>(null)
-  const streamStates = ref<Map<string, { abort: () => void }>>(new Map())
+  const streamStates = ref<Map<string, { abort: () => void, settle?: () => void }>>(new Map())
   /** sessionId → server-reported isWorking status */
   const serverWorking = ref<Set<string>>(new Set())
   /** Sessions that completed while the user was viewing another session. */
@@ -782,6 +816,24 @@ export const useChatStore = defineStore('chat', () => {
     const sid = activeSessionId.value
     return sid ? pendingApprovals.value.get(sid) || null : null
   })
+  const workflowStages = ref<Map<string, WorkflowStage>>(new Map())
+  const activeWorkflowStage = computed(() => {
+    const sid = activeSessionId.value
+    return sid ? workflowStages.value.get(sid) || null : null
+  })
+  const runStatusTexts = ref<Map<string, string>>(new Map())
+  const runStatusText = computed(() => {
+    const sid = activeSessionId.value
+    return sid ? runStatusTexts.value.get(sid) || null : null
+  })
+
+  function setRunStatusText(sessionId: string | null | undefined, text: string | null) {
+    if (!sessionId) return
+    const next = new Map(runStatusTexts.value)
+    if (text) next.set(sessionId, text)
+    else next.delete(sessionId)
+    runStatusTexts.value = next
+  }
 
   const pendingClarifies = ref<Map<string, PendingClarify>>(new Map())
   const activePendingClarify = computed(() => {
@@ -814,6 +866,7 @@ export const useChatStore = defineStore('chat', () => {
   const agentSwitching = ref(false)
   const isLoadingMessages = ref(false)
   let loadSessionsRequestEpoch = 0
+  let activeSelectionEpoch = 0
   let switchSessionLoadEpoch = 0
   const latestSwitchLoadEpochBySession = new Map<string, number>()
   let hydrationRequestEpoch = 0
@@ -920,32 +973,7 @@ export const useChatStore = defineStore('chat', () => {
   // re-encoded per segment (so it round-trips through the download/preview URL),
   // while `name` keeps the decoded basename for display. First-seen order,
   // deduped by path. Pure/client-only — no fetch.
-  const sessionArtifacts = computed<{ name: string, path: string }[]>(() => {
-    const out: { name: string, path: string }[] = []
-    const seen = new Set<string>()
-    const marker = '/workspace/'
-    const mediaLine = /(^|\n)[ \t]*MEDIA:([^\r\n]+)/g
-    for (const message of activeSession.value?.messages || []) {
-      if (message.role !== 'assistant') continue
-      const content = message.content
-      if (!content || !content.includes('MEDIA:')) continue
-      mediaLine.lastIndex = 0
-      let match: RegExpExecArray | null
-      while ((match = mediaLine.exec(content)) !== null) {
-        const target = match[2].trim()
-        const idx = target.indexOf(marker)
-        if (idx === -1) continue
-        const rel = target.slice(idx + marker.length).replace(/^\/+/, '')
-        if (!rel) continue
-        const name = rel.split('/').filter(Boolean).pop() || rel
-        const path = marker + rel.split('/').map(encodeURIComponent).join('/')
-        if (seen.has(path)) continue
-        seen.add(path)
-        out.push({ name, path })
-      }
-    }
-    return out
-  })
+  const sessionArtifacts = computed(() => collectSessionArtifacts(activeSession.value?.messages || []))
 
   // Active expert selection (专家广场). The composer chip mirrors the current
   // session's persisted expert metadata; selecting an expert stamps the active
@@ -954,9 +982,18 @@ export const useChatStore = defineStore('chat', () => {
   const activeExpertId = ref<string | null>(getActiveExpertId())
   const activeExpertAvatar = ref('')
   const activeExpertLabel = ref('')
+  const expertPersistence = new Map<string, Promise<boolean>>()
+  const expertPersistenceResult = new Map<string, boolean>()
+  const expertSelectionRevision = new Map<string, number>()
   function setActiveExpertDisplay(display: { avatar?: string; label?: string } | null) {
     activeExpertAvatar.value = display?.avatar?.trim() || ''
     activeExpertLabel.value = display?.label?.trim() || ''
+  }
+  function clearSessionExpert(session: Session) {
+    session.expertId = undefined
+    session.expertLabel = undefined
+    session.expertAvatar = undefined
+    session.executionEngine = 'hermes'
   }
   function applyActiveExpertToSession(
     session: Session | null | undefined,
@@ -982,6 +1019,53 @@ export const useChatStore = defineStore('chat', () => {
       setActiveExpertDisplay(nextDisplay)
       applyActiveExpertToSession(activeSession.value, next, nextDisplay)
     }
+  }
+  function persistSessionExpert(session: Session): Promise<boolean> {
+    const previous = expertPersistence.get(session.id)
+    const save = (previous ? previous.then(() => undefined, () => undefined) : Promise.resolve())
+      .then(async () => {
+        const ok = await setSessionExpert(
+          session.id,
+          session.expertId || null,
+          session.executionEngine === 'harness' ? 'harness' : 'hermes',
+          session.profile,
+        )
+        expertPersistenceResult.set(session.id, ok)
+        return ok
+      })
+    expertPersistence.set(session.id, save)
+    void save.finally(() => {
+      if (expertPersistence.get(session.id) === save) expertPersistence.delete(session.id)
+    })
+    return save
+  }
+  async function waitForExpertPersistence(sessionId: string): Promise<boolean> {
+    const saved = await expertPersistence.get(sessionId) ?? expertPersistenceResult.get(sessionId) ?? true
+    if (saved) return true
+    const session = sessions.value.find(item => item.id === sessionId)
+    return session ? await persistSessionExpert(session) : false
+  }
+  async function selectActiveExpert(
+    expertId: string | null,
+    display?: { avatar?: string; label?: string },
+  ): Promise<boolean> {
+    const session = activeSession.value
+    if (!session || isExpertIneligibleSession(session)) return false
+    const revision = (expertSelectionRevision.get(session.id) || 0) + 1
+    expertSelectionRevision.set(session.id, revision)
+    const next = expertId?.trim() || null
+    if (next) {
+      const nextDisplay = display ?? { label: next }
+      session.expertId = next
+      session.expertLabel = nextDisplay.label?.trim() || next
+      session.expertAvatar = nextDisplay.avatar?.trim() || undefined
+      setActiveExpert(next, nextDisplay)
+    } else {
+      clearSessionExpert(session)
+      setActiveExpert(null)
+    }
+    const saved = await persistSessionExpert(session)
+    return saved
   }
   function syncActiveExpertFromSession(session: Session | null | undefined) {
     if (session?.expertId && !isExpertIneligibleSession(session)) {
@@ -1061,11 +1145,30 @@ export const useChatStore = defineStore('chat', () => {
 
   async function loadSessions(profile?: string | null, preferredSessionId?: string | null) {
     const requestEpoch = ++loadSessionsRequestEpoch
+    const selectionEpoch = activeSelectionEpoch
     isLoadingSessions.value = true
     try {
+      if (activeSessionId.value) await waitForExpertPersistence(activeSessionId.value)
+      const expertRevisions = new Map(sessions.value.map(session => [
+        session.id,
+        expertSelectionRevision.get(session.id) || 0,
+      ]))
+      const sessionsBeforeRequest = new Map(sessions.value.map(session => [session.id, session]))
       const list = await fetchRuntimeSessions(profile)
       if (requestEpoch !== loadSessionsRequestEpoch) return
       const fresh = list.map(mapHermesSession)
+      for (const session of fresh) {
+        if ((expertSelectionRevision.get(session.id) || 0) === (expertRevisions.get(session.id) || 0)) {
+          expertPersistenceResult.set(session.id, true)
+          continue
+        }
+        const local = sessionsBeforeRequest.get(session.id)
+        if (!local) continue
+        session.expertId = local.expertId
+        session.expertLabel = local.expertLabel
+        session.expertAvatar = local.expertAvatar
+        session.executionEngine = local.executionEngine
+      }
       // Preserve already-loaded messages for sessions that are still present,
       // so we don't blow away the active session's messages on refresh.
       const runtimeByIdBefore = new Map(sessions.value.map(s => [s.id, {
@@ -1077,8 +1180,25 @@ export const useChatStore = defineStore('chat', () => {
         if (prev?.messages?.length) s.messages = prev.messages
         if (prev?.contextTokens != null) s.contextTokens = prev.contextTokens
       }
-      sessions.value = fresh
+      const freshIndex = new Map(fresh.map((session, index) => [session.id, index]))
+      const localOnly: Session[] = []
+      for (const local of sessions.value.filter(session => session.localCreated)) {
+        const index = freshIndex.get(local.id)
+        if (index == null) {
+          const matchesProfile = !profile || local.profile === profile
+          const shouldKeep = local.id === activeSessionId.value || local.messages.length > 0
+          if (matchesProfile && shouldKeep) localOnly.push(local)
+        } else {
+          Object.assign(local, fresh[index])
+          fresh[index] = local
+        }
+      }
+      sessions.value = [...localOnly, ...fresh]
       pruneCompletedUnreadSessions(new Set(sessions.value.map(s => s.id)))
+
+      // A user selection made while the list request was in flight wins. Keep
+      // the refreshed list, but never switch away from the new/current chat.
+      if (selectionEpoch !== activeSelectionEpoch) return
 
       // Restore route-selected session first (tab-local source of truth),
       // then current in-memory session, then persisted legacy/default choice,
@@ -1128,6 +1248,12 @@ export const useChatStore = defineStore('chat', () => {
     if (isLoadingSessions.value) return
     const requestEpoch = ++loadSessionsRequestEpoch
     try {
+      if (activeSessionId.value) await waitForExpertPersistence(activeSessionId.value)
+      if (requestEpoch !== loadSessionsRequestEpoch) return
+      const expertRevisions = new Map(sessions.value.map(session => [
+        session.id,
+        expertSelectionRevision.get(session.id) || 0,
+      ]))
       const list = await fetchRuntimeSessions(profile ?? sessionProfileFilter.value)
       if (requestEpoch !== loadSessionsRequestEpoch) return
       const incoming = list.map(mapHermesSession)
@@ -1153,10 +1279,16 @@ export const useChatStore = defineStore('chat', () => {
           existing.inputTokens = fresh.inputTokens
           existing.outputTokens = fresh.outputTokens
           existing.workspace = fresh.workspace
+          existing.projectId = fresh.projectId
+          existing.projectName = fresh.projectName
+          existing.projectBound = fresh.projectBound
           existing.isArchived = fresh.isArchived
-          existing.expertId = fresh.expertId
-          existing.expertLabel = fresh.expertLabel
-          existing.expertAvatar = fresh.expertAvatar
+          if ((expertSelectionRevision.get(fresh.id) || 0) === (expertRevisions.get(fresh.id) || 0)) {
+            existing.expertId = fresh.expertId
+            existing.expertLabel = fresh.expertLabel
+            existing.expertAvatar = fresh.expertAvatar
+            expertPersistenceResult.set(fresh.id, true)
+          }
           // messageTotal: keep the larger of server count vs what we've loaded,
           // so we don't shrink below already-rendered messages mid-session.
           if (fresh.messageTotal != null) {
@@ -1222,6 +1354,8 @@ export const useChatStore = defineStore('chat', () => {
   ): Promise<boolean> {
     const requestEpoch = ++hydrationRequestEpoch
     const sessionLoadEpoch = latestSwitchLoadEpochBySession.get(target.id)
+    await waitForExpertPersistence(target.id)
+    const expertRevision = expertSelectionRevision.get(target.id) || 0
     const messagesAtRequestStart = new Map(target.messages.map(message => [message.id, JSON.stringify(message)]))
     const detail = await fetchSessionMessagesPage(target.id, 0, limit, profile)
     if (
@@ -1240,9 +1374,12 @@ export const useChatStore = defineStore('chat', () => {
     target.messageCount = detail.total
     target.hasMoreBefore = detail.hasMore
     if (detail.session.title) target.title = detail.session.title
-    target.expertId = detail.session.expert_id || undefined
-    target.expertLabel = detail.session.expert_label || undefined
-    target.expertAvatar = detail.session.expert_avatar || undefined
+    if ((expertSelectionRevision.get(target.id) || 0) === expertRevision) {
+      target.expertId = detail.session.expert_id || undefined
+      target.expertLabel = detail.session.expert_label || undefined
+      target.expertAvatar = detail.session.expert_avatar || undefined
+      expertPersistenceResult.set(target.id, true)
+    }
     return target.messages.length > 0
   }
 
@@ -1312,6 +1449,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function switchSession(sessionId: string, focusId?: string | null) {
+    activeSelectionEpoch += 1
     const loadEpoch = ++switchSessionLoadEpoch
     latestSwitchLoadEpochBySession.set(sessionId, loadEpoch)
     const isLatestSessionLoad = () => latestSwitchLoadEpochBySession.get(sessionId) === loadEpoch
@@ -1461,6 +1599,8 @@ export const useChatStore = defineStore('chat', () => {
                 applyResumedAbortCompleted(target, data, e)
               } else if (e.event === 'approval.requested') {
                 setPendingApproval({ ...e, session_id: sessionId } as RunEvent)
+              } else if (e.event === 'workflow.stage') {
+                setWorkflowStage({ ...e, session_id: sessionId } as RunEvent)
               } else if (e.event === 'approval.resolved') {
                 clearPendingApproval({ ...e, session_id: sessionId } as RunEvent)
               } else if (e.event === 'clarify.requested') {
@@ -1656,10 +1796,37 @@ export const useChatStore = defineStore('chat', () => {
     return session
   }
 
-  function newChatWithExpert(expert: { id: string; name?: string; title?: string; avatar?: string }): Session {
+  function newChatWithExpert(
+    expert: { id: string; name?: string; title?: string; avatar?: string },
+    executionEngine: 'hermes' | 'harness' = 'hermes',
+  ): Session {
     const expertId = expert.id.trim()
     if (!expertId) throw new Error('Expert id is required')
-    const session = newChat()
+    const appStore = useAppStore()
+    const profile = useProfilesStore().activeProfileName || 'default'
+    const profileGroups = appStore.profileModelGroups.find(entry => entry.profile === profile)?.groups
+    const groups = profileGroups?.length ? profileGroups : appStore.modelGroups
+    const currentGroup = groups.find(group => group.provider === appStore.selectedProvider)
+    const currentModels = currentGroup
+      ? [...currentGroup.models, ...(appStore.customModels[currentGroup.provider] || [])]
+      : []
+    const currentIsCodex = isCodexModel(appStore.selectedModel)
+      && currentModels.includes(appStore.selectedModel)
+    const fallback = groups
+      .flatMap(group => [...group.models, ...(appStore.customModels[group.provider] || [])]
+        .filter(isCodexModel)
+        .map(model => ({ model, provider: group.provider })))
+      .at(0)
+    if (executionEngine === 'harness' && !currentIsCodex && !fallback) {
+      throw new Error(CODEX_MODEL_UNAVAILABLE)
+    }
+    const codexModel = currentIsCodex
+      ? { model: appStore.selectedModel, provider: appStore.selectedProvider }
+      : fallback
+    const workspace = activeSession.value?.workspace || null
+    const session = newChat(executionEngine === 'harness'
+      ? { profile, ...codexModel, workspace }
+      : { workspace })
     const display = {
       label: expert.title?.trim() || expert.name?.trim() || expertId,
       avatar: expert.avatar?.trim() || '',
@@ -1667,7 +1834,8 @@ export const useChatStore = defineStore('chat', () => {
     session.expertId = expertId
     session.expertLabel = display.label
     session.expertAvatar = display.avatar || undefined
-    setActiveExpert(expertId, display)
+    session.executionEngine = executionEngine
+    void selectActiveExpert(expertId, display)
     return session
   }
 
@@ -1676,11 +1844,23 @@ export const useChatStore = defineStore('chat', () => {
     if (!targetId) return { ok: false, familySwitchNotice: false }
     const target = sessions.value.find(s => s.id === targetId)
     const activeTarget = activeSession.value?.id === targetId ? activeSession.value : null
+    if (!await waitForExpertPersistence(targetId)) return { ok: false, familySwitchNotice: false }
     const previousProvider = String(target?.provider ?? activeTarget?.provider ?? '')
     const nextProvider = provider || ''
     const shouldClearRuntimeCredentials = previousProvider !== nextProvider && (
       isCodingAgentLikeSession(target) || isCodingAgentLikeSession(activeTarget)
     )
+    const unstartedHarness = (target?.localCreated || activeTarget?.localCreated)
+      && (target?.executionEngine || activeTarget?.executionEngine) === 'harness'
+      && !(target?.expertId || activeTarget?.expertId)
+    if (unstartedHarness) {
+      for (const session of [target, activeTarget]) {
+        if (!session) continue
+        session.model = modelId
+        session.provider = nextProvider
+      }
+      return { ok: true, familySwitchNotice: false }
+    }
     const res = await setSessionModel(targetId, modelId, provider || '', apiMode)
     if (!res?.ok) return { ok: false, familySwitchNotice: false }
     if (target) {
@@ -2343,18 +2523,46 @@ export const useChatStore = defineStore('chat', () => {
     const rawChoices = Array.isArray((evt as any).choices) ? (evt as any).choices : ['once', 'session', 'deny']
     const choices = rawChoices
       .filter((choice: unknown): choice is PendingApproval['choices'][number] =>
-        choice === 'once' || choice === 'session' || choice === 'always' || choice === 'deny')
+        choice === 'once' || choice === 'session' || choice === 'always' || choice === 'deny'
+        || choice === 'approve' || choice === 'reject' || choice === 'rework')
     pendingApprovals.value.set(sid, {
       sessionId: sid,
       approvalId,
       command: String((evt as any).command || ''),
       description,
+      gate: String((evt as any).gate || ''),
+      checklist: Array.isArray((evt as any).checklist)
+        ? (evt as any).checklist.map((item: unknown) => {
+            if (!item || typeof item !== 'object') return String(item || '')
+            const evidence = item as Record<string, unknown>
+            const label = [evidence.kind, evidence.id].filter(Boolean).join(': ')
+            return [label, evidence.summary].filter(Boolean).join(' — ')
+          }).filter(Boolean)
+        : [],
       choices: isMemoryWrite ? ['once', 'deny'] : choices.length ? choices : ['once', 'session', 'deny'],
       allowPermanent: Boolean((evt as any).allow_permanent),
       isMemoryWrite,
       requestedAt: Date.now(),
+      submitting: false,
+      error: '',
     })
     pendingApprovals.value = new Map(pendingApprovals.value)
+  }
+
+  function setWorkflowStage(evt: RunEvent) {
+    const sid = evt.session_id
+    const stage = String((evt as any).stage || '').trim()
+    if (!sid || !stage) return
+    const related = (evt as any).related_ids
+    workflowStages.value.set(sid, {
+      sessionId: sid,
+      stage,
+      status: String((evt as any).status || ''),
+      summary: String((evt as any).summary || ''),
+      relatedIds: related && typeof related === 'object' ? related : {},
+      auditId: String((evt as any).audit_id || ''),
+    })
+    workflowStages.value = new Map(workflowStages.value)
   }
 
   function clearPendingApproval(evt: RunEvent) {
@@ -2364,6 +2572,16 @@ export const useChatStore = defineStore('chat', () => {
     if (!current) return
     const approvalId = (evt as any).approval_id
     if (approvalId && current.approvalId !== approvalId) return
+    if ((evt as any).resolved === false) {
+      pendingApprovals.value.set(sid, {
+        ...current,
+        submitting: false,
+        error: String((evt as any).error || ''),
+        errorFallback: true,
+      })
+      pendingApprovals.value = new Map(pendingApprovals.value)
+      return
+    }
     pendingApprovals.value.delete(sid)
     pendingApprovals.value = new Map(pendingApprovals.value)
   }
@@ -2399,17 +2617,41 @@ export const useChatStore = defineStore('chat', () => {
     const runId = String((evt as any).run_id || '')
     const connectorId = String((evt as any).connector_id || '')
     if (!sid || !runId || !connectorId) return
+    const workflowId = String((evt as any).workflow_id || '') || undefined
+    const current = pendingReauths.value.get(sid)
+    if (workflowId && current?.workflowId === workflowId && current.retrying) {
+      if ((evt as any).error) addAgentErrorMessage(sid, (evt as any).error)
+      settleHarnessReauthAttachment(sid)
+    }
     pendingReauths.value.set(sid, {
       sessionId: sid,
       runId,
       connectorId,
       provider: String((evt as any).provider || ''),
+      workflowId,
+      credentialKind: String((evt as any).credential_kind || '') || undefined,
       sessionRowId: Number.isSafeInteger(evt.session_row_id) ? evt.session_row_id : undefined,
       sessionIncarnation: Number.isSafeInteger(evt.session_incarnation) ? evt.session_incarnation : undefined,
       requestedAt: Date.now(),
       retrying: false,
     })
     pendingReauths.value = new Map(pendingReauths.value)
+  }
+
+  function settleHarnessReauthAttachment(sessionId: string) {
+    const stream = streamStates.value.get(sessionId)
+    if (stream?.settle) {
+      stream.settle()
+      return
+    }
+    streamStates.value.delete(sessionId)
+    serverWorking.value.delete(sessionId)
+    for (const message of getSessionMsgs(sessionId)) {
+      if (message.role === 'assistant' && message.isStreaming) {
+        updateMessage(sessionId, message.id, { isStreaming: false })
+      }
+    }
+    unregisterSessionHandlers(sessionId)
   }
 
   function clearPendingReauth(
@@ -2430,9 +2672,17 @@ export const useChatStore = defineStore('chat', () => {
   function applyAuthResolved(evt: RunEvent) {
     const sessionId = evt.session_id
     const runId = String(evt.run_id || '')
-    if (!sessionId || !runId
-      || !Number.isSafeInteger(evt.session_row_id)
-      || !Number.isSafeInteger(evt.session_incarnation)) return
+    if (!sessionId) return
+    const current = pendingReauths.value.get(sessionId)
+    if (!current) return
+    const workflowId = String((evt as any).workflow_id || '')
+    if (workflowId) {
+      if (current.workflowId !== workflowId) return
+      clearPendingReauth(sessionId)
+      settleHarnessReauthAttachment(sessionId)
+      return
+    }
+    if (!runId || !Number.isSafeInteger(evt.session_row_id) || !Number.isSafeInteger(evt.session_incarnation)) return
     clearPendingReauth(sessionId, runId, evt.session_row_id, evt.session_incarnation)
   }
 
@@ -2474,13 +2724,17 @@ export const useChatStore = defineStore('chat', () => {
       run_id: current.runId,
       connector_id: current.connectorId,
       provider: current.provider,
+      workflow_id: current.workflowId,
+      credential_kind: current.credentialKind,
     })
-    clearPendingReauth(
-      current.sessionId,
-      current.runId,
-      current.sessionRowId,
-      current.sessionIncarnation,
-    )
+    if (!current.workflowId) {
+      clearPendingReauth(
+        current.sessionId,
+        current.runId,
+        current.sessionRowId,
+        current.sessionIncarnation,
+      )
+    }
   }
 
   function clearPendingInteractions(sessionId: string) {
@@ -2508,12 +2762,16 @@ export const useChatStore = defineStore('chat', () => {
   }
 
 
-  function respondApproval(choice: PendingApproval['choices'][number]) {
+  function respondApproval(choice: PendingApproval['choices'][number], comment = '') {
     const pending = activePendingApproval.value
-    if (!pending) return
-    respondToolApproval(pending.sessionId, pending.approvalId, choice, runtimeTransport())
-    pendingApprovals.value.delete(pending.sessionId)
+    if (!pending || pending.submitting) return
+    pendingApprovals.value.set(pending.sessionId, {
+      ...pending,
+      submitting: true,
+      error: '',
+    })
     pendingApprovals.value = new Map(pendingApprovals.value)
+    respondToolApproval(pending.sessionId, pending.approvalId, choice, comment, runtimeTransport())
   }
 
   function updateSessionTitle(sessionId: string) {
@@ -2613,6 +2871,10 @@ export const useChatStore = defineStore('chat', () => {
     const sid = activeSessionId.value!
     const sessionOwner = activeSession.value
     if (!sessionOwner || sessionOwner.id !== sid) return
+    if (!await waitForExpertPersistence(sid)) {
+      addAgentErrorMessage(sid, 'Failed to save expert selection. Please retry.')
+      return
+    }
     const shouldSendInitialSessionConfig = activeSession.value
       ? activeSession.value.messageCount == null || activeSession.value.messageCount === 0
       : false
@@ -2725,7 +2987,7 @@ export const useChatStore = defineStore('chat', () => {
           models: group.models,
         })),
         queue_id: userMsg.id,
-        workspace: activeSession.value?.workspace || undefined,
+        workspace: activeSession.value?.projectId ? undefined : activeSession.value?.workspace || undefined,
         source: sessionSource,
         ...(runtimeMode.value === 'global_agent' ? { session_source: 'global_agent' as const } : {}),
         ...(sessionSource === 'coding_agent'
@@ -2741,8 +3003,10 @@ export const useChatStore = defineStore('chat', () => {
         // consume this setting yet, so keep their payloads explicit.
         reasoning_effort: sessionSource === 'coding_agent' ? undefined : activeSession.value?.reasoningEffort || undefined,
         expert_id: expertIdForRun,
+        project_id: activeSession.value?.projectId,
         expert_label: expertLabelForRun,
         expert_avatar: expertAvatarForRun,
+        execution_engine: activeSession.value?.executionEngine || 'hermes',
       }
       if (runPayload.expert_id && activeSession.value) {
         activeSession.value.expertId = runPayload.expert_id
@@ -2926,6 +3190,12 @@ export const useChatStore = defineStore('chat', () => {
               case 'approval.requested':
                 setPendingApproval({ ...e, session_id: sid })
                 break
+              case 'workflow.stage':
+                setWorkflowStage({ ...e, session_id: sid })
+                break
+              case 'run.status':
+                setRunStatusText(sid, String((e as any).text || '') || null)
+                break
               case 'approval.resolved':
                 clearPendingApproval({ ...e, session_id: sid })
                 break
@@ -3017,6 +3287,18 @@ export const useChatStore = defineStore('chat', () => {
                 queueLengths.value.delete(sid)
               }
               break
+
+            case 'project.bound': {
+              const receipt = (evt as any).receipt || {}
+              const target = sessions.value.find(session => session.id === sid)
+              if (target) {
+                target.projectId = typeof receipt.project_id === 'string' ? receipt.project_id : undefined
+                target.projectName = typeof receipt.project_name === 'string' ? receipt.project_name : undefined
+                target.projectBound = true
+                target.workspace = typeof receipt.workspace === 'string' ? receipt.workspace : null
+              }
+              break
+            }
 
             case 'run.queued': {
               handleRunQueuedEvent(sid, evt)
@@ -3184,6 +3466,7 @@ export const useChatStore = defineStore('chat', () => {
             }
 
             case 'message.delta': {
+              setRunStatusText(sid, null)
               if (evt.delta) {
                 runProducedAssistantText = true
                 runProducedAssistantContent = true
@@ -3225,6 +3508,7 @@ export const useChatStore = defineStore('chat', () => {
             }
 
             case 'tool.started': {
+              setRunStatusText(sid, null)
               runHadToolActivity = true
               const msgs = getSessionMsgs(sid)
               const toolCallId = (evt as any).tool_call_id as string | undefined
@@ -3316,6 +3600,16 @@ export const useChatStore = defineStore('chat', () => {
               break
             }
 
+            case 'workflow.stage': {
+              setWorkflowStage(evt)
+              break
+            }
+
+            case 'run.status': {
+              setRunStatusText(sid, String((evt as any).text || '') || null)
+              break
+            }
+
             case 'approval.resolved': {
               clearPendingApproval(evt)
               break
@@ -3337,6 +3631,7 @@ export const useChatStore = defineStore('chat', () => {
             }
 
             case 'run.completed': {
+              setRunStatusText(sid, null)
               clearAgentEventMessages(sid)
               const msgs = getSessionMsgs(sid)
               const lastMsg = activeAssistantMessageId
@@ -3510,6 +3805,7 @@ export const useChatStore = defineStore('chat', () => {
             }
 
             case 'run.failed': {
+              setRunStatusText(sid, null)
               clearAgentEventMessages(sid)
               if ((evt as any).inputTokens != null) {
                 const target = sessions.value.find(s => s.id === sid)
@@ -3747,6 +4043,18 @@ export const useChatStore = defineStore('chat', () => {
           }
           break
 
+        case 'project.bound': {
+          const receipt = (evt as any).receipt || {}
+          const target = sessions.value.find(session => session.id === sid)
+          if (target) {
+            target.projectId = typeof receipt.project_id === 'string' ? receipt.project_id : undefined
+            target.projectName = typeof receipt.project_name === 'string' ? receipt.project_name : undefined
+            target.projectBound = true
+            target.workspace = typeof receipt.workspace === 'string' ? receipt.workspace : null
+          }
+          break
+        }
+
         case 'compression.started': {
           setCompressionState(sid, {
             compressing: true,
@@ -3867,6 +4175,7 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         case 'message.delta': {
+          setRunStatusText(sid, null)
           if (evt.delta) {
             runProducedAssistantText = true
             runProducedAssistantContent = true
@@ -3907,6 +4216,7 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         case 'tool.started': {
+          setRunStatusText(sid, null)
           runHadToolActivity = true
           const msgs = getSessionMsgs(sid)
           const toolCallId = (evt as any).tool_call_id as string | undefined
@@ -3996,6 +4306,16 @@ export const useChatStore = defineStore('chat', () => {
           break
         }
 
+        case 'workflow.stage': {
+          setWorkflowStage(evt)
+          break
+        }
+
+        case 'run.status': {
+          setRunStatusText(sid, String((evt as any).text || '') || null)
+          break
+        }
+
         case 'approval.resolved': {
           clearPendingApproval(evt)
           break
@@ -4017,6 +4337,7 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         case 'run.completed': {
+          setRunStatusText(sid, null)
           clearAgentEventMessages(sid)
           const hasQueue = (evt as any).queue_remaining > 0
           if (hasQueue) {
@@ -4181,6 +4502,7 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         case 'run.failed': {
+          setRunStatusText(sid, null)
           clearAgentEventMessages(sid)
           if ((evt as any).inputTokens != null) {
             const target = sessions.value.find(s => s.id === sid)
@@ -4311,6 +4633,7 @@ export const useChatStore = defineStore('chat', () => {
       onReasoningDelta: (evt) => handleEvent(evt),
       onThinkingDelta: (evt) => handleEvent(evt),
       onReasoningAvailable: (evt) => handleEvent(evt),
+      onRunStatus: (evt) => handleEvent(evt),
       onToolStarted: (evt) => handleEvent(evt),
       onToolCompleted: (evt) => handleEvent(evt),
       onSubagentEvent: (evt) => handleEvent(evt),
@@ -4327,6 +4650,13 @@ export const useChatStore = defineStore('chat', () => {
       onSessionCommand: (evt) => handleEvent(evt),
       onRunQueued: (evt) => handleEvent(evt),
       onRunRejected: (evt) => handleEvent(evt),
+      // startRunViaSocket reuses whatever set is already registered for the
+      // session (api/hermes/chat.ts), and switchSession registers this one
+      // first — anything missing here is dropped for the whole session.
+      onSessionTitleUpdated: (evt) => handleEvent(evt),
+      onApprovalRequested: (evt) => handleEvent(evt),
+      onApprovalResolved: (evt) => handleEvent(evt),
+      onWorkflowStage: (evt) => handleEvent(evt),
       onClarifyRequested: (evt) => handleEvent(evt),
       onClarifyResolved: (evt) => handleEvent(evt),
       onAuthRequired: (evt) => handleEvent(evt),
@@ -4336,11 +4666,13 @@ export const useChatStore = defineStore('chat', () => {
       transport: runtimeTransport(),
       onReconnectResume: applyAttachedReconnectResume,
       onDone: () => {
+        if (closed) return
         closeStreamingAssistant()
         cleanup()
         updateSessionTitle(sid)
       },
       onError: (error) => {
+        if (closed) return
         addAgentErrorMessage(sid, error.message)
         closeStreamingAssistant()
         settleRunningTools(sid, 'error')
@@ -4356,6 +4688,10 @@ export const useChatStore = defineStore('chat', () => {
     streamStates.value.set(sid, {
       abort: () => {
         getChatRunSocket(runtimeTransport())?.emit('abort', { session_id: sid })
+      },
+      settle: () => {
+        closeStreamingAssistant()
+        cleanup()
       },
     })
   }
@@ -4611,6 +4947,21 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function setSessionProject(sessionId: string, project: { id: string; name: string; primary_folder?: string | null } | null): string | null {
+    const session = sessions.value.find(item => item.id === sessionId)
+    if (!session) return null
+    if (session.projectId === project?.id) return session.id
+    if (session.projectBound || (session.messageCount || session.messages.length) > 0) {
+      const fresh = newChat()
+      fresh.projectId = project?.id
+      fresh.projectName = project?.name
+      return fresh.id
+    }
+    session.projectId = project?.id
+    session.projectName = project?.name
+    return session.id
+  }
+
   // Persisted in localStorage keyed by sessionId so the choice survives
   // page reloads. Cleared on session deletion is NOT implemented (best-effort
   // — orphan keys are tiny and never read again).
@@ -4671,6 +5022,7 @@ export const useChatStore = defineStore('chat', () => {
     activeExpertAvatar,
     activeExpertLabel,
     setActiveExpert,
+    selectActiveExpert,
     setActiveExpertDisplay,
     focusMessageId,
     messages,
@@ -4684,12 +5036,15 @@ export const useChatStore = defineStore('chat', () => {
     sessionProfileFilter,
     agentSwitching,
     compressionState,
+    runStatusText,
     abortState,
     isAborting,
     queueLengths,
     queuedUserMessages,
     pendingApprovals,
     activePendingApproval,
+    workflowStages,
+    activeWorkflowStage,
     activePendingClarify,
     pendingReauths,
     activePendingReauth,
@@ -4728,6 +5083,7 @@ export const useChatStore = defineStore('chat', () => {
     setAutoPlaySpeech,
     playMessageSpeech,
     setSessionReasoningEffort,
+    setSessionProject,
     setRuntimeMode,
   }
 })

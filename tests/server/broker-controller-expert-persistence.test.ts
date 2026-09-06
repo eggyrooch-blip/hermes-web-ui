@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { rmSync, writeFileSync } from 'node:fs'
 
 describe('BrokerRunController expert metadata persistence', () => {
+  const harnessReadyFile = `/tmp/hermes-harness-broker-${process.pid}.ready`
+  const harnessRevision = 'a'.repeat(40)
   let db: any = null
   let fetchExpertCatalogMock: ReturnType<typeof vi.fn>
   let handleBrokerRunMock: ReturnType<typeof vi.fn>
@@ -8,6 +11,11 @@ describe('BrokerRunController expert metadata persistence', () => {
   let runBrokerSessionCommandMock: ReturnType<typeof vi.fn>
 
   beforeEach(async () => {
+    process.env.HERMES_WEBUI_HARNESS_ENABLED = '1'
+    process.env.HERMES_WEBUI_HARNESS_PROFILES = 'research'
+    process.env.HERMES_WEBUI_HARNESS_SOURCE_REV = harnessRevision
+    process.env.HERMES_WEBUI_HARNESS_READY_FILE = harnessReadyFile
+    writeFileSync(harnessReadyFile, `${harnessRevision}\n`)
     vi.resetModules()
     handleBrokerRunMock = vi.fn(async () => undefined)
     parseBrokerSessionCommandMock = vi.fn(() => null)
@@ -107,6 +115,12 @@ describe('BrokerRunController expert metadata persistence', () => {
       runBrokerGoalEvaluate: vi.fn(),
       runBrokerSessionCommand: runBrokerSessionCommandMock,
     }))
+    vi.doMock('../../packages/server/src/services/hermes/run-chat/workspace', () => ({
+      normalizeHermesSessionWorkspace: vi.fn(async (_profile: string, value?: string | null) => String(value || '').trim() || null),
+      normalizeStoredHermesSessionWorkspace: vi.fn(async (_profile: string, value?: string | null) => (
+        value === 'missing-workspace' ? null : String(value || '').trim() || null
+      )),
+    }))
     vi.doMock('../../packages/server/src/services/hermes/expert-registry-client', () => ({
       fetchExpertCatalog: fetchExpertCatalogMock,
     }))
@@ -129,6 +143,11 @@ describe('BrokerRunController expert metadata persistence', () => {
   })
 
   afterEach(() => {
+    delete process.env.HERMES_WEBUI_HARNESS_ENABLED
+    delete process.env.HERMES_WEBUI_HARNESS_PROFILES
+    delete process.env.HERMES_WEBUI_HARNESS_SOURCE_REV
+    delete process.env.HERMES_WEBUI_HARNESS_READY_FILE
+    rmSync(harnessReadyFile, { force: true })
     db?.close()
     db = null
     vi.resetModules()
@@ -164,6 +183,8 @@ describe('BrokerRunController expert metadata persistence', () => {
       expert_id: 'keep-resource-delivery',
       expert_label: '客户端伪造名称',
       expert_avatar: '/fake-client-avatar.png',
+      execution_engine: 'harness',
+      workspace: 'project-a',
     }, 'research')
 
     const sessionsController = await import('../../packages/server/src/controllers/hermes/sessions')
@@ -174,6 +195,8 @@ describe('BrokerRunController expert metadata persistence', () => {
       expert_id: 'keep-resource-delivery',
       expert_label: '资源投放专家',
       expert_avatar: expertAvatar,
+      execution_engine: 'harness',
+      workspace: 'project-a',
     })
 
     const detailCtx: any = { params: { id: 'expert-run-session' }, query: {}, state: {}, body: null }
@@ -193,12 +216,126 @@ describe('BrokerRunController expert metadata persistence', () => {
     }))
     expect(handleBrokerRunMock).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ expert_id: 'keep-resource-delivery' }),
+      expect.objectContaining({ expert_id: 'keep-resource-delivery', workspace: 'project-a' }),
       expect.anything(),
       expect.anything(),
       expect.anything(),
       expect.anything(),
     )
+  })
+
+  it('rejects an attempt to replace a persisted Harness binding', async () => {
+    await initTestDb()
+    const { createSession, updateSession } = await import('../../packages/server/src/db/hermes/session-store')
+    createSession({
+      id: 'bound-harness', profile: 'research', user_id: 'principal-a', execution_engine: 'harness',
+    })
+    updateSession('bound-harness', { expert_id: 'keep-resource-delivery', expert_label: '资源投放专家' })
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    ;(controller as any).nsp = { to: vi.fn(() => ({ emit: vi.fn() })) }
+    const socket = { connected: true, data: { user: { openid: 'principal-a' } }, emit: vi.fn(), join: vi.fn() }
+
+    await (controller as any).handleRun(socket, {
+      input: 'switch', session_id: 'bound-harness', source: 'cli',
+      expert_id: 'keep-resource-delivery', execution_engine: 'hermes',
+    }, 'research')
+
+    expect(handleBrokerRunMock).not.toHaveBeenCalled()
+    expect(socket.emit).toHaveBeenCalledWith('run.rejected', expect.objectContaining({
+      error: 'Session is already bound to a different execution engine',
+    }))
+  })
+
+  it('rejects an attempt to replace a persisted Harness workspace', async () => {
+    await initTestDb()
+    const { createSession, updateSession } = await import('../../packages/server/src/db/hermes/session-store')
+    createSession({
+      id: 'bound-workspace', profile: 'research', user_id: 'principal-a',
+      execution_engine: 'harness', workspace: 'project-a',
+    })
+    updateSession('bound-workspace', { expert_id: 'keep-resource-delivery', expert_label: '资源投放专家' })
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    ;(controller as any).nsp = { to: vi.fn(() => ({ emit: vi.fn() })) }
+    const socket = { connected: true, data: { user: { openid: 'principal-a' } }, emit: vi.fn(), join: vi.fn() }
+
+    await (controller as any).handleRun(socket, {
+      input: 'switch', session_id: 'bound-workspace', source: 'cli', workspace: 'project-b',
+      expert_id: 'keep-resource-delivery', execution_engine: 'harness',
+    }, 'research')
+
+    expect(handleBrokerRunMock).not.toHaveBeenCalled()
+    expect(socket.emit).toHaveBeenCalledWith('run.rejected', expect.objectContaining({
+      error: 'Session is already bound to a different workspace',
+    }))
+  })
+
+  it('rejects a persisted Harness workspace that is no longer available', async () => {
+    await initTestDb()
+    const { createSession, updateSession } = await import('../../packages/server/src/db/hermes/session-store')
+    createSession({
+      id: 'missing-workspace-session', profile: 'research', user_id: 'principal-a',
+      execution_engine: 'harness', workspace: 'missing-workspace',
+    })
+    updateSession('missing-workspace-session', { expert_id: 'keep-resource-delivery' })
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    ;(controller as any).nsp = { to: vi.fn(() => ({ emit: vi.fn() })) }
+    const socket = { connected: true, data: { user: { openid: 'principal-a' } }, emit: vi.fn(), join: vi.fn() }
+
+    await (controller as any).handleRun(socket, {
+      input: 'continue', session_id: 'missing-workspace-session', source: 'cli',
+      expert_id: 'keep-resource-delivery', execution_engine: 'harness',
+    }, 'research')
+
+    expect(handleBrokerRunMock).not.toHaveBeenCalled()
+    expect(socket.emit).toHaveBeenCalledWith('run.rejected', expect.objectContaining({
+      error: 'Session workspace is unavailable',
+    }))
+  })
+
+  it('keeps the existing Hermes per-run workspace selection behavior', async () => {
+    await initTestDb()
+    const { createSession } = await import('../../packages/server/src/db/hermes/session-store')
+    createSession({
+      id: 'hermes-workspace-session', profile: 'research', user_id: 'principal-a',
+      execution_engine: 'hermes', workspace: 'project-a',
+    })
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    ;(controller as any).nsp = { to: vi.fn(() => ({ emit: vi.fn() })) }
+    const socket = { connected: true, data: { user: { openid: 'principal-a' } }, emit: vi.fn(), join: vi.fn() }
+
+    await (controller as any).handleRun(socket, {
+      input: 'continue', session_id: 'hermes-workspace-session', source: 'cli',
+      workspace: 'project-b', execution_engine: 'hermes',
+    }, 'research')
+
+    expect(handleBrokerRunMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ workspace: 'project-b', execution_engine: 'hermes' }),
+      expect.anything(), expect.anything(), expect.anything(), expect.anything(),
+    )
+  })
+
+  it('fails closed when Harness is not enabled on the server', async () => {
+    await initTestDb()
+    delete process.env.HERMES_WEBUI_HARNESS_ENABLED
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    ;(controller as any).nsp = { to: vi.fn(() => ({ emit: vi.fn() })) }
+    const socket = { connected: true, data: { user: { openid: 'principal-a' } }, emit: vi.fn(), join: vi.fn() }
+
+    await (controller as any).handleRun(socket, {
+      input: 'start', session_id: 'disabled-harness', source: 'cli',
+      expert_id: 'keep-resource-delivery', execution_engine: 'harness',
+    }, 'research')
+
+    expect(handleBrokerRunMock).not.toHaveBeenCalled()
+    expect(socket.emit).toHaveBeenCalledWith('run.rejected', expect.objectContaining({
+      error: 'Harness engine is unavailable',
+    }))
   })
 
   it('rejects changing a bound expert before writing a message or invoking the broker', async () => {
@@ -427,6 +564,68 @@ describe('BrokerRunController expert metadata persistence', () => {
     expect(runBrokerSessionCommandMock).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'bound-command',
       expertId: 'keep-resource-delivery',
+    }))
+  })
+
+  it('applies the same Harness feature gate to a new session command', async () => {
+    await initTestDb()
+    delete process.env.HERMES_WEBUI_HARNESS_ENABLED
+    parseBrokerSessionCommandMock.mockReturnValue({ raw: '/plan status', name: 'plan' })
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    ;(controller as any).nsp = { to: vi.fn(() => ({ emit: vi.fn() })) }
+    const socket = { connected: true, data: { user: { openid: 'principal-a' } }, emit: vi.fn(), join: vi.fn() }
+
+    await (controller as any).handleBrokerSessionCommand(socket, {
+      input: '/plan status', session_id: 'new-command', queue_id: 'command-1', source: 'cli',
+      expert_id: 'keep-resource-delivery', execution_engine: 'harness',
+    }, 'research')
+
+    expect(runBrokerSessionCommandMock).not.toHaveBeenCalled()
+    expect(socket.emit).toHaveBeenCalledWith('run.rejected', expect.objectContaining({
+      error: 'Harness engine is unavailable',
+    }))
+  })
+
+  it('admits an authorized Harness run regardless of the legacy profile allowlist', async () => {
+    await initTestDb()
+    process.env.HERMES_WEBUI_HARNESS_PROFILES = 'sunke'
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    ;(controller as any).nsp = { to: vi.fn(() => ({ emit: vi.fn() })) }
+    const socket = { connected: true, data: { user: { openid: 'principal-a' } }, emit: vi.fn(), join: vi.fn() }
+
+    await (controller as any).handleRun(socket, {
+      input: 'start', session_id: 'not-allowlisted', source: 'cli',
+      expert_id: 'keep-resource-delivery', execution_engine: 'harness',
+    }, 'research')
+
+    expect(handleBrokerRunMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ execution_engine: 'harness' }),
+      'research',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    )
+  })
+
+  it('rejects an unsupported engine on the session command path', async () => {
+    await initTestDb()
+    parseBrokerSessionCommandMock.mockReturnValue({ raw: '/plan status', name: 'plan' })
+    const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+    const controller = new BrokerRunController()
+    ;(controller as any).nsp = { to: vi.fn(() => ({ emit: vi.fn() })) }
+    const socket = { connected: true, data: { user: { openid: 'principal-a' } }, emit: vi.fn(), join: vi.fn() }
+
+    await (controller as any).handleBrokerSessionCommand(socket, {
+      input: '/plan status', session_id: 'bad-engine', queue_id: 'command-1', source: 'cli',
+      expert_id: 'keep-resource-delivery', execution_engine: 'invented',
+    }, 'research')
+
+    expect(runBrokerSessionCommandMock).not.toHaveBeenCalled()
+    expect(socket.emit).toHaveBeenCalledWith('run.rejected', expect.objectContaining({
+      error: 'Unsupported execution engine',
     }))
   })
 

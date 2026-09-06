@@ -7,6 +7,10 @@ import { ensureWebUserForFeishu } from './compat-user'
 
 export const FEISHU_SESSION_COOKIE = 'hermes_feishu_session'
 export const FEISHU_STATE_COOKIE = 'hermes_feishu_state'
+// Set only when the broker scope lookup failed and login degraded to a minimal
+// scope. The callback reads it to SKIP the UAT import entirely: a narrow-scope
+// token must never overwrite a good routed Lark-cli credential.
+export const FEISHU_SCOPE_DEGRADED_COOKIE = 'hermes_feishu_scope_degraded'
 
 /**
  * Pull the FEISHU_SESSION_COOKIE value out of a raw `Cookie` header.
@@ -51,25 +55,13 @@ interface ParseOptions {
 interface FeishuTokenResponse {
   code?: number
   msg?: string
-  data?: {
-    open_id?: string
-    user_id?: string
-    union_id?: string
-    tenant_key?: string
-    access_token?: string
-    refresh_token?: string
-    expires_in?: number
-    email?: string
-    enterprise_email?: string
-    name?: string
-    en_name?: string
-    avatar_url?: string
-    avatar_thumb?: string
-    avatar_middle?: string
-    avatar_big?: string
-  }
-  app_access_token?: string
-  tenant_access_token?: string
+  error?: string
+  error_description?: string
+  access_token?: string
+  refresh_token?: string
+  expires_in?: number
+  refresh_token_expires_in?: number
+  scope?: string
 }
 
 interface FeishuUserInfoResponse {
@@ -247,11 +239,18 @@ export function verifyFeishuState(cookieState: string | undefined, returnedState
   return !!parseSignedPayload(cookieState, secret)
 }
 
-export function buildFeishuAuthorizeUrl(state: string): string {
+export function buildFeishuAuthorizeUrl(state: string, scope: string): string {
   const url = new URL(config.feishuAuthorizeUrl)
-  url.searchParams.set('app_id', config.feishuAppId)
+  if (url.hostname === 'accounts.feishu.cn') {
+    url.searchParams.set('client_id', config.feishuAppId)
+    url.searchParams.set('response_type', 'code')
+  } else {
+    // Keep explicit legacy FEISHU_AUTHORIZE_URL deployments compatible.
+    url.searchParams.set('app_id', config.feishuAppId)
+  }
   url.searchParams.set('redirect_uri', config.feishuRedirectUri)
   url.searchParams.set('state', state)
+  url.searchParams.set('scope', scope)
   return url.toString()
 }
 
@@ -283,7 +282,7 @@ async function getJson<T>(url: string, headers: Record<string, string> = {}): Pr
   return data as T
 }
 
-function pickAvatar(data: FeishuTokenResponse['data'] | FeishuUserInfoResponse['data'] | null): string | undefined {
+function pickAvatar(data: FeishuUserInfoResponse['data'] | null): string | undefined {
   return data?.avatar_url || data?.avatar_middle || data?.avatar_thumb || data?.avatar_big
 }
 
@@ -296,22 +295,6 @@ async function getFeishuUserInfo(accessToken: string): Promise<FeishuUserInfoRes
   return data.data || null
 }
 
-export async function getFeishuAppAccessToken(): Promise<string> {
-  if (!config.feishuAppId || !config.feishuAppSecret) {
-    throw new Error('Feishu OAuth is not configured')
-  }
-
-  const data = await postJson<FeishuTokenResponse>(
-    `${config.feishuApiBaseUrl}/open-apis/auth/v3/app_access_token/internal`,
-    { app_id: config.feishuAppId, app_secret: config.feishuAppSecret },
-  )
-
-  if (data.code !== 0 || !data.app_access_token) {
-    throw new Error(data.msg || 'Failed to get Feishu app_access_token')
-  }
-  return data.app_access_token
-}
-
 export async function exchangeFeishuCode(code: string): Promise<{
   openid: string
   userId?: string
@@ -322,45 +305,49 @@ export async function exchangeFeishuCode(code: string): Promise<{
   accessToken: string
   refreshToken?: string
   expiresIn?: number
+  refreshTokenExpiresIn?: number
+  scope?: string
   name?: string
   avatarUrl?: string
 }> {
-  const appAccessToken = await getFeishuAppAccessToken()
+  if (!config.feishuAppId || !config.feishuAppSecret) {
+    throw new Error('Feishu OAuth is not configured')
+  }
   const data = await postJson<FeishuTokenResponse>(
-    `${config.feishuApiBaseUrl}/open-apis/authen/v1/access_token`,
-    { grant_type: 'authorization_code', code },
-    { Authorization: `Bearer ${appAccessToken}` },
+    config.feishuTokenUrl,
+    {
+      grant_type: 'authorization_code',
+      client_id: config.feishuAppId,
+      client_secret: config.feishuAppSecret,
+      code,
+      redirect_uri: config.feishuRedirectUri,
+    },
   )
 
-  const openid = data.data?.open_id
-  const accessToken = data.data?.access_token
-  if (data.code !== 0 || !openid || !accessToken) {
-    throw new Error(data.msg || 'Failed to exchange Feishu authorization code')
+  const accessToken = data.access_token
+  if (!accessToken) {
+    throw new Error(data.error_description || data.msg || 'Failed to exchange Feishu authorization code')
   }
-  let userInfo: FeishuUserInfoResponse['data'] | null = null
-  const tokenName = data.data?.name || data.data?.en_name
-  const tokenAvatar = pickAvatar(data.data)
-  const tokenEmail = data.data?.enterprise_email || data.data?.email
-  if (!tokenName || !tokenAvatar || !data.data?.user_id || !data.data?.tenant_key || !tokenEmail) {
-    try {
-      userInfo = await getFeishuUserInfo(accessToken)
-    } catch {
-      // The access token exchange is sufficient for login; user_info only enriches display metadata.
-    }
+  const userInfo = await getFeishuUserInfo(accessToken)
+  const openid = userInfo?.open_id
+  if (!openid) {
+    throw new Error('Failed to verify Feishu OAuth user')
   }
 
   return {
     openid,
-    userId: data.data?.user_id || userInfo?.user_id,
-    unionId: data.data?.union_id || userInfo?.union_id,
-    tenantKey: data.data?.tenant_key || userInfo?.tenant_key,
+    userId: userInfo?.user_id,
+    unionId: userInfo?.union_id,
+    tenantKey: userInfo?.tenant_key,
     appId: config.feishuAppId || undefined,
-    email: tokenEmail || userInfo?.enterprise_email || userInfo?.email,
+    email: userInfo?.enterprise_email || userInfo?.email,
     accessToken,
-    refreshToken: data.data?.refresh_token,
-    expiresIn: data.data?.expires_in,
-    name: tokenName || userInfo?.name || userInfo?.en_name,
-    avatarUrl: tokenAvatar || pickAvatar(userInfo),
+    refreshToken: data.refresh_token,
+    expiresIn: data.expires_in,
+    refreshTokenExpiresIn: data.refresh_token_expires_in,
+    scope: data.scope,
+    name: userInfo?.name || userInfo?.en_name,
+    avatarUrl: pickAvatar(userInfo),
   }
 }
 

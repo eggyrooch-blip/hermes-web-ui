@@ -15,6 +15,7 @@ const tracker = vi.hoisted(() => ({
   complete: vi.fn(),
   discard: vi.fn(),
 }))
+const skillCredentialStatuses = vi.hoisted(() => vi.fn())
 
 vi.mock('../../packages/server/src/config', () => ({
   config: {
@@ -50,6 +51,9 @@ vi.mock('../../packages/server/src/services/feishu-oauth', () => ({
 }))
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
   getProfileDir: vi.fn(() => '/tmp/hermes-profile'),
+}))
+vi.mock('../../packages/server/src/services/hermes/skill-credentials', () => ({
+  listSkillCredentialStatuses: skillCredentialStatuses,
 }))
 vi.mock('../../packages/server/src/services/hermes/agent-ownership', () => ({
   ownerOwnsProfile: vi.fn(() => false),
@@ -188,6 +192,183 @@ describe('BrokerRunController run lifecycle', () => {
     store.getSessionIncarnation.mockReturnValue(1)
     tracker.start.mockResolvedValue({ key: 'checkpoint' })
     tracker.complete.mockResolvedValue(null)
+    skillCredentialStatuses.mockResolvedValue({
+      profile_name: 'research',
+      credentials: [{ id: 'kep-cli-online', status: 'authenticated' }],
+    })
+  })
+
+  it('forwards Gate decisions with their comment to the run broker', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { handlers } = makeHarness()
+
+    await handlers.get('approval.respond')!({
+      session_id: 's1', approval_id: 'gate-e', choice: 'approve', comment: 'preview passed',
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://broker.test/api/run-broker/approval/gate-e/respond',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          profile_name: 'research', session_id: 's1', choice: 'approve', comment: 'preview passed',
+        }),
+      }),
+    )
+  })
+
+  it('resumes a Harness workflow credential and clears its durable auth card', async () => {
+    store.getSession.mockReturnValue({
+      id: 's1', profile: 'research', workspace: '/tmp/workspace', execution_engine: 'harness',
+    })
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, emitted, handlers } = makeHarness()
+    const replay = vi.spyOn(controller as any, 'handleReplay').mockResolvedValue(undefined)
+    const state = (controller as any).getOrCreateSession('s1', 'research')
+    state.events.push({
+      event: 'auth.required',
+      data: {
+        workflow_id: 'workflow-1', credential_kind: 'mobius',
+        connector_id: 'kep-cli-online',
+      },
+    })
+
+    await handlers.get('credential.replay')!({
+      session_id: 's1', run_id: 'auth-run', workflow_id: 'workflow-1',
+      credential_kind: 'mobius', connector_id: 'kep-cli-online',
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://broker.test/api/run-broker/harness/workflows/workflow-1',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          profile_name: 'research', session_id: 's1', action: 'resume_credential',
+          credential_kind: 'mobius', connector_id: 'kep-cli-online', credential_verified: true,
+        }),
+      }),
+    )
+    expect(state.events).toEqual([])
+    expect(emitted).toContainEqual({
+      event: 'auth.resolved',
+      payload: expect.objectContaining({ workflow_id: 'workflow-1', credential_kind: 'mobius' }),
+    })
+    expect(replay).not.toHaveBeenCalled()
+  })
+
+  it('restores a Harness credential card with a safe retry reason when resume fails', async () => {
+    store.getSession.mockReturnValue({
+      id: 's1', profile: 'research', workspace: '/tmp/workspace', execution_engine: 'harness',
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 503 })))
+    const { handlers, socket } = makeHarness()
+
+    await handlers.get('credential.replay')!({
+      session_id: 's1', run_id: 'auth-run', workflow_id: 'workflow-1',
+      credential_kind: 'mobius', connector_id: 'kep-cli-online',
+    })
+
+    expect(socket.emit).toHaveBeenCalledWith(
+      'auth.required',
+      expect.objectContaining({
+        workflow_id: 'workflow-1',
+        connector_id: 'kep-cli-online',
+        error: 'Credential resume failed. Please try again.',
+      }),
+    )
+  })
+
+  it('rejects a client workflow id on a persisted Hermes session before Harness broker access', async () => {
+    store.getSession.mockReturnValue({
+      id: 's1', profile: 'research', workspace: '/tmp/workspace', execution_engine: 'hermes',
+    })
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, handlers, socket } = makeHarness()
+    const replay = vi.spyOn(controller as any, 'handleReplay').mockResolvedValue(undefined)
+
+    await handlers.get('credential.replay')!({
+      session_id: 's1', run_id: 'auth-run', workflow_id: 'forged-workflow',
+      credential_kind: 'mobius', connector_id: 'kep-cli-online',
+    })
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(replay).not.toHaveBeenCalled()
+    expect(socket.emit).toHaveBeenCalledWith('run.reattach_failed', expect.objectContaining({
+      session_id: 's1',
+      run_id: 'auth-run',
+      terminal: true,
+    }))
+  })
+
+  it('restores and resumes a Harness credential card after WebUI state loss', async () => {
+    store.getSession.mockReturnValue({
+      id: 's1', profile: 'research', workspace: '/tmp/workspace', execution_engine: 'harness',
+    })
+    const fetchMock = vi.fn(async (url: string) => (
+      url.endsWith('/by-session')
+        ? {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              status: 'waiting_credential', workflow_id: 'workflow-1',
+              credential_kind: 'mobius', connector_id: 'kep-cli-online',
+            }),
+          }
+        : { ok: true, status: 200 }
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, handlers, socket } = makeHarness()
+    const replay = vi.spyOn(controller as any, 'handleReplay').mockResolvedValue(undefined)
+
+    await (controller as any).resumeSession(socket, 's1', 'research')
+    await handlers.get('credential.replay')!({
+      session_id: 's1', run_id: 'workflow-1', workflow_id: 'workflow-1',
+      credential_kind: 'mobius', connector_id: 'kep-cli-online',
+    })
+
+    expect(socket.emit).toHaveBeenCalledWith('resumed', expect.objectContaining({
+      events: [expect.objectContaining({
+        event: 'auth.required',
+        data: expect.objectContaining({ workflow_id: 'workflow-1', run_id: 'workflow-1' }),
+      })],
+    }))
+    expect(replay).not.toHaveBeenCalled()
+  })
+
+  it('restores an idle Harness pending Gate from the MT workflow snapshot', async () => {
+    store.getSession.mockReturnValue({
+      id: 's1', profile: 'research', workspace: '/tmp/workspace', execution_engine: 'harness',
+    })
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        status: 'waiting_gate',
+        pending_gate: {
+          approval_id: 'gate-f', gate: 'F',
+          checklist: [{ kind: 'defect', id: 'BUG-1', summary: 'classified' }],
+        },
+      }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { controller, socket } = makeHarness()
+
+    await (controller as any).resumeSession(socket, 's1', 'research')
+
+    expect(socket.emit).toHaveBeenCalledWith('resumed', expect.objectContaining({
+      isWorking: false,
+      events: [expect.objectContaining({
+        event: 'approval.requested',
+        data: expect.objectContaining({ approval_id: 'gate-f', gate: 'F' }),
+      })],
+    }))
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://broker.test/api/run-broker/harness/workflows/by-session',
+      expect.objectContaining({ method: 'POST' }),
+    )
   })
 
   it('abandons only the exact HTTP-deleted generation without waiting for a socket abort', async () => {
@@ -949,7 +1130,7 @@ describe('BrokerRunController run lifecycle', () => {
     let stateAtCreate: any
     const brokerRun = deferred<any>()
     store.getSession.mockImplementation(() => exists
-      ? { id: 'command-session', profile: 'research', workspace: '/tmp/workspace' }
+      ? { id: 'command-session', profile: 'research', workspace: null }
       : null)
     store.getSessionRowId.mockImplementation(() => exists ? 1 : null)
     store.getSessionIncarnation.mockImplementation(() => exists ? 1 : null)

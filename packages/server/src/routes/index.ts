@@ -14,6 +14,7 @@ import { codexProxyRoutes } from './codex-proxy'
 
 // Hermes route modules
 import { sessionRoutes } from './hermes/sessions'
+import { coworkRoutes } from './hermes/cowork'
 import { profileRoutes } from './hermes/profiles'
 import { agentRoutes } from './hermes/agents'
 import { skillRoutes } from './hermes/skills'
@@ -47,6 +48,7 @@ import { mcpRoutes } from './hermes/mcp'
 import { runtimeVersionRoutes } from './hermes/runtime-versions'
 import { writeGateRoutes } from './hermes/write-gate'
 import { slashRoutes } from './hermes/slash'
+import { linkPreviewRoutes } from './hermes/link-previews'
 import { consoleRoutes } from './hermes/console'
 
 /**
@@ -75,11 +77,13 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(updateRoutes.routes())           // Must be before proxy (proxy catch-all matches everything)
   app.use(codingAgentRoutes.routes())
   app.use(sessionRoutes.routes())
+  app.use(coworkRoutes.routes())
   app.use(profileRoutes.routes())
   app.use(agentRoutes.routes())
   app.use(skillRoutes.routes())
   app.use(expertRoutes.routes())           // /api/hermes/experts — expert catalog (专家广场) BFF proxy
   app.use(slashRoutes.routes())            // /api/hermes/slash/commands (re-register: dropped in rebaseline)
+  app.use(linkPreviewRoutes.routes())      // actor-scoped Feishu/Lark URL metadata
   app.use(pluginRoutes.routes())
   app.use(memoryRoutes.routes())
   app.use(modelRoutes.routes())

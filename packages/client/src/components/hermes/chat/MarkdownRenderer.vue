@@ -17,7 +17,14 @@ import {
   renderMermaidPlaceholder,
   SUPPORT_PREVIEW_FILE_TYPES,
 } from './mermaidRenderer'
-import { downloadFile, getDownloadUrl, fetchFileText } from '@/api/hermes/download'
+import {
+  downloadFile,
+  getDownloadUrl,
+  fetchFileText,
+  parseArtifactPublication,
+  readbackWorkspaceArtifact,
+  type ArtifactPublication,
+} from '@/api/hermes/download'
 import { useFilesStore, isHtmlFile, isImageFile } from '@/stores/hermes/files'
 
 const LATEX_FENCE_LANGS = new Set(['latex', 'tex', 'math', 'katex'])
@@ -98,7 +105,7 @@ const md: MarkdownIt = new MarkdownItConstructor({
   html: false,
   breaks: true,
   linkify: true,
-  typographer: true,
+  typographer: false,
   highlight(str: string, lang: string): string {
     return renderHighlightedCodeBlock(str, lang, t('common.copy'), {
       formatDiffFoldLabel: diffFoldLabel,
@@ -139,6 +146,7 @@ md.renderer.rules.code_inline = (tokens, idx, options, env, self) => {
     return renderFileCard(file.path, file.fileName, {
       inline: true,
       diffFile: findWorkspaceDiffFileByDisplayPath(file.path),
+      publication: file.publication,
     })
   }
 
@@ -173,7 +181,11 @@ const textPreviewVisible = ref(false)
 const textPreviewIsMarkdown = computed(() => /\.(md|markdown)$/i.test(textPreviewFileName.value))
 
 let renderGeneration = 0
+let artifactReadbackGeneration = 0
 let unmounted = false
+const artifactReadbacks = new Map<string, ReturnType<typeof readbackWorkspaceArtifact>>()
+const MAX_ARTIFACT_READBACKS = 20
+const ARTIFACT_READBACK_CONCURRENCY = 3
 
 function isLocalFilePath(path: string): boolean {
   return path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path)
@@ -202,17 +214,24 @@ function hasFileExtension(path: string): boolean {
   return /\.[^./]+$/.test(name)
 }
 
-function workspaceDisplayPath(raw: string): { path: string; fileName: string } | null {
+function workspaceDisplayPath(raw: string): {
+  path: string
+  fileName: string
+  publication: ArtifactPublication | null
+} | null {
   const value = raw.trim()
   if (!value || /^https?:\/\//i.test(value)) return null
+  const artifact = parseArtifactPublication(value)
+  const artifactPath = artifact.path.replace(/:\d+(?::\d+)?$/, '')
   const marker = '/workspace/'
-  const idx = value.indexOf(marker)
+  const idx = artifactPath.indexOf(marker)
   if (idx === -1) return null
-  const rel = value.slice(idx + marker.length).replace(/^\/+/, '')
+  const rel = artifactPath.slice(idx + marker.length).replace(/^\/+/, '')
   if (!rel || rel.endsWith('/') || !hasFileExtension(rel)) return null
   return {
     path: `${marker}${rel}`,
     fileName: fileNameFromPath(rel),
+    publication: artifact.publication,
   }
 }
 
@@ -247,15 +266,24 @@ function findWorkspaceDiffFileByDisplayPath(path: string): WorkspaceDiffInlineFi
 function renderFileCard(path: string, fileName: string, options: {
   inline?: boolean
   diffFile?: WorkspaceDiffInlineFile | null
+  publication?: ArtifactPublication | null
 } = {}): string {
   const tag = options.inline ? 'span' : 'div'
   const inlineClass = options.inline ? ' markdown-inline-file-card' : ''
-  const card = `<${tag} class="markdown-file-card${inlineClass}" data-path="${escapeHtml(path)}" data-filename="${escapeHtml(fileName)}" title="${escapeHtml(t('download.downloadFile'))}">
+  const publication = options.publication
+  const publicationAttrs = publication
+    ? ` data-artifact-state="pending" data-artifact-mime="${escapeHtml(publication.mime)}" data-artifact-bytes="${publication.bytes}"`
+    : ''
+  const publicationStatus = publication
+    ? `<span class="artifact-readback-status" title="${escapeHtml(t('download.downloading'))}">${escapeHtml(t('download.downloading'))}</span>`
+    : ''
+  const card = `<${tag} class="markdown-file-card${inlineClass}" data-path="${escapeHtml(path)}" data-filename="${escapeHtml(fileName)}"${publicationAttrs} title="${escapeHtml(t('download.downloadFile'))}">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
         <polyline points="14 2 14 8 20 8" />
       </svg>
       <span class="att-name">${escapeHtml(fileName)}</span>
+      ${publicationStatus}
       <button class="att-download-btn" type="button" title="${escapeHtml(t('download.downloadFile'))}" aria-label="${escapeHtml(t('download.downloadFile'))}">
         <svg class="att-download-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -431,7 +459,8 @@ const renderedHtml = computed(() => {
   html = html.replace(/<a href="([^"]+)">([^<]+)<\/a>/g, (match, rawPath, filename) => {
     if (!isLocalFilePath(rawPath)) return match
 
-    const path = normalizeLocalFilePath(rawPath)
+    const artifact = parseArtifactPublication(normalizeLocalFilePath(rawPath.replace(/&amp;/g, '&')))
+    const path = artifact.path
     const fileName = filename.trim()
 
     // Video files: render as video player
@@ -465,7 +494,7 @@ const renderedHtml = computed(() => {
     }
 
     // Other files: render as file card
-    return renderFileCard(path, fileName)
+    return renderFileCard(path, fileName, { publication: artifact.publication })
   })
 
   if (props.mentionNames && props.mentionNames.length > 0) {
@@ -617,17 +646,59 @@ async function renderMermaidDiagrams(): Promise<void> {
   }
 }
 
+async function verifyPublishedArtifacts(): Promise<void> {
+  const generation = ++artifactReadbackGeneration
+  await nextTick()
+  const root = markdownBody.value
+  if (unmounted || generation !== artifactReadbackGeneration || !root) return
+
+  const cards = Array.from(root.querySelectorAll<HTMLElement>('[data-artifact-state="pending"]'))
+  for (const card of cards.slice(MAX_ARTIFACT_READBACKS)) {
+    card.setAttribute('data-artifact-state', 'incomplete')
+    const status = card.querySelector<HTMLElement>('.artifact-readback-status')
+    if (status) status.textContent = status.title = t('download.downloadFailed')
+  }
+  const limitedCards = cards.slice(0, MAX_ARTIFACT_READBACKS)
+  for (let offset = 0; offset < limitedCards.length; offset += ARTIFACT_READBACK_CONCURRENCY) {
+    await Promise.all(limitedCards.slice(offset, offset + ARTIFACT_READBACK_CONCURRENCY).map(async (card) => {
+      const path = card.getAttribute('data-path') || ''
+      const mime = card.getAttribute('data-artifact-mime') || ''
+      const bytes = Number(card.getAttribute('data-artifact-bytes'))
+      const status = card.querySelector<HTMLElement>('.artifact-readback-status')
+      const readbackKey = JSON.stringify([path, mime.trim().toLowerCase(), bytes])
+      let readback = artifactReadbacks.get(readbackKey)
+      if (!readback) {
+        readback = readbackWorkspaceArtifact(path, { mime, bytes })
+        artifactReadbacks.set(readbackKey, readback)
+      }
+      const result = await readback
+      if (unmounted || generation !== artifactReadbackGeneration || !root.contains(card)) return
+      const complete = result.complete
+      card.setAttribute('data-artifact-state', complete ? 'complete' : 'incomplete')
+      if (status) {
+        status.textContent = complete ? '✓' : t('download.downloadFailed')
+        status.title = complete ? '✓' : t('download.downloadFailed')
+      }
+    }))
+    if (unmounted || generation !== artifactReadbackGeneration) return
+  }
+}
+
 onMounted(() => {
   void renderMermaidDiagrams()
+  void verifyPublishedArtifacts()
 })
 
 watch(renderedHtml, () => {
   void renderMermaidDiagrams()
+  void verifyPublishedArtifacts()
 }, { flush: 'post' })
 
 onBeforeUnmount(() => {
   unmounted = true
   renderGeneration += 1
+  artifactReadbackGeneration += 1
+  artifactReadbacks.clear()
 })
 
 async function handleMarkdownClick(event: MouseEvent): Promise<void> {
@@ -1006,6 +1077,28 @@ function closeTextPreview(): void {
     &:hover .att-download-icon,
     .att-download-btn:hover .att-download-icon {
       opacity: 1;
+    }
+
+    .artifact-readback-status {
+      max-width: 110px;
+      overflow: hidden;
+      color: $text-secondary;
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    &[data-artifact-state='complete'] .artifact-readback-status {
+      color: #2f9e44;
+      font-weight: 700;
+    }
+
+    &[data-artifact-state='incomplete'] {
+      border-color: rgba(224, 49, 49, 0.45);
+    }
+
+    &[data-artifact-state='incomplete'] .artifact-readback-status {
+      color: #e03131;
     }
   }
 

@@ -227,6 +227,36 @@ describe('Database Schema Synchronization', () => {
       const row = db.prepare(`SELECT model, family_switch_noticed FROM "${SESSIONS_TABLE}" WHERE id = ?`).get('legacy-session')
       expect(row).toMatchObject({ model: 'claude-sonnet-5', family_switch_noticed: 0 })
     })
+
+    it('adds the nullable group-chat owner column to an existing room table', async () => {
+      const { syncTable, initAllHermesTables, GC_ROOMS_TABLE, GC_ROOMS_SCHEMA } = await import('../../packages/server/src/db/hermes/schemas')
+      const db = getTestDb()
+      db.exec(`CREATE TABLE "${GC_ROOMS_TABLE}" (id TEXT PRIMARY KEY, name TEXT NOT NULL, inviteCode TEXT UNIQUE)`)
+      db.prepare(`INSERT INTO "${GC_ROOMS_TABLE}" (id, name, inviteCode) VALUES (?, ?, ?)`)
+        .run('legacy-room', 'Legacy', 'LEGACY88')
+
+      syncTable(GC_ROOMS_TABLE, GC_ROOMS_SCHEMA)
+
+      expect(getTableColumns(db, GC_ROOMS_TABLE).has('ownerAuthUserId')).toBe(true)
+      expect(db.prepare(`SELECT ownerAuthUserId FROM "${GC_ROOMS_TABLE}" WHERE id = ?`).get('legacy-room'))
+        .toEqual({ ownerAuthUserId: null })
+
+      initAllHermesTables()
+      const { ChatStorage } = await import('../../packages/server/src/services/hermes/group-chat')
+      const storage = new ChatStorage()
+      expect(storage.getRoomByInviteCode('LEGACY88')).toMatchObject({
+        id: 'legacy-room',
+        ownerAuthUserId: null,
+      })
+      expect(storage.joinRoomByInviteCode('LEGACY88', 2, 'bob')).toBeUndefined()
+      expect(db.prepare('SELECT COUNT(*) AS count FROM gc_room_members WHERE roomId = ?').get('legacy-room'))
+        .toEqual({ count: 0 })
+
+      db.prepare(`UPDATE "${GC_ROOMS_TABLE}" SET ownerAuthUserId = 1 WHERE id = ?`).run('legacy-room')
+      expect(storage.joinRoomByInviteCode('LEGACY88', 2, 'bob')).toMatchObject({ id: 'legacy-room' })
+      expect(db.prepare('SELECT authUserId FROM gc_room_members WHERE roomId = ?').get('legacy-room'))
+        .toEqual({ authUserId: 2 })
+    })
   })
 
   describe('Schema sync with single-column primary keys', () => {

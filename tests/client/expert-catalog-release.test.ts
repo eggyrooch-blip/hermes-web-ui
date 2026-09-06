@@ -73,7 +73,7 @@ describe('ExpertCatalogView release metadata', () => {
     document.querySelector<HTMLButtonElement>('.action-primary')?.click()
     await flushPromises()
 
-    expect(newChatWithExpertMock).toHaveBeenCalledWith(expert)
+    expect(newChatWithExpertMock).toHaveBeenCalledWith(expert, 'hermes')
     expect(routerPushMock).toHaveBeenCalledWith({
       name: 'hermes.session',
       params: { sessionId: 'session-x' },

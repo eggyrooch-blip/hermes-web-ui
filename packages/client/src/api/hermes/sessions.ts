@@ -14,6 +14,7 @@ export interface SessionSummary {
   expert_id?: string | null
   expert_label?: string | null
   expert_avatar?: string | null
+  execution_engine?: 'hermes' | 'harness'
   model: string
   provider?: string
   title: string | null
@@ -33,6 +34,9 @@ export interface SessionSummary {
   actual_cost_usd: number | null
   cost_status: string
   workspace?: string | null
+  project_id?: string | null
+  project_name?: string | null
+  project_bound?: boolean
   webui_imported?: boolean
   is_archived?: boolean
 }
@@ -326,6 +330,24 @@ export async function setSessionWorkspace(id: string, workspace: string | null):
     await request(`/api/hermes/sessions/${id}/workspace`, {
       method: 'POST',
       body: JSON.stringify({ workspace: workspace || '' }),
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function setSessionExpert(
+  id: string,
+  expertId: string | null,
+  executionEngine: 'hermes' | 'harness',
+  profile?: string,
+): Promise<boolean> {
+  try {
+    const query = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+    await request(`/api/hermes/sessions/${id}/expert${query}`, {
+      method: 'POST',
+      body: JSON.stringify({ expert_id: expertId, execution_engine: executionEngine, profile }),
     })
     return true
   } catch {

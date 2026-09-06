@@ -47,6 +47,17 @@ function makeCtx(openid: string, view?: 'maintainer') {
   } as any
 }
 
+function makeLocalCtx(id: number) {
+  return {
+    state: { user: { id, role: 'super_admin' } },
+    params: { expertId: 'expert-x' },
+    query: { profile: 'profile-local' },
+    get: (name: string) => name.toLowerCase() === 'x-hermes-profile' ? 'profile-local' : '',
+    status: 200,
+    body: undefined as any,
+  } as any
+}
+
 describe('expert work record', () => {
   beforeEach(() => {
     vi.setSystemTime(new Date('2026-08-12T00:00:00Z'))
@@ -124,6 +135,25 @@ describe('expert work record', () => {
     expect([...aIds].filter(id => bIds.has(id))).toEqual([])
     expect(JSON.stringify(a.body)).not.toContain('ownerless')
     expect(JSON.stringify(a.body)).not.toContain('Wrong expert')
+  })
+
+  it('keeps an authenticated local WebUI account in its own namespaced scope', async () => {
+    sessions.list.mockReturnValueOnce([{
+      id: 'session-local', expert_id: 'expert-x', user_id: '7', profile: 'profile-local',
+      title: 'Local work', last_active: 1786492790, ended_at: null,
+    }])
+    feedback.list.mockReturnValueOnce([])
+    const { workRecord } = await import('../../packages/server/src/controllers/hermes/experts')
+    const request = makeLocalCtx(7)
+
+    await workRecord(request)
+
+    expect(request.status).toBe(200)
+    expect(registry.catalog).toHaveBeenCalledWith({ profileName: 'profile-local', userKey: '7' })
+    expect(feedback.list).toHaveBeenCalledWith('webui:7', 'session-local')
+    expect(request.body.partitions.sessions.items).toEqual([
+      expect.objectContaining({ id: 'session-local', title: 'Local work' }),
+    ])
   })
 
   it('gives only the unique registry owner identifier-free aggregates', async () => {

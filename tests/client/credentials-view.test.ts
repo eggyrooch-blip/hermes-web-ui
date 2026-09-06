@@ -4,9 +4,16 @@ import { mount } from '@vue/test-utils'
 
 const fetchSkillCredentialsMock = vi.hoisted(() => vi.fn())
 const submitGitlabTokenMock = vi.hoisted(() => vi.fn())
+const submitGithubTokenMock = vi.hoisted(() => vi.fn())
+const revokeGithubTokenMock = vi.hoisted(() => vi.fn())
 const startSkillCredentialAuthMock = vi.hoisted(() => vi.fn())
 const completeSkillCredentialAuthMock = vi.hoisted(() => vi.fn())
 const pollFeishuUatSessionMock = vi.hoisted(() => vi.fn())
+const fetchConnectorCatalogMock = vi.hoisted(() => vi.fn())
+const fetchCustomConnectorsMock = vi.hoisted(() => vi.fn())
+const importCustomConnectorsMock = vi.hoisted(() => vi.fn())
+const connectCatalogConnectorMock = vi.hoisted(() => vi.fn())
+const deleteCustomConnectorMock = vi.hoisted(() => vi.fn())
 const messageSuccessMock = vi.hoisted(() => vi.fn())
 const messageErrorMock = vi.hoisted(() => vi.fn())
 const messageWarningMock = vi.hoisted(() => vi.fn())
@@ -18,6 +25,16 @@ vi.mock('@/api/skillCredentials', () => ({
   pollFeishuUatSession: pollFeishuUatSessionMock,
   startSkillCredentialAuth: startSkillCredentialAuthMock,
   submitGitlabToken: submitGitlabTokenMock,
+  submitGithubToken: submitGithubTokenMock,
+  revokeGithubToken: revokeGithubTokenMock,
+}))
+
+vi.mock('@/api/connectorCatalog', () => ({
+  fetchConnectorCatalog: fetchConnectorCatalogMock,
+  fetchCustomConnectors: fetchCustomConnectorsMock,
+  importCustomConnectors: importCustomConnectorsMock,
+  connectCatalogConnector: connectCatalogConnectorMock,
+  deleteCustomConnector: deleteCustomConnectorMock,
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -25,7 +42,23 @@ vi.mock('vue-i18n', () => ({
     t: (key: string) => ({
       'skillCredentials.groups.internalSystems': 'Internal systems',
       'skillCredentials.groups.otherCredentials': 'Other credentials',
+      'skillCredentials.larkAuthRequired': 'Lark-cli authorization was not saved. Re-authorize from the card below.',
       'sidebar.connectors': 'Connectors',
+      'skillCredentials.github.title': 'GitHub — connect my personal credential',
+      'skillCredentials.github.hint': 'PAT stays in the vault; Agent gets a broker token.',
+      'skillCredentials.github.readonly': 'Read-only MCP with companion Skill.',
+      'skillCredentials.github.create': 'Create a fine-grained PAT on GitHub',
+      'skillCredentials.github.repositoryAccess': 'Only select repositories the Agent may query.',
+      'skillCredentials.github.permissions': 'Use read-only Contents, Issues and Pull requests permissions.',
+      'skillCredentials.github.returnToPaste': 'Generate the token, copy it once, then return here to paste it.',
+      'skillCredentials.github.token': 'GitHub PAT',
+      'skillCredentials.github.placeholder': 'Paste your GitHub PAT',
+      'skillCredentials.github.connect': 'Connect',
+      'skillCredentials.github.cancel': 'Cancel',
+      'skillCredentials.github.revoke': 'Revoke',
+      'skillCredentials.github.revokeConfirm': 'Revoke GitHub?',
+      'skillCredentials.github.revoked': 'GitHub revoked',
+      'skillCredentials.github.failed': 'GitHub failed',
     } as Record<string, string>)[key] || key,
   }),
 }))
@@ -139,6 +172,28 @@ describe('CredentialsView', () => {
         },
       ],
     })
+    fetchConnectorCatalogMock.mockResolvedValue({
+      profile_name: 'feishu_g41a5b5g',
+      subject_id: 'owner-a',
+      view: 'source',
+      source_count: 642,
+      canonical_count: 330,
+      connectors: [],
+    })
+    fetchCustomConnectorsMock.mockResolvedValue({
+      profile_name: 'feishu_g41a5b5g',
+      subject_id: 'owner-a',
+      connectors: [],
+    })
+    importCustomConnectorsMock.mockResolvedValue({
+      profile_name: 'feishu_g41a5b5g',
+      subject_id: 'owner-a',
+      connectors: [],
+    })
+    connectCatalogConnectorMock.mockResolvedValue({
+      profile_name: 'feishu_g41a5b5g', subject_id: 'owner-a', connectors: [],
+    })
+    deleteCustomConnectorMock.mockResolvedValue({ ok: true })
     startSkillCredentialAuthMock.mockResolvedValue({
       id: 'lark-cli',
       action: { kind: 'feishu_device_flow' },
@@ -188,6 +243,400 @@ describe('CredentialsView', () => {
     const html = wrapper.html()
     expect(html).not.toContain('keep-secret-token')
     expect(html).not.toContain('gitlab-secret-token')
+  })
+
+  it('shows the owner-scoped catalog and rejects command-based custom imports', async () => {
+    fetchConnectorCatalogMock.mockResolvedValueOnce({
+      profile_name: 'feishu_g41a5b5g', subject_id: 'owner-a', view: 'source',
+      source_count: 642, canonical_count: 330,
+      connectors: [
+        { row_key: 'github', canonical_key: 'github', name: 'GitHub', product: 'GitHub', final_verdict: 'needs_auth', download_count: 1200,
+          reason_code: 'remote_auth_required', next_action: 'Complete personal OAuth', action: { kind: 'authorize', label: 'Authorization required', available: false } },
+        { row_key: 'unknown', canonical_key: 'unknown', name: 'Unknown', product: 'Example', final_verdict: 'needs_sandbox', download_count: null,
+          next_action: 'Use an admitted sandbox package', action: { kind: 'install_sandbox', label: 'Sandbox required', available: false } },
+      ],
+    })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(fetchConnectorCatalogMock).toHaveBeenCalledWith('source')
+    expect(fetchCustomConnectorsMock).toHaveBeenCalledWith()
+    expect(wrapper.findAll('.catalog-card')).toHaveLength(2)
+    expect(wrapper.find('.catalog-card').attributes('tabindex')).toBe('0')
+    expect(wrapper.text()).toContain('↓ mcp.downloadUnknown')
+
+    await wrapper.find('.catalog-card').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.mock-modal').text()).toContain('Complete personal OAuth')
+    expect(connectCatalogConnectorMock).not.toHaveBeenCalled()
+
+    await wrapper.find('[data-testid="custom-connector-open"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    await wrapper.find('.mock-modal textarea').setValue('{"mcpServers":{"unsafe":{"command":"npx"}}}')
+    await wrapper.vm.$nextTick()
+    const save = wrapper.findAll('.mock-modal button').at(-1)!
+    expect(save.attributes('disabled')).toBeDefined()
+    expect(importCustomConnectorsMock).not.toHaveBeenCalled()
+  })
+
+  it('connects and revokes an available catalog card through the owner-bound APIs', async () => {
+    const installation = {
+      connector_id: 'custom-0123456789abcdef01234567', name: 'catalog-ready', transport: 'streamable_http',
+      endpoint: 'https://example.com/mcp', credential_fields: [], state: 'active', updated_at: 1,
+    }
+    const catalog = (connected = false) => ({
+      profile_name: 'current', subject_id: 'owner', view: 'source', source_count: 642, canonical_count: 330,
+      connectors: [{ row_key: 'ready', canonical_key: 'ready', name: 'Ready MCP', final_verdict: 'pass',
+        next_action: 'ready', action: connected
+          ? { kind: 'revoke', label: 'Disconnect', available: true, installation_name: 'catalog-ready', connector_id: installation.connector_id, status: 'ready' }
+          : { kind: 'connect', label: 'Connect', available: true, installation_name: 'catalog-ready' } }],
+    })
+    fetchConnectorCatalogMock
+      .mockResolvedValueOnce(catalog())
+      .mockResolvedValueOnce(catalog(true))
+      .mockResolvedValueOnce(catalog())
+    fetchCustomConnectorsMock
+      .mockResolvedValueOnce({ profile_name: 'current', subject_id: 'owner', connectors: [] })
+      .mockResolvedValueOnce({ profile_name: 'current', subject_id: 'owner', connectors: [installation] })
+      .mockResolvedValueOnce({ profile_name: 'current', subject_id: 'owner', connectors: [] })
+    connectCatalogConnectorMock.mockResolvedValueOnce({
+      profile_name: 'current', subject_id: 'owner', connectors: [installation],
+    })
+    const Panel = (await import('@/components/hermes/connectors/ConnectorCatalogPanel.vue')).default
+    const wrapper = mount(Panel, { props: { profile: 'current' } })
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    await wrapper.find('.catalog-card').trigger('click')
+    await wrapper.find('[data-testid="catalog-primary-action"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(connectCatalogConnectorMock).toHaveBeenCalledWith('ready')
+    expect(wrapper.text()).toContain('mcp.connected')
+
+    await wrapper.find('.catalog-card').trigger('click')
+    await wrapper.find('[data-testid="catalog-primary-action"]').trigger('click')
+    expect(deleteCustomConnectorMock).toHaveBeenCalledWith(installation.connector_id)
+  })
+
+  it('binds the exact credential fields requested by an owner-bound catalog card', async () => {
+    const installation = {
+      connector_id: 'custom-aaaaaaaaaaaaaaaaaaaaaaaa', name: 'catalog-manual', transport: 'streamable_http',
+      endpoint: 'https://example.com/mcp', credential_fields: ['Authorization'], state: 'ready', updated_at: 1,
+    }
+    const catalog = {
+      profile_name: 'current', subject_id: 'owner', view: 'source', source_count: 642, canonical_count: 330,
+      connectors: [{
+        row_key: 'manual', canonical_key: 'manual', name: 'Manual MCP', final_verdict: 'needs_auth',
+        action: { kind: 'authorize', label: 'Authorize', available: true, fields: ['Authorization'] },
+      }],
+    }
+    fetchConnectorCatalogMock.mockResolvedValue(catalog)
+    fetchCustomConnectorsMock
+      .mockResolvedValueOnce({ profile_name: 'current', subject_id: 'owner', connectors: [] })
+      .mockResolvedValueOnce({ profile_name: 'current', subject_id: 'owner', connectors: [installation] })
+    connectCatalogConnectorMock.mockResolvedValue({
+      profile_name: 'current', subject_id: 'owner', connectors: [installation],
+    })
+    const Panel = (await import('@/components/hermes/connectors/ConnectorCatalogPanel.vue')).default
+    const wrapper = mount(Panel, { props: { profile: 'current' } })
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    await wrapper.find('.catalog-card').trigger('click')
+    await wrapper.find('[data-testid="catalog-credential-Authorization"] input').setValue('Bearer owner-secret')
+    await wrapper.find('[data-testid="catalog-primary-action"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(connectCatalogConnectorMock).toHaveBeenCalledWith('manual', { Authorization: 'Bearer owner-secret' })
+    expect(wrapper.html()).not.toContain('owner-secret')
+  })
+
+  it('connects an admitted sandbox catalog card with its exact fields', async () => {
+    fetchConnectorCatalogMock.mockResolvedValue({
+      profile_name: 'current', subject_id: 'owner', view: 'source', source_count: 642, canonical_count: 330,
+      connectors: [{
+        row_key: 'sandbox', canonical_key: 'sandbox', name: 'Sandbox MCP', final_verdict: 'needs_sandbox',
+        action: { kind: 'install_sandbox', label: 'Connect', available: true, fields: ['API_KEY'] },
+      }],
+    })
+    fetchCustomConnectorsMock
+      .mockResolvedValueOnce({ profile_name: 'current', subject_id: 'owner', connectors: [] })
+      .mockResolvedValueOnce({ profile_name: 'current', subject_id: 'owner', connectors: [] })
+    connectCatalogConnectorMock.mockResolvedValue({
+      profile_name: 'current', subject_id: 'owner', connectors: [],
+    })
+    const Panel = (await import('@/components/hermes/connectors/ConnectorCatalogPanel.vue')).default
+    const wrapper = mount(Panel, { props: { profile: 'current' } })
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    await wrapper.find('.catalog-card').trigger('click')
+    await wrapper.find('[data-testid="catalog-credential-API_KEY"] input').setValue('owner-secret')
+    await wrapper.find('[data-testid="catalog-primary-action"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(connectCatalogConnectorMock).toHaveBeenCalledWith('sandbox', { API_KEY: 'owner-secret' })
+    expect(wrapper.html()).not.toContain('owner-secret')
+  })
+
+  it('opens the standard MCP OAuth URL without claiming the card is connected', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue({} as Window)
+    fetchConnectorCatalogMock.mockResolvedValue({
+      profile_name: 'current', subject_id: 'owner', view: 'source', source_count: 642, canonical_count: 330,
+      connectors: [{
+        row_key: 'oauth', canonical_key: 'oauth', name: 'OAuth MCP', final_verdict: 'needs_auth',
+        action: { kind: 'authorize', label: 'Authorize', available: true, auth_flow: 'mcp_oauth', status: 'ready' },
+      }],
+    })
+    fetchCustomConnectorsMock.mockResolvedValue({ profile_name: 'current', subject_id: 'owner', connectors: [] })
+    connectCatalogConnectorMock.mockResolvedValue({
+      profile_name: 'current', subject_id: 'owner',
+      authorization_url: 'https://auth.example/authorize?state=opaque',
+    })
+    const Panel = (await import('@/components/hermes/connectors/ConnectorCatalogPanel.vue')).default
+    const wrapper = mount(Panel, { props: { profile: 'current' } })
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    await wrapper.find('.catalog-card').trigger('click')
+    await wrapper.find('[data-testid="catalog-primary-action"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(open).toHaveBeenCalledWith('https://auth.example/authorize?state=opaque', '_blank', 'noopener,noreferrer')
+    expect(fetchCustomConnectorsMock).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).not.toContain('mcp.connected')
+    open.mockRestore()
+  })
+
+  it('routes the Feishu catalog card through the existing owner-bound lark-cli broker', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue({} as Window)
+    fetchConnectorCatalogMock.mockResolvedValue({
+      profile_name: 'current', subject_id: 'owner', view: 'source', source_count: 642, canonical_count: 330,
+      connectors: [{
+        row_key: 'workbuddy:feishu', canonical_key: 'feishu', name: 'Feishu', final_verdict: 'needs_auth',
+        action: { kind: 'authorize', label: 'Authorize', available: true, auth_flow: 'feishu_device_flow' },
+      }],
+    })
+    fetchCustomConnectorsMock.mockResolvedValue({ profile_name: 'current', subject_id: 'owner', connectors: [] })
+    startSkillCredentialAuthMock.mockResolvedValue({
+      session_id: 'owner-session', verification_uri: 'https://accounts.feishu.cn/device', user_code: 'OWNER',
+    })
+    pollFeishuUatSessionMock.mockResolvedValue({ session_id: 'owner-session', status: 'success' })
+    const Panel = (await import('@/components/hermes/connectors/ConnectorCatalogPanel.vue')).default
+    const wrapper = mount(Panel, { props: { profile: 'current' } })
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    await wrapper.find('.catalog-card').trigger('click')
+    vi.useFakeTimers()
+    await wrapper.find('[data-testid="catalog-primary-action"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(2_500)
+
+    expect(startSkillCredentialAuthMock).toHaveBeenCalledWith('lark-cli', 'current')
+    expect(pollFeishuUatSessionMock).toHaveBeenCalledWith('owner-session', 'current')
+    expect(connectCatalogConnectorMock).not.toHaveBeenCalled()
+    expect(open).toHaveBeenCalledWith('https://accounts.feishu.cn/device', '_blank', 'noopener,noreferrer')
+    open.mockRestore()
+    vi.useRealTimers()
+  })
+
+  it('revokes a ready Feishu card through the exact owner-bound catalog route', async () => {
+    const ready = {
+      profile_name: 'current', subject_id: 'owner', view: 'source', source_count: 642, canonical_count: 330,
+      connectors: [{
+        row_key: 'workbuddy:feishu', canonical_key: 'feishu', name: 'Feishu', final_verdict: 'needs_auth',
+        action: { kind: 'revoke', label: 'Disconnect', available: true, auth_flow: 'feishu_device_flow', status: 'ready' },
+      }],
+    }
+    fetchConnectorCatalogMock.mockResolvedValue(ready)
+    fetchCustomConnectorsMock.mockResolvedValue({ profile_name: 'current', subject_id: 'owner', connectors: [] })
+    const Panel = (await import('@/components/hermes/connectors/ConnectorCatalogPanel.vue')).default
+    const wrapper = mount(Panel, { props: { profile: 'current' } })
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('mcp.connected')
+    await wrapper.find('.catalog-card').trigger('click')
+    await wrapper.find('[data-testid="catalog-primary-action"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(connectCatalogConnectorMock).toHaveBeenCalledWith('workbuddy:feishu')
+    expect(startSkillCredentialAuthMock).not.toHaveBeenCalled()
+  })
+
+  it('fails visibly without showing stale catalog rows when the broker is unavailable', async () => {
+    fetchConnectorCatalogMock.mockRejectedValueOnce(new Error('catalog unavailable'))
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(wrapper.findAll('.catalog-card')).toHaveLength(0)
+    expect(wrapper.text()).toContain('catalog unavailable')
+  })
+
+  it('keeps the newest profile load when an older connector response arrives late', async () => {
+    let resolveOldCatalog!: (value: any) => void
+    let resolveOldCustom!: (value: any) => void
+    fetchConnectorCatalogMock
+      .mockImplementationOnce(() => new Promise(resolve => { resolveOldCatalog = resolve }))
+      .mockResolvedValueOnce({
+        profile_name: 'new', subject_id: 'new-owner', view: 'source', source_count: 642, canonical_count: 330,
+        connectors: [{ row_key: 'new', canonical_key: 'new', name: 'Newest connector' }],
+      })
+    fetchCustomConnectorsMock
+      .mockImplementationOnce(() => new Promise(resolve => { resolveOldCustom = resolve }))
+      .mockResolvedValueOnce({ profile_name: 'new', subject_id: 'new-owner', connectors: [] })
+
+    const Panel = (await import('@/components/hermes/connectors/ConnectorCatalogPanel.vue')).default
+    const wrapper = mount(Panel, { props: { profile: 'old' } })
+    await Promise.resolve()
+    await wrapper.setProps({ profile: 'new' })
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('Newest connector')
+
+    resolveOldCatalog({
+      profile_name: 'old', subject_id: 'old-owner', view: 'source', source_count: 642, canonical_count: 330,
+      connectors: [{ row_key: 'old', canonical_key: 'old', name: 'Stale connector' }],
+    })
+    resolveOldCustom({ profile_name: 'old', subject_id: 'old-owner', connectors: [] })
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('Newest connector')
+    expect(wrapper.text()).not.toContain('Stale connector')
+  })
+
+  it('falls back from a failed icon and submits one import while pending', async () => {
+    fetchConnectorCatalogMock.mockResolvedValueOnce({
+      profile_name: 'current', subject_id: 'owner', view: 'source', source_count: 642, canonical_count: 330,
+      connectors: [{ row_key: 'demo', canonical_key: 'demo', name: 'Demo', icon: { url: '/broken.png' } }],
+    })
+    importCustomConnectorsMock.mockImplementationOnce(() => new Promise(() => {}))
+    const Panel = (await import('@/components/hermes/connectors/ConnectorCatalogPanel.vue')).default
+    const wrapper = mount(Panel, { props: { profile: 'current' } })
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    await wrapper.find('.catalog-card img').trigger('error')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.catalog-fallback').text()).toBe('D')
+
+    await wrapper.find('[data-testid="custom-connector-open"]').trigger('click')
+    await wrapper.find('.mock-modal textarea').setValue('{"mcpServers":{"demo":{"url":"https://example.com/mcp"}}}')
+    await wrapper.vm.$nextTick()
+    const save = wrapper.findAll('.mock-modal button').at(-1)!
+    await save.trigger('click')
+    await save.trigger('click')
+    expect(importCustomConnectorsMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('connects the GitHub MCP bundle without persisting or rendering the PAT', async () => {
+    const row = (status: string, hint?: string) => ({
+      profile_name: 'feishu_g41a5b5g',
+      credentials: [{
+        id: 'github-mcp', title: 'GitHub', provider: 'github', installed: true,
+        status, account_hint: hint,
+        detail: 'Official remote MCP · companion Skill · read-only · personal credential',
+        required_by: ['github-mcp'], action: { kind: 'manual', label: 'Connect' },
+      }],
+    })
+    fetchSkillCredentialsMock
+      .mockResolvedValueOnce(row('needs_auth'))
+      .mockResolvedValueOnce(row('authenticated', 'octo…ice'))
+    submitGithubTokenMock.mockResolvedValueOnce({ ok: true, account_hint: 'octo…ice' })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('Official remote MCP · companion Skill · read-only')
+    await wrapper.find('[data-credential-action="github-mcp"]').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('Read-only MCP with companion Skill.')
+    const createLink = wrapper.find('[data-testid="github-pat-create-link"]')
+    expect(createLink.attributes('href')).toBe('https://github.com/settings/personal-access-tokens/new?name=Hermes%20MCP&description=Read-only%20GitHub%20MCP%20connector&expires_in=30&contents=read&issues=read&pull_requests=read&metadata=read')
+    expect(createLink.attributes('target')).toBe('_blank')
+    expect(createLink.attributes('rel')).toBe('noopener noreferrer')
+    expect(wrapper.text()).toContain('Only select repositories the Agent may query.')
+    expect(wrapper.text()).toContain('Use read-only Contents, Issues and Pull requests permissions.')
+    expect(wrapper.text()).toContain('Generate the token, copy it once, then return here to paste it.')
+    const input = wrapper.find('input[type="password"]')
+    const sampleValue = ['sample', 'value'].join('-')
+    await input.setValue(`  ${sampleValue}  `)
+    await wrapper.find('[data-testid="github-submit"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(submitGithubTokenMock).toHaveBeenCalledWith(sampleValue, 'feishu_g41a5b5g')
+    expect(fetchSkillCredentialsMock).toHaveBeenLastCalledWith('feishu_g41a5b5g', { fresh: true })
+    expect(wrapper.html()).not.toContain(sampleValue)
+    expect(JSON.stringify(localStorage)).not.toContain(sampleValue)
+    expect(wrapper.text()).toContain('octo…ice')
+  })
+
+  it('keeps the GitHub dialog open when the broker rejects the token', async () => {
+    fetchSkillCredentialsMock.mockResolvedValueOnce({
+      profile_name: 'feishu_g41a5b5g',
+      credentials: [{
+        id: 'github-mcp', title: 'GitHub', provider: 'github', installed: true,
+        status: 'needs_auth', action: { kind: 'manual', label: 'Connect' },
+      }],
+    })
+    submitGithubTokenMock.mockResolvedValueOnce({ ok: false, error: 'GitHub token is invalid' })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-credential-action="github-mcp"]').trigger('click')
+    const submit = wrapper.find('[data-testid="github-submit"]')
+    expect(submit.attributes('disabled')).toBeDefined()
+    await wrapper.find('input[type="password"]').setValue('bad-token')
+    await submit.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.mock-modal').exists()).toBe(true)
+    expect(wrapper.text()).toContain('GitHub token is invalid')
+    expect(wrapper.text()).not.toContain('已认证')
+  })
+
+  it('revokes the authenticated GitHub MCP credential for the active profile', async () => {
+    const credential = (status: string, label: string) => ({
+      profile_name: 'feishu_g41a5b5g',
+      credentials: [{
+        id: 'github-mcp', title: 'GitHub', provider: 'github', installed: true,
+        status, detail: 'read-only',
+        account_hint: label,
+        action: { kind: 'manual', label: 'Reconnect' },
+      }],
+    })
+    fetchSkillCredentialsMock
+      .mockResolvedValueOnce(credential('authenticated', 'octo…ice'))
+      .mockResolvedValueOnce(credential('needs_auth', ''))
+    revokeGithubTokenMock.mockResolvedValueOnce({ ok: true, revoked: true })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-credential-revoke="github-mcp"]').trigger('click')
+    await wrapper.find('[data-testid="github-revoke-confirm"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(revokeGithubTokenMock).toHaveBeenCalledWith('feishu_g41a5b5g')
+    expect(messageSuccessMock).toHaveBeenCalledWith('GitHub revoked')
+    expect(wrapper.text()).toContain('未认证')
+    expect(wrapper.text()).not.toContain('octo…ice')
+  })
+
+  it('does not claim revoke success when the broker rejects it', async () => {
+    fetchSkillCredentialsMock.mockResolvedValue({
+      profile_name: 'feishu_g41a5b5g',
+      credentials: [{
+        id: 'github-mcp', title: 'GitHub', provider: 'github', installed: true,
+        status: 'authenticated', action: { kind: 'manual', label: 'Reconnect' },
+      }],
+    })
+    revokeGithubTokenMock.mockResolvedValueOnce({ ok: false, error: 'vault unavailable' })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-credential-revoke="github-mcp"]').trigger('click')
+    await wrapper.find('[data-testid="github-revoke-confirm"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(messageSuccessMock).not.toHaveBeenCalled()
+    expect(messageErrorMock).toHaveBeenCalledWith('vault unavailable')
+    expect(wrapper.find('[data-testid="github-revoke-confirm"]').exists()).toBe(true)
   })
 
   it('keeps legacy kep-cli credential rows grouped with internal systems', async () => {
@@ -333,6 +782,17 @@ describe('CredentialsView', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(fetchSkillCredentialsMock).toHaveBeenCalledWith('route_profile')
+  })
+
+  it('shows the login fallback warning without starting Device Flow automatically', async () => {
+    routeQuery.lark_auth = 'required'
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="lark-auth-required"]').text()).toContain('Lark-cli authorization was not saved')
+    expect(startSkillCredentialAuthMock).not.toHaveBeenCalled()
   })
 
   it('prefers the active profile when embedded in Expert', async () => {

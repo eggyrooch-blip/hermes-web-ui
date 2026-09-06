@@ -22,6 +22,11 @@ backend, and an Electron desktop distribution around Hermes Agent.
 5. Services own side effects: files, SQLite, Hermes profiles, subprocesses, bridges, and credentials.
 6. Long-running chat and group-chat flows use Socket.IO namespaces managed by server services.
 
+The standard MCP OAuth approval is intentionally a narrow exception to normal feature routing: the router renders
+`/#/mcp/oauth/approve` from a one-time request id, GETs only client/callback/scope consent metadata, and delegates
+the same-origin JSON approval POST to the Run Broker using only the trusted WebUI session principal. Client tokens,
+upstream connector secrets, and user-supplied identity never enter browser state.
+
 Keep each layer narrow. Routes should not grow business logic, and client code
 should not duplicate server persistence rules.
 

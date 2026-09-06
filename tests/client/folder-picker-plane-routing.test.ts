@@ -12,7 +12,7 @@ vi.mock('@/api/client', () => ({
 import {
   createWorkspaceFolder,
   deleteWorkspaceFolder,
-  listWorkspaceFolders,
+  listWorkspacePickerFolders,
   renameWorkspaceFolder,
 } from '@/utils/hermes/workspace-folder-api'
 
@@ -36,7 +36,7 @@ describe('workspace folder api plane routing', () => {
         ],
       })
 
-      const result = await listWorkspaceFolders()
+      const result = await listWorkspacePickerFolders()
 
       expect(requestMock).toHaveBeenCalledWith('/api/hermes/files/list')
       expect(requestMock.mock.calls[0][0]).not.toContain('workspace/folders')
@@ -44,10 +44,26 @@ describe('workspace folder api plane routing', () => {
       expect(result.folders[0]).toEqual({ name: 'media-probe', path: 'media-probe', fullPath: 'media-probe' })
     })
 
+    it('keeps runtime-owned directories out of workspace choices', async () => {
+      requestMock.mockResolvedValue({
+        entries: [
+          { name: '.ai-docs', isDir: true },
+          { name: 'uploads', isDir: true },
+          { name: 'runs', isDir: true },
+          { name: 'Downloads', isDir: true },
+          { name: 'client-a', isDir: true },
+        ],
+      })
+
+      const result = await listWorkspacePickerFolders()
+
+      expect(result.folders.map(folder => folder.name)).toEqual(['Downloads', 'client-a'])
+    })
+
     it('keeps relative paths when drilling into a subdirectory', async () => {
       requestMock.mockResolvedValue({ entries: [{ name: 'acme', isDir: true }] })
 
-      const result = await listWorkspaceFolders('clients')
+      const result = await listWorkspacePickerFolders('clients')
 
       expect(requestMock).toHaveBeenCalledWith('/api/hermes/files/list?path=clients')
       expect(result.folders[0]).toEqual({ name: 'acme', path: 'clients/acme', fullPath: 'clients/acme' })
@@ -129,7 +145,7 @@ describe('workspace folder api plane routing', () => {
       // admins there would silently change which directories they are choosing from.
       requestMock.mockResolvedValue({ base: '/home/user', current: '', folders: [] })
 
-      await listWorkspaceFolders('sub')
+      await listWorkspacePickerFolders('sub')
       expect(requestMock).toHaveBeenLastCalledWith('/api/hermes/workspace/folders?path=sub')
 
       requestMock.mockResolvedValue({ ok: true })

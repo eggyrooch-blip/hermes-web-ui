@@ -8,6 +8,7 @@ import { getSession, getSessionIncarnation, getSessionRowId, updateSession } fro
 import { config } from '../../../config'
 import { logger } from '../../logger'
 import { getProfileDir } from '../hermes-profile'
+import { listSkillCredentialStatuses } from '../skill-credentials'
 import { buildBrokerMessagesForSession, contentBlocksToBrokerText } from './content-blocks'
 import { readSseFrames } from './sse-utils'
 import type { ContentBlock, ResponseRunState, SessionMessage, SessionState } from './types'
@@ -70,6 +71,7 @@ type BuildRunBrokerRequestOptions = {
    *  body (`expert_id`) and metadata so the multitenancy layer can inject the
    *  expert persona overlay for this run only. */
   expertId?: string
+  projectId?: string
   instructions?: string
   workspace?: string | null
   workspacePath?: string | null
@@ -94,6 +96,30 @@ const PROFILE_SKILL_SLASH_ALIASES: Record<string, string> = {
 
 const BROKER_SESSION_COMMANDS = new Set(['new', 'reset', 'status', 'plan', 'goal', 'subgoal'])
 
+export function resolveProjectRunBinding(
+  session: Pick<NonNullable<ReturnType<typeof getSession>>, 'project_id' | 'project_bound' | 'message_count'> | null,
+  requestedProjectId: unknown,
+  requestedWorkspace: string | null,
+): { projectId?: string; workspace: string | null; persistProjectId: boolean } {
+  const requested = typeof requestedProjectId === 'string' ? requestedProjectId.trim() : ''
+  const stored = session?.project_id?.trim() || ''
+  if (session?.project_bound && (!stored || (requested && requested !== stored))) {
+    throw new Error('Session is already bound to a different Project')
+  }
+  if (stored && requested && requested !== stored) {
+    throw new Error('Session Project cannot be changed')
+  }
+  if (!stored && requested && (session?.message_count || 0) > 1) {
+    throw new Error('Project cannot be added after the first turn')
+  }
+  const projectId = stored || requested || undefined
+  return {
+    projectId,
+    workspace: projectId ? null : requestedWorkspace,
+    persistProjectId: Boolean(requested && !stored),
+  }
+}
+
 export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOptions): Promise<Record<string, any>> {
   const {
     input,
@@ -104,6 +130,7 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
     provider,
     agentId,
     expertId,
+    projectId,
     instructions,
     workspace,
     workspacePath = workspace,
@@ -146,6 +173,7 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
     profile_name: profile,
     ...(agentId ? { agent_id: agentId } : {}),
     ...(expertId ? { expert_id: expertId } : {}),
+    ...(projectId ? { project_id: projectId } : {}),
     user_key: userKey,
     content,
     session_id: sessionId,
@@ -333,7 +361,7 @@ function readSmallText(path: string): string {
   }
 }
 
-export function buildRunBrokerHeaders(options: { runBrokerKey?: string; ownerOpenId?: string; agentId?: string; expertId?: string }): Record<string, string> {
+export function buildRunBrokerHeaders(options: { runBrokerKey?: string; ownerOpenId?: string; agentId?: string; expertId?: string; executionEngine?: 'hermes' | 'harness' }): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const key = options.runBrokerKey?.trim()
   const ownerOpenId = options.ownerOpenId?.trim()
@@ -346,6 +374,7 @@ export function buildRunBrokerHeaders(options: { runBrokerKey?: string; ownerOpe
   }
   if (agentId) headers['X-Hermes-Agent-Id'] = agentId
   if (expertId) headers['X-Hermes-Expert-Id'] = expertId
+  if (options.executionEngine === 'harness') headers['X-Hermes-Expert-Engine'] = 'harness'
   return headers
 }
 
@@ -413,6 +442,27 @@ export function mapRunBrokerFrameForChat(
   const brokerKind = parsed?.kind || parsed?.event || frameEvent
   const runId = parsed?.run_id || parsed?.runId || payload.run_id || fallbackRunId
   const responseId = runId
+
+  if (brokerKind === 'workflow_stage' || brokerKind === 'workflow.stage') {
+    const stage = String(parsed?.stage || payload.stage || '').trim()
+    if (!stage) return { type: 'ignore' }
+    return {
+      type: 'emit',
+      event: 'workflow.stage',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'workflow.stage',
+        run_id: runId,
+        response_id: responseId,
+        stage,
+        status: String(parsed?.status || payload.status || ''),
+        summary: String(parsed?.summary || payload.summary || ''),
+        related_ids: parsed?.related_ids || payload.related_ids || {},
+        audit_id: String(parsed?.audit_id || payload.audit_id || ''),
+      },
+    }
+  }
 
   if (brokerKind === 'content' || brokerKind === 'message.delta') {
     const deltaText = parsed?.text || parsed?.delta || payload.text || payload.delta || ''
@@ -545,11 +595,108 @@ export function mapRunBrokerFrameForChat(
     }
   }
 
+  if (brokerKind === 'approval_required' || brokerKind === 'approval.requested') {
+    const approvalId = parsed?.approval_id || payload.approval_id
+    if (!approvalId) return { type: 'ignore' }
+    return {
+      type: 'emit',
+      event: 'approval.requested',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'approval.requested',
+        run_id: runId,
+        response_id: responseId,
+        approval_id: String(approvalId),
+        command: String(parsed?.command || payload.command || ''),
+        description: String(parsed?.description || payload.description || ''),
+        choices: ['once', 'deny'],
+        allow_permanent: false,
+      },
+    }
+  }
+
+  if (brokerKind === 'approval_resolved' || brokerKind === 'approval.resolved') {
+    const approvalId = parsed?.approval_id || payload.approval_id
+    if (!approvalId) return { type: 'ignore' }
+    return {
+      type: 'emit',
+      event: 'approval.resolved',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'approval.resolved',
+        run_id: runId,
+        response_id: responseId,
+        approval_id: String(approvalId),
+        choice: parsed?.choice ?? payload.choice,
+        timed_out: parsed?.timed_out ?? payload.timed_out,
+      },
+    }
+  }
+
+  if (brokerKind === 'heartbeat' || brokerKind === 'harness_heartbeat') {
+    return {
+      type: 'emit',
+      event: 'run.status',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'run.status',
+        run_id: runId,
+        response_id: responseId,
+        text: String(parsed?.text || payload.text || ''),
+      },
+    }
+  }
+
+  if (brokerKind === 'gate_required') {
+    const approvalId = parsed?.approval_id || payload.approval_id
+    if (!approvalId) return { type: 'ignore' }
+    return {
+      type: 'emit',
+      event: 'approval.requested',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'approval.requested',
+        run_id: runId,
+        response_id: responseId,
+        approval_id: String(approvalId),
+        gate: String(parsed?.gate || payload.gate || ''),
+        checklist: Array.isArray(parsed?.checklist) ? parsed.checklist : (Array.isArray(payload.checklist) ? payload.checklist : []),
+        command: String(parsed?.command || payload.command || `Gate ${parsed?.gate || payload.gate || ''}`),
+        description: String(parsed?.description || payload.description || ''),
+        choices: ['approve', 'reject', 'rework'],
+        allow_permanent: false,
+      },
+    }
+  }
+
+  if (brokerKind === 'gate_resolved') {
+    const approvalId = parsed?.approval_id || payload.approval_id
+    if (!approvalId) return { type: 'ignore' }
+    return {
+      type: 'emit',
+      event: 'approval.resolved',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'approval.resolved',
+        run_id: runId,
+        response_id: responseId,
+        approval_id: String(approvalId),
+        choice: parsed?.decision ?? payload.decision,
+      },
+    }
+  }
+
   if (brokerKind === 'auth_required') {
     // A connector's credential expired mid-run. The broker parked the original
     // request keyed by run_id + exposes a replay endpoint; surface a structured
     // event so the chat UI renders an inline re-auth card instead of leaving the
     // failure as free-form assistant text.
+    const credentialKind = String(parsed?.credential_kind || payload.credential_kind || '')
     const connectorId = String(parsed?.connector_id || payload.connector_id || '')
     if (!connectorId) return { type: 'ignore' }
     return {
@@ -562,7 +709,27 @@ export function mapRunBrokerFrameForChat(
         run_id: runId,
         response_id: responseId,
         connector_id: connectorId,
-        provider: String(parsed?.provider || payload.provider || ''),
+        provider: String(parsed?.provider || payload.provider || (credentialKind ? 'harness' : '')),
+        workflow_id: String(parsed?.workflow_id || payload.workflow_id || ''),
+        credential_kind: credentialKind,
+      },
+    }
+  }
+
+  if (brokerKind === 'auth_resolved') {
+    const credentialKind = String(parsed?.credential_kind || payload.credential_kind || '')
+    return {
+      type: 'emit',
+      event: 'auth.resolved',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'auth.resolved',
+        run_id: runId,
+        response_id: responseId,
+        connector_id: String(parsed?.connector_id || payload.connector_id || ''),
+        workflow_id: String(parsed?.workflow_id || payload.workflow_id || ''),
+        credential_kind: credentialKind,
       },
     }
   }
@@ -601,6 +768,73 @@ export function mapRunBrokerFrameForChat(
   return { type: 'ignore' }
 }
 
+export function rememberBrokerWorkflowEvent(
+  state: Pick<SessionState, 'events'>,
+  event: string,
+  data: any,
+): void {
+  if (event === 'workflow.stage') {
+    state.events = state.events.filter(item => item.event !== event)
+    state.events.push({ event, data })
+    return
+  }
+  if (event === 'approval.requested') {
+    const approvalId = String(data?.approval_id || '')
+    state.events = state.events.filter(item => (
+      item.event !== event || String(item.data?.approval_id || '') !== approvalId
+    ))
+    state.events.push({ event, data })
+    return
+  }
+  if (event === 'approval.resolved') {
+    const approvalId = String(data?.approval_id || '')
+    state.events = state.events.filter(item => (
+      item.event !== 'approval.requested' || String(item.data?.approval_id || '') !== approvalId
+    ))
+    return
+  }
+  if (event === 'auth.required') {
+    const workflowId = String(data?.workflow_id || '')
+    state.events = state.events.filter(item => (
+      item.event !== event || String(item.data?.workflow_id || '') !== workflowId
+    ))
+    state.events.push({ event, data })
+    return
+  }
+  if (event === 'auth.resolved') {
+    const workflowId = String(data?.workflow_id || '')
+    state.events = state.events.filter(item => (
+      item.event !== 'auth.required' || String(item.data?.workflow_id || '') !== workflowId
+    ))
+  }
+}
+
+export async function fetchBrokerHarnessWorkflowSnapshot(options: {
+  socket: Socket
+  profile: string
+  sessionId: string
+  agentId?: string
+}): Promise<any> {
+  if (!config.runBrokerUrl) throw new Error('HERMES_RUN_BROKER_URL is required when HERMES_WEBUI_RUN_BROKER=1')
+  const ownerOpenId = String(options.socket.data?.user?.openid || options.socket.data?.user?.id || '').trim()
+  if (!ownerOpenId) throw new Error('owner identity is required for Harness workflow restore')
+  const res = await fetch(`${config.runBrokerUrl}/api/run-broker/harness/workflows/by-session`, {
+    method: 'POST',
+    headers: buildRunBrokerHeaders({
+      runBrokerKey: config.runBrokerKey,
+      ownerOpenId,
+      agentId: options.agentId,
+    }),
+    body: JSON.stringify({
+      profile_name: options.profile,
+      session_id: options.sessionId,
+      action: 'snapshot',
+    }),
+  })
+  if (!res.ok) throw new Error(`Harness workflow snapshot failed (${res.status})`)
+  return await res.json()
+}
+
 export async function respondToBrokerClarify(options: {
   socket: Socket
   profile: string
@@ -611,7 +845,7 @@ export async function respondToBrokerClarify(options: {
 }): Promise<void> {
   const brokerUrl = config.runBrokerUrl
   if (!brokerUrl) throw new Error('HERMES_RUN_BROKER_URL is required when HERMES_WEBUI_RUN_BROKER=1')
-  const ownerOpenId = (options.socket.data?.user?.openid as string | undefined)?.trim()
+  const ownerOpenId = String(options.socket.data?.user?.openid || options.socket.data?.user?.id || '').trim()
   if (!ownerOpenId) throw new Error('owner identity is required for clarify response')
   const res = await fetch(`${brokerUrl}/api/run-broker/clarify/${encodeURIComponent(options.clarifyId)}/respond`, {
     method: 'POST',
@@ -633,6 +867,84 @@ export async function respondToBrokerClarify(options: {
   }
 }
 
+export async function respondToBrokerApproval(options: {
+  socket: Socket
+  profile: string
+  agentId?: string
+  sessionId: string
+  approvalId: string
+  choice: string
+  comment?: string
+}): Promise<void> {
+  const brokerUrl = config.runBrokerUrl
+  if (!brokerUrl) throw new Error('HERMES_RUN_BROKER_URL is required when HERMES_WEBUI_RUN_BROKER=1')
+  const ownerOpenId = String(options.socket.data?.user?.openid || options.socket.data?.user?.id || '').trim()
+  if (!ownerOpenId) throw new Error('owner identity is required for approval response')
+  const res = await fetch(`${brokerUrl}/api/run-broker/approval/${encodeURIComponent(options.approvalId)}/respond`, {
+    method: 'POST',
+    headers: buildRunBrokerHeaders({
+      runBrokerKey: config.runBrokerKey,
+      ownerOpenId,
+      agentId: options.agentId,
+    }),
+    body: JSON.stringify({
+      profile_name: options.profile,
+      ...(options.agentId ? { agent_id: options.agentId } : {}),
+      session_id: options.sessionId,
+      choice: options.choice,
+      comment: options.comment || '',
+    }),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`Run broker approval ${res.status}: ${text}`)
+  }
+}
+
+export async function resumeBrokerHarnessCredential(options: {
+  socket: Socket
+  profile: string
+  agentId?: string
+  sessionId: string
+  workflowId: string
+  credentialKind: string
+  connectorId: string
+}): Promise<void> {
+  const brokerUrl = config.runBrokerUrl
+  if (!brokerUrl) throw new Error('HERMES_RUN_BROKER_URL is required when HERMES_WEBUI_RUN_BROKER=1')
+  const ownerOpenId = String(options.socket.data?.user?.openid || options.socket.data?.user?.id || '').trim()
+  if (!ownerOpenId) throw new Error('owner identity is required for Harness credential resume')
+  const connectorId = String(options.connectorId || '').trim()
+  if (!connectorId) throw new Error('Harness connector id is required')
+  const statuses = await listSkillCredentialStatuses({
+    profileName: options.profile,
+    profileDir: getProfileDir(options.profile),
+    user: options.socket.data?.user,
+  })
+  if (!statuses.credentials.some(entry => (
+    entry.id === connectorId && entry.status === 'authenticated'
+  ))) {
+    throw new Error('Harness connector is not authenticated')
+  }
+  const res = await fetch(`${brokerUrl}/api/run-broker/harness/workflows/${encodeURIComponent(options.workflowId)}`, {
+    method: 'POST',
+    headers: buildRunBrokerHeaders({
+      runBrokerKey: config.runBrokerKey,
+      ownerOpenId,
+      agentId: options.agentId,
+    }),
+    body: JSON.stringify({
+      profile_name: options.profile,
+      session_id: options.sessionId,
+      action: 'resume_credential',
+      credential_kind: options.credentialKind,
+      connector_id: connectorId,
+      credential_verified: true,
+    }),
+  })
+  if (!res.ok) throw new Error(`Harness credential resume failed (${res.status})`)
+}
+
 export async function runBrokerSessionCommand(options: {
   socket: Socket
   profile: string
@@ -644,7 +956,7 @@ export async function runBrokerSessionCommand(options: {
 }): Promise<BrokerSessionCommandResult> {
   const brokerUrl = config.runBrokerUrl
   if (!brokerUrl) throw new Error('HERMES_RUN_BROKER_URL is required when HERMES_WEBUI_RUN_BROKER=1')
-  const ownerOpenId = (options.socket.data?.user?.openid as string | undefined)?.trim()
+  const ownerOpenId = String(options.socket.data?.user?.openid || options.socket.data?.user?.id || '').trim()
   if (!ownerOpenId) throw new Error('owner identity is required for session command')
   const res = await fetch(`${brokerUrl}/api/run-broker/session-commands`, {
     method: 'POST',
@@ -680,7 +992,7 @@ export async function runBrokerGoalEvaluate(options: {
 }): Promise<BrokerGoalEvaluateResult> {
   const brokerUrl = config.runBrokerUrl
   if (!brokerUrl) throw new Error('HERMES_RUN_BROKER_URL is required when HERMES_WEBUI_RUN_BROKER=1')
-  const ownerOpenId = (options.socket.data?.user?.openid as string | undefined)?.trim()
+  const ownerOpenId = String(options.socket.data?.user?.openid || options.socket.data?.user?.id || '').trim()
   if (!ownerOpenId) throw new Error('owner identity is required for goal evaluation')
   const res = await fetch(`${brokerUrl}/api/run-broker/goals/evaluate`, {
     method: 'POST',
@@ -721,6 +1033,12 @@ export type HandleBrokerRunContext = {
   abandonRun: (sessionId: string, state: SessionState, runMarker: string | undefined) => boolean
   dequeueNextQueuedRun: (socket: Socket, sessionId: string, state: SessionState) => boolean
   buildInput: (input: string | ContentBlock[], profile: string) => Promise<any>
+  publishRunAssistantMedia?: (
+    sessionId: string,
+    runMarker: string | undefined,
+    profile: string,
+    fallbackContent: string,
+  ) => string | undefined
 }
 
 export function appendBrokerFailureMessage(
@@ -758,7 +1076,7 @@ export function appendBrokerFailureMessage(
 
 export async function handleBrokerRun(
   socket: Socket,
-  data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; replay_run_id?: string },
+  data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; project_id?: string; execution_engine?: 'hermes' | 'harness'; replay_run_id?: string },
   profile: string,
   runMarker: string | undefined,
   emit: (event: string, payload: any) => void,
@@ -870,10 +1188,11 @@ export async function handleBrokerRun(
     })
   }
   const brokerUrl = config.runBrokerUrl
-  const ownerOpenId = (socket.data?.user?.openid as string | undefined)?.trim()
+  const ownerOpenId = String(socket.data?.user?.openid || socket.data?.user?.id || '').trim()
   const agentId = (socket.data?.agentId as string | undefined)?.trim()
   let workspace: string | null = null
   let sessionWorkspace: string | null = null
+  let projectIdForRun: string | undefined
   let workspaceDiffRunId = runMarker || ''
   let workspaceDiffCompleted = false
   let workspaceDiffCheckpoint: WorkspaceRunCheckpointHandle | null = null
@@ -959,6 +1278,23 @@ export async function handleBrokerRun(
       rejectReplay()
       return
     }
+    let projectBinding
+    try {
+      projectBinding = resolveProjectRunBinding(sessionRow, data.project_id, data.workspace || null)
+    } catch (err) {
+      if (session_id && state) context.abandonRun(session_id, state, runMarker)
+      socket.emit('run.rejected', {
+        event: 'run.rejected',
+        session_id,
+        error: err instanceof Error ? err.message : 'Invalid Project binding',
+      })
+      return
+    }
+    projectIdForRun = projectBinding.projectId
+    if (!isReplay && session_id && sessionRow && projectBinding.persistProjectId) {
+      updateSession(session_id, { project_id: projectIdForRun || null, project_bound: false })
+      sessionRow = { ...sessionRow, project_id: projectIdForRun || null }
+    }
     // The STORED binding always wins; `data.workspace` can only ever bind a session
     // that has none. Gating the payload on message_count looks tempting here and is
     // wrong: the controller persists the first user message BEFORE dispatch
@@ -966,7 +1302,7 @@ export async function handleBrokerRun(
     // brand-new session's first turn the row already reads message_count=1 and the
     // freshly picked workspace — which lives only in this payload — would be dropped.
     sessionWorkspace = (!isReplay && session_id)
-      ? await normalizeHermesSessionWorkspace(profile, sessionRow?.workspace || data.workspace)
+      ? await normalizeHermesSessionWorkspace(profile, sessionRow?.workspace || projectBinding.workspace)
       : null
     workspace = (!isReplay && session_id)
       ? await ensureHermesRunWorkspace(profile, sessionWorkspace)
@@ -977,7 +1313,9 @@ export async function handleBrokerRun(
     if (!isReplay && session_id && sessionRow && sessionRow.workspace !== sessionWorkspace) {
       updateSession(session_id, { workspace: sessionWorkspace })
     }
-    workspaceDiffCheckpoint = session_id && workspace
+    // Harness owns an isolated per-workflow clone. Scanning the profile workspace
+    // here would attribute files from unrelated historical runs to this answer.
+    workspaceDiffCheckpoint = session_id && workspace && sessionRow?.execution_engine !== 'harness'
       ? await startWorkspaceRunCheckpoint({ sessionId: session_id, workspace })
       : null
     if (abandonStaleRun()) return
@@ -997,11 +1335,12 @@ export async function handleBrokerRun(
       ownerOpenId,
       agentId,
       expertId: expert_id,
+      projectId: projectIdForRun,
       sessionId: session_id,
       model: runModel,
       provider: runProvider,
       instructions,
-      workspace: sessionWorkspace,
+      workspace: projectIdForRun ? null : sessionWorkspace,
       workspacePath: workspace,
       messages: state?.messages || [],
       profileDir: getProfileDir(profile),
@@ -1014,7 +1353,13 @@ export async function handleBrokerRun(
     const res = isReplay
       ? await fetch(`${brokerUrl}/api/run-broker/credentials/replay/${encodeURIComponent(replayRunId)}`, {
         method: 'POST',
-        headers: buildRunBrokerHeaders({ runBrokerKey: config.runBrokerKey, ownerOpenId, agentId, expertId: expert_id }),
+        headers: buildRunBrokerHeaders({
+          runBrokerKey: config.runBrokerKey,
+          ownerOpenId,
+          agentId,
+          expertId: expert_id,
+          executionEngine: sessionRow?.execution_engine,
+        }),
         signal: abortController.signal,
       })
       : await fetch(`${brokerUrl}/api/run-broker/runs`, {
@@ -1024,6 +1369,7 @@ export async function handleBrokerRun(
           ownerOpenId,
           agentId,
           expertId: expert_id,
+          executionEngine: sessionRow?.execution_engine,
         }),
         body: JSON.stringify(request),
         signal: abortController.signal,
@@ -1038,6 +1384,35 @@ export async function handleBrokerRun(
       emit('run.failed', { event: 'run.failed', error, queue_remaining: queueLen })
       dequeueNext()
       return
+    }
+    if (!isReplay && session_id && projectIdForRun) {
+      try {
+        const receiptResponse = await fetch(
+          `${brokerUrl}/api/run-broker/sessions/${encodeURIComponent(session_id)}/project`,
+          {
+            headers: buildRunBrokerHeaders({
+              runBrokerKey: config.runBrokerKey,
+              ownerOpenId,
+              agentId,
+              expertId: expert_id,
+              executionEngine: sessionRow?.execution_engine,
+            }),
+            signal: abortController.signal,
+          },
+        )
+        if (!receiptResponse.ok) throw new Error(`receipt ${receiptResponse.status}`)
+        const payload = await receiptResponse.json() as { receipt?: Record<string, unknown> }
+        const receipt = payload.receipt || {}
+        updateSession(session_id, {
+          project_id: typeof receipt.project_id === 'string' ? receipt.project_id : null,
+          project_name: typeof receipt.project_name === 'string' ? receipt.project_name : null,
+          project_bound: true,
+          workspace: typeof receipt.workspace === 'string' ? receipt.workspace : null,
+        })
+        emit('project.bound', { event: 'project.bound', receipt })
+      } catch (err) {
+        logger.warn({ err, sessionId: session_id }, '[chat-run-socket] project receipt read-back failed')
+      }
     }
     if (!res.body) {
       const error = 'Run broker response stream missing'
@@ -1082,9 +1457,10 @@ export async function handleBrokerRun(
             }
             const now = Math.floor(Date.now() / 1000)
 
-            if (mapped.event === 'auth.required') {
+            if (mapped.event === 'auth.required' && !mapped.payload.workflow_id) {
               mapped.payload = context.recordParkedCredentialRun(currentState, session_id, mapped.payload)
             }
+            rememberBrokerWorkflowEvent(currentState, mapped.event, mapped.payload)
 
             if (mapped.event === 'message.delta' && mapped.persistAssistantContent) {
               const deltaText = mapped.payload.delta || ''
@@ -1250,7 +1626,11 @@ export async function handleBrokerRun(
           ))
           if (finalMessage && finalMessage.finish_reason == null) finalMessage.finish_reason = 'stop'
         }
-        const output = mapped.payload.output || finalText
+        const rawOutput = String(mapped.payload.output || finalText || '')
+        const parsedContent = mapped.event === 'run.completed' && session_id
+          ? context.publishRunAssistantMedia?.(session_id, runMarker, profile, rawOutput)
+          : undefined
+        const output = parsedContent ?? rawOutput
         await emitWorkspaceDiffCompleted()
         if (mapped.event === 'run.failed') {
           appendFailure(mapped.payload.error || output || 'Run broker failed')
@@ -1264,6 +1644,7 @@ export async function handleBrokerRun(
         emit(mapped.event, {
           ...mapped.payload,
           ...(mapped.event === 'run.completed' ? { source_refs: clientSourceRefs } : {}),
+          ...(parsedContent !== undefined ? { parsed_content: parsedContent } : {}),
           output,
           queue_remaining: queueLen,
         })
