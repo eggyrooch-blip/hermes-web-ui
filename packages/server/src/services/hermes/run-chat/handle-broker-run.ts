@@ -6,6 +6,14 @@ import yaml from 'js-yaml'
 import { getSystemPrompt } from '../../../lib/llm-prompt'
 import { getSession, getSessionIncarnation, getSessionRowId, updateSession } from '../../../db/hermes/session-store'
 import { config } from '../../../config'
+import {
+  interruptUnfinishedSubagentSnapshots,
+  isReplayableSubagentEvent,
+  replayableSubagentEvents,
+  RUN_TERMINAL_EVENTS,
+  subagentReplayKey,
+  subagentSnapshotSupersedes,
+} from './subagent-replay'
 import { logger } from '../../logger'
 import { getProfileDir } from '../hermes-profile'
 import { listSkillCredentialStatuses } from '../skill-credentials'
@@ -15,6 +23,7 @@ import type { ContentBlock, ResponseRunState, SessionMessage, SessionState } fro
 import type { SourceRef } from '../../../db/hermes/session-store'
 import { authorizeSourceRefs, normalizeSourceRefs } from '../source-refs'
 import { ensureHermesRunWorkspace, normalizeHermesSessionWorkspace } from './workspace'
+import { resolveRunReasoningEffort } from './reasoning-effort'
 import { completeWorkspaceRunCheckpoint, discardWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint, type WorkspaceRunCheckpointHandle } from './workspace-diff-tracker'
 
 export { readSseFrames } from './sse-utils'
@@ -72,6 +81,13 @@ type BuildRunBrokerRequestOptions = {
    *  expert persona overlay for this run only. */
   expertId?: string
   projectId?: string
+  /** Per-session reasoning-effort override (core's parse_reasoning_effort
+   *  vocabulary). Rides in `metadata`, NOT at the request top level: metadata
+   *  already carries model / provider / expert_id, reaches the broker as
+   *  `event.raw_event.metadata`, and is what the multitenancy layer reads —
+   *  the broker's frozen RunRequest would reject an unknown top-level field.
+   *  The key is absent entirely when unset, so the profile default applies. */
+  reasoningEffort?: string
   instructions?: string
   workspace?: string | null
   workspacePath?: string | null
@@ -131,6 +147,7 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
     agentId,
     expertId,
     projectId,
+    reasoningEffort,
     instructions,
     workspace,
     workspacePath = workspace,
@@ -149,6 +166,7 @@ export async function buildRunBrokerRequest(options: BuildRunBrokerRequestOption
   if (model) metadata.model = model
   if (provider) metadata.provider = provider
   if (expertId) metadata.expert_id = expertId
+  if (reasoningEffort) metadata.reasoning_effort = reasoningEffort
   if (sessionId) metadata.conversation = `webui:${sessionId}`
   metadata.instructions = [
     getSystemPrompt(),
@@ -595,6 +613,57 @@ export function mapRunBrokerFrameForChat(
     }
   }
 
+  // TRAE-style inline authorization: a tool needs the user to grant a CLI
+  // credential mid-run. The broker owns the whole handshake (it is the only
+  // thing that can mint a verification URL); the frames it streams carry no
+  // token, no open_id, no profile and no URL — only an opaque authorization_id
+  // plus the service and scopes we are allowed to show. This is deliberately
+  // NOT the `auth.required` / `credential.replay` path: nothing here resurrects
+  // a parked run.
+  if (brokerKind === 'authorization_required' || brokerKind === 'authorization.required') {
+    const authorizationId = parsed?.authorization_id || payload.authorization_id
+    if (!authorizationId) return { type: 'ignore' }
+    const scopes = Array.isArray(parsed?.scopes)
+      ? parsed.scopes
+      : (Array.isArray(payload.scopes) ? payload.scopes : [])
+    return {
+      type: 'emit',
+      event: 'authorization.required',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'authorization.required',
+        run_id: runId,
+        response_id: responseId,
+        authorization_id: String(authorizationId),
+        service: String(parsed?.service || payload.service || ''),
+        scopes: scopes.map((scope: unknown) => String(scope)),
+        expires_at: Number(parsed?.expires_at ?? payload.expires_at ?? 0) || 0,
+        state: String(parsed?.state || payload.state || 'pending'),
+      },
+    }
+  }
+
+  if (brokerKind === 'authorization_resolved' || brokerKind === 'authorization.resolved') {
+    const authorizationId = parsed?.authorization_id || payload.authorization_id
+    if (!authorizationId) return { type: 'ignore' }
+    return {
+      type: 'emit',
+      event: 'authorization.resolved',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: 'authorization.resolved',
+        run_id: runId,
+        response_id: responseId,
+        authorization_id: String(authorizationId),
+        service: String(parsed?.service || payload.service || ''),
+        state: String(parsed?.state || payload.state || ''),
+        reason: String(parsed?.reason || payload.reason || ''),
+      },
+    }
+  }
+
   if (brokerKind === 'approval_required' || brokerKind === 'approval.requested') {
     const approvalId = parsed?.approval_id || payload.approval_id
     if (!approvalId) return { type: 'ignore' }
@@ -765,6 +834,67 @@ export function mapRunBrokerFrameForChat(
     }
   }
 
+  // Subagent telemetry. The broker (MT) re-emits core's own event names
+  // (`subagent.start|spawn_requested|tool|progress|complete|text|thinking`)
+  // as SSE kinds, so the chat UI can render the same `delegate_task` card it
+  // already renders in bridge mode. The client store matches on the event name
+  // and field names only (`stores/hermes/chat.ts` handleSubagentEvent), so the
+  // key set here must stay identical to the bridge payload built in
+  // `handle-bridge-run.ts` — otherwise the two modes render differently.
+  if (typeof brokerKind === 'string' && brokerKind.startsWith('subagent.')) {
+    const subagentId = parsed?.subagent_id ?? payload.subagent_id
+    const toolName = payload.tool_name ?? parsed?.name ?? payload.tool ?? payload.name
+    const text = parsed?.text ?? payload.text ?? ''
+    const summary = parsed?.summary ?? payload.summary
+    const durationSeconds = parsed?.duration_seconds ?? payload.duration_seconds
+    return {
+      type: 'emit',
+      event: brokerKind,
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: {
+        event: brokerKind,
+        run_id: runId,
+        response_id: responseId,
+        subagent_id: subagentId,
+        parent_id: parsed?.parent_id ?? payload.parent_id,
+        depth: parsed?.depth ?? payload.depth,
+        task_index: parsed?.task_index ?? payload.task_index,
+        task_count: parsed?.task_count ?? payload.task_count,
+        goal: parsed?.goal ?? payload.goal,
+        model: parsed?.model ?? payload.model,
+        toolsets: parsed?.toolsets ?? payload.toolsets,
+        tool_count: parsed?.tool_count ?? payload.tool_count,
+        child_session_id: parsed?.child_session_id ?? payload.child_session_id,
+        delegation_id: parsed?.delegation_id ?? payload.delegation_id,
+        tool: toolName,
+        name: toolName,
+        preview: text || summary || payload.tool_preview || parsed?.preview || payload.preview || '',
+        text,
+        status: parsed?.status ?? payload.status,
+        summary,
+        duration: durationSeconds,
+        duration_seconds: durationSeconds,
+        input_tokens: parsed?.input_tokens ?? payload.input_tokens,
+        output_tokens: parsed?.output_tokens ?? payload.output_tokens,
+        reasoning_tokens: parsed?.reasoning_tokens ?? payload.reasoning_tokens,
+        api_calls: parsed?.api_calls ?? payload.api_calls,
+        cost_usd: parsed?.cost_usd ?? payload.cost_usd,
+        files_read: parsed?.files_read ?? payload.files_read,
+        files_written: parsed?.files_written ?? payload.files_written,
+        output_tail: parsed?.output_tail ?? payload.output_tail,
+        // The broker clamps `text`, `args` and `summary` to keep one NDJSON
+        // line readable by the parent. Without these markers a clipped summary
+        // renders as if it were the whole result, so the card cannot tell the
+        // user that something was cut.
+        text_truncated: parsed?.text_truncated ?? payload.text_truncated,
+        args_truncated: parsed?.args_truncated ?? payload.args_truncated,
+        args_bytes: parsed?.args_bytes ?? payload.args_bytes,
+        summary_truncated: parsed?.summary_truncated ?? payload.summary_truncated,
+      },
+    }
+  }
+
   return { type: 'ignore' }
 }
 
@@ -773,6 +903,48 @@ export function rememberBrokerWorkflowEvent(
   event: string,
   data: any,
 ): void {
+  // Subagent cards must survive an F5 mid-delegation, and the in-run reconnect
+  // path needs them re-emitted (see subagent-replay.ts). Keep exactly one frame
+  // per card: newest wins, except that a completed card is terminal — a late
+  // `subagent.tool` must not drag it back to "running". Frames with no client
+  // listener (`text` / `thinking` / `spawn_requested`) stream live but are not
+  // remembered, so they can never displace a completion either.
+  //
+  // The update happens IN PLACE. Deleting and re-pushing would reorder cards
+  // (start A, start B, complete A replays as B then A) and the client renders
+  // replayed cards in the order it receives them.
+  if (event.startsWith('subagent.')) {
+    if (!isReplayableSubagentEvent(event)) return
+    const key = subagentReplayKey(data)
+    const index = state.events.findIndex(item => (
+      String(item.event || '').startsWith('subagent.') && subagentReplayKey(item.data) === key
+    ))
+    if (index < 0) {
+      // First frame for this card owns its position and its timestamp; the
+      // client uses created_at so a replayed card keeps its original place in
+      // the transcript instead of jumping to "now".
+      state.events.push({ event, data: { ...data, created_at: data?.created_at ?? Date.now() } })
+      return
+    }
+    const previous = state.events[index]
+    if (!subagentSnapshotSupersedes(String(previous.event || ''), event)) return
+    state.events[index] = {
+      event,
+      data: { ...data, created_at: previous.data?.created_at ?? data?.created_at ?? Date.now() },
+    }
+    return
+  }
+
+  // The parent run ended. Any card still short of its own completion was cut
+  // off with it, so store it as terminal now — otherwise every later resume
+  // replays a card that will never finish as "running".
+  if (RUN_TERMINAL_EVENTS.has(event)) {
+    interruptUnfinishedSubagentSnapshots(
+      state.events,
+      String(data?.run_id || data?.response_id || ''),
+    )
+    return
+  }
   if (event === 'workflow.stage') {
     state.events = state.events.filter(item => item.event !== event)
     state.events.push({ event, data })
@@ -805,6 +977,24 @@ export function rememberBrokerWorkflowEvent(
     const workflowId = String(data?.workflow_id || '')
     state.events = state.events.filter(item => (
       item.event !== 'auth.required' || String(item.data?.workflow_id || '') !== workflowId
+    ))
+    return
+  }
+  // Inline authorization must survive an F5 — clarify famously does not, because
+  // it has no branch here. Keyed by authorization_id so two concurrent requests
+  // in one session do not clobber each other.
+  if (event === 'authorization.required') {
+    const authorizationId = String(data?.authorization_id || '')
+    state.events = state.events.filter(item => (
+      item.event !== event || String(item.data?.authorization_id || '') !== authorizationId
+    ))
+    state.events.push({ event, data })
+    return
+  }
+  if (event === 'authorization.resolved') {
+    const authorizationId = String(data?.authorization_id || '')
+    state.events = state.events.filter(item => (
+      item.event !== 'authorization.required' || String(item.data?.authorization_id || '') !== authorizationId
     ))
   }
 }
@@ -899,6 +1089,66 @@ export async function respondToBrokerApproval(options: {
     const text = await res.text().catch(() => '')
     throw new Error(`Run broker approval ${res.status}: ${text}`)
   }
+}
+
+export type BrokerAuthorizationAction = 'authorize' | 'confirm' | 'cancel'
+
+export interface BrokerAuthorizationResult {
+  ok?: boolean
+  authorization_id?: string
+  /** Only ever produced by the broker — the WebUI never builds an auth URL. */
+  verification_uri?: string
+  state?: string
+  reason?: string
+  [key: string]: unknown
+}
+
+/**
+ * Drive one step of the inline authorization handshake on the broker.
+ *
+ * `authorize` asks for the verification URL, `confirm` polls whether the user
+ * finished, `cancel` withdraws the request. Deliberately mirrors
+ * respondToBrokerClarify (same owner-open-id requirement, same body shape); it
+ * shares nothing with the credential.replay run-resurrection path.
+ *
+ * A 404/409 means the request is gone/consumed/expired: it throws so the caller
+ * can surface a terminal failure rather than spinning a retry loop. The broker's
+ * response body is intentionally NOT folded into the error — it can echo request
+ * detail, and this string reaches the browser.
+ */
+export async function respondToBrokerAuthorization(options: {
+  socket: Socket
+  profile: string
+  agentId?: string
+  sessionId: string
+  authorizationId: string
+  action: BrokerAuthorizationAction
+}): Promise<BrokerAuthorizationResult> {
+  const brokerUrl = config.runBrokerUrl
+  if (!brokerUrl) throw new Error('HERMES_RUN_BROKER_URL is required when HERMES_WEBUI_RUN_BROKER=1')
+  const ownerOpenId = String(options.socket.data?.user?.openid || options.socket.data?.user?.id || '').trim()
+  if (!ownerOpenId) throw new Error('owner identity is required for authorization response')
+  const res = await fetch(
+    `${brokerUrl}/api/run-broker/authorization/${encodeURIComponent(options.authorizationId)}/${options.action}`,
+    {
+      method: 'POST',
+      headers: buildRunBrokerHeaders({
+        runBrokerKey: config.runBrokerKey,
+        ownerOpenId,
+        agentId: options.agentId,
+      }),
+      body: JSON.stringify({
+        profile_name: options.profile,
+        ...(options.agentId ? { agent_id: options.agentId } : {}),
+        session_id: options.sessionId,
+      }),
+    },
+  )
+  if (!res.ok) {
+    throw new Error(`Run broker authorization ${res.status}`)
+  }
+  const body = await res.json().catch(() => ({}))
+  return (body && typeof body === 'object' ? body : {}) as BrokerAuthorizationResult
 }
 
 export async function resumeBrokerHarnessCredential(options: {
@@ -1076,7 +1326,7 @@ export function appendBrokerFailureMessage(
 
 export async function handleBrokerRun(
   socket: Socket,
-  data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; project_id?: string; execution_engine?: 'hermes' | 'harness'; replay_run_id?: string },
+  data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; project_id?: string; execution_engine?: 'hermes' | 'harness'; replay_run_id?: string; reasoning_effort?: string },
   profile: string,
   runMarker: string | undefined,
   emit: (event: string, payload: any) => void,
@@ -1090,7 +1340,7 @@ export async function handleBrokerRun(
   const abortController = new AbortController()
   if (state) {
     state.isWorking = true
-    state.events = []
+    state.events = replayableSubagentEvents(state.events, { interrupted: true })
     state.activeRunMarker = runMarker
     state.runId = runMarker
     state.abortController = abortController
@@ -1113,6 +1363,7 @@ export async function handleBrokerRun(
   const finishRun = async (info: { event: string; run_id?: string; final_response?: string }) => {
     if (!identityError && abandonStaleRunSafely()) return false
     if (!session_id || !state) return true
+    interruptUnfinishedSubagentSnapshots(state.events, info.run_id || state.runId)
     const identityFailure = () => identityError instanceof Error
       ? identityError.message
       : identityError == null ? undefined : String(identityError)
@@ -1339,6 +1590,9 @@ export async function handleBrokerRun(
       sessionId: session_id,
       model: runModel,
       provider: runProvider,
+      // Shared with the bridge path; '' (cleared) beats the row, and
+      // buildRunBrokerRequest drops the key when the result is empty.
+      reasoningEffort: resolveRunReasoningEffort(data.reasoning_effort, sessionRow?.reasoning_effort),
       instructions,
       workspace: projectIdForRun ? null : sessionWorkspace,
       workspacePath: workspace,
@@ -1580,6 +1834,9 @@ export async function handleBrokerRun(
         if (session_id && runId) {
           const currentState = isCurrentRun() ? state : undefined
           if (currentState) {
+            // Settle the run's subagent cards before anything else can resume:
+            // a card that never reported completion was cut off with the run.
+            rememberBrokerWorkflowEvent(currentState, mapped.event, mapped.payload)
             currentState.runId = runId
             context.getResponseRunState(currentState, runMarker).responseId = runId
             for (const message of currentState.messages) {

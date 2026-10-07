@@ -15,6 +15,9 @@ type UsageTokenMessage = {
   role?: string
   content?: unknown
   tool_calls?: unknown
+  /** DeepSeek/Kimi thinking-mode payload echoed back on subsequent turns. */
+  reasoning_content?: unknown
+  reasoning?: unknown
 }
 
 function contentToUsageText(content: unknown): string {
@@ -36,7 +39,18 @@ export function estimateUsageTokensFromMessages(messages: UsageTokenMessage[]): 
     .reduce((sum, m) => sum + countTokens(contentToUsageText(m.content)), 0)
   const outputTokens = messages
     .filter(m => m.role === 'assistant' || m.role === 'tool')
-    .reduce((sum, m) => sum + countTokens(contentToUsageText(m.content)) + countTokens(String(m.tool_calls || '')), 0)
+    .reduce((sum, m) => {
+      // reasoning_content is re-sent to providers that require thinking-mode
+      // echo-back (DeepSeek/Kimi). Omitting it undercounts full context by
+      // hundreds of K tokens and skips compression until the upstream 400.
+      const reasoning = m.reasoning_content ?? m.reasoning
+      return (
+        sum
+        + countTokens(contentToUsageText(m.content))
+        + countTokens(String(m.tool_calls || ''))
+        + countTokens(String(reasoning || ''))
+      )
+    }, 0)
   return { inputTokens, outputTokens }
 }
 

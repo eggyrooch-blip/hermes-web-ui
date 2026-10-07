@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { NButton, NCheckbox, NCheckboxGroup, NModal, NInput, useMessage, useDialog } from 'naive-ui'
 import type { AvailableModelGroup } from '@/api/hermes/system'
 import { useModelsStore } from '@/stores/hermes/models'
 import { useAppStore } from '@/stores/hermes/app'
 import { useChatStore } from '@/stores/hermes/chat'
+import { getModelsPageProfile } from '@/api/client'
 import { checkCopilotToken, disableCopilot } from '@/api/hermes/copilot-auth'
 import { useI18n } from 'vue-i18n'
 
@@ -16,6 +17,22 @@ const appStore = useAppStore()
 const chatStore = useChatStore()
 const message = useMessage()
 const dialog = useDialog()
+
+// 删除确认框挂在 App 根部的 NDialogProvider 上，不随这张卡片卸载而消失：在 P2 打开
+// 确认框、退回聊天页再点「确定」，请求 header 已经变回 active profile，删掉的是另一个
+// Profile 的同名 provider。所以要记住实例、卸载时销毁，并在回调里复核身份。
+let deleteDialog: { destroy: () => void } | null = null
+let cardAlive = true
+
+function closeDeleteDialog() {
+  deleteDialog?.destroy()
+  deleteDialog = null
+}
+
+onUnmounted(() => {
+  cardAlive = false
+  closeDeleteDialog()
+})
 
 const isCustom = computed(() => !props.provider.builtin && props.provider.provider.startsWith('custom:'))
 const isCopilot = computed(() => props.provider.provider === 'copilot')
@@ -118,14 +135,22 @@ async function handleDelete() {
       else if (status.source === 'apps-json') copilotMsg = t('models.copilotDeleteHintAppsJson')
     } catch { /* ignore — fall back to generic confirm copy */ }
   }
-  dialog.warning({
+  // 发起删除时页面看的是哪个 Profile —— 确认时必须还是它。
+  const requestProfile = getModelsPageProfile()
+  closeDeleteDialog()
+  deleteDialog = dialog.warning({
     title: t('models.deleteProvider'),
     content: isCopilot.value && copilotMsg
       ? `${t('models.deleteConfirm', { name: displayName.value })}\n\n${copilotMsg}`
       : t('models.deleteConfirm', { name: displayName.value }),
     positiveText: t('common.delete'),
     negativeText: t('common.cancel'),
+    onAfterLeave: () => { deleteDialog = null },
     onPositiveClick: async () => {
+      if (!cardAlive || getModelsPageProfile() !== requestProfile) {
+        closeDeleteDialog()
+        return
+      }
       deleting.value = true
       try {
         if (isCopilot.value) {

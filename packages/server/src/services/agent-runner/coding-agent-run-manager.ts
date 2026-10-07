@@ -1703,6 +1703,25 @@ export class CodingAgentRunManager {
       ...(payload || { event }),
       ...(queueRemaining > 0 ? { queue_remaining: queueRemaining } : {}),
     }, completionIdentity)
+    // The end marker is keyed only by session id, so it has to be fenced the same
+    // way the rest of the terminal path is. `queueRemaining` was read before the
+    // workspace-diff await; re-read the queue, and confirm this run still owns both
+    // the turn and the session generation, so a late completion cannot mark a next
+    // turn — or a deleted-and-recreated session of the same id — as finished.
+    // Checked before markChatRunCompleted, which clears the turn marker on success.
+    const ownsTerminalWrite = run.state.queue.length === 0
+      && this.ownsExternalRunIdentity(run, completionIdentity)
+      && this.ownsSessionGeneration(run)
+    if (ownsTerminalWrite) {
+      try {
+        updateSession(run.launch.sessionId, {
+          ended_at: nowSeconds(),
+          end_reason: event === 'run.failed' ? 'error' : 'complete',
+        })
+      } catch (err) {
+        logger.warn({ err, runId: run.id, sessionId: run.launch.sessionId }, '[coding-agent-run] failed to write coding-agent session end marker')
+      }
+    }
     const marked = this.markChatRunCompleted(run.launch.sessionId, event, completionIdentity)
     if (!marked && this.ownsExternalRunIdentity(run, completionIdentity)) {
       run.state.isWorking = false

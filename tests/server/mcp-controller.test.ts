@@ -17,7 +17,7 @@ const profileMock = vi.hoisted(() => ({
 }))
 
 vi.mock('../../packages/server/src/services/hermes/agent-bridge/client', () => ({
-  AgentBridgeClient: vi.fn().mockImplementation(() => ({
+  AgentBridgeClient: vi.fn().mockImplementation(function () { return {
     mcpList: mcpListMock,
     mcpAdd: mcpAddMock,
     mcpUpdate: mcpUpdateMock,
@@ -25,7 +25,7 @@ vi.mock('../../packages/server/src/services/hermes/agent-bridge/client', () => (
     mcpTest: mcpTestMock,
     mcpTools: mcpToolsMock,
     mcpReload: mcpReloadMock,
-  })),
+  } }),
 }))
 
 vi.mock('../../packages/server/src/services/logger', () => ({

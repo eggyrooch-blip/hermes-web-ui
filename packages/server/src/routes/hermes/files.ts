@@ -1,71 +1,17 @@
 import Router from '@koa/router'
 import type { Context } from 'koa'
-import { mkdir } from 'fs/promises'
-import { join, normalize, resolve } from 'path'
-import {
-  createFileProvider,
-  LocalFileProvider,
-  resolveHermesPath,
-  MAX_EDIT_SIZE,
-} from '../../services/hermes/file-provider'
+import { MAX_EDIT_SIZE } from '../../services/hermes/file-provider'
 import { requireSuperAdminOrChatPlane } from '../../middleware/user-auth'
-import { getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
 import { MultipartParseError, parseMultipartBoundary, parseMultipartFilename, splitMultipart } from '../../lib/multipart'
+import {
+  assertWorkspaceRealPath,
+  createRequestFileProvider,
+  getFileRootDir,
+  isSensitiveFilePath as isSensitivePath,
+  resolveFilePath,
+} from '../../services/hermes/file-scope'
 import { isNearestExistingRealPathWithin } from '../../services/hermes/hermes-path'
-
-function requestedProfile(ctx: any): string | undefined {
-  return ctx.state?.profile?.name
-}
-
-// Fork's chat-plane isolation predicate. The upstream `isSensitivePath` only
-// blocks `.env`/`auth.json` basenames; the fork additionally blocks `config.yaml`
-// and any path containing a credentials/tokens/.ssh/feishu_uat segment so a
-// Feishu user can never reach root/profile config or materialized secrets even
-// inside their own workspace. Kept local because we may only edit this file.
-const SENSITIVE_FILE_NAMES = new Set(['.env', 'auth.json', 'config.yaml'])
-const SENSITIVE_PATH_PARTS = new Set(['credentials', 'tokens', '.ssh', 'feishu_uat'])
-
-function isSensitivePath(relativePath: string): boolean {
-  const parts = relativePath.replace(/\\/g, '/').split('/').filter(Boolean)
-  const fileName = parts[parts.length - 1] || ''
-  return SENSITIVE_FILE_NAMES.has(fileName) || parts.some(part => SENSITIVE_PATH_PARTS.has(part))
-}
-
-// Chat-plane requests are scoped to the bound profile's `workspace` subdir so a
-// Feishu user can never read/write the profile home, root config, sibling
-// profiles, or materialized credentials. Admin/JWT requests keep the upstream
-// profile-home behavior (rootDir undefined → resolve via resolveHermesPath).
-async function getFileRootDir(ctx: Context): Promise<string | undefined> {
-  if (!isChatPlaneRequest(ctx)) return undefined
-  const workspaceDir = join(getRequestProfileDir(ctx), 'workspace')
-  await mkdir(workspaceDir, { recursive: true })
-  return workspaceDir
-}
-
-// Resolve a caller-supplied relative path. When a chat-plane rootDir is in
-// effect the path is confined to that workspace (traversal-checked); otherwise
-// fall back to the upstream profile-home resolution.
-function resolveFilePath(ctx: any, relativePath: string, rootDir?: string): string {
-  if (rootDir) {
-    if (!relativePath || relativePath === '.' || relativePath === '/') {
-      return rootDir
-    }
-    const normalized = normalize(relativePath).replace(/\\/g, '/')
-    if (normalized.startsWith('..') || normalized.includes('/../') || normalized.startsWith('/')) {
-      throw Object.assign(new Error('Invalid file path'), { code: 'invalid_path' })
-    }
-    const resolved = resolve(rootDir, normalized)
-    if (resolved !== rootDir && !resolved.startsWith(rootDir + '/')) {
-      throw Object.assign(new Error('Path traversal detected'), { code: 'invalid_path' })
-    }
-    return resolved
-  }
-  return resolveHermesPath(relativePath, requestedProfile(ctx))
-}
-
-async function createRequestFileProvider(ctx: any, rootDir?: string) {
-  return rootDir ? new LocalFileProvider(rootDir) : createFileProvider(requestedProfile(ctx))
-}
+import { previewProfileFile } from '../../controllers/hermes/file-preview'
 
 function withAbsolutePath<T extends { path: string }>(ctx: any, entry: T, rootDir?: string): T & { absolutePath: string } {
   return { ...entry, absolutePath: resolveFilePath(ctx, entry.path, rootDir) }
@@ -76,12 +22,6 @@ function denySensitivePath(ctx: Context, relativePath: string, action = 'access'
   ctx.status = 403
   ctx.body = { error: `Cannot ${action} sensitive file`, code: 'permission_denied' }
   return true
-}
-
-async function assertWorkspaceRealPath(absPath: string, rootDir?: string): Promise<void> {
-  if (!rootDir) return
-  if (await isNearestExistingRealPathWithin(absPath, rootDir)) return
-  throw Object.assign(new Error('Path escapes workspace'), { code: 'permission_denied' })
 }
 
 async function filterWorkspaceEntries<T extends { path: string; name: string }>(
@@ -186,6 +126,17 @@ fileRoutes.get('/api/hermes/files/read', requireSuperAdminOrChatPlane, async (ct
   } catch (err: any) {
     handleError(ctx, err)
   }
+})
+
+// GET /api/hermes/files/preview?path=
+// Binary-safe sibling of /read for the formats the panel renders with a
+// dedicated viewer (pdf / docx / pptx / xlsx). Same isolation as every other
+// files route; the extension allowlist and per-format size caps live in the
+// controller.
+fileRoutes.get('/api/hermes/files/preview', requireSuperAdminOrChatPlane, async (ctx) => {
+  const relativePath = (ctx.query.path as string) || ''
+  if (relativePath && denySensitivePath(ctx, relativePath, 'preview')) return
+  await previewProfileFile(ctx)
 })
 
 // PUT /api/hermes/files/write  body: { path, content }

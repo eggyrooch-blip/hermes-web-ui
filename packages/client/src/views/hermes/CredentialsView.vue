@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { NAlert, NButton, NFormItem, NInput, NModal, NSelect, NSpin, useMessage } from 'naive-ui'
 import { completeSkillCredentialAuth, fetchSkillCredentials, pollFeishuUatSession, startSkillCredentialAuth } from '@/api/skillCredentials'
-import { revokeGithubToken, submitGithubToken, submitGitlabToken } from '@/api/skillCredentials'
+import { revokeFigmaCredential, revokeGithubToken, submitGithubToken, submitGitlabToken } from '@/api/skillCredentials'
 import type { SkillCredentialEntry, SkillCredentialsResponse } from '@/api/skillCredentials'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { readCachedConnectorStatus, writeCachedConnectorStatus } from '@/utils/connector-status-cache'
@@ -21,6 +21,7 @@ const props = withDefaults(defineProps<{
   embedded: false,
   preferActiveProfile: false,
 })
+const catalogPanel = ref<InstanceType<typeof ConnectorCatalogPanel> | null>(null)
 const loading = ref(false)
 const startingId = ref('')
 const completingId = ref('')
@@ -227,6 +228,13 @@ const gitlabScopes = computed(() => GITLAB_TIER_SCOPES[gitlabForm.value.tier] ||
 /** 建 token 页基址来自服务端运行时配置（未配置则为空 → 不渲染链接）。
  *  绝不写死内网域名：本仓有 GitHub 远端。 */
 const gitlabBaseUrl = ref('')
+// 服务端的 web plane。撤销 Figma 授权要把动作绑到一个飞书 openid 上，而只有 chat 面的
+// 会话带得出 openid（非 chat 面一律是本地账号的 token 认证），所以控制器在非 chat 面
+// 直接 404 —— 按钮在那儿渲染出来也只会点出一个报错。
+// null = 还没问到：这种时候照常渲染，别为一次 /api/auth/status 抖动把生产功能藏掉。
+const chatPlane = ref<boolean | null>(null)
+const figmaRevokable = computed(() => chatPlane.value !== false)
+let authStatusLoaded = false
 /** 直达建 token 页，并预填 name 与该档位的 scopes —— GitLab 支持这两个 query 参数。 */
 const gitlabTokenUrl = computed(() => {
   if (!gitlabBaseUrl.value) return ''
@@ -243,6 +251,9 @@ const githubRevoking = ref(false)
 const githubRevokeDialog = ref(false)
 const githubError = ref('')
 let githubAttempt = 0
+const figmaRevoking = ref(false)
+const figmaRevokeDialog = ref(false)
+let figmaAttempt = 0
 
 /** Which entries open the personal-token form instead of an interactive auth flow.
  *
@@ -264,6 +275,12 @@ function isGitlabTokenEntry(entry: SkillCredentialEntry) {
 
 function isGithubTokenEntry(entry: SkillCredentialEntry) {
   return entry.id === 'github-mcp' && entry.provider === 'github'
+}
+
+/** Figma 走 broker 的 OAuth（`oauth_url`），授权按钮照常走 startCredential；
+ *  这里只判"要不要额外渲染一颗撤销按钮"。 */
+function isFigmaEntry(entry: SkillCredentialEntry) {
+  return entry.id === 'figma' && entry.provider === 'figma'
 }
 
 /** 一颗按钮三种去处 —— 这里是唯一的分流点。
@@ -363,20 +380,69 @@ async function confirmGithubRevoke() {
   }
 }
 
+function openFigmaRevokeDialog() {
+  figmaRevokeDialog.value = true
+}
+
+function closeFigmaRevokeDialog() {
+  figmaRevokeDialog.value = false
+  figmaRevoking.value = false
+}
+
+async function confirmFigmaRevoke() {
+  if (figmaRevoking.value) return
+  const attempt = ++figmaAttempt
+  const profile = requestedProfile.value
+  figmaRevoking.value = true
+  // 弹窗只为"已经当面告诉员工失败了"这一种结局留着。别的任何出口 —— 成功、
+  // 请求被更新的一次顶掉、面板中途换了 profile —— 都必须把它关掉：早先的写法
+  // 在两处 stale 守卫上直接 `return`，弹窗既没成功提示也没错误提示地钉在屏幕上，
+  // 员工只能看着一个点不动的确认框（2026-09-21 真机走查撞到）。
+  let reportedFailure = false
+  try {
+    const result = await revokeFigmaCredential(profile)
+    if (attempt !== figmaAttempt || profile !== requestedProfile.value) return
+    // 和 GitHub 撤销同一条纪律：服务端没说 ok 就绝不报"已撤销"，弹窗留在原地。
+    if (!result?.ok) {
+      reportedFailure = true
+      message.error(result?.error || t('skillCredentials.figma.failed'))
+      return
+    }
+    closeFigmaRevokeDialog()
+    message.success(t('skillCredentials.figma.revoked'))
+    // fresh：绕开 broker 的短 TTL 连接器缓存，否则卡片会重画撤销前的状态。
+    await loadCredentials({ fresh: true })
+  } catch (err: any) {
+    if (attempt !== figmaAttempt || profile !== requestedProfile.value) return
+    reportedFailure = true
+    message.error(err?.data?.error || err?.message || t('skillCredentials.figma.failed'))
+  } finally {
+    // 只收拾自己那次：被新一次点击顶掉时，弹窗归新的那次管。
+    if (attempt === figmaAttempt) {
+      figmaRevoking.value = false
+      if (!reportedFailure) closeFigmaRevokeDialog()
+    }
+  }
+}
+
 /** GitLab has no interactive auth flow — the employee supplies the token, so
- *  this row opens a form instead of starting a device/QR flow. */
-async function loadGitlabBaseUrl() {
-  if (gitlabBaseUrl.value) return
+ *  this row opens a form instead of starting a device/QR flow.
+ *
+ *  同一个 `/api/auth/status` 还回 `plane`，撤销按钮要用（见 figmaRevokable）。 */
+async function loadAuthStatus() {
+  if (authStatusLoaded) return
   try {
     const res = await fetch('/api/auth/status', { credentials: 'same-origin', headers: { Accept: 'application/json' } })
     if (!res.ok) return
-    const status = await res.json().catch(() => ({})) as { gitlabBaseUrl?: unknown }
+    const status = await res.json().catch(() => ({})) as { gitlabBaseUrl?: unknown; plane?: unknown }
     if (typeof status.gitlabBaseUrl === 'string') gitlabBaseUrl.value = status.gitlabBaseUrl.trim()
-  } catch { /* 拿不到就不显示链接，不影响填写 */ }
+    if (typeof status.plane === 'string') chatPlane.value = status.plane.trim().toLowerCase() === 'chat'
+    authStatusLoaded = true
+  } catch { /* 拿不到就不显示链接，不影响填写；下次开窗还会再问一次 */ }
 }
 
 function openGitlabDialog(entry: SkillCredentialEntry) {
-  void loadGitlabBaseUrl()
+  void loadAuthStatus()
   gitlabForm.value = { tier: 'read', token: '' }
   gitlabError.value = ''
   gitlabDialog.value = { title: entry.title }
@@ -514,6 +580,8 @@ function handleWindowFocus() {
 
 onMounted(async () => {
   window.addEventListener('focus', handleWindowFocus)
+  // 不 await：撤销按钮默认渲染，这次请求只负责在非 chat 面把它收回去。
+  void loadAuthStatus()
   // Activate the profile watcher BEFORE the initial load so a profile switch DURING that
   // load triggers a replacement load (the `profile === previous` guard still suppresses
   // the no-op fire when requestedProfile merely resolves to the same value).
@@ -537,6 +605,7 @@ watch(requestedProfile, async (profile, previous) => {
   attemptSeq += 1
   closeGithubDialog()
   closeGithubRevokeDialog()
+  closeFigmaRevokeDialog()
   closeAuthWindow()
   oauthPollingId.value = ''
   // 这里必须显式清：startCredential 的 finally 只清"自己那次"，而上面刚把 attemptSeq
@@ -553,7 +622,7 @@ watch(requestedProfile, async (profile, previous) => {
   <div class="credentials-view" :class="{ 'is-embedded': props.embedded }">
     <header class="page-header">
       <h2 class="header-title">{{ t('sidebar.connectors') }}</h2>
-      <NButton size="small" quaternary :loading="loading" @click="() => loadCredentials({ fresh: true })">刷新</NButton>
+      <NButton size="small" quaternary :loading="loading" @click="() => { void loadCredentials({ fresh: true }); void catalogPanel?.refresh() }">刷新</NButton>
     </header>
 
     <NAlert
@@ -600,6 +669,14 @@ watch(requestedProfile, async (profile, previous) => {
                    undefined。 -->
               <div class="credential-actions">
                 <NButton
+                  v-if="isFigmaEntry(entry) && entry.status === 'authenticated' && figmaRevokable"
+                  size="small"
+                  secondary
+                  :loading="figmaRevoking"
+                  data-credential-revoke="figma"
+                  @click="openFigmaRevokeDialog"
+                >{{ t('skillCredentials.figma.revoke') }}</NButton>
+                <NButton
                   v-if="isGithubTokenEntry(entry) && entry.status === 'authenticated'"
                   size="small"
                   secondary
@@ -626,7 +703,7 @@ watch(requestedProfile, async (profile, previous) => {
       </div>
     </NSpin>
 
-    <ConnectorCatalogPanel :profile="requestedProfile" />
+    <ConnectorCatalogPanel ref="catalogPanel" :profile="requestedProfile" />
 
     <NModal
       :show="!!gitlabDialog"
@@ -773,6 +850,28 @@ watch(requestedProfile, async (profile, previous) => {
             data-testid="github-revoke-confirm"
             @click="confirmGithubRevoke"
           >{{ t('skillCredentials.github.revoke') }}</NButton>
+        </div>
+      </template>
+    </NModal>
+
+    <NModal
+      :show="figmaRevokeDialog"
+      preset="card"
+      style="max-width: 420px"
+      :title="t('skillCredentials.figma.revoke')"
+      @update:show="(v: boolean) => { if (!v && !figmaRevoking) closeFigmaRevokeDialog() }"
+    >
+      <p>{{ t('skillCredentials.figma.revokeConfirm') }}</p>
+      <template #footer>
+        <div class="gitlab-actions">
+          <NButton size="small" :disabled="figmaRevoking" @click="closeFigmaRevokeDialog">{{ t('skillCredentials.figma.cancel') }}</NButton>
+          <NButton
+            size="small"
+            type="error"
+            :loading="figmaRevoking"
+            data-testid="figma-revoke-confirm"
+            @click="confirmFigmaRevoke"
+          >{{ t('skillCredentials.figma.revoke') }}</NButton>
         </div>
       </template>
     </NModal>

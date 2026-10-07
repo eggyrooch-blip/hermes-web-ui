@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { reactive, ref, computed } from 'vue'
 import * as filesApi from '@/api/hermes/files'
 import type { FileEntry } from '@/api/hermes/files'
+import { getBinaryPreviewKind, isBinaryPreviewFile } from '@/utils/hermes/file-preview'
+import type { BinaryPreviewKind } from '@/utils/hermes/file-preview'
 
 const EXT_LANG_MAP: Record<string, string> = {
   '.js': 'javascript', '.jsx': 'javascript',
@@ -106,7 +108,7 @@ export function isTextFile(name: string): boolean {
 }
 
 export function isPreviewableFile(name: string): boolean {
-  return isImageFile(name) || isMarkdownFile(name) || isTextFile(name)
+  return isImageFile(name) || isMarkdownFile(name) || isTextFile(name) || isBinaryPreviewFile(name)
 }
 
 export const DEFAULT_EDITOR_SCOPE = 'files-view:__default__'
@@ -135,7 +137,9 @@ function isAffected(targetPath: string, changedPath: string, changedIsDir: boole
 
 type PreviewFile = {
   path: string
-  type: 'image' | 'markdown' | 'text' | 'html'
+  // The binary kinds (pdf/docx/presentation/spreadsheet) carry no `content`:
+  // FilePreview fetches their bytes from the preview endpoint instead.
+  type: 'image' | 'markdown' | 'text' | 'html' | BinaryPreviewKind
   content?: string
   language?: string
   contentError?: boolean
@@ -284,7 +288,10 @@ export const useFilesStore = defineStore('files', () => {
 
   async function openPreview(entry: FileEntry) {
     const requestId = ++previewRequestId
-    if (isImageFile(entry.name)) {
+    const binaryKind = getBinaryPreviewKind(entry.name)
+    if (binaryKind) {
+      previewFile.value = { path: entry.path, type: binaryKind }
+    } else if (isImageFile(entry.name)) {
       previewFile.value = { path: entry.path, type: 'image' }
     } else if (isMarkdownFile(entry.name)) {
       const result = await filesApi.readFile(entry.path)
@@ -334,13 +341,45 @@ export const useFilesStore = defineStore('files', () => {
     }
   }
 
+  // Same chat-plane / admin-plane path ambiguity as readFileWithWorkspaceFallback,
+  // for files whose bytes are never read into JS as text.
+  async function statPathWithWorkspaceFallback(
+    displayPath: string,
+    rel: string,
+    relWithWs: string,
+  ): Promise<string | null> {
+    try {
+      await filesApi.statFile(rel)
+      return rel
+    } catch (firstError) {
+      try {
+        await filesApi.statFile(relWithWs)
+        return relWithWs
+      } catch (secondError) {
+        console.error('Failed to locate file from display path:', displayPath, firstError, secondError)
+        return null
+      }
+    }
+  }
+
   async function previewByDisplayPath(displayPath: string, fileName?: string): Promise<void> {
     const requestId = ++previewRequestId
     const rel = decodeDisplayPathSegments(displayPath.replace(/^\/workspace\//, ''))
     const relWithWs = decodeDisplayPathSegments(displayPath.replace(/^\//, ''))
     const inferredFileName = fileName || rel.split('/').filter(Boolean).pop() || ''
 
-    let type: 'image' | 'markdown' | 'html' | 'text' | null = null
+    let type: PreviewFile['type'] | null = getBinaryPreviewKind(inferredFileName)
+    if (type) {
+      // Nothing to read here — the bytes are fetched by FilePreview. Only the
+      // path has to be pinned down, and the same workspace/ prefix ambiguity
+      // applies, so probe with stat instead of read.
+      previewFile.value = null
+      previewPanelRequestedAt.value += 1
+      const resolved = await statPathWithWorkspaceFallback(displayPath, rel, relWithWs)
+      if (!resolved || requestId !== previewRequestId) return
+      previewFile.value = { path: resolved, type }
+      return
+    }
     if (isImageFile(inferredFileName)) {
       type = 'image'
     } else if (isMarkdownFile(inferredFileName)) {
@@ -396,10 +435,28 @@ export const useFilesStore = defineStore('files', () => {
       profile: opts.profile,
     }
 
+    const binaryKind = getBinaryPreviewKind(inferredFileName)
     let type: PreviewFile['type'] = 'text'
-    if (isImageFile(inferredFileName)) type = 'image'
+    if (binaryKind) type = binaryKind
+    else if (isImageFile(inferredFileName)) type = 'image'
     else if (isMarkdownFile(inferredFileName)) type = 'markdown'
     else if (isHtmlFile(inferredFileName)) type = 'html'
+
+    // An office file changed by a run still has a viewable diff, but its bytes
+    // must never go through readFile — decoding a ZIP as UTF-8 produces
+    // mojibake in the File pane. Probe for the path instead and let FilePreview
+    // fetch the bytes, exactly as the non-diff path does.
+    if (binaryKind) {
+      const resolved = await statPathWithWorkspaceFallback(opts.displayPath, rel, relWithWs)
+      if (requestId !== previewRequestId) return
+      previewFile.value = {
+        path: resolved || rel,
+        type: binaryKind,
+        ...(resolved ? {} : { contentError: true }),
+        diff,
+      }
+      return
+    }
 
     // Unlike previewByDisplayPath, a failed content read must NOT abort: the
     // file may be gone (deleted/renamed after the run) while its diff is still

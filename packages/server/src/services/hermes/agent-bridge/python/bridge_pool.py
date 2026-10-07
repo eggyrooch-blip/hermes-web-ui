@@ -27,6 +27,7 @@ from bridge_runtime import (
     _jsonable,
     _load_cfg,
     _load_enabled_toolsets,
+    _load_fallback_model,
     _load_reasoning_config,
     _load_service_tier,
     _mcp_tool_names_from_names,
@@ -189,6 +190,7 @@ class AgentPool:
 
                 agent = AIAgent(
                     model=resolved_model,
+                    fallback_model=_load_fallback_model(cfg),
                     max_iterations=_cfg_max_turns(cfg, 90),
                     provider=runtime.get("provider"),
                     base_url=runtime.get("base_url"),
@@ -199,7 +201,7 @@ class AgentPool:
                     credential_pool=runtime.get("credential_pool"),
                     quiet_mode=True,
                     verbose_logging=False,
-                    reasoning_config=_load_reasoning_config(),
+                    reasoning_config=_load_reasoning_config(resolved_model),
                     service_tier=_load_service_tier(),
                     enabled_toolsets=_load_enabled_toolsets(),
                     platform=_bridge_platform(),
@@ -217,6 +219,7 @@ class AgentPool:
                 )
                 agent.compression_enabled = False
                 self._install_compression_hook(agent, session_id)
+                self._install_prepersist_dedup_hook(agent)
                 mcp_tool_names = self._mcp_tool_names(self._agent_tool_names(getattr(agent, "tools", None) or []))
 
                 session = AgentSession(
@@ -297,6 +300,10 @@ class AgentPool:
         if not callable(switch_model):
             raise RuntimeError("loaded agent does not support switch_model")
 
+        with _profile_env(target_profile):
+            _refresh_worker_profile_env()
+            reasoning_config = _load_reasoning_config(requested_model)
+
         switch_model(
             new_model=requested_model,
             new_provider=resolved_provider,
@@ -304,6 +311,7 @@ class AgentPool:
             base_url=runtime.get("base_url") or "",
             api_mode=runtime.get("api_mode") or "",
         )
+        session.agent.reasoning_config = reasoning_config
         session.config.update({
             "profile": target_profile,
             "model": requested_model,
@@ -409,6 +417,46 @@ class AgentPool:
                 profile or str(session.config.get("profile") or "default"),
                 add_note=True,
             )
+
+    # The native runtime funnels every durable write through
+    # `_flush_messages_to_session_db`: `_persist_session` delegates to it, and the
+    # in-loop writers (tool rounds, final response, stop gates) call it directly
+    # without ever going through `_persist_session`. Wrapping only the turn
+    # boundary therefore lets a tool round write the pre-persisted user message a
+    # second time. Wrap the flush entry point, and keep the `_persist_session`
+    # wrapper for older runtimes that do not expose it.
+    _NATIVE_FLUSH_ENTRY_POINTS = ("_flush_messages_to_session_db", "_persist_session")
+
+    def _install_prepersist_dedup_hook(self, agent: Any) -> None:
+        """Skip one bridge-pre-persisted user message in the native DB flush."""
+        for name in self._NATIVE_FLUSH_ENTRY_POINTS:
+            original = getattr(agent, name, None)
+            if not callable(original):
+                continue
+            if getattr(original, "_hermes_bridge_prepersist_dedup_wrapper", False):
+                return
+            setattr(agent, name, self._wrapped_native_flush(agent, original))
+            return
+
+    def _wrapped_native_flush(self, agent: Any, original: Any) -> Any:
+        def wrapped_native_flush(messages: Any, conversation_history: Any = None, *args: Any, **kwargs: Any):
+            self._consume_prepersist_marker(agent, messages)
+            return original(messages, conversation_history, *args, **kwargs)
+
+        wrapped_native_flush._hermes_bridge_prepersist_dedup_wrapper = True  # type: ignore[attr-defined]
+        return wrapped_native_flush
+
+    def _consume_prepersist_marker(self, agent: Any, messages: Any) -> None:
+        """Stamp the one message the bridge already wrote, once, then release."""
+        if getattr(agent, "_hermes_bridge_prepersisted_user_run", None) is None:
+            return
+        if not isinstance(messages, list):
+            return
+        for message in reversed(messages):
+            if isinstance(message, dict) and message.get("role") == "user" and not message.get("_db_persisted"):
+                message["_db_persisted"] = True
+                agent._hermes_bridge_prepersisted_user_run = None
+                break
 
     def _install_compression_hook(self, agent: Any, session_id: str) -> None:
         original = getattr(agent, "_compress_context", None)
@@ -876,6 +924,7 @@ class AgentPool:
         conversation_history: list[dict[str, Any]] | None,
         profile: str | None,
         source: str | None = None,
+        run_id: str | None = None,
     ) -> bool:
         persist_message = storage_message if storage_message is not None else message
         user_content = str(persist_message) if not isinstance(persist_message, dict) else str(persist_message.get("content", persist_message))
@@ -901,6 +950,13 @@ class AgentPool:
                 if messages:
                     last = messages[-1]
                     if last.get("role") == "user" and last.get("content") == user_content:
+                        # This message is already durable — a retry after the row
+                        # landed but the run died before any assistant output. It
+                        # is "already persisted", not "write failed": mark it so a
+                        # marker-based runtime skips it exactly like the legacy
+                        # flush cursor below already does. Returning False still
+                        # tells the caller this call wrote no new row.
+                        self._mark_prepersisted_user(session, run_id)
                         self._align_prepersist_flush_cursor(session, history_len)
                         return False
 
@@ -910,6 +966,11 @@ class AgentPool:
                 content=user_content,
             )
 
+            # The native agent flush receives its own live message list. Mark
+            # exactly one user entry in that list only after this durable write
+            # succeeds, so fallback persistence remains available on failures.
+            self._mark_prepersisted_user(session, run_id)
+
             # AIAgent will build messages as conversation_history + current user.
             # Since the current user was pre-persisted above, align the flush
             # cursor so the normal end-of-turn flush starts at assistant/tool
@@ -918,6 +979,29 @@ class AgentPool:
             return True
         except Exception:
             return False
+
+    # The marker lives on the agent, which is shared by every run of the session,
+    # so it records the run that armed it. A run that finishes late must never
+    # clear a marker a following run already armed for its own user message.
+    _PREPERSIST_MARKER_FALLBACK_OWNER = "bridge-prepersist"
+
+    def _mark_prepersisted_user(self, session: AgentSession, run_id: str | None = None) -> None:
+        """Arm the one-shot dedup marker for the message just made durable."""
+        try:
+            session.agent._hermes_bridge_prepersisted_user_run = run_id or self._PREPERSIST_MARKER_FALLBACK_OWNER
+        except Exception:
+            pass
+
+    def _release_prepersist_marker(self, session: AgentSession, run_id: str | None) -> None:
+        """Clear the marker only when this run still owns it."""
+        try:
+            owner = getattr(session.agent, "_hermes_bridge_prepersisted_user_run", None)
+            if owner is None:
+                return
+            if owner == (run_id or self._PREPERSIST_MARKER_FALLBACK_OWNER):
+                session.agent._hermes_bridge_prepersisted_user_run = None
+        except Exception:
+            pass
 
     def _align_prepersist_flush_cursor(self, session: AgentSession, history_len: int) -> None:
         try:
@@ -1081,14 +1165,20 @@ class AgentPool:
                 except Exception:
                     self._run_context.session_id = session.session_id
                 try:
-                    from tools.approval import register_gateway_notify, set_current_session_key
+                    from tools.approval import register_gateway_notify
+                    try:
+                        from tools.approval_context import set_current_session_key
+                    except ModuleNotFoundError as exc:
+                        if exc.name != "tools.approval_context":
+                            raise
+                        from tools.approval import set_current_session_key
 
                     approval_session_token = set_current_session_key(session.session_id)
                     register_gateway_notify(session.session_id, self._gateway_approval_notify(session.session_id))
                     registered_gateway_approval_session = session.session_id
                 except Exception:
                     pass
-                self._prepersist_user_message(session, message, storage_message, conversation_history, profile, source)
+                self._prepersist_user_message(session, message, storage_message, conversation_history, profile, source, record.run_id)
                 db_count_after_prepersist = self._session_db_message_count(session.session_id, profile)
                 agent_message = self._prepend_pending_model_switch_note(session, message)
                 if force_compress:
@@ -1222,6 +1312,10 @@ class AgentPool:
                     session.last_used_at = time.time()
                 self._apply_pending_session_model_switch(session)
             finally:
+                # A failed or interrupted run may never reach a native flush. Drop
+                # only the marker this run armed: by the time this runs the session
+                # is already released, so a following run may own the marker now.
+                self._release_prepersist_marker(session, record.run_id)
                 with self._lock:
                     self._approval_handlers.pop(session.session_id, None)
                 try:
@@ -1230,7 +1324,13 @@ class AgentPool:
                     pass
                 if approval_session_token is not None:
                     try:
-                        from tools.approval import reset_current_session_key, unregister_gateway_notify
+                        from tools.approval import unregister_gateway_notify
+                        try:
+                            from tools.approval_context import reset_current_session_key
+                        except ModuleNotFoundError as exc:
+                            if exc.name != "tools.approval_context":
+                                raise
+                            from tools.approval import reset_current_session_key
 
                         if registered_gateway_approval_session is not None:
                             unregister_gateway_notify(registered_gateway_approval_session)

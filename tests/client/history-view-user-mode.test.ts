@@ -51,10 +51,10 @@ vi.mock('@/stores/hermes/profiles', () => ({
   useProfilesStore: () => ({ fetchProfiles: vi.fn(async () => undefined) }),
 }))
 
-vi.mock('@/stores/hermes/session-browser-prefs', () => ({
-  useSessionBrowserPrefsStore: () => ({
-    isPinned: () => false,
-    togglePin: vi.fn(),
+vi.mock('@/stores/hermes/session-pins', () => ({
+  useSessionPinsStore: () => ({
+    setPinned: vi.fn(async () => true),
+    migrateLegacyPins: vi.fn(async () => []),
   }),
 }))
 

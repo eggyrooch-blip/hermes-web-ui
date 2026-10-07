@@ -73,10 +73,11 @@ const profilesStoreMock = vi.hoisted(() => ({
 
 const prefsStoreMock = vi.hoisted(() => ({
   humanOnly: false,
-  isPinned: vi.fn(() => false),
-  pruneMissingSessions: vi.fn(),
-  removePinned: vi.fn(),
-  togglePinned: vi.fn(),
+}))
+
+const sessionPinsStoreMock = vi.hoisted(() => ({
+  setPinned: vi.fn(async () => true),
+  migrateLegacyPins: vi.fn(async () => []),
 }))
 
 vi.mock('@/api/client', () => ({
@@ -100,6 +101,10 @@ vi.mock('@/stores/hermes/profiles', () => ({
 
 vi.mock('@/stores/hermes/session-browser-prefs', () => ({
   useSessionBrowserPrefsStore: () => prefsStoreMock,
+}))
+
+vi.mock('@/stores/hermes/session-pins', () => ({
+  useSessionPinsStore: () => sessionPinsStoreMock,
 }))
 
 vi.mock('@/stores/hermes/files', () => ({

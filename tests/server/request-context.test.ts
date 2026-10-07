@@ -52,6 +52,22 @@ describe('chat plane access control', () => {
     expect(next).toHaveBeenCalledOnce()
   })
 
+  it('lets a chat-plane employee revoke their OWN Figma authorization, and only via DELETE', async () => {
+    // 实机撞到：新端点默认落在 forbiddenInChatPlane 的 catch-all 上，员工点「撤销」
+    // 只拿到 403 not available in chat plane。放行同 GitHub，身份仍只认已验证会话。
+    const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
+    const allowed = mockCtx('/api/hermes/credentials/figma', 'DELETE')
+    const blocked = mockCtx('/api/hermes/credentials/figma', 'POST')
+    const next = vi.fn(async () => {})
+
+    await enforcePlaneAccess(allowed, next)
+    await enforcePlaneAccess(blocked, next)
+
+    expect(next).toHaveBeenCalledOnce()
+    expect(allowed.status).toBe(200)
+    expect(blocked.status).toBe(403)
+  })
+
   it('lets a chat-plane employee approve their own MCP OAuth request only', async () => {
     const { enforcePlaneAccess } = await loadRequestContext({ HERMES_WEB_PLANE: 'chat' })
     const allowed = mockCtx('/api/auth/mcp-oauth/approve', 'POST')

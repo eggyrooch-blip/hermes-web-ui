@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
 const UNIFIED_DIFF_SAMPLE = `diff --git a/foo.ts b/foo.ts
@@ -196,6 +196,7 @@ describe('MessageItem tool details', () => {
       },
     })
 
+    await vi.waitFor(() => expect(wrapper.text()).toContain('still visible'))
     await wrapper.get('[data-feedback-rating="up"]').trigger('click')
     await vi.waitFor(() => expect(wrapper.find('[role="alert"]').exists()).toBe(true))
     expect(wrapper.text()).toContain('still visible')
@@ -655,6 +656,7 @@ describe('MessageItem tool details', () => {
         } satisfies Message,
       },
     })
+    await vi.waitFor(() => expect(wrapper.find('.markdown-file-card').exists()).toBe(true))
 
     const card = wrapper.find('.markdown-file-card')
     expect(card.exists()).toBe(true)
@@ -673,7 +675,7 @@ describe('MessageItem tool details', () => {
     expect(fetchWorkspaceRunChangeFileMock).not.toHaveBeenCalled()
   })
 
-  it('renders fallback diff chips for an assistant message with empty text', () => {
+  it('renders fallback diff chips for an assistant message with empty text', async () => {
     const chatStore = useChatStore()
     chatStore.upsertWorkspaceDiff('session-1', {
       event: 'workspace.diff.completed',
@@ -696,11 +698,11 @@ describe('MessageItem tool details', () => {
       },
     })
 
-    expect(wrapper.find('.markdown-diff-fallback-row').exists()).toBe(true)
+    await vi.waitFor(() => expect(wrapper.find('.markdown-diff-fallback-row').exists()).toBe(true))
     expect(wrapper.find('.markdown-file-card').attributes('data-path')).toBe('/workspace/src/app.ts')
   })
 
-  it('does not linkify assistant bare filenames from workspace diffs in another run', () => {
+  it('does not linkify assistant bare filenames from workspace diffs in another run', async () => {
     const chatStore = useChatStore()
     chatStore.upsertWorkspaceDiff('session-1', {
       event: 'workspace.diff.completed',
@@ -731,7 +733,8 @@ describe('MessageItem tool details', () => {
       },
     })
 
+    await vi.waitFor(() => expect(wrapper.text()).toContain('app.ts'))
+
     expect(wrapper.find('.markdown-file-card').exists()).toBe(false)
-    expect(wrapper.text()).toContain('app.ts')
   })
 })

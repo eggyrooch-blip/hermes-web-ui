@@ -19,6 +19,7 @@ import { speedToEdgeRate, hzToEdgePitch } from '@/utils/ttsHelpers'
 import { getDownloadUrl } from '@/api/hermes/download'
 import { formatChatTimestamp } from '@/utils/chat-timestamp'
 import type { ChatMessage, RoomAgent, MemberInfo } from '@/api/hermes/group-chat'
+import ImagePreviewOverlay from '@/components/hermes/chat/ImagePreviewOverlay.vue'
 
 const TOOL_PAYLOAD_DISPLAY_LIMIT = 1000
 const JSON_STRING_DISPLAY_LIMIT = 200
@@ -611,9 +612,12 @@ onBeforeUnmount(() => {
             </div>
         </div>
     </div>
-    <div v-if="previewUrl" class="image-preview-overlay" @click.self="previewUrl = null">
-        <img :src="previewUrl" class="image-preview-img" @click="previewUrl = null" />
-    </div>
+    <ImagePreviewOverlay
+        v-if="previewUrl"
+        :src="previewUrl"
+        alt=""
+        @close="previewUrl = null"
+    />
 </template>
 
 <style scoped lang="scss">
@@ -1041,25 +1045,7 @@ onBeforeUnmount(() => {
     }
 }
 
-.image-preview-overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 9999;
-    background: rgba(0, 0, 0, 0.82);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
-}
 
-.image-preview-img {
-    max-width: min(96vw, 1400px);
-    max-height: 92vh;
-    object-fit: contain;
-    border-radius: 6px;
-    cursor: zoom-out;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
-}
 
 .thinking-block {
     margin-bottom: 8px;

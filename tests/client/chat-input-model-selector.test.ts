@@ -11,6 +11,7 @@ const chatStoreMock = vi.hoisted(() => ({
   activeExpertId: null as string | null,
   runtimeMode: 'agent',
   isStreaming: false,
+  consumeStagedComposerDraft: vi.fn(() => ''),
   isAborting: false,
   setAutoPlaySpeech: vi.fn(),
   setActiveExpert: vi.fn(),
@@ -81,6 +82,16 @@ vi.mock('naive-ui', () => ({
   NModal: {
     props: ['show'],
     template: '<div v-if="show"><slot /><slot name="footer" /></div>',
+  },
+  NPopover: {
+    name: 'NPopover',
+    template: '<div><slot name="trigger" /><slot /></div>',
+  },
+  NSlider: {
+    name: 'NSlider',
+    props: ['value', 'min', 'max', 'step', 'formatTooltip'],
+    emits: ['update:value'],
+    template: '<div class="n-slider-stub" />',
   },
   NInputNumber: {
     template: '<input />',

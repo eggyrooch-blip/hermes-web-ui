@@ -20,6 +20,18 @@ export interface KanbanTask {
   tenant: string | null
   result: string | null
   skills: string[] | null
+  // Emitted by hermes-agent 0.21.3 task payloads.
+  branch_name?: string | null
+  project_id?: string | null
+  session_id?: string | null
+  workflow_template_id?: string | null
+  current_step_key?: string | null
+  completion_contract?: string | null
+  model_override?: string | null
+  provider_override?: string | null
+  max_retries?: number | null
+  last_failure_error?: string | null
+  goal_mode?: boolean
 }
 
 export interface KanbanRun {
@@ -37,7 +49,8 @@ export interface KanbanRun {
 }
 
 export interface KanbanComment {
-  id: number
+  // The server synthesizes a string id when core omits one (0.21.3 does).
+  id: number | string
   task_id: string
   author: string
   body: string
@@ -45,7 +58,8 @@ export interface KanbanComment {
 }
 
 export interface KanbanEvent {
-  id: number
+  // The server synthesizes a string id when core omits one (0.21.3 does).
+  id: number | string
   task_id: string
   kind: string
   payload: Record<string, unknown> | null
@@ -108,6 +122,8 @@ export interface KanbanBoard {
   color: string
   created_at: number | null
   archived: boolean
+  default_workdir?: string | null
+  project_id?: string | null
   db_path?: string
   is_current?: boolean
   counts: Record<string, number>

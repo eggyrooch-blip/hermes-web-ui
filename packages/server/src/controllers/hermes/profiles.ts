@@ -12,6 +12,7 @@ import {
   prepareGatewayForProfileDelete,
   restartGatewayForProfile as restartGatewayRuntimeForProfile,
 } from '../../services/hermes/gateway-autostart'
+import { isGatewayRestartDisabledError } from '../../services/hermes/gateway-restart-guard'
 import { logger } from '../../services/logger'
 import { smartCloneCleanup, copyModelProviderAuthForClone } from '../../services/hermes/profile-credentials'
 import { detectHermesRootHome } from '../../services/hermes/hermes-path'
@@ -930,7 +931,7 @@ export async function restartGatewayForProfile(ctx: any) {
     }
     ctx.body = { success: true, gateway }
   } catch (err: any) {
-    ctx.status = 500
+    ctx.status = isGatewayRestartDisabledError(err) ? 409 : 500
     ctx.body = { error: err.message }
   }
 }

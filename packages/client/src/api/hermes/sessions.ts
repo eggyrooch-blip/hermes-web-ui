@@ -17,6 +17,8 @@ export interface SessionSummary {
   execution_engine?: 'hermes' | 'harness'
   model: string
   provider?: string
+  /** Per-session reasoning-effort override; '' or absent means "config default". */
+  reasoning_effort?: string
   title: string | null
   preview?: string
   started_at: number
@@ -39,6 +41,7 @@ export interface SessionSummary {
   project_bound?: boolean
   webui_imported?: boolean
   is_archived?: boolean
+  is_pinned?: boolean
 }
 
 export interface SessionDetail extends SessionSummary {
@@ -275,6 +278,22 @@ export async function setSessionArchived(id: string, archived: boolean, profile?
   }
 }
 
+/**
+ * Cross-device session pin. Unlike setSessionArchived this rejects instead of
+ * returning false: the caller has to tell a refused pin (403/404) apart from a
+ * transport failure so the one-shot localStorage migration can decide whether
+ * the legacy key is safe to drop.
+ */
+export async function setSessionPinned(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean; is_pinned: boolean }> {
+  const params = new URLSearchParams()
+  if (profile) params.set('profile', profile)
+  const query = params.toString()
+  return request<{ ok: boolean; is_pinned: boolean }>(
+    `/api/hermes/sessions/${encodeURIComponent(id)}/pin${query ? `?${query}` : ''}`,
+    { method: 'POST', body: JSON.stringify({ is_pinned: pinned }) },
+  )
+}
+
 export async function importHermesSession(id: string, profile?: string | null): Promise<{ ok: boolean; imported: boolean; session?: SessionDetail }> {
   const params = new URLSearchParams()
   if (profile) params.set('profile', profile)
@@ -337,6 +356,36 @@ export async function setSessionWorkspace(id: string, workspace: string | null):
   }
 }
 
+export interface SessionExpertSaveError {
+  status: number | null
+  message: string
+}
+
+/**
+ * The BFF's reason for refusing an expert save — 409 `Expert is fixed once the
+ * session has messages` is the one users hit — lives only on the thrown Error,
+ * and `setSessionExpert` has to keep its boolean contract for the chat store.
+ * Park the reason under the session id the request was made for so the caller
+ * reads THIS request's failure instead of re-deriving one from whatever session
+ * happens to be active by the time it renders a toast.
+ */
+const sessionExpertSaveErrors = new Map<string, SessionExpertSaveError>()
+
+function sessionExpertErrorStatus(err: unknown): number | null {
+  const status = (err as { status?: unknown } | null)?.status
+  if (typeof status === 'number') return status
+  const match = /API Error (\d{3})/.exec((err as Error | null)?.message || '')
+  return match ? Number(match[1]) : null
+}
+
+/** Returns and clears the recorded failure for that session id, if any. */
+export function consumeSessionExpertSaveError(sessionId: string): SessionExpertSaveError | null {
+  const failure = sessionExpertSaveErrors.get(sessionId)
+  if (!failure) return null
+  sessionExpertSaveErrors.delete(sessionId)
+  return failure
+}
+
 export async function setSessionExpert(
   id: string,
   expertId: string | null,
@@ -349,8 +398,13 @@ export async function setSessionExpert(
       method: 'POST',
       body: JSON.stringify({ expert_id: expertId, execution_engine: executionEngine, profile }),
     })
+    sessionExpertSaveErrors.delete(id)
     return true
-  } catch {
+  } catch (err) {
+    sessionExpertSaveErrors.set(id, {
+      status: sessionExpertErrorStatus(err),
+      message: (err as Error | null)?.message || String(err),
+    })
     return false
   }
 }
@@ -370,6 +424,23 @@ export async function setSessionModel(id: string, model: string, provider: strin
     return { ok: true, familySwitchNotice: !!res?.family_switch_notice }
   } catch {
     return { ok: false, familySwitchNotice: false }
+  }
+}
+
+/**
+ * Persist the per-session reasoning-effort override. Pass '' to clear it and
+ * fall back to the profile default. Resolves false on any transport or
+ * validation failure so the caller can roll the optimistic UI back.
+ */
+export async function setSessionReasoningEffort(id: string, reasoningEffort: string): Promise<boolean> {
+  try {
+    await request(`/api/hermes/sessions/${encodeURIComponent(id)}/reasoning-effort`, {
+      method: 'POST',
+      body: JSON.stringify({ reasoningEffort }),
+    })
+    return true
+  } catch {
+    return false
   }
 }
 

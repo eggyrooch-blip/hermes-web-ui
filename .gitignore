@@ -8,6 +8,9 @@ pnpm-debug.log*
 lerna-debug.log*
 node_modules
 dist
+# scripts/package-release.sh stages a production tree and a multi-hundred-MB
+# tarball here; CI publishes it to the package registry and nothing commits it.
+.release-artifact/
 playwright-report
 test-results
 dist-ssr

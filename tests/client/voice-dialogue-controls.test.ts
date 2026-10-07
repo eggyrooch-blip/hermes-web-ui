@@ -80,6 +80,12 @@ vi.mock('naive-ui', () => ({
   NTooltip: { template: '<div><slot name="trigger" /><slot /></div>' },
   NSwitch: { template: '<button type="button"></button>' },
   NModal: { template: '<div><slot /><slot name="footer" /></div>' },
+  NSlider: {
+    name: 'NSlider',
+    props: ['value', 'min', 'max', 'step', 'formatTooltip'],
+    emits: ['update:value'],
+    template: '<div class="n-slider-stub" />',
+  },
   NInputNumber: { template: '<input />' },
   NPopselect: { template: '<div><slot /></div>' },
   useMessage: () => ({ error: vi.fn(), success: vi.fn() }),

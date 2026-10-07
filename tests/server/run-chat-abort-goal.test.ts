@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const updateSessionStatsMock = vi.fn()
+const updateSessionMock = vi.fn()
 const flushBridgePendingToDbMock = vi.fn()
 const flushResponseRunToDbMock = vi.fn()
 const replaceStateMock = vi.fn()
@@ -15,6 +16,7 @@ const codingAgentRunManagerMock = vi.hoisted(() => ({
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSessionIncarnation: getSessionIncarnationMock,
   getSessionRowId: getSessionRowIdMock,
+  updateSession: updateSessionMock,
   updateSessionStats: updateSessionStatsMock,
 }))
 
@@ -98,6 +100,7 @@ describe('run chat abort goal handling', () => {
     expect(state.isWorking).toBe(true)
     expect(state.isAborting).toBe(true)
     expect(emit).not.toHaveBeenCalledWith('abort.completed', expect.anything())
+    expect(updateSessionMock).not.toHaveBeenCalled()
   })
 
   it('releases local working state when a CLI interrupt does not sync before timeout', async () => {
@@ -144,6 +147,10 @@ describe('run chat abort goal handling', () => {
       run_id: 'run-1',
       synced: false,
     }))
+    expect(updateSessionMock).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      ended_at: expect.any(Number),
+      end_reason: 'abort',
+    }))
   })
 
   it('stops a coding-agent run even when chat-run state was not marked working', async () => {
@@ -168,6 +175,10 @@ describe('run chat abort goal handling', () => {
     expect(emit).toHaveBeenCalledWith('abort.completed', expect.objectContaining({
       session_id: 'session-1',
       synced: true,
+    }))
+    expect(updateSessionMock).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      ended_at: expect.any(Number),
+      end_reason: 'abort',
     }))
   })
 

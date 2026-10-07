@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 
@@ -118,7 +118,9 @@ describe('App auth navigation readiness', () => {
     expect(stopHealthPollingMock).toHaveBeenCalled()
 
     authReadyBox.ref!.value = true
-    await nextTick()
+    // AppSidebar is an async component now, so its chunk resolves on a
+    // microtask rather than the next tick.
+    await flushPromises()
 
     expect(wrapper.find('[data-test="app-sidebar"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="router-view"]').exists()).toBe(false)

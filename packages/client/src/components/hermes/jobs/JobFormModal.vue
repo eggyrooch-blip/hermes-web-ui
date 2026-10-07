@@ -17,9 +17,18 @@ import type { SkillInfo } from '@/api/hermes/skills'
 import { fetchExperts } from '@/api/hermes/experts'
 import { getActiveProfileName } from '@/api/client'
 import { agentDisplayName, groupAgents } from '@/utils/hermes/agent-identity'
+import {
+  buildScheduleExpression,
+  parseScheduleExpression,
+  scheduleWeekdayOptions,
+  SCHEDULE_HOUR_OPTIONS,
+  SCHEDULE_MINUTE_OPTIONS,
+  SCHEDULE_MONTH_DAY_OPTIONS,
+  type ScheduleFrequency,
+} from '@/utils/schedule-frequency'
 import { useI18n } from 'vue-i18n'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 const props = defineProps<{
   jobId: string | null
@@ -170,20 +179,77 @@ const formData = ref({
   repeat_times: null as number | null,
 })
 
-const presetValue = ref<string | null>(null)
+// Nothing is preselected: a job only ever gets the Cron the operator chose,
+// either by picking a frequency or by typing the expression themselves.
+const scheduleFrequency = ref<ScheduleFrequency | null>(null)
+const scheduleHour = ref(9)
+const scheduleMinute = ref(0)
+const scheduleWeekday = ref(1)
+const scheduleMonthDay = ref(1)
 
 const isEdit = computed(() => !!props.jobId)
 const isScheduledExpert = computed(() => !isEdit.value && !!props.sourceSessionId)
 
-const schedulePresets = computed(() => [
-  { label: t('jobs.presetEveryMinute'), value: '* * * * *' },
-  { label: t('jobs.presetEvery5Min'), value: '*/5 * * * *' },
-  { label: t('jobs.presetEveryHour'), value: '0 * * * *' },
-  { label: t('jobs.presetEveryDay'), value: '0 0 * * *' },
-  { label: t('jobs.presetEveryDay9'), value: '0 9 * * *' },
-  { label: t('jobs.presetEveryMonday'), value: '0 9 * * 1' },
-  { label: t('jobs.presetEveryMonth'), value: '0 9 1 * *' },
+const scheduleFrequencyOptions = computed(() => [
+  { label: t('jobs.presetEveryMinute'), value: 'every-minute' },
+  { label: t('jobs.presetEvery5Min'), value: 'every-5-minutes' },
+  { label: t('jobs.presetEvery30Min'), value: 'every-30-minutes' },
+  { label: t('jobs.presetEveryHour'), value: 'hourly' },
+  { label: t('jobs.frequencyDaily'), value: 'daily' },
+  { label: t('jobs.frequencyWeekly'), value: 'weekly' },
+  { label: t('jobs.frequencyMonthly'), value: 'monthly' },
+  { label: t('jobs.customSchedule'), value: 'custom' },
 ])
+const scheduleWeekdays = computed(() => scheduleWeekdayOptions(locale.value))
+const showScheduleTimeFields = computed(() => (
+  scheduleFrequency.value === 'daily'
+  || scheduleFrequency.value === 'weekly'
+  || scheduleFrequency.value === 'monthly'
+))
+
+function generatedSchedule(): string {
+  if (!scheduleFrequency.value) return ''
+  return buildScheduleExpression({
+    frequency: scheduleFrequency.value,
+    hour: scheduleHour.value,
+    minute: scheduleMinute.value,
+    weekday: scheduleWeekday.value,
+    monthDay: scheduleMonthDay.value,
+  })
+}
+
+function syncGeneratedSchedule() {
+  if (scheduleFrequency.value && scheduleFrequency.value !== 'custom') {
+    formData.value.schedule = generatedSchedule()
+  }
+}
+
+function handleScheduleFrequency(value: ScheduleFrequency | null) {
+  const previous = scheduleFrequency.value
+  scheduleFrequency.value = value
+  if (!value) {
+    // Clearing the frequency clears the expression: no silent leftover schedule.
+    formData.value.schedule = ''
+  } else if (value === 'custom') {
+    if (previous !== 'custom') formData.value.schedule = ''
+  } else {
+    syncGeneratedSchedule()
+  }
+}
+
+// The Cron field stays visible and authoritative. Typing an expression that a
+// picked frequency would not produce switches the form to custom, so the next
+// hour/minute change cannot silently overwrite what the operator typed.
+function handleScheduleInput(value: string) {
+  formData.value.schedule = value
+  if (value === generatedSchedule()) return
+  scheduleFrequency.value = value.trim() ? 'custom' : null
+}
+
+function setScheduleHour(value: number) { scheduleHour.value = value; syncGeneratedSchedule() }
+function setScheduleMinute(value: number) { scheduleMinute.value = value; syncGeneratedSchedule() }
+function setScheduleWeekday(value: number) { scheduleWeekday.value = value; syncGeneratedSchedule() }
+function setScheduleMonthDay(value: number) { scheduleMonthDay.value = value; syncGeneratedSchedule() }
 
 function hasText(value: unknown): boolean {
   return typeof value === 'string' && value.trim().length > 0
@@ -288,14 +354,21 @@ onMounted(async () => {
     try {
       const job = await getJob(props.jobId)
       originalJob.value = job
+      const schedule = scheduleToEditableInput(job.schedule, job.schedule_display || '')
+      const parsedSchedule = parseScheduleExpression(schedule)
       formData.value = {
         name: job.name,
-        schedule: scheduleToEditableInput(job.schedule, job.schedule_display || ''),
+        schedule,
         prompt: job.prompt,
         deliver: job.deliver || 'origin',
         skills: job.skills || (job.skill ? [job.skill] : []),
         repeat_times: jobRepeatToEditValue(job.repeat),
       }
+      scheduleFrequency.value = parsedSchedule.frequency
+      scheduleHour.value = parsedSchedule.hour
+      scheduleMinute.value = parsedSchedule.minute
+      scheduleWeekday.value = parsedSchedule.weekday
+      scheduleMonthDay.value = parsedSchedule.monthDay
     } catch (e: any) {
       message.error(t('jobs.loadFailed') + ': ' + e.message)
     }
@@ -415,19 +488,65 @@ function handleClose() {
         />
       </NFormItem>
 
-      <NFormItem :label="t('jobs.schedule')" required>
-        <NInput
-          v-model:value="formData.schedule"
-          :placeholder="t('jobs.schedulePlaceholder')"
+      <NFormItem :label="t('jobs.frequency')" data-testid="job-schedule-frequency" required>
+        <NSelect
+          :value="scheduleFrequency"
+          :options="scheduleFrequencyOptions"
+          :placeholder="t('jobs.selectPreset')"
+          clearable
+          @update:value="handleScheduleFrequency"
         />
       </NFormItem>
 
-      <NFormItem :label="t('jobs.quickPresets')" data-testid="job-preset">
+      <NFormItem v-if="scheduleFrequency === 'hourly'" :label="t('scheduleBuilder.minute')" data-testid="job-schedule-minute" required>
         <NSelect
-          v-model:value="presetValue"
-          :options="schedulePresets"
-          :placeholder="t('jobs.selectPreset')"
-          @update:value="v => formData.schedule = v"
+          :value="scheduleMinute"
+          :options="SCHEDULE_MINUTE_OPTIONS"
+          @update:value="setScheduleMinute"
+        />
+      </NFormItem>
+
+      <NFormItem v-if="scheduleFrequency === 'weekly'" :label="t('scheduleBuilder.weekday')" data-testid="job-schedule-weekday" required>
+        <NSelect
+          :value="scheduleWeekday"
+          :options="scheduleWeekdays"
+          @update:value="setScheduleWeekday"
+        />
+      </NFormItem>
+
+      <NFormItem v-if="scheduleFrequency === 'monthly'" :label="t('scheduleBuilder.monthDay')" data-testid="job-schedule-month-day" required>
+        <NSelect
+          :value="scheduleMonthDay"
+          :options="SCHEDULE_MONTH_DAY_OPTIONS"
+          @update:value="setScheduleMonthDay"
+        />
+      </NFormItem>
+
+      <NFormItem v-if="showScheduleTimeFields" :label="t('scheduleBuilder.time')" required>
+        <div class="schedule-time-fields">
+          <NSelect
+            data-testid="job-schedule-hour"
+            :value="scheduleHour"
+            :options="SCHEDULE_HOUR_OPTIONS"
+            :aria-label="t('scheduleBuilder.hour')"
+            @update:value="setScheduleHour"
+          />
+          <span>:</span>
+          <NSelect
+            data-testid="job-schedule-time-minute"
+            :value="scheduleMinute"
+            :options="SCHEDULE_MINUTE_OPTIONS"
+            :aria-label="t('scheduleBuilder.minute')"
+            @update:value="setScheduleMinute"
+          />
+        </div>
+      </NFormItem>
+
+      <NFormItem :label="t('jobs.schedule')" data-testid="job-schedule" required>
+        <NInput
+          :value="formData.schedule"
+          :placeholder="t('jobs.schedulePlaceholder')"
+          @update:value="handleScheduleInput"
         />
       </NFormItem>
 
@@ -503,5 +622,13 @@ function handleClose() {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.schedule-time-fields {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
 }
 </style>

@@ -35,10 +35,26 @@ vi.mock('vue-i18n', () => ({
 vi.mock('naive-ui', () => ({
   NButton: { template: '<button type="button" v-bind="$attrs"><slot /><slot name="icon" /></button>' },
   NInput: { template: '<input />' },
-  NPopover: { template: '<div><slot name="trigger" /></div>' },
+  NPopover: { template: '<div class="n-popover-stub"><slot name="trigger" /><slot /></div>' },
   NTooltip: { template: '<div><slot name="trigger" /><slot /></div>' },
   NSwitch: { template: '<button type="button"></button>' },
   NModal: { template: '<div><slot /><slot name="footer" /></div>' },
+  NSlider: {
+    name: 'NSlider',
+    props: ['value', 'min', 'max', 'step', 'formatTooltip'],
+    emits: ['update:value'],
+    template: `
+      <input
+        class="n-slider-stub"
+        type="range"
+        :value="value"
+        :min="min"
+        :max="max"
+        :step="step"
+        @input="$emit('update:value', Number($event.target.value))"
+      />
+    `,
+  },
   NInputNumber: { template: '<input />' },
   NPopselect: {
     props: ['value', 'options'],
@@ -64,6 +80,7 @@ vi.mock('naive-ui', () => ({
 
 vi.mock('@/api/hermes/sessions', () => ({
   fetchContextLength: vi.fn().mockResolvedValue(256000),
+  setSessionReasoningEffort: vi.fn().mockResolvedValue(true),
 }))
 
 vi.mock('@/api/hermes/model-context', () => ({
@@ -377,19 +394,32 @@ describe('ChatInput draft persistence', () => {
     })
     await nextTick()
 
-    expect(wrapper.find('.n-popselect-stub').exists()).toBe(false)
-    expect(wrapper.find('[data-value="high"]').exists()).toBe(false)
+    expect(wrapper.find('.n-slider-stub').exists()).toBe(false)
   })
 
   it('stores the selected reasoning effort for the active session', async () => {
     const wrapper = mountForSession('session-reasoning')
     const store = useChatStore()
 
-    await wrapper.get('[data-value="high"]').trigger('click')
+    // Stop 5 of 0..7 — see reasoningEffortOptions in ChatInput.vue.
+    await wrapper.get('.n-slider-stub').setValue('5')
     await nextTick()
 
     expect(store.sessions[0].reasoningEffort).toBe('high')
-    expect(localStorage.getItem('hermes:reasoning_effort:session-reasoning')).toBe('high')
+    expect(wrapper.get('.reasoning-effort-button').attributes('style')).toContain('--reasoning-effort-accent-color: #f9c33c')
+    expect(wrapper.get('.n-slider-stub').classes()).not.toContain('reasoning-effort-slider--max')
+  })
+
+  it('stores maximum reasoning effort for the active session', async () => {
+    const wrapper = mountForSession('session-reasoning-max')
+    const store = useChatStore()
+
+    await wrapper.get('.n-slider-stub').setValue('7')
+    await nextTick()
+
+    expect(store.sessions[0].reasoningEffort).toBe('max')
+    expect(wrapper.get('.reasoning-effort-button').attributes('style')).toContain('--reasoning-effort-accent-color: #ef4444')
+    expect(wrapper.get('.n-slider-stub').classes()).toContain('reasoning-effort-slider--max')
   })
 
   it('opens the skill picker from /skill and inserts the selected skill command', async () => {

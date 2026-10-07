@@ -5,6 +5,7 @@ import { NButton, NSwitch, NTooltip } from 'naive-ui'
 import { useGroupChatStore } from '@/stores/hermes/group-chat'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import { useToolTraceVisibility } from '@/composables/useToolTraceVisibility'
+import ImagePreviewOverlay from '@/components/hermes/chat/ImagePreviewOverlay.vue'
 import { buildMentionOptions, type MentionOption } from './mention-options'
 import type { Attachment } from '@/stores/hermes/chat'
 import { CHAT_INPUT_HEIGHT_MOBILE_QUERY, chatInputHeightStyle, clampChatInputHeight } from '@/utils/chat-input-height'
@@ -21,6 +22,7 @@ const textareaRef = ref<HTMLTextAreaElement>()
 const dropdownRef = ref<HTMLDivElement>()
 const fileInputRef = ref<HTMLInputElement>()
 const attachments = ref<Attachment[]>([])
+const previewAttachment = ref<Attachment | null>(null)
 const isDragging = ref(false)
 const dragCounter = ref(0)
 const isComposing = ref(false)
@@ -248,6 +250,7 @@ function handleSend() {
 
     emit('send', content, attachments.value.length > 0 ? attachments.value : undefined)
     inputText.value = ''
+    previewAttachment.value = null
     attachments.value = []
     mentionActive.value = false
     // 发送后重置到自定义高度（不清除拖拽状态）
@@ -376,6 +379,7 @@ function handleDrop(e: DragEvent) {
 function removeAttachment(id: string) {
     const idx = attachments.value.findIndex(a => a.id === id)
     if (idx !== -1) {
+        if (previewAttachment.value?.id === id) previewAttachment.value = null
         URL.revokeObjectURL(attachments.value[idx].url)
         attachments.value.splice(idx, 1)
     }
@@ -389,6 +393,11 @@ function formatSize(bytes: number): string {
 
 function isImage(type: string): boolean {
     return type.startsWith('image/')
+}
+
+function openAttachmentPreview(attachment: Attachment) {
+    if (!isImage(attachment.type)) return
+    previewAttachment.value = attachment
 }
 </script>
 
@@ -429,7 +438,15 @@ function isImage(type: string): boolean {
         </div>
         <div v-if="attachments.length > 0" class="attachment-previews">
             <div v-for="att in attachments" :key="att.id" class="attachment-preview" :class="{ image: isImage(att.type) }">
-                <img v-if="isImage(att.type)" :src="att.url" :alt="att.name" class="attachment-thumb" />
+                <button
+                    v-if="isImage(att.type)"
+                    type="button"
+                    class="attachment-thumb-button"
+                    :aria-label="att.name"
+                    @click="openAttachmentPreview(att)"
+                >
+                    <img :src="att.url" :alt="att.name" class="attachment-thumb" />
+                </button>
                 <div v-else class="attachment-file">
                     <span class="file-name">{{ att.name }}</span>
                     <span class="file-size">{{ formatSize(att.size) }}</span>
@@ -439,6 +456,12 @@ function isImage(type: string): boolean {
                 </button>
             </div>
         </div>
+        <ImagePreviewOverlay
+            v-if="previewAttachment"
+            :src="previewAttachment.url"
+            :alt="previewAttachment.name"
+            @close="previewAttachment = null"
+        />
         <div
             ref="inputWrapperRef"
             class="input-wrapper"
@@ -580,15 +603,32 @@ function isImage(type: string): boolean {
     border: 1px solid $border-color;
 
     &.image {
-        width: 64px;
-        height: 64px;
+        width: 112px;
+        height: 72px;
     }
 }
 
 .attachment-thumb {
+    display: block;
     width: 100%;
     height: 100%;
-    object-fit: cover;
+    object-fit: contain;
+}
+
+.attachment-thumb-button {
+    display: block;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background:
+        linear-gradient(45deg, rgba(127, 127, 127, 0.08) 25%, transparent 25%),
+        linear-gradient(-45deg, rgba(127, 127, 127, 0.08) 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, rgba(127, 127, 127, 0.08) 75%),
+        linear-gradient(-45deg, transparent 75%, rgba(127, 127, 127, 0.08) 75%);
+    background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+    background-size: 12px 12px;
+    cursor: zoom-in;
 }
 
 .attachment-file {

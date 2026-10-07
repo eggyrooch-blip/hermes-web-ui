@@ -210,6 +210,7 @@ describe('coding agent terminal output sanitizer', () => {
 })
 
 describe('coding agent run state', () => {
+  // First test in this block pays initAllHermesTables() + CodingAgentRunManager init; timed out at the global 30s in 7 CI jobs this week under runner load. Ceiling is 4x the global, logic unchanged.
   it('persists the client message id for coding-agent user turns', () => {
     initAllHermesTables()
     const manager = new CodingAgentRunManager()
@@ -238,7 +239,7 @@ describe('coding agent run state', () => {
     }))
     expect(getSession(run.launch.sessionId)?.user_id).toBe('ou_trusted')
     manager.shutdown()
-  })
+  }, 120_000)
 
   it('marks existing scoped Codex runners incompatible when Hermes MCP config is missing', () => {
     const codexHome = mkdtempSync(join(tmpdir(), 'hwui-codex-mcp-compat-'))
@@ -1889,6 +1890,113 @@ describe('coding agent run state', () => {
     expect(state.isWorking).toBe(false)
     expect(run.pendingChatCompletionEvent).toBeUndefined()
     expect(run.pendingChatCompletionPayload).toBeUndefined()
+  })
+
+  it('writes print coding-agent session end markers only after the final queued run completes', async () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const state: any = { messages: [], isWorking: true, events: [], queue: [{ queue_id: 'queued-1', input: 'next' }] }
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const agentSessionId = `agent-session-ended-marker-${suffix}`
+    const chatSessionId = `chat-session-ended-marker-${suffix}`
+    manager.start({
+      agentSessionId,
+      agentId: 'claude-code',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'claude-test',
+      sessionId: chatSessionId,
+      command: 'claude',
+      args: [],
+      shellCommand: 'claude',
+      workspaceDir: process.cwd(),
+      state,
+    })
+    const run = (manager as any).runs.get(agentSessionId)
+
+    await (manager as any).emitAndMarkPrintChatRunCompleted(run, 'run.completed', { event: 'run.completed' })
+    expect(getSession(chatSessionId)?.ended_at).toBeNull()
+    expect(getSession(chatSessionId)?.end_reason).toBeNull()
+
+    state.queue = []
+    state.isWorking = true
+    await (manager as any).emitAndMarkPrintChatRunCompleted(run, 'run.failed', { event: 'run.failed' })
+    const session = getSession(chatSessionId)
+    expect(session?.ended_at).toEqual(expect.any(Number))
+    expect(session?.end_reason).toBe('error')
+    manager.shutdown()
+  })
+
+  it('does not write a session end marker when a next turn already took over', async () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const state: any = { messages: [], isWorking: true, events: [], queue: [] }
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const agentSessionId = `agent-session-stale-end-${suffix}`
+    const chatSessionId = `chat-session-stale-end-${suffix}`
+    manager.start({
+      agentSessionId,
+      agentId: 'claude-code',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'claude-test',
+      sessionId: chatSessionId,
+      command: 'claude',
+      args: [],
+      shellCommand: 'claude',
+      workspaceDir: process.cwd(),
+      state,
+    })
+    const run = (manager as any).runs.get(agentSessionId)
+    run.runMarker = 'turn-1'
+    state.activeRunMarker = 'turn-1'
+
+    // The next turn claimed the session while this completion was still awaiting
+    // its workspace diff.
+    state.activeRunMarker = 'turn-2'
+    state.isWorking = true
+
+    await (manager as any).emitAndMarkPrintChatRunCompleted(run, 'run.completed', { event: 'run.completed' })
+
+    const session = getSession(chatSessionId)
+    expect(session?.ended_at).toBeNull()
+    expect(session?.end_reason).toBeNull()
+    expect(state.isWorking).toBe(true)
+    manager.shutdown()
+  })
+
+  it('does not write a session end marker onto a deleted-and-recreated session of the same id', async () => {
+    initAllHermesTables()
+    const manager = new CodingAgentRunManager()
+    const state: any = { messages: [], isWorking: true, events: [], queue: [] }
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const agentSessionId = `agent-session-regen-end-${suffix}`
+    const chatSessionId = `chat-session-regen-end-${suffix}`
+    manager.start({
+      agentSessionId,
+      agentId: 'claude-code',
+      profile: 'default',
+      provider: 'test-provider',
+      model: 'claude-test',
+      sessionId: chatSessionId,
+      command: 'claude',
+      args: [],
+      shellCommand: 'claude',
+      workspaceDir: process.cwd(),
+      state,
+    })
+    const run = (manager as any).runs.get(agentSessionId)
+    expect(getSession(chatSessionId)).not.toBeNull()
+
+    deleteSession(chatSessionId)
+    createSession({ id: chatSessionId, profile: 'default', source: 'coding_agent', title: '', model: 'claude-test', provider: 'test-provider' } as any)
+
+    await (manager as any).emitAndMarkPrintChatRunCompleted(run, 'run.completed', { event: 'run.completed' })
+
+    const session = getSession(chatSessionId)
+    expect(session?.ended_at).toBeNull()
+    expect(session?.end_reason).toBeNull()
+    manager.shutdown()
   })
 })
 

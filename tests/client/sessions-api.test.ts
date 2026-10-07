@@ -8,7 +8,7 @@ vi.mock('@/api/client', () => ({
   getBaseUrlValue: vi.fn(() => ''),
 }))
 
-import { fetchSessionMessagesPage, setSessionExpert, setSessionModel } from '@/api/hermes/sessions'
+import { consumeSessionExpertSaveError, fetchSessionMessagesPage, setSessionExpert, setSessionModel } from '@/api/hermes/sessions'
 
 describe('sessions api', () => {
   beforeEach(() => {
@@ -83,5 +83,48 @@ describe('sessions api', () => {
       method: 'POST',
       body: JSON.stringify({ expert_id: null, execution_engine: 'hermes', profile: 'profile-a' }),
     })
+  })
+
+  it('parks the refusal reason for the session it belongs to, and hands it out once', async () => {
+    requestMock.mockRejectedValue(Object.assign(
+      new Error('API Error 409: Expert is fixed once the session has messages'),
+      { status: 409 },
+    ))
+
+    await expect(setSessionExpert('session-1', 'expert-a', 'hermes')).resolves.toBe(false)
+
+    // Another session's save must not inherit it.
+    expect(consumeSessionExpertSaveError('session-2')).toBeNull()
+
+    expect(consumeSessionExpertSaveError('session-1')).toEqual({
+      status: 409,
+      message: 'API Error 409: Expert is fixed once the session has messages',
+    })
+    // Consuming clears it, so a later generic failure can never replay a 409.
+    expect(consumeSessionExpertSaveError('session-1')).toBeNull()
+  })
+
+  it('falls back to the status embedded in the message when the Error carries none', async () => {
+    requestMock.mockRejectedValue(new Error('API Error 500: upstream exploded'))
+
+    await expect(setSessionExpert('session-3', 'expert-a', 'hermes')).resolves.toBe(false)
+    expect(consumeSessionExpertSaveError('session-3')).toEqual({
+      status: 500,
+      message: 'API Error 500: upstream exploded',
+    })
+
+    requestMock.mockRejectedValue(new Error('Unauthorized'))
+    await expect(setSessionExpert('session-3', 'expert-a', 'hermes')).resolves.toBe(false)
+    expect(consumeSessionExpertSaveError('session-3')).toEqual({ status: null, message: 'Unauthorized' })
+  })
+
+  it('clears a recorded refusal once the save succeeds', async () => {
+    requestMock.mockRejectedValue(Object.assign(new Error('API Error 409: fixed'), { status: 409 }))
+    await expect(setSessionExpert('session-4', 'expert-a', 'hermes')).resolves.toBe(false)
+
+    requestMock.mockResolvedValue({ ok: true })
+    await expect(setSessionExpert('session-4', 'expert-b', 'hermes')).resolves.toBe(true)
+
+    expect(consumeSessionExpertSaveError('session-4')).toBeNull()
   })
 })

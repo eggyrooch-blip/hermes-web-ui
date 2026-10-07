@@ -111,6 +111,40 @@ describe('useSpeech WebSpeech playback', () => {
     wrapper.unmount()
   })
 
+  it('preserves semantic symbols while filtering speech noise', () => {
+    const speech = useSpeech()
+
+    expect(speech.extractReadableText(
+      '跌幅 -3%，反弹 +8.3%，09:30 开盘，日期 2026-09-03，比例 3:1，区间 5~6，A/B = 0.5。🙂 # *',
+    )).toBe(
+      '跌幅 -3%，反弹 +8.3%，09:30 开盘，日期 2026-09-03，比例 3:1，区间 5~6，A/B = 0.5。',
+    )
+  })
+
+  it('keeps collapsed thinking blocks out of speech text', () => {
+    const speech = useSpeech()
+
+    expect(speech.extractReadableText(
+      '<think>hidden plan</think>Visible answer. '
+      + '<thinking>legacy hidden plan</thinking>More detail. '
+      + '<reasoning>hidden rationale</reasoning>Done.',
+    )).toBe('Visible answer. More detail. Done.')
+  })
+
+  it('does not speak an unclosed trailing thinking block (aborted mid-thinking)', () => {
+    const speech = useSpeech()
+
+    expect(speech.extractReadableText('<think>hidden plan')).toBe('')
+    expect(speech.extractReadableText('Visible answer. <thinking>half-written plan')).toBe('Visible answer.')
+    expect(speech.extractReadableText('Visible answer. <reasoning kind="x">half rationale')).toBe('Visible answer.')
+  })
+
+  it('drops thinking blocks whose opening tag carries attributes', () => {
+    const speech = useSpeech()
+
+    expect(speech.extractReadableText('<thinking kind="x">a</thinking>Visible')).toBe('Visible')
+  })
+
   it('does not crash when Web Speech is unavailable', () => {
     Object.defineProperty(window, 'speechSynthesis', {
       configurable: true,

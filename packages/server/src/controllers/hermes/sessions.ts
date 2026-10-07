@@ -10,6 +10,7 @@ import {
   deleteSession as localDeleteSession,
   renameSession as localRenameSession,
   setSessionArchived as localSetSessionArchived,
+  setSessionPinned as localSetSessionPinned,
   createSession as localCreateSession,
   addMessages as localAddMessages,
   updateSession as localUpdateSession,
@@ -711,11 +712,16 @@ export async function listHermesSessions(ctx: any) {
         ...(ownersConflict && profile ? { profile } : {}),
         webui_imported: Boolean(localSession),
         is_archived: localSession?.is_archived ?? false,
+        is_pinned: localSession?.is_pinned ?? false,
         ...(localSession
           ? {
               // Identity always comes from the local row (empty means empty —
               // `??` would let a blank local owner keep the state owner alive).
               user_id: localOwner || null,
+              // Only the local row carries the override; the state summary has
+              // no such column, so without this the slider would reset to
+              // default every time the list refreshed.
+              reasoning_effort: localSession.reasoning_effort || '',
               expert_id: localSession.expert_id || null,
               expert_label: localSession.expert_label || null,
               expert_avatar: localSession.expert_avatar || null,
@@ -1160,6 +1166,35 @@ export async function unarchiveSession(ctx: any) {
   await setArchived(ctx, false)
 }
 
+/**
+ * POST /api/hermes/sessions/:id/pin — cross-device session pin.
+ *
+ * The pin lives on the session row, so it reaches every browser the same
+ * account signs in from. Writes go through the same profile/owner fence as
+ * archive: a caller who cannot read the row cannot pin it either.
+ */
+export async function setPinned(ctx: any) {
+  const existing = localGetSession(ctx.params.id)
+  if (!existing) {
+    ctx.status = 404
+    ctx.body = { error: 'Session not found' }
+    return
+  }
+  if (await denySessionAccessAsync(ctx, existing)) return
+  const { is_pinned } = (ctx.request.body || {}) as { is_pinned?: unknown }
+  if (typeof is_pinned !== 'boolean') {
+    ctx.status = 400
+    ctx.body = { error: 'is_pinned must be a boolean' }
+    return
+  }
+  if (!localSetSessionPinned(ctx.params.id, is_pinned)) {
+    ctx.status = 500
+    ctx.body = { error: 'Failed to update session pin' }
+    return
+  }
+  ctx.body = { ok: true, is_pinned }
+}
+
 export async function setWorkspace(ctx: any) {
   const { workspace } = ctx.request.body as { workspace?: string }
   if (workspace !== undefined && workspace !== null && typeof workspace !== 'string') {
@@ -1330,6 +1365,51 @@ export async function setModel(ctx: any) {
   // ponytail: the key only appears when the client should toast — the plain
   // `{ ok: true }` contract every other caller asserts on stays untouched.
   ctx.body = noticeFamilySwitch ? { ok: true, family_switch_notice: true } : { ok: true }
+}
+
+/** The slider's stops plus the two "unset" spellings. Mirrors
+ *  `reasoningEffortOptions` in ChatInput.vue, which in turn mirrors core's
+ *  VALID_REASONING_EFFORTS (hermes_constants.py). '' means "no override —
+ *  fall back to the profile/config default". */
+const SESSION_REASONING_EFFORTS = new Set(['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+
+/**
+ * POST /api/hermes/sessions/:id/reasoning-effort
+ *
+ * Persist the per-session reasoning-effort override on the session row so the
+ * choice survives a reload and reaches every device that opens the session.
+ * Unknown values are rejected rather than stored: an unrecognized string would
+ * reach the agent and be silently dropped, leaving the slider claiming a depth
+ * the run never used.
+ */
+export async function setReasoningEffort(ctx: any) {
+  const id = ctx.params.id
+  const existing = localGetSession(id)
+  if (!existing) {
+    ctx.status = 404
+    ctx.body = { error: 'Session not found' }
+    return
+  }
+  if (await denySessionAccessAsync(ctx, existing)) return
+
+  const body = (ctx.request.body || {}) as { reasoningEffort?: unknown; reasoning_effort?: unknown }
+  const rawEffort = body.reasoningEffort ?? body.reasoning_effort
+  if (typeof rawEffort !== 'string') {
+    ctx.status = 400
+    ctx.body = { error: 'reasoningEffort must be a string' }
+    return
+  }
+  const reasoningEffort = rawEffort.trim()
+  if (!SESSION_REASONING_EFFORTS.has(reasoningEffort)) {
+    ctx.status = 400
+    ctx.body = { error: 'Invalid reasoningEffort' }
+    return
+  }
+
+  // Cleared means NULL, not '': "no override" is the column's absent state.
+  // Readers normalize both back to '' so nothing downstream has to care.
+  localUpdateSession(id, { reasoning_effort: reasoningEffort || null })
+  ctx.body = { ok: true, reasoning_effort: reasoningEffort }
 }
 
 export async function contextLength(ctx: any) {

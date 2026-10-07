@@ -52,6 +52,7 @@ import {
   rememberBrokerWorkflowEvent,
   resumeBrokerHarnessCredential,
   respondToBrokerApproval,
+  respondToBrokerAuthorization,
   respondToBrokerClarify,
   runBrokerGoalEvaluate,
   runBrokerSessionCommand,
@@ -71,6 +72,7 @@ import {
   stateMatchesSessionGeneration,
   type SessionGeneration,
 } from './run-chat/session-generation'
+import { interruptUnfinishedSubagentSnapshots, isReplayableSubagentEvent, replayableSubagentEvents } from './run-chat/subagent-replay'
 import { acknowledgeResumeEvents, forgetResumeEventAcknowledgement } from './run-chat/pending-resume-events'
 import { fetchExpertCatalog } from './expert-registry-client'
 import { isHarnessEnabledForProfile } from './harness-admission'
@@ -428,6 +430,8 @@ interface QueuedRun {
   expert_label?: string
   expert_avatar?: string
   execution_engine?: 'hermes' | 'harness'
+  /** Reasoning-effort override as it stood when this run was typed ahead. */
+  reasoning_effort?: string
   goalContinuation?: boolean
   profile: string
   // Principal that enqueued this item. Verified against the row owner AND the
@@ -677,6 +681,8 @@ export class BrokerRunController {
       expert_avatar?: string
       execution_engine?: 'hermes' | 'harness'
       queue_id?: string
+      /** Per-session reasoning-effort override picked in the chat input. */
+      reasoning_effort?: string
     }) => {
       // Before ANY state or transcript write: a socket may only drive a session row
       // owned by its own profile. This entry also guards the queue and session-command
@@ -729,6 +735,7 @@ export class BrokerRunController {
             expert_label: data.expert_label,
             expert_avatar: data.expert_avatar,
             execution_engine: data.execution_engine,
+            reasoning_effort: data.reasoning_effort,
             profile,
           })
           admittedState.goalEvaluationAbortController?.abort()
@@ -833,6 +840,66 @@ export class BrokerRunController {
           event: 'clarify.failed',
           session_id: sessionId,
           clarify_id: clarifyId,
+          error: err?.message || String(err),
+        })
+      }
+    })
+
+    // Inline authorization (TRAE-style): the card drives a three-step handshake
+    // that lives entirely on the broker. `authorize` returns the broker-minted
+    // verification URL to THIS socket only; `confirm` is the client's poll and
+    // stays silent while the broker says pending (the real success arrives as an
+    // `authorization_resolved` frame on the run stream, so we never synthesize
+    // one); `cancel` closes the card for everyone in the session room. Nothing
+    // here touches credential.replay — no run is resurrected by this path.
+    socket.on('authorization.respond', async (data: { session_id?: string; authorization_id?: string; action?: string }) => {
+      const sessionId = String(data.session_id || '').trim()
+      const authorizationId = String(data.authorization_id || '').trim()
+      const action = String(data.action || '').trim()
+      if (!sessionId || !authorizationId) return
+      if (action !== 'authorize' && action !== 'confirm' && action !== 'cancel') return
+      if (this.rejectsUnauthorizedSession(socket, sessionId, profile, undefined, { requireExistingRow: true })) return
+      try {
+        const result = await respondToBrokerAuthorization({
+          socket,
+          profile,
+          agentId: (socket.data?.agentId as string | undefined)?.trim(),
+          sessionId,
+          authorizationId,
+          action,
+        })
+        if (action === 'authorize') {
+          const verificationUri = String(result?.verification_uri || '').trim()
+          if (!verificationUri) throw new Error('Authorization link is unavailable')
+          socket.emit('authorization.url', {
+            event: 'authorization.url',
+            session_id: sessionId,
+            authorization_id: authorizationId,
+            verification_uri: verificationUri,
+          })
+          return
+        }
+        if (action === 'cancel') {
+          const authorizationState = this.getSessionState(sessionId, profile)
+          if (authorizationState) {
+            rememberBrokerWorkflowEvent(authorizationState, 'authorization.resolved', { authorization_id: authorizationId })
+          }
+          this.nsp.to(this.sessionRoom(sessionId, profile)).emit('authorization.resolved', {
+            event: 'authorization.resolved',
+            session_id: sessionId,
+            authorization_id: authorizationId,
+            state: 'cancelled',
+            reason: '',
+          })
+          return
+        }
+        // action === 'confirm': ok:false / state:"pending" is the normal
+        // not-yet-authorized answer — emit nothing, the card keeps polling.
+      } catch (err: any) {
+        socket.emit('authorization.failed', {
+          event: 'authorization.failed',
+          session_id: sessionId,
+          authorization_id: authorizationId,
           error: err?.message || String(err),
         })
       }
@@ -1169,8 +1236,11 @@ export class BrokerRunController {
         logger.warn({ err, sid }, '[chat-run-socket] Harness workflow restore failed')
       }
     }
+    if (!state.isWorking) interruptUnfinishedSubagentSnapshots(state.events)
+    const subagentReplay = replayableSubagentEvents(state.events)
     const replayEvents = [
-      ...state.events,
+      ...state.events.filter(item => !isReplayableSubagentEvent(item.event)),
+      ...subagentReplay,
       ...[
         ...(state.pendingTerminalEvents || []),
         ...Array.from(state.parkedCredentialRuns?.values() || [], parked => parked.resumeEvent),
@@ -1204,6 +1274,10 @@ export class BrokerRunController {
       outputTokens: state.outputTokens,
       queueLength: state.queue?.length || 0,
     })
+
+    for (const snapshot of subagentReplay) {
+      socket.emit(snapshot.event, { ...snapshot.data, session_id: sid })
+    }
 
     logger.info('[chat-run-socket] socket %s resumed session %s (working: %s, messages: %d)',
       socket.id, sid, state.isWorking, state.messages.length)
@@ -1380,7 +1454,7 @@ export class BrokerRunController {
 
   private async handleRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; source?: ChatRunSource; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; project_id?: string; expert_label?: string; expert_avatar?: string; execution_engine?: 'hermes' | 'harness'; queue_id?: string },
+    data: { input: string | ContentBlock[]; __skipSessionCommand?: boolean; __hideUserMessage?: boolean; session_id?: string; source?: ChatRunSource; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; project_id?: string; expert_label?: string; expert_avatar?: string; execution_engine?: 'hermes' | 'harness'; queue_id?: string; reasoning_effort?: string },
     profile: string,
     skipUserMessage = false,
   ) {
@@ -1450,6 +1524,9 @@ export class BrokerRunController {
           expert_label: data.expert_label,
           expert_avatar: data.expert_avatar,
           execution_engine: data.execution_engine,
+          // Frozen at enqueue: the depth the user picked when they hit send,
+          // not whatever the slider says by the time this run drains.
+          reasoning_effort: data.reasoning_effort,
           profile,
         })
         state.goalEvaluationAbortController?.abort()
@@ -1461,7 +1538,7 @@ export class BrokerRunController {
         return
       }
       state.isWorking = true
-      state.events = []
+      state.events = replayableSubagentEvents(state.events, { interrupted: true })
       state.profile = profile
       state.activeRunMarker = runMarker
     }
@@ -1480,7 +1557,7 @@ export class BrokerRunController {
       state.activeRunMarker = undefined
       state.responseRun = undefined
       state.profile = undefined
-      state.events = []
+      state.events = replayableSubagentEvents(state.events, { interrupted: true })
     }
     try {
       let resolved: Awaited<ReturnType<typeof this.resolveRunExpert>>
@@ -1571,6 +1648,9 @@ export class BrokerRunController {
               title: preview,
               workspace: authoritativeWorkspace || undefined,
               execution_engine: authoritativeEngine,
+              // A brand-new chat has no row to POST the slider to, so the
+              // choice rides this first run and is written with the row.
+              reasoning_effort: data.reasoning_effort || '',
             })
           }
 
@@ -1607,7 +1687,7 @@ export class BrokerRunController {
         state.activeRunMarker = undefined
         state.responseRun = undefined
         state.profile = undefined
-        state.events = []
+        state.events = replayableSubagentEvents(state.events, { interrupted: true })
         emit('run.failed', {
           event: 'run.failed',
           run_id: runMarker,
@@ -1636,6 +1716,7 @@ export class BrokerRunController {
         expert_id: authoritativeExpert?.id,
         project_id: data.project_id,
         execution_engine: authoritativeEngine,
+        reasoning_effort: data.reasoning_effort,
       }, profile, runMarker, emit)
       return
     }
@@ -1800,6 +1881,7 @@ export class BrokerRunController {
       expert_avatar?: string
       execution_engine?: 'hermes' | 'harness'
       queue_id?: string
+      reasoning_effort?: string
     },
     profile: string,
     state?: SessionState,
@@ -1863,6 +1945,9 @@ export class BrokerRunController {
         expert_label: data.expert_label,
         expert_avatar: data.expert_avatar,
         execution_engine: data.execution_engine,
+        // Same freeze as the plain run queue: /plan and /goal derive a run
+        // later, and it must use the depth chosen when the command was sent.
+        reasoning_effort: data.reasoning_effort,
         profile,
       })
       state.goalEvaluationAbortController?.abort()
@@ -1880,7 +1965,7 @@ export class BrokerRunController {
       state.activeRunMarker = commandMarker
       state.runId = commandMarker
       state.abortController = commandAbortController
-      state.events = []
+      state.events = replayableSubagentEvents(state.events, { interrupted: true })
     }
 
     // Catalog resolution AFTER the synchronous reservation above: a second
@@ -1895,7 +1980,7 @@ export class BrokerRunController {
       state!.activeRunMarker = undefined
       state!.responseRun = undefined
       state!.profile = undefined
-      state!.events = []
+      state!.events = replayableSubagentEvents(state!.events, { interrupted: true })
     }
     let resolvedExpert: AuthoritativeExpert | undefined
     let authoritativeEngine: 'hermes' | 'harness' = 'hermes'
@@ -1958,7 +2043,7 @@ export class BrokerRunController {
       state.activeRunMarker = undefined
       state.responseRun = undefined
       state.profile = undefined
-      state.events = []
+      state.events = replayableSubagentEvents(state.events, { interrupted: true })
       return true
     }
     const discardStaleCommand = (removeMappedState = false) => {
@@ -2069,6 +2154,7 @@ export class BrokerRunController {
           project_id: data.project_id,
           expert_label: data.expert_label,
           expert_avatar: data.expert_avatar,
+          reasoning_effort: data.reasoning_effort,
         }, profile)
       } else if (serialized) {
         this.dequeueNextQueuedRun(socket, sessionId, profile, state)
@@ -2212,7 +2298,7 @@ export class BrokerRunController {
         state.isAborting = false
         state.abortController = undefined
         state.runId = undefined
-        state.events = []
+        state.events = replayableSubagentEvents(state.events, { interrupted: true })
       }
       this.emitToSession(socket, sessionId, profile, 'abort.completed', {
         event: 'abort.completed',
@@ -2301,7 +2387,7 @@ export class BrokerRunController {
     state.activeRunMarker = undefined
     state.responseRun = undefined
     state.profile = undefined
-    state.events = []
+    state.events = replayableSubagentEvents(state.events, { interrupted: true })
     const terminalError = finalizationError || pendingFailure
     if (wasAborting) {
       const abortCompleted = {
@@ -2436,6 +2522,7 @@ export class BrokerRunController {
       expert_label: next.expert_label,
       expert_avatar: next.expert_avatar,
       execution_engine: next.execution_engine,
+      reasoning_effort: next.reasoning_effort,
       __skipSessionCommand: next.goalContinuation,
       __hideUserMessage: next.goalContinuation,
     }
@@ -2498,7 +2585,7 @@ export class BrokerRunController {
 
   private async handleBrokerRun(
     socket: Socket,
-    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; project_id?: string; execution_engine?: 'hermes' | 'harness'; replay_run_id?: string },
+    data: { input: string | ContentBlock[]; session_id?: string; model?: string; provider?: string; workspace?: string | null; instructions?: string; expert_id?: string; project_id?: string; execution_engine?: 'hermes' | 'harness'; replay_run_id?: string; reasoning_effort?: string },
     profile: string,
     runMarker: string | undefined,
     emit: (event: string, payload: any) => void,
@@ -2622,7 +2709,7 @@ export class BrokerRunController {
     })
     state.parkedCredentialRuns?.delete(runId)
     state.isWorking = true
-    state.events = []
+    state.events = replayableSubagentEvents(state.events, { interrupted: true })
     state.profile = profile
 
     const emit = (event: string, payload: any) => {

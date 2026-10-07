@@ -23,9 +23,12 @@ export interface HermesSessionRow {
   expert_avatar: string | null
   execution_engine: 'hermes' | 'harness'
   is_archived: boolean
+  is_pinned: boolean
   user_id: string | null
   model: string
   provider: string
+  /** Per-session reasoning-effort override; '' means "use the config default". */
+  reasoning_effort: string
   title: string | null
   started_at: number
   ended_at: number | null
@@ -134,9 +137,11 @@ function mapSessionRow(row: Record<string, unknown>): HermesSessionRow {
     expert_avatar: row.expert_avatar != null ? String(row.expert_avatar) : null,
     execution_engine: row.execution_engine === 'harness' ? 'harness' : 'hermes',
     is_archived: Number(row.is_archived || 0) === 1,
+    is_pinned: Number(row.is_pinned || 0) === 1,
     user_id: row.user_id != null ? String(row.user_id) : null,
     model: String(row.model || ''),
     provider: String(row.provider || ''),
+    reasoning_effort: String(row.reasoning_effort || ''),
     title,
     started_at: Number(row.started_at || 0),
     ended_at: row.ended_at != null ? Number(row.ended_at) : null,
@@ -201,6 +206,7 @@ export function createSession(data: {
   user_id?: string | null
   model?: string
   provider?: string
+  reasoning_effort?: string
   title?: string
   workspace?: string
   execution_engine?: 'hermes' | 'harness'
@@ -218,7 +224,10 @@ export function createSession(data: {
       expert_avatar: data.expert_avatar || null,
       execution_engine: data.execution_engine === 'harness' ? 'harness' : 'hermes',
       is_archived: false,
-      user_id: data.user_id || null, model: data.model || '', provider: data.provider || '', title: data.title || null,
+      is_pinned: false,
+      user_id: data.user_id || null, model: data.model || '', provider: data.provider || '',
+      reasoning_effort: data.reasoning_effort || '',
+      title: data.title || null,
       started_at: now, ended_at: null, end_reason: null,
       message_count: 0, tool_call_count: 0,
       input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0,
@@ -230,8 +239,8 @@ export function createSession(data: {
   }
   const db = getDb()!
   db.prepare(
-    `INSERT INTO ${SESSIONS_TABLE} (id, profile, source, agent, agent_mode, agent_session_id, agent_native_session_id, expert_id, expert_label, expert_avatar, user_id, model, provider, title, started_at, last_active, workspace, execution_engine)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO ${SESSIONS_TABLE} (id, profile, source, agent, agent_mode, agent_session_id, agent_native_session_id, expert_id, expert_label, expert_avatar, user_id, model, provider, reasoning_effort, title, started_at, last_active, workspace, execution_engine)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     data.id,
     data.profile || 'default',
@@ -246,6 +255,7 @@ export function createSession(data: {
     data.user_id || null,
     data.model || '',
     data.provider || '',
+    data.reasoning_effort || '',
     data.title || null,
     now,
     now,
@@ -279,7 +289,13 @@ export function getSessionIncarnation(id: string, knownRowId: number | null = ge
   return ensureSessionIncarnation(id)
 }
 
-export function updateSession(id: string, data: Partial<Omit<HermesSessionRow, 'id' | 'profile'>>): void {
+// `reasoning_effort` widens to null on write: reads always normalize to a
+// string, but clearing the override stores SQL NULL rather than '' so "never
+// set" and "explicitly cleared" look the same to any future query.
+export function updateSession(
+  id: string,
+  data: Partial<Omit<HermesSessionRow, 'id' | 'profile' | 'reasoning_effort'>> & { reasoning_effort?: string | null },
+): void {
   if (!isSqliteAvailable()) return
   const db = getDb()!
   const fields: string[] = []
@@ -366,16 +382,32 @@ export function setSessionArchived(id: string, archived: boolean): boolean {
   return result.changes > 0
 }
 
+/**
+ * Cross-device session pin. The flag lives on the session row (not in browser
+ * storage) so the same account sees the same pinned set in every browser.
+ */
+export function setSessionPinned(id: string, pinned: boolean): boolean {
+  if (!isSqliteAvailable()) return false
+  const db = getDb()!
+  const result = db.prepare(`UPDATE ${SESSIONS_TABLE} SET is_pinned = ? WHERE id = ?`).run(pinned ? 1 : 0, id)
+  return result.changes > 0
+}
+
 export function listSessions(
   profile?: string,
   source?: string,
   limit = 2000,
-  options: { includeArchived?: boolean } = {},
+  options: { includeArchived?: boolean; pinned?: boolean } = {},
 ): HermesSessionRow[] {
   if (!isSqliteAvailable()) return []
   const db = getDb()!
   const profileFilter = profile?.trim()
   const includeArchived = options.includeArchived === true
+  const pinnedFilter = options.pinned === undefined
+    ? ''
+    : options.pinned
+      ? 'AND COALESCE(s.is_pinned, 0) = 1'
+      : 'AND COALESCE(s.is_pinned, 0) = 0'
 
   // Use a subquery to generate preview from first user message if not set
   const sql = `
@@ -397,7 +429,10 @@ export function listSessions(
       ${profileFilter ? 'AND s.profile = ?' : ''}
       ${source ? 'AND s.source = ?' : ''}
       ${includeArchived ? '' : 'AND COALESCE(s.is_archived, 0) = 0'}
-    ORDER BY s.last_active DESC
+      ${pinnedFilter}
+    -- Pinned rows sort first so a truncating LIMIT can never drop a pin that
+    -- the sidebar has to render above everything else.
+    ORDER BY COALESCE(s.is_pinned, 0) DESC, s.last_active DESC
     LIMIT ?
   `
 

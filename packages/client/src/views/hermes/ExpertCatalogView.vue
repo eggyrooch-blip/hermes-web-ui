@@ -101,24 +101,62 @@ function openDetail(expert: ExpertInfo) {
   showDetail.value = true
 }
 
-async function startExpertChat(expert: ExpertInfo, engine: 'hermes' | 'harness') {
-  let session
+/** Create the expert-bound session, or surface the Codex-unavailable notice. */
+function createExpertSession(expert: ExpertInfo, engine: 'hermes' | 'harness') {
   try {
-    session = chatStore.newChatWithExpert(expert, engine)
+    const session = chatStore.newChatWithExpert(expert, engine)
+    startError.value = ''
+    return session
   } catch (err) {
     if (err instanceof Error && err.message === CODEX_MODEL_UNAVAILABLE) {
       startError.value = t('expert.detail.codexNoModels')
-      return
+      return null
     }
     throw err
   }
-  startError.value = ''
-  showDetail.value = false
-  await router.push({
+}
+
+function sessionRoute(session: { id: string; profile?: string }) {
+  return {
     name: 'hermes.session',
     params: { sessionId: session.id },
     query: session.profile ? { profile: session.profile } : undefined,
-  })
+  }
+}
+
+async function startExpertChat(expert: ExpertInfo, engine: 'hermes' | 'harness') {
+  const session = createExpertSession(expert, engine)
+  if (!session) return
+  showDetail.value = false
+  await router.push(sessionRoute(session))
+}
+
+/**
+ * 「试试这样问我」: open a new chat with this expert AND pre-fill the sentence.
+ * The draft is staged before the session exists, and ChatInput consumes it once
+ * it has switched over — never auto-sent, the user presses send themselves.
+ */
+async function askExpert(prompt: string, engine: 'hermes' | 'harness') {
+  const expert = selected.value
+  if (!expert) return
+  const session = createExpertSession(expert, engine)
+  if (!session) return
+  // Addressed to this session: ChatInput takes it only there, so a guard that
+  // redirects us elsewhere cannot type this line into someone else's draft.
+  chatStore.stageComposerDraft(session.id, prompt)
+  showDetail.value = false
+  try {
+    await router.push(sessionRoute(session))
+  } catch (err) {
+    chatStore.clearStagedComposerDraft(session.id)
+    throw err
+  }
+  // Resolving is not arriving: a guard may have redirected. Anything still
+  // staged for this session then never gets consumed, so drop it rather than
+  // leave it waiting for a session the user may reopen much later.
+  if (router.currentRoute.value.params.sessionId !== session.id) {
+    chatStore.clearStagedComposerDraft(session.id)
+  }
 }
 
 onMounted(() => {
@@ -211,6 +249,7 @@ watch(activeProfileName, () => {
           :active="isActive(selected)"
           @close="showDetail = false"
           @activate="startExpertChat"
+          @ask="askExpert"
         />
       </NDrawerContent>
     </NDrawer>

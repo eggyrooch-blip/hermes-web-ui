@@ -215,6 +215,9 @@ export class GlobalAgentServer {
     socket.on('clarify.respond', (payload: unknown) => {
       void this.emitFrontendChatEvent(socket, 'clarify.respond', payload)
     })
+    socket.on('authorization.respond', (payload: unknown) => {
+      void this.emitFrontendChatEvent(socket, 'authorization.respond', payload)
+    })
     socket.on('credential.replay', (payload: unknown) => {
       void this.emitFrontendChatEvent(socket, 'credential.replay', payload)
     })

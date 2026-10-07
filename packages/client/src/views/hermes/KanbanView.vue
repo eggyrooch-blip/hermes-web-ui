@@ -9,6 +9,7 @@ import KanbanCreateForm from '@/components/hermes/kanban/KanbanCreateForm.vue'
 import { DEFAULT_KANBAN_BOARD, useKanbanStore } from '@/stores/hermes/kanban'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { withDefaultAssignee } from '@/utils/hermes/kanban-assignees'
+import { isKanbanDropTarget, resolveKanbanDropAction } from '@/utils/hermes/kanban-drag'
 import type { KanbanTaskStatus } from '@/api/hermes/kanban'
 import type { ProfileAvatar } from '@/api/hermes/profiles'
 
@@ -93,6 +94,84 @@ const visibleBoardStatuses = computed(() => {
 })
 
 const visibleAssignees = computed(() => withDefaultAssignee(kanbanStore.assignees, kanbanStore.stats?.by_assignee || {}))
+
+// ─── Drag a card between columns ────────────────────────────────
+// The dragged id lives here rather than in dataTransfer: dataTransfer is not
+// readable during dragover (protected mode), and jsdom does not populate it at
+// all, so a column could not decide whether it is a legal target from it.
+const draggingTaskId = ref<string | null>(null)
+const dropTargetStatus = ref<KanbanTaskStatus | null>(null)
+// One transition at a time. Without this a second drop lands while the first
+// request is still open and the two responses race on the same card.
+const dropPending = ref(false)
+
+const draggingTask = computed(() => (
+  draggingTaskId.value ? kanbanStore.tasks.find(task => task.id === draggingTaskId.value) || null : null
+))
+
+function canDropOn(status: KanbanTaskStatus): boolean {
+  if (!isKanbanDropTarget(status)) return false
+  const task = draggingTask.value
+  return !!task && resolveKanbanDropAction(task.status, status) !== null
+}
+
+function handleTaskDragStart(taskId: string) {
+  draggingTaskId.value = taskId
+}
+
+function handleTaskDragEnd() {
+  draggingTaskId.value = null
+  dropTargetStatus.value = null
+}
+
+function handleColumnDragOver(status: KanbanTaskStatus, event: DragEvent) {
+  if (!canDropOn(status)) return
+  // Only preventDefault on a column that will accept the drop, so the cursor
+  // shows "no drop" over the ones that would fail.
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  dropTargetStatus.value = status
+}
+
+function handleColumnDragLeave(status: KanbanTaskStatus) {
+  if (dropTargetStatus.value === status) dropTargetStatus.value = null
+}
+
+async function handleColumnDrop(status: KanbanTaskStatus, event: DragEvent) {
+  event.preventDefault()
+  const taskId = draggingTaskId.value
+  draggingTaskId.value = null
+  dropTargetStatus.value = null
+  if (!taskId || dropPending.value) return
+
+  const task = kanbanStore.tasks.find(item => item.id === taskId)
+  if (!task) return
+  const previousStatus = task.status
+  const action = resolveKanbanDropAction(previousStatus, status)
+  if (!action) return
+
+  dropPending.value = true
+  try {
+    if (action === 'complete') {
+      await kanbanStore.completeTasks([taskId])
+      message.success(t('kanban.message.taskCompleted'))
+    } else if (action === 'block') {
+      await kanbanStore.blockTask(taskId, t('kanban.drag.blockReason'))
+      message.success(t('kanban.message.taskBlocked'))
+    } else {
+      await kanbanStore.unblockTasks([taskId])
+      message.success(t('kanban.message.taskUnblocked'))
+    }
+  } catch (err: any) {
+    // The store moves the card optimistically; put it back where it came from
+    // so the board never shows a column the server rejected.
+    const reverted = kanbanStore.tasks.find(item => item.id === taskId)
+    if (reverted) reverted.status = previousStatus
+    message.error(err?.message || t('kanban.drag.failed'))
+  } finally {
+    dropPending.value = false
+  }
+}
 
 const profileAvatarByName = computed<Record<string, ProfileAvatar | null>>(() => {
   return Object.fromEntries(profilesStore.profiles.map(profile => [profile.name, profile.avatar || null]))
@@ -302,7 +381,7 @@ async function handleDispatch() {
         :aria-pressed="!kanbanStore.filterStatus"
         @click="handleStatusChipClick(null)"
       >
-        <span class="stat-count">{{ kanbanStore.stats.total }}</span>
+        <span class="stat-count">{{ kanbanStore.stats.total || 0 }}</span>
         <span class="stat-label">{{ t('kanban.stats.total') }}</span>
       </button>
     </div>
@@ -324,13 +403,26 @@ async function handleDispatch() {
                 <span>{{ t(`kanban.columns.${status}`, status) }} ({{ tasksByStatus[status].length }})</span>
               </span>
             </template>
-            <div class="task-list" :class="`status-${status}`">
+            <div
+              class="task-list"
+              :class="[`status-${status}`, {
+                'drop-target': canDropOn(status),
+                'drop-over': dropTargetStatus === status,
+              }]"
+              :data-drop-status="status"
+              :data-drop-allowed="canDropOn(status) ? 'true' : 'false'"
+              @dragover="event => handleColumnDragOver(status, event)"
+              @dragleave="handleColumnDragLeave(status)"
+              @drop="event => handleColumnDrop(status, event)"
+            >
               <KanbanTaskCard
                 v-for="task in tasksByStatus[status]"
                 :key="task.id"
                 :task="task"
                 :assignee-avatar="task.assignee ? profileAvatarByName[task.assignee] || null : null"
                 @click="handleTaskClick(task.id)"
+                @drag-start="handleTaskDragStart"
+                @drag-end="handleTaskDragEnd"
               />
               <div v-if="tasksByStatus[status].length === 0" class="column-empty">
                 {{ t('kanban.noTasks') }}
@@ -392,6 +484,16 @@ async function handleDispatch() {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.task-list.drop-target {
+  outline: 1px dashed rgba(var(--accent-primary-rgb), 0.45);
+  outline-offset: -4px;
+}
+
+.task-list.drop-over {
+  outline-style: solid;
+  background-color: rgba(var(--accent-primary-rgb), 0.06);
 }
 
 .stats-bar {

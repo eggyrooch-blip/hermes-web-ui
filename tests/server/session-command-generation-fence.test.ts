@@ -54,7 +54,7 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/handle-coding-agent-
 }))
 
 vi.mock('../../packages/server/src/services/hermes/agent-bridge', () => ({
-  AgentBridgeClient: vi.fn(() => bridgeMock),
+  AgentBridgeClient: vi.fn(function () { return bridgeMock }),
 }))
 
 vi.mock('../../packages/server/src/services/hermes/agent-bridge/manager', () => ({
@@ -163,6 +163,7 @@ function harness() {
 describe('bridge session command generation fence', () => {
   let root: string
 
+  // CI runner (4 workers on a 4-cpu quota, /tmp SQLite + full table init) measured past vitest's global 30s in 5 failed jobs this week; hook logic is unchanged, only the ceiling is 4x the global (same slack factor as workspace-diff-tracker).
   beforeEach(async () => {
     vi.clearAllMocks()
     namespaceEmit.mockReset()
@@ -181,13 +182,13 @@ describe('bridge session command generation fence', () => {
     initAllHermesTables()
     const { createSession } = await import('../../packages/server/src/db/hermes/session-store')
     createSession({ id: 'session-1', profile: 'default', source: 'cli' })
-  })
+  }, 120_000)
 
   afterEach(() => {
     dbState.db?.close()
     dbState.db = null
     rmSync(root, { recursive: true, force: true })
-  })
+  }, 120_000)
 
   it('waits to look up an active /plan until its queued item is dequeued', async () => {
     bridgeMock.command.mockResolvedValue({ handled: true, message: 'expanded plan' })

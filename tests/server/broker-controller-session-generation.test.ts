@@ -283,6 +283,7 @@ function expectSessionPurged(sessionId = 'same-id') {
 describe('BrokerRunController session generation integration', () => {
   let root: string
 
+  // CI runner (4 workers on a 4-cpu quota, /tmp SQLite + full table init) measured past vitest's global 30s in 9 failed jobs this week; hook logic is unchanged, only the ceiling is 4x the global (same slack factor as workspace-diff-tracker).
   beforeEach(() => {
     vi.clearAllMocks()
     chatRun.server = undefined
@@ -296,13 +297,13 @@ describe('BrokerRunController session generation integration', () => {
     workspace.normalizeStored.mockImplementation(async (_profile: string, value?: string | null) => value || null)
     tracker.start.mockResolvedValue({ key: 'checkpoint' })
     tracker.complete.mockResolvedValue(null)
-  })
+  }, 120_000)
 
   afterEach(() => {
     dbState.db?.close()
     dbState.db = null
     rmSync(root, { recursive: true, force: true })
-  })
+  }, 120_000)
 
   it('starts a same-id recreated session instead of queueing it on the deleted generation', async () => {
     const oldCheckpoint = deferred<any>()

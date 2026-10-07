@@ -54,10 +54,10 @@ constraint directly.
 <!-- ftask:managed v1 — auto-generated; edit OUTSIDE this block -->
 # Agent rules — hermes-web-ui (managed by ftask)
 
-- This repo is part of sunke's agent-OS. Agents NEVER run git directly here — use `bun ~/.claude/LIFEOS/TOOLS/ftask.ts`.
-- Base branch: `main`. WORKTREE MODE: the main checkout stays PERMANENTLY on `main` — it is sunke's verification environment, NEVER switch its branch or write to it. `ftask new <slug>` gives each task its own worktree at `hermes-web-ui.tasks/<slug>`; do ALL work there. Parallel agents = parallel worktrees, zero contention.
-- Test gate: `ftask ship` runs valid SPEC-targeted paths first, then `bun run test` (auto-detected) once as the final local-ff gate (PR: required CI owns full); invalid/missing targets fall back to full and failures BLOCK merge.
-- Ship semantics: `ftask ship` merges into `main` then STOPS — sunke verifies in his local environment on `main` (worktree mode: the main checkout already shows the merge, zero switching); only after his OK run `ftask postship <slug> --finalize` (push + remove worktree + delete branch). NOT OK → `ftask revert <slug>`.
+- This repo is part of sunke's agent-OS. Agents NEVER run git directly here — use `bun ~/.claude/LIFEOS/TOOLS/.ftask-runtime/current/ftask.ts`.
+- Base branch: `main`. WORKTREE MODE: the main checkout stays PERMANENTLY on `main` as the stable main workspace; NEVER switch its branch or write to it. `ftask new <slug>` gives each task its own worktree at `hermes-web-ui.tasks/<slug>`; do ALL work there. Parallel agents = parallel worktrees, zero contention.
+- Ship semantics: sunke's explicit `ftask ship` authorization is the production decision; green gates complete merge, push, cleanup, and finalization in that command. `postship` is optional health monitoring or legacy recovery, not another approval.
+- Test gate: `ftask ship` runs valid SPEC-targeted paths locally with `bun run test` (auto-detected); required CI owns every full suite. Missing/stale/drifted CI or invalid targets BLOCK merge — never fall back to a local full suite.
 - Code questions (where is X / who calls X / what breaks if I change X): this repo has a `.codegraph/` index — use the `codegraph_*` MCP tools (explore/callers/callees/impact) FIRST instead of grep/Read sweeps; cross-repo queries take a `projectPath` arg. Human-readable architecture map: vault `AgentOS/<repo>/GRAPH.md`.
 - When you fix a bug found while troubleshooting (a 排障), add a regression test that FAILS without the fix BEFORE `ftask ship`, and record the root cause as one line under "Known gotchas" below.
 - Global protocol: `~/.claude/CLAUDE.md` (Claude), `~/.codex/AGENTS.md` (Codex), and `~/.grok/AGENTS.md` (Grok) — "AGENT-OS" section. User cheatsheet: `~/code/AGENT-OS.md`.
@@ -68,6 +68,9 @@ constraint directly.
 <!-- /ftask:managed -->
 
 ## Local known gotchas
+
+- 2026-09-21: 初始滚动恢复不能用 8 秒定时器清 pending；resume 的 15 秒超时之后仍可能成功 HTTP hydration，应依据恢复成功或加载结束清理。
+- 2026-09-21: i18n 的空 English 降级字典也会出现在 availableLocales；仅成功请求的 locale 才能记入 loaded 缓存，否则网络恢复后无法重试。
 
 - 2026-09-01: `scripts/run-tests.mjs` 里，**带 filter 的 CI 调用同样要走 cap + 隔离**，别再让 filter 直接 `return null` 走原参数直通 —— tiered pipeline 之后 `.gitlab-ci.yml` 的 lane 自己就是定向调用（`npm test -- tests/client|server|desktop`），直通等于整套 CI 裸并发跑，把 vitest 的 worker RPC 压到 `Timeout calling "onTaskUpdate"`：用例全过却 exit 1（pipeline 543253，1931 passed / exit 1）。两条配套约束：①cap 前要清掉 caller 的**所有**并发写法（`--min/maxWorkers` 两种拼写 + `--poolOptions.<pool>.max*/min*`，`--poolOptions` 与 `--pool-options` 两种前缀都收），pool 那组优先级高于 `--maxWorkers`，漏剥会**静默**盖掉 cap；②filter 只命中被隔离的 `workspace-diff-tracker.test.ts` 时，common 阶段排掉它就一个文件不剩，vitest 会以 `No test files found` 退 1，所以有 filter 时 common 带 `--passWithNoTests`（isolated 阶段一定跑到那个文件，不会整轮空过）。本地（无 CI）定向调用仍然直通，不要改。
 - 2026-08-30: CI test wrappers must use Vitest's own CLI parser to distinguish positional filters from option values. Hand-rolled “first non-dash token” checks misclassify both substring filters and values such as `--exclude workspace-diff`; split phases must also give coverage/reporter output separate artifact paths instead of silently dropping or overwriting them.

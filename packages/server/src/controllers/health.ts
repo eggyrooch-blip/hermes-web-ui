@@ -169,6 +169,15 @@ async function refreshAgentBridgeHealth(): Promise<AgentBridgeHealthPayload> {
   }
 }
 
+/**
+ * Lightweight liveness probe — static response, no Hermes CLI version call and
+ * no Agent Bridge probe, so boot/deploy probes stay fast and never block on a
+ * slow upstream.
+ */
+export function livenessCheck(ctx: any) {
+  ctx.body = { status: 'ok' }
+}
+
 export async function healthCheck(ctx: any) {
   const raw = await hermesCli.getVersion()
   const hermesVersion = raw.split('\n')[0].replace('Hermes Agent ', '') || ''

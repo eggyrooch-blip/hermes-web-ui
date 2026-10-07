@@ -1,17 +1,12 @@
 <script lang="ts">
-type SessionScrollSnapshot = {
-  scrollTop: number;
-  scrollHeight: number;
-  clientHeight: number;
-  wasNearBottom: boolean;
-}
+import type { MessageViewportScrollSnapshot } from "./message-scroll-position";
 
 type BottomScrollOptions = number | {
   frames?: number;
   keepAliveMs?: number;
 }
 
-const sessionScrollPositions = new Map<string, SessionScrollSnapshot>();
+const sessionScrollPositions = new Map<string, MessageViewportScrollSnapshot>();
 </script>
 
 <script setup lang="ts">
@@ -25,13 +20,21 @@ import { useFeedbackStore } from "@/stores/hermes/feedback";
 import { startSkillCredentialAuth, fetchSkillCredentials } from "@/api/skillCredentials";
 import thinkingImage from "@/assets/thinking.gif";
 import { useToolTraceVisibility } from "@/composables/useToolTraceVisibility";
+import { formatAuthorizationRemaining } from "@/utils/hermes/authorization-countdown";
+import { messageScrollPositionKey, rememberMessageScrollPosition } from "./message-scroll-position";
+
+const props = withDefaults(defineProps<{
+  scrollScope?: string
+}>(), {
+  scrollScope: "chat",
+})
 
 const chatStore = useChatStore();
 const feedbackStore = useFeedbackStore();
 const { t } = useI18n();
 const { toolTraceVisible } = useToolTraceVisibility();
 const listRef = ref<InstanceType<typeof VirtualMessageList> | null>(null);
-const pendingInitialScrollSessionId = ref<string | null>(null);
+const pendingInitialScrollKey = ref<string | null>(null);
 const showScrollBottomButton = ref(false);
 const thinkingElapsedMs = ref(0);
 const initialBottomScrollOptions = { frames: 8, keepAliveMs: 1200 };
@@ -167,10 +170,13 @@ const queuedMessages = computed(() => {
 const visibleApproval = computed(() => chatStore.activePendingApproval);
 const visibleClarify = computed(() => chatStore.activePendingClarify);
 const visibleReauth = computed(() => chatStore.activePendingReauth);
+const visibleAuthorization = computed(() => chatStore.activePendingAuthorization);
 const clarifyResponse = ref("");
 const approvalComment = ref("");
 watch(() => visibleApproval.value?.approvalId, () => { approvalComment.value = ""; });
-const hasFloatingPrompt = computed(() => !!visibleApproval.value || !!visibleClarify.value || !!visibleReauth.value);
+const hasFloatingPrompt = computed(() => (
+  !!visibleApproval.value || !!visibleClarify.value || !!visibleAuthorization.value || !!visibleReauth.value
+));
 
 const CONNECTOR_DISPLAY_NAMES: Record<string, string> = {
   "lark-cli": "Lark CLI",
@@ -220,10 +226,186 @@ async function handleReauth() {
     reauthInFlight.delete(sessionId);
   }
 }
+// Inline authorization card. The raw broker service id (lark-cli / kep-cli-*) is
+// never shown — it maps to a translated product name. Nothing here ever touches
+// credential.replay: the broker holds the parked run and releases it itself.
+const AUTHORIZATION_SERVICE_KEYS: Record<string, string> = {
+  "lark-cli": "chat.authorizationServiceLarkCli",
+  "kep-cli-online": "chat.authorizationServiceKepOnline",
+  "kep-cli-pre": "chat.authorizationServiceKepPre",
+};
+const authorizationServiceLabel = computed(() => {
+  const key = AUTHORIZATION_SERVICE_KEYS[visibleAuthorization.value?.service || ""];
+  return key ? t(key) : t("chat.authorizationTitle");
+});
+
+const authorizationNow = ref(Math.floor(Date.now() / 1000));
+const authorizationExpired = computed(() => {
+  const card = visibleAuthorization.value;
+  if (!card || !card.expiresAt) return false;
+  return authorizationNow.value >= card.expiresAt;
+});
+const authorizationTerminal = computed(() => {
+  const state = visibleAuthorization.value?.state;
+  return state === "success" || state === "cancelled" || state === "failed" || state === "expired";
+});
+const authorizationStateLabel = computed(() => {
+  const card = visibleAuthorization.value;
+  if (!card) return "";
+  if (authorizationExpired.value && !authorizationTerminal.value) return t("chat.authorizationStateExpired");
+  switch (card.state) {
+    case "authorizing": return t("chat.authorizationStateAuthorizing");
+    case "success": return t("chat.authorizationStateSuccess");
+    case "cancelled": return t("chat.authorizationStateCancelled");
+    case "expired": return t("chat.authorizationStateExpired");
+    case "failed": return t("chat.authorizationStateFailed");
+    default: return t("chat.authorizationStatePending");
+  }
+});
+const authorizationRemainingText = computed(() => {
+  const time = formatAuthorizationRemaining(
+    visibleAuthorization.value?.expiresAt,
+    authorizationNow.value,
+  );
+  return time ? t("chat.authorizationRemaining", { time }) : "";
+});
+const authorizationHint = computed(() => {
+  const card = visibleAuthorization.value;
+  if (!card) return "";
+  if (card.state === "failed") return t("chat.authorizationFailedHint");
+  if (authorizationExpired.value) return t("chat.authorizationExpiredHint");
+  return "";
+});
+const authorizationActionsDisabled = computed(() => authorizationExpired.value || authorizationTerminal.value);
+
+// The SERVER resolves the authorization now — the provider callback, or a
+// bounded server-side poll — and pushes `authorization.resolved` on the run
+// stream. The client does not drive verification and must not poll: on the lark
+// path the token exchange never happened client-side anyway, so a confirm button
+// could not work no matter how often it was pressed. The success path is
+// therefore zero clicks in chat after 去授权.
+//
+// The one-second ticker survives for the countdown ONLY. Same stop conditions as
+// before: no card, any terminal state, the deadline, or unmount.
+const AUTHORIZATION_RECHECK_AFTER_SECONDS = 20;
+const authorizationRequested = new Set<string>();
+const authorizationAuthorizingSince = ref(0);
+let authorizationTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopAuthorizationTimer() {
+  if (authorizationTimer) {
+    clearInterval(authorizationTimer);
+    authorizationTimer = null;
+  }
+}
+
+function startAuthorizationTimer() {
+  if (authorizationTimer) return;
+  authorizationTimer = setInterval(() => {
+    authorizationNow.value = Math.floor(Date.now() / 1000);
+    if (!visibleAuthorization.value || authorizationTerminal.value || authorizationExpired.value) {
+      stopAuthorizationTimer();
+    }
+  }, 1000);
+}
+
+// Escape hatch, not an action: if the server has said nothing for a while, let
+// the user ask it to look again. Secondary by construction — a text link, and it
+// does not exist at all until the wait has actually dragged.
+const showAuthorizationRecheck = computed(() => {
+  const card = visibleAuthorization.value;
+  if (!card || card.state !== "authorizing") return false;
+  if (authorizationActionsDisabled.value) return false;
+  const since = authorizationAuthorizingSince.value;
+  if (!since) return false;
+  return authorizationNow.value - since >= AUTHORIZATION_RECHECK_AFTER_SECONDS;
+});
+
+function openAuthorizationWindow(uri: string) {
+  window.open(uri, "_blank", "noopener");
+}
+
+watch(() => visibleAuthorization.value?.authorizationId, (id) => {
+  stopAuthorizationTimer();
+  authorizationRequested.clear();
+  authorizationAuthorizingSince.value = 0;
+  authorizationNow.value = Math.floor(Date.now() / 1000);
+  if (id) startAuthorizationTimer();
+}, { immediate: true });
+
+// immediate so a card restored by replay (F5 mid-wait) also starts its clock.
+watch(() => visibleAuthorization.value?.state, (state) => {
+  if (state === "authorizing") {
+    if (!authorizationAuthorizingSince.value) {
+      authorizationAuthorizingSince.value = Math.floor(Date.now() / 1000);
+      authorizationNow.value = authorizationAuthorizingSince.value;
+    }
+    return;
+  }
+  authorizationAuthorizingSince.value = 0;
+}, { immediate: true });
+
+// Open the window only for the click that asked for it — a replayed URL after
+// F5 must not pop a tab the user did not ask for.
+watch(() => visibleAuthorization.value?.verificationUri, (uri) => {
+  const card = visibleAuthorization.value;
+  if (!uri || !card) return;
+  const key = `${card.sessionId}:${card.authorizationId}`;
+  if (!authorizationRequested.has(key)) return;
+  authorizationRequested.delete(key);
+  openAuthorizationWindow(uri);
+});
+
+function handleAuthorizationAuthorize() {
+  const card = visibleAuthorization.value;
+  if (!card || card.submitting || authorizationActionsDisabled.value) return;
+  if (card.verificationUri) {
+    openAuthorizationWindow(card.verificationUri);
+    startAuthorizationTimer();
+    return;
+  }
+  const key = `${card.sessionId}:${card.authorizationId}`;
+  if (authorizationRequested.has(key)) return;
+  authorizationRequested.add(key);
+  chatStore.respondToAuthorization("authorize");
+  startAuthorizationTimer();
+}
+
+/** Fallback only — never fires on its own. */
+function handleAuthorizationRecheck() {
+  const card = visibleAuthorization.value;
+  if (!card || authorizationActionsDisabled.value) return;
+  chatStore.respondToAuthorization("confirm");
+}
+
+function handleAuthorizationCancel() {
+  const card = visibleAuthorization.value;
+  if (!card) return;
+  stopAuthorizationTimer();
+  chatStore.respondToAuthorization("cancel");
+}
+
+onBeforeUnmount(stopAuthorizationTimer);
+
 const virtualListPadding = computed(() => {
   if (queuedMessages.value.length > 0 && hasFloatingPrompt.value) return "20px 20px 380px";
   if (queuedMessages.value.length > 0 || hasFloatingPrompt.value) return "20px 20px 260px";
   return "20px";
+});
+
+// Scroll snapshots are stored per scope+profile+session, so the same session id
+// opened from chat / history / kanban / workflow never reuses another surface's
+// position.
+const activeSessionScrollKey = computed(() => {
+  const sessionId = chatStore.activeSessionId;
+  if (!sessionId) return null;
+  const session = chatStore.activeSession?.id === sessionId
+    ? chatStore.activeSession
+    : chatStore.sessions?.find(item => item.id === sessionId);
+  return messageScrollPositionKey(props.scrollScope, {
+    id: sessionId,
+    profile: session?.profile,
+  });
 });
 
 const showHistoryArchiveLink = computed(() => {
@@ -281,41 +463,67 @@ function updateScrollBottomButton() {
 }
 
 function handleListScroll() {
+  if (!shouldAutoFollowBottom()) clearPendingInitialScroll();
   updateScrollBottomButton();
 }
 
 function handleScrollBottomClick() {
+  clearPendingInitialScroll();
   scrollToBottom({ frames: 4, keepAliveMs: 600 });
 }
 
-function saveSessionScrollPosition(sessionId: string | null | undefined) {
-  if (!sessionId) return;
-  const snapshot = listRef.value?.captureViewportPosition() ?? null;
-  if (snapshot) sessionScrollPositions.set(sessionId, snapshot);
+// Hydration includes the resume timeout and HTTP fallback; elapsed time alone
+// cannot tell us whether restoring the saved position is still possible.
+function clearPendingInitialScroll() {
+  pendingInitialScrollKey.value = null;
 }
 
-function applyInitialSessionScroll(sessionId: string) {
-  if (chatStore.activeSessionId !== sessionId) return;
+function setPendingInitialScroll(scrollKey: string) {
+  pendingInitialScrollKey.value = scrollKey;
+}
+
+function saveSessionScrollPosition(scrollKey: string | null | undefined) {
+  if (!scrollKey) return;
+  const snapshot = listRef.value?.captureViewportPosition() ?? null;
+  if (snapshot) rememberMessageScrollPosition(sessionScrollPositions, scrollKey, snapshot);
+}
+
+// The transcript is hydrated asynchronously: switching to a session whose
+// messages are not loaded yet renders an empty list first. Consuming the
+// pending key at that point loses the saved position for good, because the
+// anchor cannot be found in an empty list and the retry watcher then bails.
+// So pending is only cleared once a restore actually succeeded, or once the
+// messages have settled and the anchor is genuinely gone.
+function messagesSettled(): boolean {
+  return chatStore.messages.length > 0 && !chatStore.isLoadingMessages;
+}
+
+function applyInitialSessionScroll(scrollKey: string) {
+  if (activeSessionScrollKey.value !== scrollKey) return;
   if (chatStore.focusMessageId) {
-    pendingInitialScrollSessionId.value = null;
+    clearPendingInitialScroll();
     scrollToMessage(chatStore.focusMessageId);
     return;
   }
 
-  const snapshot = sessionScrollPositions.get(sessionId);
+  const snapshot = sessionScrollPositions.get(scrollKey);
   if (snapshot) {
-    pendingInitialScrollSessionId.value = null;
     if (snapshot.wasNearBottom) {
       scrollToBottom(initialBottomScrollOptions);
-    } else {
-      listRef.value?.restoreViewportPosition(snapshot);
+      if (messagesSettled()) clearPendingInitialScroll();
+      return;
     }
+
+    // restoreViewportPosition reports false when the saved anchor is not in the
+    // list yet — keep pending so the post-hydration watcher retries.
+    const restored = listRef.value?.restoreViewportPosition(snapshot) ?? false;
+    if (restored || messagesSettled()) clearPendingInitialScroll();
     return;
   }
 
   scrollToBottom(initialBottomScrollOptions);
-  if (chatStore.messages.length > 0 && !chatStore.isLoadingMessages) {
-    pendingInitialScrollSessionId.value = null;
+  if (messagesSettled()) {
+    clearPendingInitialScroll();
   }
 }
 
@@ -330,24 +538,37 @@ async function handleTopReach() {
   updateScrollBottomButton();
 }
 
+// Feedback stays keyed on the raw session id — it is not scroll state and must
+// not reload when only the scroll scope/profile part of the key changes.
 watch(
   () => chatStore.activeSessionId,
-  async (id, previousId) => {
-    saveSessionScrollPosition(previousId);
+  (id) => {
     if (!id) return;
     void Promise.resolve(feedbackStore.load(id)).catch(() => {});
-    pendingInitialScrollSessionId.value = id;
-    await nextTick();
-    applyInitialSessionScroll(id);
   },
   { immediate: true },
 );
 
 watch(
-  () => [chatStore.activeSessionId, chatStore.messages.length] as const,
-  ([id, length]) => {
-    if (!id || pendingInitialScrollSessionId.value !== id || length === 0) return;
-    applyInitialSessionScroll(id);
+  activeSessionScrollKey,
+  async (scrollKey, previousScrollKey) => {
+    saveSessionScrollPosition(previousScrollKey);
+    if (!scrollKey) {
+      clearPendingInitialScroll();
+      return;
+    }
+    setPendingInitialScroll(scrollKey);
+    await nextTick();
+    applyInitialSessionScroll(scrollKey);
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [activeSessionScrollKey.value, chatStore.messages.length] as const,
+  ([scrollKey, length]) => {
+    if (!scrollKey || pendingInitialScrollKey.value !== scrollKey || length === 0) return;
+    applyInitialSessionScroll(scrollKey);
     void nextTick(updateScrollBottomButton);
   },
   { flush: "post" },
@@ -365,16 +586,17 @@ watch(
   () => chatStore.isLoadingMessages,
   async (isLoading, wasLoading) => {
     if (isLoading || !wasLoading) return;
-    const id = chatStore.activeSessionId;
-    if (!id || pendingInitialScrollSessionId.value !== id) return;
-    if (chatStore.focusMessageId) {
-      pendingInitialScrollSessionId.value = null;
+    const scrollKey = activeSessionScrollKey.value;
+    if (!scrollKey || pendingInitialScrollKey.value !== scrollKey) return;
+    if (chatStore.focusMessageId || chatStore.messages.length === 0) {
+      clearPendingInitialScroll();
       return;
     }
     await nextTick();
-    if (chatStore.activeSessionId !== id) return;
-    scrollToBottom(initialBottomScrollOptions);
-    pendingInitialScrollSessionId.value = null;
+    if (activeSessionScrollKey.value !== scrollKey) return;
+    // Route through applyInitialSessionScroll so a remembered position wins over
+    // the plain bottom scroll; with no snapshot it still falls back to bottom.
+    applyInitialSessionScroll(scrollKey);
   },
   { flush: "post" },
 );
@@ -417,7 +639,7 @@ watch(
 watch(
   () => chatStore.messages[chatStore.messages.length - 1]?.content,
   () => {
-    if (pendingInitialScrollSessionId.value === chatStore.activeSessionId) return;
+    if (pendingInitialScrollKey.value === activeSessionScrollKey.value) return;
     if (chatStore.focusMessageId) {
       scrollToMessage(chatStore.focusMessageId);
       return;
@@ -427,7 +649,7 @@ watch(
   },
 );
 watch(currentToolCalls, () => {
-  if (pendingInitialScrollSessionId.value === chatStore.activeSessionId) return;
+  if (pendingInitialScrollKey.value === activeSessionScrollKey.value) return;
   if (chatStore.focusMessageId) {
     scrollToMessage(chatStore.focusMessageId);
     return;
@@ -439,7 +661,7 @@ watch(currentToolCalls, () => {
 watch(
   () => queuedMessages.value.length,
   async (length, previousLength) => {
-    if (pendingInitialScrollSessionId.value === chatStore.activeSessionId) return;
+    if (pendingInitialScrollKey.value === activeSessionScrollKey.value) return;
     if (chatStore.focusMessageId) return;
     if (length <= previousLength) return;
     const wasNearBottom = shouldAutoFollowBottom(320);
@@ -451,7 +673,8 @@ watch(
 
 onBeforeUnmount(() => {
   stopThinkingTimer();
-  saveSessionScrollPosition(chatStore.activeSessionId);
+  clearPendingInitialScroll();
+  saveSessionScrollPosition(activeSessionScrollKey.value);
 });
 
 onMounted(() => {
@@ -468,7 +691,7 @@ defineExpose({
 <template>
   <div class="message-list-shell">
     <VirtualMessageList
-      :key="chatStore.activeSessionId || 'chat-empty'"
+      :key="activeSessionScrollKey || 'chat-empty'"
       ref="listRef"
       :messages="displayMessages"
       :virtualized="false"
@@ -702,7 +925,7 @@ defineExpose({
       </svg>
     </button>
     <div
-      v-if="visibleApproval || visibleClarify || visibleReauth || queuedMessages.length > 0"
+      v-if="visibleApproval || visibleClarify || visibleAuthorization || visibleReauth || queuedMessages.length > 0"
       class="message-float-stack"
     >
       <Transition name="queue-float">
@@ -873,7 +1096,90 @@ defineExpose({
       </Transition>
       <Transition name="approval-float">
         <div
-          v-if="!visibleApproval && !visibleClarify && visibleReauth"
+          v-if="!visibleApproval && !visibleClarify && visibleAuthorization"
+          class="approval-float-panel authorization-float-panel"
+          data-testid="authorization-card"
+          role="status"
+          aria-live="polite"
+          :aria-label="t('chat.authorizationCardAria')"
+        >
+          <div class="float-panel-header">
+            <span class="approval-float-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M15 7a2 2 0 0 1 2 2" />
+                <path d="M11 7a6 6 0 0 1 6 6c0 1.1 0 2 1 2h2l-2.5-9A7 7 0 0 0 4.6 8" />
+                <path d="M4 12a7 7 0 0 0 7 7h3" />
+              </svg>
+            </span>
+            <span>{{ t("chat.authorizationKicker") }}</span>
+          </div>
+          <div class="approval-float-title">{{ t("chat.authorizationTitle") }}</div>
+          <div class="approval-float-desc">
+            {{ t("chat.authorizationDesc", { service: authorizationServiceLabel }) }}
+          </div>
+          <div class="authorization-float-status">
+            <span class="authorization-float-state" data-testid="authorization-state">{{ authorizationStateLabel }}</span>
+            <span v-if="authorizationRemainingText" class="authorization-float-remaining" data-testid="authorization-remaining">
+              {{ authorizationRemainingText }}
+            </span>
+          </div>
+          <div
+            v-if="visibleAuthorization.scopes.length"
+            class="approval-float-meta"
+            data-testid="authorization-scopes"
+          >
+            {{ t("chat.authorizationScopes") }}: {{ visibleAuthorization.scopes.join(", ") }}
+            <span class="authorization-float-grant-note" data-testid="authorization-grant-note">
+              · {{ t("chat.authorizationScopesGrantHint") }}
+            </span>
+          </div>
+          <div v-if="authorizationHint" class="approval-float-error" data-testid="authorization-hint">
+            {{ authorizationHint }}
+          </div>
+          <div class="approval-float-actions">
+            <NButton
+              size="small"
+              type="primary"
+              :loading="visibleAuthorization.submitting"
+              :disabled="visibleAuthorization.submitting || authorizationActionsDisabled"
+              :aria-label="t('chat.authorizationAuthorizeAria', { service: authorizationServiceLabel })"
+              data-testid="authorization-authorize"
+              @click="handleAuthorizationAuthorize"
+            >
+              {{ t("chat.authorizationAuthorize") }}
+            </NButton>
+            <!-- Outlined primary, NOT a bare `secondary`. With no `type` Naive UI
+                 renders the default grey palette, which between the filled primary
+                 「去授权」and the tinted error「取消」lost every button affordance and
+                 read as disabled (sunke, 2026-09-08 目测). It is enabled whenever the
+                 card is pending, so it must look enabled. -->
+            <NButton
+              size="small"
+              type="error"
+              secondary
+              :aria-label="t('chat.authorizationCancelAria', { service: authorizationServiceLabel })"
+              data-testid="authorization-cancel"
+              @click="handleAuthorizationCancel"
+            >
+              {{ t("chat.authorizationCancel") }}
+            </NButton>
+          </div>
+          <div v-if="showAuthorizationRecheck" class="authorization-float-recheck">
+            <button
+              type="button"
+              class="authorization-recheck-link"
+              :aria-label="t('chat.authorizationRecheckAria')"
+              data-testid="authorization-recheck"
+              @click="handleAuthorizationRecheck"
+            >
+              {{ t("chat.authorizationRecheck") }}
+            </button>
+          </div>
+        </div>
+      </Transition>
+      <Transition name="approval-float">
+        <div
+          v-if="!visibleApproval && !visibleClarify && !visibleAuthorization && visibleReauth"
           class="approval-float-panel"
           data-testid="reauth-card"
         >
@@ -1099,6 +1405,52 @@ defineExpose({
   font-size: 12px;
 }
 
+.authorization-float-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+.authorization-float-state {
+  font-weight: 600;
+  color: var(--accent-primary);
+}
+
+.authorization-float-remaining {
+  color: $text-muted;
+}
+
+// The requested scope is a model-supplied label, not a provider scope subset.
+// This note is what stops the card reading as "you are only granting `read`".
+.authorization-float-grant-note {
+  color: $text-muted;
+}
+
+.authorization-float-recheck {
+  margin-top: 8px;
+  padding: 0 4px;
+}
+
+.authorization-recheck-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: $text-muted;
+  font-size: 12px;
+  line-height: 1.4;
+  text-decoration: underline;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--accent-primary);
+  }
+}
+
 .approval-float-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1310,6 +1662,12 @@ defineExpose({
     :deep(.n-button) {
       width: 100%;
     }
+  }
+
+  // Single column on narrow screens: three authorization buttons in a 2-column
+  // grid leaves a stranded half-row.
+  .authorization-float-panel .approval-float-actions {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .tool-calls-panel .tool-call-item {

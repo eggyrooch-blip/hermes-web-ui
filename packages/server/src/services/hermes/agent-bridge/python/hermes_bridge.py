@@ -111,6 +111,7 @@ _SERVER_PATCH_NAMES = (
     "AgentPool",
     "_agent_root",
     "_apply_profile_env",
+    "_endpoint_for_listen_socket",
     "_hermes_home",
     "_install_stop_signal_handlers",
     "_jsonable",

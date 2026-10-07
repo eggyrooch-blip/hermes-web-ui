@@ -293,6 +293,8 @@ async function remove(item: CustomConnectorEntry) {
   }
 }
 
+defineExpose({ refresh: load })
+
 watch(() => [props.profile, view.value], () => void load(), { immediate: true })
 </script>
 

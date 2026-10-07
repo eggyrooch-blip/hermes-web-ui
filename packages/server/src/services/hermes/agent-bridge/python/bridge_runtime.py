@@ -582,6 +582,16 @@ def _load_cfg(profile: str | None = None) -> dict[str, Any]:
     return _merge_bridge_config(shared_cfg, profile_cfg)
 
 
+def _load_fallback_model(cfg: dict[str, Any]) -> list | None:
+    """Return the canonical configured fallback chain for a bridge agent."""
+    try:
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        return get_fallback_chain(cfg) or None
+    except Exception:
+        return None
+
+
 def _apply_profile_env(profile: str | None) -> str | None:
     """Temporarily set HERMES_HOME to the profile directory.
     Returns the original HERMES_HOME value to restore later.
@@ -1009,15 +1019,30 @@ def _log_worker_startup_context(profile: str | None) -> None:
         })
 
 
-def _load_reasoning_config() -> dict[str, Any] | None:
-    _ensure_agent_imports()
-    try:
-        from hermes_constants import parse_reasoning_effort
+def _load_reasoning_config(model: str = "") -> dict[str, Any] | None:
+    """Model-aware reasoning config, or None where it cannot be looked up.
 
-        effort = str((_load_cfg().get("agent") or {}).get("reasoning_effort", "") or "").strip()
-        return parse_reasoning_effort(effort)
+    A missing hermes-agent (CI image, bare worker) degrades to None: reasoning
+    config is an optimization, and a model switch must still succeed without
+    it. An error raised INSIDE the shared resolver is a real defect and still
+    propagates — see `does not hide errors raised inside the shared Hermes
+    resolver`.
+    """
+    try:
+        _ensure_agent_imports()
     except Exception:
         return None
+    try:
+        from hermes_constants import resolve_reasoning_config
+    except ImportError:
+        try:
+            from hermes_constants import parse_reasoning_effort
+
+            effort = str((_load_cfg().get("agent") or {}).get("reasoning_effort", "") or "").strip()
+            return parse_reasoning_effort(effort)
+        except Exception:
+            return None
+    return resolve_reasoning_config(_load_cfg(), model)
 
 
 def _load_service_tier() -> str | None:

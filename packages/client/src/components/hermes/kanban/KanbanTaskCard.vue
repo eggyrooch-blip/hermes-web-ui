@@ -13,7 +13,23 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   click: [taskId: string]
+  dragStart: [taskId: string]
+  dragEnd: []
 }>()
+
+function handleDragStart(event: DragEvent) {
+  // dataTransfer is absent in jsdom and in some synthetic events; the board
+  // tracks the dragged id in its own state, so treat this as best-effort only.
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    try {
+      event.dataTransfer.setData('text/plain', props.task.id)
+    } catch {
+      // Safari throws when the drag source is not a text node.
+    }
+  }
+  emit('dragStart', props.task.id)
+}
 
 const { t } = useI18n()
 
@@ -37,7 +53,15 @@ const priorityText = computed(() => {
 </script>
 
 <template>
-  <div class="kanban-task-card" :class="`status-${task.status}`" @click="emit('click', task.id)">
+  <div
+    class="kanban-task-card"
+    :class="`status-${task.status}`"
+    draggable="true"
+    :data-task-id="task.id"
+    @click="emit('click', task.id)"
+    @dragstart="handleDragStart"
+    @dragend="emit('dragEnd')"
+  >
     <div class="card-title">{{ task.title }}</div>
     <div class="card-meta">
       <NTooltip v-if="task.assignee" trigger="hover">

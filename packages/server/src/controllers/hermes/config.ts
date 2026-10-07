@@ -3,6 +3,7 @@ import { join } from 'path'
 import { getActiveProfileName, getProfileDir } from '../../services/hermes/hermes-profile'
 import { config } from '../../config'
 import { restartGatewayForProfile } from '../../services/hermes/gateway-autostart'
+import { isGatewayRestartDisabledError } from '../../services/hermes/gateway-restart-guard'
 import { readAppConfig, writeAppConfig, normalizeGatewayAutoStartConfig } from '../../services/app-config'
 import { saveEnvValueForProfile } from '../../services/config-helpers'
 import { logger } from '../../services/logger'
@@ -399,6 +400,11 @@ export async function updateConfig(ctx: any) {
         const restartResult = await restartGatewayForProfile(profile)
         logger.info('[config] gateway restarted after config update section=%s profile=%s result=%j', section, profile, restartResult)
       } catch (err) {
+        if (isGatewayRestartDisabledError(err)) {
+          ctx.status = 409
+          ctx.body = { error: `配置已保存。${(err as Error).message}` }
+          return
+        }
         logger.error(err, 'Gateway restart failed')
         ctx.status = 500
         ctx.body = { error: err instanceof Error ? err.message : 'Gateway restart failed' }
@@ -527,6 +533,11 @@ export async function updateCredentials(ctx: any) {
       const restartResult = await restartGatewayForProfile(profile)
       logger.info('[config] gateway restarted after credentials update platform=%s profile=%s result=%j', platform, profile, restartResult)
     } catch (err) {
+      if (isGatewayRestartDisabledError(err)) {
+        ctx.status = 409
+        ctx.body = { error: `凭据已保存。${(err as Error).message}` }
+        return
+      }
       logger.error(err, 'Gateway restart failed')
       ctx.status = 500
       ctx.body = { error: err instanceof Error ? err.message : 'Gateway restart failed' }

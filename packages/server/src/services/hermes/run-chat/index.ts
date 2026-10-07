@@ -47,6 +47,7 @@ import {
 import { registerBridgeAbortFinalizer, unregisterBridgeAbortFinalizer } from './bridge-abort-finalizer'
 import { awaitWithAbortSignal, isAbortError } from './abortable-await'
 import { acknowledgePendingResumeEvents, forgetResumeEventAcknowledgement, pendingResumeEventsForSocket } from './pending-resume-events'
+import { interruptUnfinishedSubagentSnapshots, isReplayableSubagentEvent, replayableSubagentEvents } from './subagent-replay'
 
 export type { ContentBlock } from './types'
 
@@ -293,7 +294,7 @@ export class ChatRunSocket {
           logger.info('[chat-run-socket] queued run for session %s (queue: %d)', data.session_id, state.queue.length)
           return
         }
-        state.events = []
+        state.events = replayableSubagentEvents(state.events, { interrupted: true })
         state.isWorking = source !== 'coding_agent'
         state.profile = runProfile
         state.source = source
@@ -572,9 +573,22 @@ export class ChatRunSocket {
     let state = await loadExactState()
     await this.reattachBridgeRun(socket, sid, state)
     state = await loadExactState()
+    // Subagent cards are UI-only state — nothing writes them to the message
+    // table — so an idle resume that drops every event also drops every
+    // delegate_task card the finished run produced. Keep one snapshot per card
+    // so the session-switch replay can rebuild them.
+    // An idle session has no stream that could ever finish these cards, so a
+    // leftover running card is by definition interrupted. This also catches the
+    // paths that record no terminal event at all: an abort, a dead broker, a
+    // bridge runs, which share this list. Snapshots are in memory only.
+    if (!state.isWorking) interruptUnfinishedSubagentSnapshots(state.events)
+    const subagentReplay = replayableSubagentEvents(state.events)
     const liveEvents = state.isWorking
-      ? state.events
-      : (state.events || []).filter(evt => evt?.event === 'run.reattach_failed')
+      ? [...state.events.filter(item => !isReplayableSubagentEvent(item.event)), ...subagentReplay]
+      : [
+          ...(state.events || []).filter(evt => evt?.event === 'run.reattach_failed'),
+          ...subagentReplay,
+        ]
     const resumeEvents = [
       ...liveEvents,
       ...pendingResumeEventsForSocket(state, socket.id),
@@ -595,6 +609,16 @@ export class ChatRunSocket {
       queueLength: state.queue?.length || 0,
       queueMessages: this.serializeQueuedMessages(state.queue || []),
     })
+
+    // The in-run reconnect paths in the chat store switch on a fixed event list
+    // with no `subagent.*` case, so a card that completed while the socket was
+    // down would stay "running" forever if we only put it in the array above.
+    // Re-emit each snapshot under the same event name the client already has a
+    // socket listener for; the card is keyed by tool_call_id and the handler is
+    // idempotent, so a client that also consumed the array just updates in place.
+    for (const snapshot of subagentReplay) {
+      socket.emit(snapshot.event, { ...snapshot.data, session_id: sid })
+    }
 
     logger.info('[chat-run-socket] socket %s resumed session %s (working: %s, messages: %d)',
       socket.id, sid, state.isWorking, state.messages.length)
@@ -649,7 +673,7 @@ export class ChatRunSocket {
       state.activeRunMarker = undefined
       state.profile = profile
       state.source = source === 'global_agent' ? 'global_agent' : 'cli'
-      state.events = []
+      state.events = replayableSubagentEvents(state.events, { interrupted: true })
       const instructions = this.resumeInstructionsForSession(sid)
       void resumeBridgeRun(
         this.nsp,
@@ -835,7 +859,7 @@ export class ChatRunSocket {
     state.abortController = undefined
     state.runId = undefined
     state.activeRunMarker = undefined
-    state.events = []
+    state.events = replayableSubagentEvents(state.events, { interrupted: true })
     state.responseRun = undefined
     state.profile = undefined
     logger.info('[chat-run-socket] external run completed for session %s (%s)', sessionId, event)

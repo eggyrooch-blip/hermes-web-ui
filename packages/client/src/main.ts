@@ -1,10 +1,9 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import router from './router'
-import { i18n } from './i18n'
+import { i18nReady } from './i18n'
 import App from './App.vue'
 import './styles/global.scss'
-import 'katex/dist/katex.min.css'
 
 // Apply theme classes before mount to prevent FOUC (Flash of Unstyled Content)
 const savedBrightness = localStorage.getItem('hermes_brightness') || 'system'
@@ -38,11 +37,16 @@ if (urlToken) {
   ;(window as any).__LOGIN_TOKEN__ = urlToken
 }
 
-const app = createApp(App)
-app.use(createPinia())
-app.use(i18n)
-app.use(router)
-app.mount('#app')
-void router.isReady().catch((error) => {
-  console.error('Router failed to finish initial navigation', error)
-})
+async function mountApp(): Promise<void> {
+  const i18n = await i18nReady
+  const app = createApp(App)
+  app.use(createPinia())
+  app.use(i18n)
+  app.use(router)
+  app.mount('#app')
+  void router.isReady().catch((error) => {
+    console.error('Router failed to finish initial navigation', error)
+  })
+}
+
+void mountApp()

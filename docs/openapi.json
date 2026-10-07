@@ -10118,6 +10118,54 @@
         }
       }
     },
+    "/api/hermes/sessions/{id}/pin": {
+      "post": {
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Create pin",
+        "description": "POST /api/hermes/sessions/:id/pin",
+        "operationId": "setPinned",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/hermes/sessions/{id}/rename": {
       "post": {
         "tags": [

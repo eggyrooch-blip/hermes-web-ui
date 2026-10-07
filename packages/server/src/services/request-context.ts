@@ -315,6 +315,9 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   // 只放 POST：这个路径没有别的动词。
   if (path === '/api/hermes/credentials/gitlab' && method === 'POST') return false
   if (path === '/api/hermes/credentials/github' && (method === 'POST' || method === 'DELETE')) return false
+  // 同理：Figma 撤销的唯一用户就是 chat 面的员工。身份同样只从已验证会话来，
+  // 控制器无身份自行 403。只放 DELETE —— 起授权走 /api/auth/skill-credentials/figma/start。
+  if (path === '/api/hermes/credentials/figma' && method === 'DELETE') return false
   if (path === '/api/hermes/config/credentials') return true
   if (config.chatPlaneAllowSettings && path === '/api/hermes/config' && (method === 'GET' || method === 'PUT')) return false
   if (path === '/api/hermes/skills/skillhub/install' && method === 'POST') return false

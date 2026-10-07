@@ -1,12 +1,24 @@
 <script setup lang="ts">
-import { computed, h, ref, watch } from 'vue'
-import { NButton, NIcon, useMessage } from 'naive-ui'
+import { computed, defineAsyncComponent, h, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { NAlert, NButton, NIcon, NSpin, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useFilesStore } from '@/stores/hermes/files'
-import { getFileDownloadUrl } from '@/api/hermes/files'
+import { fetchFilePreviewBlob, getFileDownloadUrl } from '@/api/hermes/files'
 import { fetchWorkspaceRunChangeFile } from '@/api/hermes/sessions'
+import { previewMimeMatches } from '@/utils/hermes/file-preview'
+import type { BinaryPreviewKind } from '@/utils/hermes/file-preview'
 import MarkdownRenderer from '@/components/hermes/chat/MarkdownRenderer.vue'
 import { handleCodeBlockCopyClick, renderHighlightedCodeBlock } from '@/components/hermes/chat/highlight'
+
+// The four office renderers pull in pdfjs / docx-preview / the pptx renderer /
+// read-excel-file. Loading them lazily keeps every one of those out of the
+// initial bundle — a session that never opens a report never pays for them.
+const PdfFilePreview = defineAsyncComponent(() => import('./PdfFilePreview.vue'))
+const DocxFilePreview = defineAsyncComponent(() => import('./DocxFilePreview.vue'))
+const PptxFilePreview = defineAsyncComponent(() => import('./PptxFilePreview.vue'))
+const SpreadsheetFilePreview = defineAsyncComponent(() => import('./SpreadsheetFilePreview.vue'))
+
+const BINARY_PREVIEW_TYPES = new Set<string>(['pdf', 'docx', 'presentation', 'spreadsheet'])
 
 const { t } = useI18n()
 const message = useMessage()
@@ -37,7 +49,13 @@ watch(
   () => {
     diffRequestId += 1
     htmlShowSource.value = false
-    activePane.value = filesStore.previewFile?.diff ? 'diff' : 'file'
+    // A changed office file opens on the rendered document, not on its patch:
+    // the diff of a binary part is unreadable, and the whole point of clicking
+    // the card is to see the report.
+    const previewed = filesStore.previewFile
+    activePane.value = previewed?.diff && !(previewed.type && BINARY_PREVIEW_TYPES.has(previewed.type))
+      ? 'diff'
+      : 'file'
     diffPatch.value = ''
     diffLoading.value = false
     diffError.value = ''
@@ -75,6 +93,68 @@ watch(
   },
   { immediate: true },
 )
+
+const binaryKind = computed<BinaryPreviewKind | null>(() => {
+  const type = filesStore.previewFile?.type
+  return type && BINARY_PREVIEW_TYPES.has(type) ? type as BinaryPreviewKind : null
+})
+
+const previewBuffer = shallowRef<ArrayBuffer | null>(null)
+const binaryLoading = ref(false)
+const binaryError = ref('')
+let binaryController: AbortController | null = null
+let binaryGeneration = 0
+
+function resetBinaryPreview(): void {
+  binaryController?.abort()
+  binaryController = null
+  previewBuffer.value = null
+  binaryError.value = ''
+  binaryLoading.value = false
+}
+
+async function loadBinaryPreview(): Promise<void> {
+  const generation = ++binaryGeneration
+  resetBinaryPreview()
+  const file = filesStore.previewFile
+  const kind = binaryKind.value
+  if (!file || !kind) return
+  binaryController = new AbortController()
+  binaryLoading.value = true
+  try {
+    const blob = await fetchFilePreviewBlob(file.path, binaryController.signal)
+    if (generation !== binaryGeneration) return
+    // The renderers parse whatever bytes they get, so a response that does not
+    // carry the MIME type we dispatched on never reaches them.
+    if (!previewMimeMatches(kind, blob.type)) throw new Error(t('files.previewMimeMismatch'))
+    const buffer = await blob.arrayBuffer()
+    if (generation !== binaryGeneration) return
+    previewBuffer.value = buffer
+  } catch (err) {
+    if ((err as { name?: string })?.name === 'AbortError' || generation !== binaryGeneration) return
+    binaryError.value = err instanceof Error && err.message ? err.message : t('files.previewFailed')
+  } finally {
+    if (generation === binaryGeneration) binaryLoading.value = false
+  }
+}
+
+// A renderer that fails mid-parse (corrupt archive, unsupported construct)
+// must land in the same place a failed fetch does: an error plus a download,
+// never a blank pane.
+function handleRendererError(error: Error): void {
+  binaryError.value = error.message || t('files.previewFailed')
+}
+
+function binaryDownloadUrl(): string {
+  const file = filesStore.previewFile
+  return file ? getFileDownloadUrl(file.path) : ''
+}
+
+watch([binaryKind, previewContextKey], () => { void loadBinaryPreview() }, { immediate: true })
+onBeforeUnmount(() => {
+  binaryGeneration += 1
+  resetBinaryPreview()
+})
 
 function getImageUrl(): string {
   if (!filesStore.previewFile) return ''
@@ -234,6 +314,38 @@ const CloseIcon = () =>
           v-html="highlightedHtmlSource"
           @click="handlePreviewClick"
         />
+        <template v-else-if="binaryKind">
+          <NAlert v-if="binaryError" type="error" class="preview-binary-error">
+            <template #header>{{ t('files.previewFailed') }}</template>
+            <div class="preview-binary-error-message">{{ binaryError }}</div>
+            <div class="preview-binary-error-action">
+              <NButton size="small" tag="a" :href="binaryDownloadUrl()" download>
+                {{ t('files.downloadInstead') }}
+              </NButton>
+            </div>
+          </NAlert>
+          <NSpin v-else-if="binaryLoading || !previewBuffer" :description="t('files.previewLoading')" />
+          <PdfFilePreview
+            v-else-if="binaryKind === 'pdf'"
+            :data="previewBuffer"
+            @error="handleRendererError"
+          />
+          <DocxFilePreview
+            v-else-if="binaryKind === 'docx'"
+            :data="previewBuffer"
+            @error="handleRendererError"
+          />
+          <PptxFilePreview
+            v-else-if="binaryKind === 'presentation'"
+            :data="previewBuffer"
+            @error="handleRendererError"
+          />
+          <SpreadsheetFilePreview
+            v-else-if="binaryKind === 'spreadsheet'"
+            :data="previewBuffer"
+            @error="handleRendererError"
+          />
+        </template>
       </template>
     </div>
   </div>
@@ -319,6 +431,19 @@ const CloseIcon = () =>
   color: $text-secondary;
   background: rgba(var(--accent-primary-rgb), 0.06);
   font-size: 12px;
+}
+
+.preview-binary-error {
+  width: min(680px, 100%);
+  align-self: flex-start;
+}
+
+.preview-binary-error-message {
+  overflow-wrap: anywhere;
+}
+
+.preview-binary-error-action {
+  margin-top: 12px;
 }
 
 .preview-html-frame {

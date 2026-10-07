@@ -143,6 +143,24 @@ export function getActiveProfileName(): string | null {
   return localStorage.getItem(ACTIVE_PROFILE_STORAGE_KEY)
 }
 
+// Models 设置页把「当前看哪个 Profile」放在 URL query 里，不改全局 active profile：
+// 在那个页面上，模型/provider/凭据类请求要打到页面选中的 Profile，聊天等其它平面
+// 仍然跟着 active profile 走。
+export function getModelsPageProfile(): string | null {
+  const route = router.currentRoute.value
+  return route?.name === 'hermes.models' && typeof route.query?.modelProfile === 'string'
+    ? route.query.modelProfile.trim() || null
+    : null
+}
+
+// 只有「模型设置页自己会打的那几类端点」才吃页面选中的 Profile。范围故意收窄：
+// 会话、agent 等请求继续用 active profile。
+function modelSettingsRequestProfile(path: string): string | null {
+  const pathname = path.split('?')[0]
+  const isModelSettings = /^\/api\/hermes\/(?:config(?:\/|$)|auth\/|provider-models(?:\/|$)|model-alias$|model-visibility$|custom-model$)/.test(pathname)
+  return isModelSettings ? getModelsPageProfile() : null
+}
+
 /** Active expert overlay id (专家广场). Empty/null = default Hermes persona. */
 export function getActiveExpertId(): string | null {
   const v = localStorage.getItem(ACTIVE_EXPERT_STORAGE_KEY)
@@ -251,6 +269,7 @@ type RequestOptions = RequestInit & {
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { skipAuthRedirect, ...fetchOptions } = options
+  const selectedProfile = modelSettingsRequestProfile(path)
   const base = getBaseUrl()
   const url = `${base}${path}`
   const isFormDataBody = typeof FormData !== 'undefined' && fetchOptions.body instanceof FormData
@@ -266,8 +285,8 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 
   // Inject active profile header for request-scoped endpoints. Explicit profile
   // selectors in the URL/body and profile-name routes are validated directly.
-  const profileName = getActiveProfileName()
-  if (profileName && shouldAttachProfileHeader(path, fetchOptions)) {
+  const profileName = selectedProfile || getActiveProfileName()
+  if (profileName && !new Headers(fetchOptions.headers).has('X-Hermes-Profile') && shouldAttachProfileHeader(path, fetchOptions)) {
     headers['X-Hermes-Profile'] = profileName
   }
   const agentId = localStorage.getItem(ACTIVE_AGENT_STORAGE_KEY)
@@ -310,7 +329,13 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
         emitAuthNotice('forbidden')
       }
     }
-    throw new Error(`API Error ${res.status}: ${responseErrorMessage(text, res.statusText)}`)
+    // Carry the numeric status on the Error: callers that turn a rejection
+    // into a boolean (setSessionExpert) otherwise lose the server's reason and
+    // can only guess at it from surrounding state.
+    throw Object.assign(
+      new Error(`API Error ${res.status}: ${responseErrorMessage(text, res.statusText)}`),
+      { status: res.status },
+    )
   }
 
   return res.json()

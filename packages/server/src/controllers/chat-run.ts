@@ -49,6 +49,8 @@ const CHAT_RUN_EVENTS = [
   'clarify.requested',
   'clarify.resolved',
   'auth.required',
+  'authorization.required',
+  'authorization.resolved',
   'peer.user.message',
 ]
 
@@ -188,7 +190,14 @@ export async function runOnce(ctx: Context) {
           })
           return
         }
-        if (eventName === 'approval.requested' || eventName === 'clarify.requested' || eventName === 'auth.required') {
+        if (
+          eventName === 'approval.requested'
+          || eventName === 'clarify.requested'
+          || eventName === 'auth.required'
+          // authorization.required parks the run until a human authorizes;
+          // authorization.resolved does not (it is the release, mirroring auth.resolved).
+          || eventName === 'authorization.required'
+        ) {
           finish(409, {
             ok: false,
             status: 'requires_action',

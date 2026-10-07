@@ -1,4 +1,4 @@
-452 entries
+459 entries
 DENY    DELETE /api/auth/locked-ips
 DENY    DELETE /api/auth/password
 DENY    DELETE /api/auth/users/:id
@@ -205,6 +205,7 @@ allow   DELETE /api/auth/skill-credentials/custom/:connectorId
 allow   DELETE /api/devices/:id/request-history
 allow   DELETE /api/hermes/agents/:agentId/shares/:granteeOpenId
 allow   DELETE /api/hermes/cowork/projects/:projectId
+allow   DELETE /api/hermes/credentials/figma
 allow   DELETE /api/hermes/credentials/github
 allow   DELETE /api/hermes/files/delete
 allow   DELETE /api/hermes/group-chat/rooms/:roomId
@@ -242,6 +243,7 @@ allow   GET    /api/hermes/download
 allow   GET    /api/hermes/experts
 allow   GET    /api/hermes/experts/:expertId/work-record
 allow   GET    /api/hermes/files/list
+allow   GET    /api/hermes/files/preview
 allow   GET    /api/hermes/files/read
 allow   GET    /api/hermes/files/stat
 allow   GET    /api/hermes/group-chat/rooms
@@ -312,6 +314,7 @@ allow   HEAD   /api/hermes/agents/shared
 allow   HEAD   /api/hermes/available-models
 allow   HEAD   /api/hermes/download
 allow   HEAD   /api/hermes/files/list
+allow   HEAD   /api/hermes/files/preview
 allow   HEAD   /api/hermes/files/read
 allow   HEAD   /api/hermes/files/stat
 allow   HEAD   /api/hermes/group-chat/rooms
@@ -401,6 +404,8 @@ allow   POST   /api/hermes/profiles
 allow   POST   /api/hermes/sessions/:id/archive
 allow   POST   /api/hermes/sessions/:id/expert
 allow   POST   /api/hermes/sessions/:id/model
+allow   POST   /api/hermes/sessions/:id/pin
+allow   POST   /api/hermes/sessions/:id/reasoning-effort
 allow   POST   /api/hermes/sessions/:id/rename
 allow   POST   /api/hermes/sessions/:id/unarchive
 allow   POST   /api/hermes/sessions/:id/workspace
@@ -429,6 +434,7 @@ ungated  GET    /api/devices/link-info
 ungated  GET    /api/hermes/openapi.json
 ungated  GET    /api/openapi.json
 ungated  GET    /health
+ungated  GET    /livez
 ungated  HEAD   /api/auth/feishu/callback
 ungated  HEAD   /api/auth/feishu/login
 ungated  HEAD   /api/auth/kep-cli/callback/:sessionId
@@ -441,6 +447,7 @@ ungated  HEAD   /api/devices/link-info
 ungated  HEAD   /api/hermes/openapi.json
 ungated  HEAD   /api/openapi.json
 ungated  HEAD   /health
+ungated  HEAD   /livez
 ungated  POST   /api/auth/feishu/logout
 ungated  POST   /api/auth/login
 ungated  POST   /api/auth/mcu-login

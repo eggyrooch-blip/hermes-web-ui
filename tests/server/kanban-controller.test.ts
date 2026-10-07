@@ -347,7 +347,7 @@ describe('kanban controller', () => {
 
     const completeCtx = ctx({ query: { board: 'project-a' }, request: { body: { task_ids: ['task-1'], summary: 'done' } } })
     await ctrl.complete(completeCtx)
-    expect(mockCompleteTasks).toHaveBeenCalledWith(['task-1'], 'done', { board: 'project-a' })
+    expect(mockCompleteTasks).toHaveBeenCalledWith(['task-1'], 'done', { board: 'project-a', operatorOverride: true })
 
     const blockCtx = ctx({ query: { board: 'project-a' }, params: { id: 'task-1' }, request: { body: { reason: 'wait' } } })
     await ctrl.block(blockCtx)
@@ -412,7 +412,7 @@ describe('kanban controller', () => {
 
     const bulkCtx = ctx({ query: { board: 'project-a' }, request: { body: { ids: ['task-1'], status: 'done', assignee: null, summary: 'closed' } } })
     await ctrl.bulkUpdateTasks(bulkCtx)
-    expect(mockBulkUpdateTasks).toHaveBeenCalledWith({ board: 'project-a', ids: ['task-1'], status: 'done', assignee: null, archive: undefined, summary: 'closed', reason: undefined })
+    expect(mockBulkUpdateTasks).toHaveBeenCalledWith({ board: 'project-a', ids: ['task-1'], status: 'done', assignee: null, archive: undefined, summary: 'closed', reason: undefined, operatorOverride: true })
     expect(bulkCtx.body).toEqual({ results: [{ id: 'task-1', ok: true }] })
   })
 
@@ -616,6 +616,27 @@ describe('kanban controller', () => {
     expect(fileCtx.status).toBe(403)
   })
 
+  // The CLI stamps created_by as the literal "user" when nothing is passed, and
+  // taskOwnedBy() keys off created_by first — so a task created without it is
+  // invisible to the very owner who just created it.
+  it('stamps the owned assignee as created_by so a new task stays visible to its creator', async () => {
+    mockCreateTask.mockResolvedValue({ id: 'task-9' })
+    mockOwnerOwnsProfile.mockReturnValue(true)
+
+    const createCtx = ctx({
+      query: { board: 'project-a' },
+      request: { body: { title: 'Ship', assignee: 'feishu_owner' } },
+    })
+    await ctrl.create(createCtx)
+
+    expect(mockCreateTask).toHaveBeenCalledWith('Ship', expect.objectContaining({
+      assignee: 'feishu_owner',
+      createdBy: 'feishu_owner',
+      tenant: 'ouX',
+    }))
+    expect(createCtx.body).toEqual({ task: { id: 'task-9' } })
+  })
+
   it('reads workspace artifacts and proxies action routes', async () => {
     mockReadFile.mockResolvedValue('artifact-content')
     mockCreateTask.mockResolvedValue({ id: 'task-2' })
@@ -686,6 +707,7 @@ describe('kanban controller', () => {
       board: 'project-a',
       body: 'x',
       assignee: undefined,
+      createdBy: undefined,
       priority: undefined,
       tenant: 'ouX',
       workspace: 'worktree:/repo',
@@ -701,7 +723,7 @@ describe('kanban controller', () => {
 
     const completeCtx = ctx({ query: { board: 'project-a' }, request: { body: { task_ids: ['task-1'], summary: 'done' } } })
     await ctrl.complete(completeCtx)
-    expect(mockCompleteTasks).toHaveBeenCalledWith(['task-1'], 'done', { board: 'project-a' })
+    expect(mockCompleteTasks).toHaveBeenCalledWith(['task-1'], 'done', { board: 'project-a', operatorOverride: true })
 
     const blockCtx = ctx({ query: { board: 'project-a' }, params: { id: 'task-1' }, request: { body: { reason: 'wait' } } })
     await ctrl.block(blockCtx)

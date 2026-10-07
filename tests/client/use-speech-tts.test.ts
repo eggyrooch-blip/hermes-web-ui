@@ -7,10 +7,14 @@ vi.stubGlobal('fetch', mockFetch)
 
 const createObjectURL = vi.fn()
 const revokeObjectURL = vi.fn()
-vi.stubGlobal('URL', {
-  createObjectURL,
-  revokeObjectURL,
-})
+// 只替换两个静态方法，保留真正的 URL 构造器：api/client.ts 用 `new URL(path, base)` 拼请求地址，
+// 整个换成普通对象会让它报 "URL is not a constructor"。
+const RealURL = globalThis.URL
+class URLStub extends RealURL {
+  static createObjectURL = createObjectURL
+  static revokeObjectURL = revokeObjectURL
+}
+vi.stubGlobal('URL', URLStub)
 
 const audioInstances: MockAudio[] = []
 let objectUrlCounter = 0

@@ -18,7 +18,8 @@ describe('i18n default locale', () => {
       configurable: true,
     })
 
-    const { i18n } = await import('@/i18n')
+    const { i18nReady } = await import('@/i18n')
+    const i18n = await i18nReady
 
     expect(i18n.global.locale.value).toBe('en')
     expect(localStorage.getItem('hermes_locale')).toBe('en')
@@ -34,7 +35,8 @@ describe('i18n default locale', () => {
       configurable: true,
     })
 
-    const { i18n } = await import('@/i18n')
+    const { i18nReady } = await import('@/i18n')
+    const i18n = await i18nReady
 
     expect(i18n.global.locale.value).toBe('en')
   })
@@ -49,7 +51,8 @@ describe('i18n default locale', () => {
       configurable: true,
     })
 
-    const { i18n } = await import('@/i18n')
+    const { i18nReady } = await import('@/i18n')
+    const i18n = await i18nReady
 
     expect(i18n.global.locale.value).toBe('zh')
   })

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
 
 const mountMock = vi.hoisted(() => vi.fn())
 const useMock = vi.hoisted(() => vi.fn(() => ({ use: useMock, mount: mountMock })))
@@ -21,9 +22,11 @@ vi.mock('@/router', () => ({
 }))
 
 vi.mock('@/i18n', () => ({
-  i18n: {
+  // i18n is now created asynchronously so only the active locale bundle is
+  // fetched at boot; main.ts awaits it before creating the app.
+  i18nReady: Promise.resolve({
     install: vi.fn(),
-  },
+  }),
 }))
 
 vi.mock('@/App.vue', () => ({
@@ -49,6 +52,7 @@ describe('client startup', () => {
 
   it('mounts the shell even while initial router navigation is still pending', async () => {
     await import('@/main')
+    await flushPromises()
 
     expect(isReadyMock).toHaveBeenCalled()
     expect(mountMock).toHaveBeenCalledWith('#app')

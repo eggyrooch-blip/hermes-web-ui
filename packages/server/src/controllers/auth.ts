@@ -67,6 +67,7 @@ import {
   isKnownConnectorIconKey,
   listCustomConnectors,
   runShadowCompare,
+  classifyOAuthIssuer,
 } from '../services/hermes/connector-registry-client'
 
 /**
@@ -1269,7 +1270,10 @@ export async function connectorCatalogStatus(ctx: Context) {
 }
 
 export async function connectorCatalogOAuthCallback(ctx: Context) {
-  if (!requireConnectorRequestShape(ctx, ['state', 'code'], [])) return
+  // `iss` 必须在允许列表里：Figma 的真实重定向带它（`?code=…&iss=https%3A%2F%2Fapi.figma.com&state=…`），
+  // 而这道闸是"只许出现列出的 query 键"，漏掉一个就整条回调 400，员工点完 Allow 回来
+  // 看到的是一页报错。列进来不等于信它 —— 下面 classifyOAuthIssuer 决定转发还是 400。
+  if (!requireConnectorRequestShape(ctx, ['state', 'code', 'iss'], [])) return
   const state = String(ctx.query?.state || '')
   const code = String(ctx.query?.code || '')
   if (!state || state.length > 512 || !code || code.length > 8192) {
@@ -1277,8 +1281,17 @@ export async function connectorCatalogOAuthCallback(ctx: Context) {
     ctx.body = { error: 'invalid catalog OAuth callback' }
     return
   }
+  // 三态：没带就保持旧契约的精确 {state, code}；带了合法的就原样转给 MT 去比对；
+  // 带了但不合法（空、重复、格式错、非 https、超长）直接 400，不调 broker ——
+  // 静默丢掉会让 broker 把"错的 issuer"当成"没有 issuer"放行。
+  const issuer = classifyOAuthIssuer(ctx.query?.iss)
+  if (issuer.kind === 'invalid') {
+    ctx.status = 400
+    ctx.body = { error: 'invalid catalog OAuth issuer' }
+    return
+  }
   try {
-    await completeCatalogOAuth({ state, code })
+    await completeCatalogOAuth({ state, code, ...(issuer.kind === 'valid' ? { iss: issuer.value } : {}) })
     ctx.redirect('/hermes/connectors?catalog_oauth=success')
   } catch (err) {
     handleConnectorCatalogError(ctx, err)
@@ -1450,6 +1463,9 @@ export async function skillCredentialStart(ctx: Context) {
       profileName,
       profileDir: getProfileDir(profileName),
       publicOrigin: externalRequestOrigin(ctx),
+      // 身份只从已验证的会话来（figma 的 broker 代理用它当 owner 断言）。
+      // 请求体里的任何 open_id/profile 字段到这里已经被丢掉了。
+      ...(user?.openid ? { ownerOpenId: user.openid } : {}),
     })
   } catch (err: any) {
     handleUatProxyError(ctx, err)

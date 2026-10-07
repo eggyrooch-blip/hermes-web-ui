@@ -5,7 +5,7 @@ import { homedir } from 'os'
 import { config } from '../../config'
 import * as kanbanCli from '../../services/hermes/hermes-kanban'
 import { ownerOwnsProfile } from '../../services/hermes/agent-ownership'
-import { isChatPlaneRequest, type WebUser } from '../../services/request-context'
+import { isChatPlaneRequest, resolveProfileForOpenId, type WebUser } from '../../services/request-context'
 import {
   searchSessionSummariesWithProfile,
   getSessionDetailFromDbWithProfile,
@@ -610,6 +610,11 @@ export async function create(ctx: Context) {
       board,
       body: body.value,
       assignee: assignee.value,
+      // Mirror the run-broker's create_owner_task: created_by is the owner's
+      // profile, tenant is the openid. Leaving created_by to the CLI default
+      // ("user") makes taskOwnedBy reject the task from its own creator, so the
+      // task is created and then immediately invisible and unmodifiable.
+      createdBy: assignee.value?.trim() || resolveProfileForOpenId(openid) || undefined,
       priority: priority.value,
       tenant: tenant.value ?? openid,
       workspace: workspace.value,
@@ -641,7 +646,8 @@ export async function complete(ctx: Context) {
   if (!board) return
   try {
     if (!await requireOwnedTasks(ctx, taskIds.value!, board, openid)) return
-    await kanbanCli.completeTasks(taskIds.value!, summary.value, { board })
+    // A dashboard completion is a human decision: bypass the core goal judge.
+    await kanbanCli.completeTasks(taskIds.value!, summary.value, { board, operatorOverride: true })
     ctx.body = { ok: true }
   } catch (err: any) {
     ctx.status = 500
@@ -813,6 +819,8 @@ export async function bulkUpdateTasks(ctx: Context) {
       archive: archive.value,
       summary: summary.value,
       reason: reason.value,
+      // Same human-decision override as the single-task complete route.
+      operatorOverride: true,
     })
   } catch (err: any) {
     ctx.status = 500

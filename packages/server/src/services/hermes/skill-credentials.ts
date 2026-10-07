@@ -32,6 +32,7 @@ interface KepAuthCallbackSession {
 
 const KEP_AUTH_CALLBACK_TTL_MS = 10 * 60 * 1000
 const FEISHU_PROJECT_CREDENTIAL_ID = 'feishu-project'
+const FIGMA_CREDENTIAL_ID = 'figma'
 const KEP_CLI_CREDENTIAL_ID = 'kep-cli'
 const KEP_CLI_ONLINE_CREDENTIAL_ID = 'kep-cli-online'
 const KEP_CLI_PRE_CREDENTIAL_ID = 'kep-cli-pre'
@@ -80,6 +81,9 @@ export interface SkillCredentialStartOptions {
   profileDir: string
   publicOrigin?: string
   env?: string
+  /** 已验证会话里的 owner open_id。只有代理 broker 的写路径（figma）会用到它：
+   *  身份绝不从请求体来，缺了就 403，不退化成"随便用当前 profile"。 */
+  ownerOpenId?: string
 }
 
 export type SkillCredentialStartResult =
@@ -297,6 +301,24 @@ export async function getSkillCredentialStartAction(options: SkillCredentialStar
         description: 'Start Feishu Project CLI device-code authorization for the current Hermes profile.',
       },
     }
+  }
+  if (id === FIGMA_CREDENTIAL_ID) {
+    // Figma 的授权链接只有 MT 能造（它持有 PKCE state 与 profile 本地 token 存储），
+    // 所以这里是纯代理：MT 回 202 + authorization_url 才算"启动了"，其余一律原样把
+    // 状态码和人话透传给客户端 —— 包括公网 origin 未配时的 503。绝不在这里把失败
+    // 翻译成一个空操作 200（ligaofeng 2026-08-06 的假「认证流程已启动」）。
+    const ownerOpenId = String(options.ownerOpenId || '').trim()
+    if (!ownerOpenId) {
+      const err: any = new Error('无法确认你的身份，请重新登录后再试')
+      err.status = 403
+      throw err
+    }
+    const { startFigmaAuthorization } = await import('./connector-registry-client')
+    const { authorization_url } = await startFigmaAuthorization({
+      profileName: options.profileName,
+      ownerOpenId,
+    })
+    return { id, verification_uri: authorization_url }
   }
   if (isKepCliCredentialId(id)) {
     const envName = kepCliEnvFromId(id) || 'online'
@@ -662,8 +684,21 @@ function waitForKepAuthUrl(child: KepAuthLoginProcess, notFoundMessage = 'Authen
     }
     const onData = (chunk: Buffer) => {
       buffer += chunk.toString('utf-8')
-      const match = buffer.match(/https?:\/\/[^\s]+/)
-      if (match) done(undefined, match[0])
+      const output = buffer.trimStart()
+      if (output.startsWith('{')) {
+        // Device-code JSON may arrive across chunks: do not return the bare
+        // verification_uri before verification_uri_complete has arrived.
+        try {
+          const data = JSON.parse(output)
+          const url = data.verification_uri_complete || data.verification_uri
+          if (typeof url === 'string' && /^https?:\/\//.test(url)) done(undefined, url)
+        } catch {
+          // Wait for the remainder of the JSON object.
+        }
+        return
+      }
+      const match = output.match(/https?:\/\/[^\s"'<>]+/)
+      if (match) done(undefined, match[0].replace(/[.,;)\]]+$/, ''))
     }
     const onExit = (code: number | null) => {
       done(new Error(`kep-auth login exited before returning an authorization URL${code === null ? '' : ` (code ${code})`}`))

@@ -114,13 +114,18 @@ export async function fetchSkillUsageStats(days = 7): Promise<SkillUsageStats> {
   return request<SkillUsageStats>(`/api/hermes/skills/usage/stats?${params}`)
 }
 
+function encodeSkillPath(path: string): string {
+  return path.split('/').map(segment => encodeURIComponent(segment)).join('/')
+}
+
 export async function fetchSkillContent(skillPath: string): Promise<string> {
-  const res = await request<{ content: string }>(`/api/hermes/skills/${skillPath}`)
+  const res = await request<{ content: string }>(`/api/hermes/skills/${encodeSkillPath(skillPath)}`)
   return res.content
 }
 
 export async function fetchSkillFiles(category: string, skill: string): Promise<SkillFileEntry[]> {
-  const res = await request<{ files: SkillFileEntry[] }>(`/api/hermes/skills/${category}/${skill}/files`)
+  const path = encodeSkillPath(`${category}/${skill}`)
+  const res = await request<{ files: SkillFileEntry[] }>(`/api/hermes/skills/${path}/files`)
   return res.files
 }
 

@@ -3,7 +3,7 @@
  */
 
 import type { Server, Socket } from 'socket.io'
-import { updateSessionStats } from '../../../db/hermes/session-store'
+import { updateSession, updateSessionStats } from '../../../db/hermes/session-store'
 import { logger } from '../../logger'
 import { codingAgentRunManager } from '../../agent-runner/coding-agent-run-manager'
 import { flushBridgePendingToDb } from './bridge-message'
@@ -18,6 +18,7 @@ import {
   ownsSessionRun,
   type SessionRunOwnership,
 } from './session-run-ownership'
+import { replayableSubagentEvents } from './subagent-replay'
 import { recordPendingResumeEvent } from './pending-resume-events'
 
 const ABORT_BRIDGE_SYNC_TIMEOUT_MESSAGE = 'Hermes Agent did not confirm stop before timeout. Local run state was released so you can continue.'
@@ -49,7 +50,7 @@ export async function handleAbort(
       state.isAborting = false
       state.abortController = undefined
       state.runId = undefined
-      state.events = []
+      state.events = replayableSubagentEvents(state.events, { interrupted: true })
     }
     emitToSession(nsp, socket, sessionId, 'abort.completed', {
       event: 'abort.completed',
@@ -260,7 +261,16 @@ export async function markAbortCompleted(
   state.activeRunMarker = undefined
   state.commandReservationMarker = undefined
   state.abortFinalizationError = undefined
-  state.events = []
+  try {
+    updateSession(sessionId, {
+      ended_at: Math.floor(Date.now() / 1000),
+      end_reason: 'abort',
+    })
+  } catch (err) {
+    logger.warn(err, '[chat-run-socket][abort] failed to write cancellation end marker for session %s', sessionId)
+  }
+
+  state.events = replayableSubagentEvents(state.events, { interrupted: true })
 
   const queueLength = state.queue.length
   const abortCompleted = {

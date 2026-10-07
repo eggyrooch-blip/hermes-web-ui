@@ -36,6 +36,11 @@ const mockDispatch = vi.hoisted(() => vi.fn())
 const mockStartEventStream = vi.hoisted(() => vi.fn())
 const mockStopEventStream = vi.hoisted(() => vi.fn())
 const mockFetchProfiles = vi.hoisted(() => vi.fn())
+const mockCompleteTasks = vi.hoisted(() => vi.fn())
+const mockBlockTask = vi.hoisted(() => vi.fn())
+const mockUnblockTasks = vi.hoisted(() => vi.fn())
+const mockBulkUpdateTasks = vi.hoisted(() => vi.fn())
+const mockMessage = vi.hoisted(() => ({ warning: vi.fn(), error: vi.fn(), success: vi.fn() }))
 const profilesState = vi.hoisted(() => ({
   profiles: [] as Array<{ name: string; avatar?: Record<string, any> | null }>,
 }))
@@ -67,6 +72,10 @@ vi.mock('@/stores/hermes/kanban', () => ({
     dispatch: mockDispatch,
     startEventStream: mockStartEventStream,
     stopEventStream: mockStopEventStream,
+    completeTasks: mockCompleteTasks,
+    blockTask: mockBlockTask,
+    unblockTasks: mockUnblockTasks,
+    bulkUpdateTasks: mockBulkUpdateTasks,
   }),
 }))
 
@@ -81,7 +90,8 @@ vi.mock('@/components/hermes/kanban/KanbanTaskCard.vue', () => ({
   default: defineComponent({
     name: 'KanbanTaskCard',
     props: { task: { type: Object, required: true }, assigneeAvatar: { type: Object, required: false } },
-    template: '<div class="kanban-task-card-stub" :data-avatar-seed="assigneeAvatar?.seed || null">{{ task.title }}</div>',
+    emits: ['click', 'dragStart', 'dragEnd'],
+    template: '<div class="kanban-task-card-stub" :data-task-id="task.id" :data-avatar-seed="assigneeAvatar?.seed || null" @dragstart="$emit(\'dragStart\', task.id)" @dragend="$emit(\'dragEnd\')">{{ task.title }}</div>',
   }),
 }))
 
@@ -102,7 +112,7 @@ vi.mock('@/components/hermes/kanban/KanbanCreateForm.vue', () => ({
 }))
 
 vi.mock('naive-ui', () => ({
-  useMessage: () => ({ warning: vi.fn(), error: vi.fn(), success: vi.fn() }),
+  useMessage: () => mockMessage,
   NButton: defineComponent({
     name: 'NButton',
     emits: ['click'],
@@ -144,6 +154,50 @@ vi.mock('naive-ui', () => ({
 }))
 
 import KanbanView from '@/views/hermes/KanbanView.vue'
+import {
+  KANBAN_DROP_TARGET_STATUSES,
+  isKanbanDropTarget,
+  resolveKanbanDropAction,
+} from '@/utils/hermes/kanban-drag'
+
+describe('kanban drag transitions', () => {
+  it('offers only the three statuses the chat plane allows a write for', () => {
+    expect([...KANBAN_DROP_TARGET_STATUSES]).toEqual(['ready', 'blocked', 'done'])
+    for (const status of ['triage', 'todo', 'scheduled', 'running', 'review', 'archived'] as const) {
+      expect(isKanbanDropTarget(status), status).toBe(false)
+    }
+  })
+
+  it('maps each accepted move to the endpoint core will honour', () => {
+    expect(resolveKanbanDropAction('todo', 'done')).toBe('complete')
+    expect(resolveKanbanDropAction('running', 'done')).toBe('complete')
+    expect(resolveKanbanDropAction('blocked', 'done')).toBe('complete')
+    expect(resolveKanbanDropAction('ready', 'blocked')).toBe('block')
+    expect(resolveKanbanDropAction('running', 'blocked')).toBe('block')
+    expect(resolveKanbanDropAction('blocked', 'ready')).toBe('unblock')
+    expect(resolveKanbanDropAction('scheduled', 'ready')).toBe('unblock')
+  })
+
+  it('refuses moves core would reject', () => {
+    // `hermes kanban unblock` exits non-zero for anything not blocked/scheduled.
+    expect(resolveKanbanDropAction('todo', 'ready')).toBeNull()
+    expect(resolveKanbanDropAction('done', 'ready')).toBeNull()
+    // done and archived are terminal.
+    expect(resolveKanbanDropAction('done', 'blocked')).toBeNull()
+    expect(resolveKanbanDropAction('archived', 'blocked')).toBeNull()
+    expect(resolveKanbanDropAction('archived', 'done')).toBeNull()
+    // Columns with no chat-plane-safe endpoint are never targets.
+    for (const target of ['triage', 'todo', 'scheduled', 'running', 'review', 'archived'] as const) {
+      expect(resolveKanbanDropAction('ready', target), target).toBeNull()
+    }
+  })
+
+  it('treats a drop back onto the same column as a no-op', () => {
+    for (const status of ['ready', 'blocked', 'done'] as const) {
+      expect(resolveKanbanDropAction(status, status), status).toBeNull()
+    }
+  })
+})
 
 describe('KanbanView', () => {
   beforeEach(() => {
@@ -190,6 +244,9 @@ describe('KanbanView', () => {
       else storeState.filterAssignee = value
     })
     mockDispatch.mockResolvedValue({ spawned: 1 })
+    mockCompleteTasks.mockResolvedValue(undefined)
+    mockBlockTask.mockResolvedValue(undefined)
+    mockUnblockTasks.mockResolvedValue(undefined)
     Object.defineProperty(document, 'visibilityState', {
       configurable: true,
       get: () => 'visible',
@@ -268,6 +325,156 @@ describe('KanbanView', () => {
 
     expect(mockSetFilter).toHaveBeenCalledWith('status', null)
     expect(mockFetchTasks).toHaveBeenCalledTimes(2)
+  })
+
+  // hermes-agent core 0.21.3 `kanban stats --json` has no `total` key and nests
+  // `by_assignee` per status. The server bridge derives a flat total from
+  // by_status; these two guard that what it derives reaches the stats bar, and
+  // that a stats payload without a total never renders as blank or NaN.
+  it('renders the board total the server derived from core 0.21.3 stats', async () => {
+    storeState.stats = {
+      by_status: { triage: 0, todo: 2, ready: 1, running: 0, blocked: 0, done: 1, archived: 1 },
+      by_assignee: { alice: 3, default: 2 },
+      total: 5,
+    }
+
+    const wrapper = mount(KanbanView)
+    await flushPromises()
+
+    const total = wrapper.find('.stat-chip.total .stat-count')
+    expect(total.text()).toBe('5')
+    expect(Number.isNaN(Number(total.text()))).toBe(false)
+    expect(wrapper.find('.stat-chip.todo .stat-count').text()).toBe('2')
+    expect(wrapper.find('.stat-chip.archived .stat-count').text()).toBe('1')
+  })
+
+  it('shows zero rather than a blank or NaN total when stats arrive without one', async () => {
+    storeState.stats = {
+      by_status: { triage: 0, todo: 1, ready: 0, running: 0, blocked: 0, done: 0, archived: 0 },
+      by_assignee: {},
+    }
+
+    const wrapper = mount(KanbanView)
+    await flushPromises()
+
+    const total = wrapper.find('.stat-chip.total .stat-count')
+    expect(total.text()).toBe('0')
+    expect(total.text()).not.toBe('')
+    expect(total.text()).not.toBe('NaN')
+    expect(total.text()).not.toBe('undefined')
+  })
+
+  // Dragging a card between columns is the Done line's "拖动任务". The board must
+  // route it through complete/unblock/block: POST /kanban/tasks/bulk is not on
+  // the chat-plane allowlist (request-context.ts isChatPlaneKanbanTaskAction)
+  // and 403s for every chat-plane user.
+  async function dragCard(wrapper: any, taskId: string, targetStatus: string) {
+    const card = wrapper.find(`.kanban-task-card-stub[data-task-id="${taskId}"]`)
+    expect(card.exists()).toBe(true)
+    await card.trigger('dragstart')
+    const column = wrapper.find(`.task-list[data-drop-status="${targetStatus}"]`)
+    expect(column.exists()).toBe(true)
+    await column.trigger('dragover')
+    await column.trigger('drop')
+    await flushPromises()
+    return column
+  }
+
+  it('completes a task dragged onto the done column', async () => {
+    const wrapper = mount(KanbanView)
+    await flushPromises()
+
+    await dragCard(wrapper, 'task-1', 'done')
+
+    expect(mockCompleteTasks).toHaveBeenCalledWith(['task-1'])
+    expect(mockBlockTask).not.toHaveBeenCalled()
+    expect(mockUnblockTasks).not.toHaveBeenCalled()
+    expect(mockMessage.success).toHaveBeenCalledWith('kanban.message.taskCompleted')
+  })
+
+  it('blocks a task dragged onto the blocked column with a reason', async () => {
+    const wrapper = mount(KanbanView)
+    await flushPromises()
+
+    await dragCard(wrapper, 'task-1', 'blocked')
+
+    expect(mockBlockTask).toHaveBeenCalledWith('task-1', 'kanban.drag.blockReason')
+    expect(mockCompleteTasks).not.toHaveBeenCalled()
+  })
+
+  it('unblocks a blocked task dragged back onto the ready column', async () => {
+    storeState.tasks = [{ id: 'task-b', title: 'Blocked one', status: 'blocked', created_at: 30 }]
+    const wrapper = mount(KanbanView)
+    await flushPromises()
+
+    await dragCard(wrapper, 'task-b', 'ready')
+
+    expect(mockUnblockTasks).toHaveBeenCalledWith(['task-b'])
+    expect(mockMessage.success).toHaveBeenCalledWith('kanban.message.taskUnblocked')
+  })
+
+  it('never routes a drag through the chat-plane-forbidden bulk endpoint', async () => {
+    const wrapper = mount(KanbanView)
+    await flushPromises()
+
+    await dragCard(wrapper, 'task-1', 'done')
+
+    // The board must reach for the allowlisted single-task routes only.
+    expect(mockCompleteTasks).toHaveBeenCalledTimes(1)
+    expect(mockBulkUpdateTasks).not.toHaveBeenCalled()
+  })
+
+  it('refuses a drag onto a column core would reject and issues no request', async () => {
+    // ready -> ready is a no-op; done is already terminal so it cannot be blocked.
+    storeState.tasks = [{ id: 'task-d', title: 'Done one', status: 'done', created_at: 40 }]
+    const wrapper = mount(KanbanView)
+    await flushPromises()
+
+    const column = await dragCard(wrapper, 'task-d', 'blocked')
+
+    expect(column.attributes('data-drop-allowed')).toBe('false')
+    expect(mockBlockTask).not.toHaveBeenCalled()
+    expect(mockCompleteTasks).not.toHaveBeenCalled()
+    expect(mockUnblockTasks).not.toHaveBeenCalled()
+  })
+
+  it('restores the original column and reports the error when the move fails', async () => {
+    // Stand in for a store that already moved the card before the write failed,
+    // which is what the rollback exists to undo.
+    mockCompleteTasks.mockImplementation(async (ids: string[]) => {
+      const moved = storeState.tasks.find(task => task.id === ids[0])
+      if (moved) moved.status = 'done'
+      throw new Error('cannot complete task-1')
+    })
+    const wrapper = mount(KanbanView)
+    await flushPromises()
+    expect(storeState.tasks[0].status).toBe('todo')
+
+    await dragCard(wrapper, 'task-1', 'done')
+
+    expect(storeState.tasks[0].status).toBe('todo')
+    expect(mockMessage.error).toHaveBeenCalledWith('cannot complete task-1')
+    expect(mockMessage.success).not.toHaveBeenCalled()
+  })
+
+  it('ignores a second drop while the first transition is still in flight', async () => {
+    let release: (() => void) | null = null
+    mockCompleteTasks.mockImplementation(() => new Promise<void>(resolve => { release = () => resolve() }))
+    const wrapper = mount(KanbanView)
+    await flushPromises()
+
+    const card = wrapper.find('.kanban-task-card-stub[data-task-id="task-1"]')
+    const column = wrapper.find('.task-list[data-drop-status="done"]')
+    await card.trigger('dragstart')
+    await column.trigger('dragover')
+    await column.trigger('drop')
+    await card.trigger('dragstart')
+    await column.trigger('dragover')
+    await column.trigger('drop')
+    release?.()
+    await flushPromises()
+
+    expect(mockCompleteTasks).toHaveBeenCalledTimes(1)
   })
 
   it('creates and archives boards from the board toolbar', async () => {

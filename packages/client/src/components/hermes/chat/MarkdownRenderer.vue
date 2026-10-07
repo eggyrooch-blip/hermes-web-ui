@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import 'katex/dist/katex.min.css'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NDrawer, NDrawerContent, NSpin, useMessage } from 'naive-ui'
@@ -26,6 +27,8 @@ import {
   type ArtifactPublication,
 } from '@/api/hermes/download'
 import { useFilesStore, isHtmlFile, isImageFile } from '@/stores/hermes/files'
+import ImagePreviewOverlay from './ImagePreviewOverlay.vue'
+import { isBinaryPreviewFile } from '@/utils/hermes/file-preview'
 
 const LATEX_FENCE_LANGS = new Set(['latex', 'tex', 'math', 'katex'])
 const PREVIEW_AREA_WIDTH = 'min(800px, 100vw)'
@@ -772,7 +775,12 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
 
     if (path) {
       const ext = fileName?.split('.').pop()?.toLowerCase()
-      if (SUPPORT_PREVIEW_FILE_TYPES.includes(ext || '')) {
+      // SUPPORT_PREVIEW_FILE_TYPES is a text/image allowlist and will never
+      // list the office formats, whose cards would otherwise fall through to
+      // the download branch below — the exact case this feature exists for, an
+      // employee clicking the report.xlsx the agent just produced.
+      const cardFileName = fileName || decodeURIComponent(path.split('/').pop() || '')
+      if (SUPPORT_PREVIEW_FILE_TYPES.includes(ext || '') || isBinaryPreviewFile(cardFileName)) {
         if (path.startsWith('/workspace/')) {
           // Chat-produced HTML artifacts open in the embedded browser (real
           // /api/hermes/preview URL + address bar). Other previewable workspace
@@ -783,9 +791,10 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
           } else {
             await useFilesStore().previewByDisplayPath(path, fileName || undefined)
           }
-        } else if (isImageFile(fileName || '')) {
-          // Non-workspace image cards cannot use the profile-scoped workspace
-          // preview endpoint. Preserve their previous safe download behavior.
+        } else if (isImageFile(fileName || '') || isBinaryPreviewFile(cardFileName)) {
+          // Non-workspace image and office cards cannot use the profile-scoped
+          // workspace preview endpoint, and an office file read as UTF-8 text
+          // renders as mojibake. Preserve the safe download behavior.
           downloadFile(path, fileName).catch((err: Error) => {
             message.error(err.message || t('download.downloadFailed'))
           })
@@ -890,11 +899,12 @@ function closeTextPreview(): void {
       </NSpin>
     </NDrawerContent>
   </NDrawer>
-  <Teleport to="body">
-    <div v-if="previewUrl" class="image-preview-overlay" @click.self="previewUrl = null">
-      <img :src="previewUrl" class="image-preview-img" @click="previewUrl = null" />
-    </div>
-  </Teleport>
+  <ImagePreviewOverlay
+    v-if="previewUrl"
+    :src="previewUrl"
+    alt=""
+    @close="previewUrl = null"
+  />
 </template>
 
 <style lang="scss">
@@ -1226,24 +1236,7 @@ function closeTextPreview(): void {
   }
 }
 
-.image-preview-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-  background: rgba(0, 0, 0, 0.85);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
 
-.image-preview-img {
-  max-width: 90vw;
-  max-height: 90vh;
-  object-fit: contain;
-  border-radius: 4px;
-  cursor: pointer;
-}
 
 .text-preview-body {
   flex: 1;

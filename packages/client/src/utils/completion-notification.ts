@@ -5,9 +5,18 @@ interface CompletionNotificationPayload {
   tag?: string
 }
 
+/**
+ * A notification that carries a place to go back to. `clickUrl` is an in-app
+ * hash route (`/hermes/...`); clicking the notification focuses the window and
+ * navigates there.
+ */
+export interface SystemNotificationPayload extends CompletionNotificationPayload {
+  clickUrl?: string
+}
+
 interface HermesDesktopBridge {
   isDesktop?: boolean
-  notifyCompletion?: (payload: CompletionNotificationPayload) => Promise<boolean>
+  notifyCompletion?: (payload: CompletionNotificationPayload & { clickUrl?: string }) => Promise<boolean>
 }
 
 export interface CompletionNotificationPermissionResult {
@@ -49,16 +58,39 @@ function isBrowserNotificationSecureContext(): boolean {
   return window.isSecureContext
 }
 
-function browserNotificationOptions(payload: CompletionNotificationPayload): NotificationOptions {
+/**
+ * Only in-app hash routes are allowed through to the click handler and to the
+ * service worker — a notification must never be able to navigate the window to
+ * an attacker-chosen origin or escape the app with `..`.
+ */
+export function safeHermesClickUrl(value?: string): string | undefined {
+  if (!value || !value.startsWith('/hermes/') || value.includes('..') || value.includes('\\')) return undefined
+  return value
+}
+
+function browserNotificationOptions(payload: SystemNotificationPayload): NotificationOptions {
+  const clickUrl = safeHermesClickUrl(payload.clickUrl)
   return {
     body: payload.body,
     icon: payload.icon ? new URL(payload.icon, window.location.origin).href : undefined,
     tag: payload.tag,
+    data: clickUrl ? { clickUrl } : undefined,
   }
 }
 
-async function showServiceWorkerNotification(payload: CompletionNotificationPayload): Promise<boolean> {
-  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return false
+/**
+ * The page is in front of the user right now. Background-only notifications
+ * (pending approvals) stay silent in this case — the card is already on screen.
+ */
+export function isDocumentVisible(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'visible'
+}
+
+async function showServiceWorkerNotification(
+  payload: SystemNotificationPayload,
+  requireBackground: boolean,
+): Promise<boolean> {
+  if (typeof navigator === 'undefined' || !navigator.serviceWorker || typeof navigator.serviceWorker.register !== 'function') return false
 
   try {
     const registration = await withTimeout(
@@ -68,6 +100,11 @@ async function showServiceWorkerNotification(payload: CompletionNotificationPayl
     )
     if (!registration) return false
     await withTimeout(navigator.serviceWorker.ready, 3000, registration)
+    // Registration plus `ready` can burn up to six seconds on a first visit.
+    // The visibility check that gated this call happened before all of that, so
+    // re-check here: a user who came back to the tab in the meantime is looking
+    // straight at the card and must not be interrupted.
+    if (requireBackground && isDocumentVisible()) return false
     await registration.showNotification(payload.title, browserNotificationOptions(payload))
     return true
   } catch (err) {
@@ -101,13 +138,27 @@ export async function requestCompletionNotificationPermission(): Promise<Complet
   }
 }
 
-export async function showCompletionNotification(payload: CompletionNotificationPayload): Promise<boolean> {
+/**
+ * Show a system notification.
+ *
+ * `requireBackground` (default `false`) makes the call a no-op while the page
+ * is visible. Callers that notify about something the user can already see on
+ * screen (pending approvals) pass `true`; completion notifications keep the
+ * historical always-show behaviour.
+ */
+export async function showSystemNotification(
+  payload: SystemNotificationPayload,
+  options: { requireBackground?: boolean } = {},
+): Promise<boolean> {
+  const requireBackground = options.requireBackground === true
+  if (requireBackground && isDocumentVisible()) return false
+
   const bridge = desktopBridge()
   if (bridge?.isDesktop && bridge.notifyCompletion) {
     try {
-      return await bridge.notifyCompletion(payload)
+      return await bridge.notifyCompletion({ ...payload, clickUrl: safeHermesClickUrl(payload.clickUrl) })
     } catch (err) {
-      console.warn('Failed to show desktop completion notification:', err)
+      console.warn('Failed to show desktop system notification:', err)
       return false
     }
   }
@@ -117,16 +168,26 @@ export async function showCompletionNotification(payload: CompletionNotification
   }
 
   try {
-    if (await showServiceWorkerNotification(payload)) return true
+    if (await showServiceWorkerNotification(payload, requireBackground)) return true
+
+    // The service-worker attempt above is awaited, so re-check before falling
+    // back to the constructor for the same reason.
+    if (requireBackground && isDocumentVisible()) return false
 
     const notification = new Notification(payload.title, browserNotificationOptions(payload))
     notification.onclick = () => {
       window.focus()
+      const clickUrl = safeHermesClickUrl(payload.clickUrl)
+      if (clickUrl) window.location.hash = `#${clickUrl}`
       notification.close()
     }
     return true
   } catch (err) {
-    console.warn('Failed to show browser completion notification:', err)
+    console.warn('Failed to show browser system notification:', err)
     return false
   }
+}
+
+export async function showCompletionNotification(payload: CompletionNotificationPayload): Promise<boolean> {
+  return showSystemNotification(payload)
 }

@@ -56,6 +56,12 @@ export interface ExpertInfo {
   release_installed_at?: number
   /** All-channel run count (webui + feishu + cron). */
   use_count?: number
+  /**
+   * Author-written opening lines (`ui.sample_prompts` in expert.yaml), shown as
+   * the 「试试这样问我」 rows. Absent → `expertSamplePrompts` generates three
+   * from this expert's own tags / name / skills.
+   */
+  sample_prompts?: string[]
   /** Server capability; absent/false means Harness must not be offered. */
   harness_available?: boolean
 }
@@ -92,6 +98,50 @@ export function isExpertRecentlyUpdated(
   if (!d) return false
   const age = now - d.getTime()
   return age >= 0 && age <= EXPERT_NEW_WINDOW_MS
+}
+
+const SAMPLE_PROMPT_LIMIT = 5
+
+/**
+ * The 「试试这样问我」 rows for one expert.
+ *
+ * Author-written openers win: `sample_prompts` is what the expert's own YAML
+ * declares, so it is used verbatim (capped at five — the panel is a shortcut,
+ * not a manual). Every other expert still gets three, generated from its own
+ * material so no two experts share a canned line — the heuristic is ported from
+ * KippiesWork 专家详情 v2 (`kippies/lib/market.ts::expertAsks`), mapped
+ * tags←display_tags, name←title||name, skills←skills.
+ *
+ * Each line has to be sendable as-is (it says what the user gives and what they
+ * want back), which is why the material is embedded rather than replaced by a
+ * placeholder like 「这件事」 — that degraded into 「这件事在这件事上有哪些坑」
+ * and gave every untagged expert identical copy.
+ *
+ * Domain words are quoted with 「」: they are often ASCII (keep-aidock) and run
+ * together with the surrounding Chinese otherwise.
+ */
+export function expertSamplePrompts(
+  expert: Pick<ExpertInfo, 'sample_prompts' | 'display_tags' | 'name' | 'title' | 'skills'>,
+): string[] {
+  const authored = (expert.sample_prompts ?? [])
+    .map(line => (typeof line === 'string' ? line.trim() : ''))
+    .filter(line => line.length > 0)
+  if (authored.length) return authored.slice(0, SAMPLE_PROMPT_LIMIT)
+
+  const tags = (expert.display_tags ?? []).filter(tag => typeof tag === 'string' && tag.trim())
+  const [t1, t2, t3] = tags
+  const rawName = (expert.title || expert.name || '').trim()
+  const domain = rawName.replace(/(专家|顾问|助手)$/u, '').trim() || rawName
+  const skill = (expert.skills ?? []).find(s => typeof s === 'string' && s.trim())
+  return [
+    t1 ? `帮我${t1}，先列清你需要我提供哪些材料` : `帮我做一次「${domain}」的任务，先列清你需要我提供哪些材料`,
+    t2
+      ? `按${t2}的口径整理一版，直接给结论和依据`
+      : skill
+        ? `从「${skill}」开始，带我把「${domain}」的流程走一遍`
+        : `拿一个「${domain}」的典型场景演示一遍，直接给结论和依据`,
+    t3 ? `这件事在${t3}上有哪些坑，挑最关键的三条` : `用「${domain}」干活最容易踩哪些坑？挑最关键的三条`,
+  ]
 }
 
 /** True when an expert was distributed through the AiHub managed-plugin pipeline. */

@@ -216,6 +216,71 @@ describe('MarkdownRenderer workspace artifact file card', () => {
     expect(downloadFile).toHaveBeenCalledWith('/workspace/reports/archive.zip', 'archive.zip')
   })
 
+  it.each([
+    ['docx', 'brief.docx'],
+    ['pdf', 'report.pdf'],
+    ['pptx', 'deck.pptx'],
+    ['xlsx', 'metrics.xlsx'],
+  ])('routes a workspace .%s card through the in-panel preview instead of downloading', async (_ext, fileName) => {
+    // SUPPORT_PREVIEW_FILE_TYPES is a text/image allowlist that will never
+    // contain the office formats, so these cards used to fall straight through
+    // to download — the exact click this feature exists to serve.
+    previewByDisplayPath.mockClear()
+    downloadFile.mockClear()
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: `[${fileName}](/workspace/${fileName})` },
+    })
+
+    await wrapper.find('.markdown-file-card').trigger('click')
+
+    expect(previewByDisplayPath).toHaveBeenCalledWith(`/workspace/${fileName}`, fileName)
+    expect(downloadFile).not.toHaveBeenCalled()
+  })
+
+  it('routes a bare inline office path through the in-panel preview', async () => {
+    previewByDisplayPath.mockClear()
+    downloadFile.mockClear()
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: 'Open `/workspace/reports/q3.xlsx` now.' },
+    })
+
+    await wrapper.find('.markdown-file-card').trigger('click')
+
+    expect(previewByDisplayPath).toHaveBeenCalledWith('/workspace/reports/q3.xlsx', 'q3.xlsx')
+    expect(downloadFile).not.toHaveBeenCalled()
+  })
+
+  it.each(['brief.docx', 'report.pdf', 'deck.pptx', 'metrics.xlsx'])(
+    'keeps non-workspace office card %s on the safe download path',
+    async (fileName) => {
+      // Outside /workspace/ there is no profile-scoped preview endpoint to
+      // fetch from, and reading the bytes as UTF-8 text would render mojibake.
+      downloadFile.mockClear()
+      previewByDisplayPath.mockClear()
+      const wrapper = mount(MarkdownRenderer, {
+        props: { content: `[${fileName}](/tmp/${fileName})` },
+      })
+
+      await wrapper.find('.markdown-file-card').trigger('click')
+
+      expect(downloadFile).toHaveBeenCalledWith(`/tmp/${fileName}`, fileName)
+      expect(previewByDisplayPath).not.toHaveBeenCalled()
+    },
+  )
+
+  it('keeps legacy binary office formats on the download path', async () => {
+    downloadFile.mockClear()
+    previewByDisplayPath.mockClear()
+    const wrapper = mount(MarkdownRenderer, {
+      props: { content: '[legacy.xls](/workspace/legacy.xls)' },
+    })
+
+    await wrapper.find('.markdown-file-card').trigger('click')
+
+    expect(downloadFile).toHaveBeenCalledWith('/workspace/legacy.xls', 'legacy.xls')
+    expect(previewByDisplayPath).not.toHaveBeenCalled()
+  })
+
   it('keeps non-workspace image cards on the safe download path', async () => {
     downloadFile.mockClear()
     previewByDisplayPath.mockClear()

@@ -48,6 +48,12 @@ export interface ExpertEntry {
   release_installed_at?: number
   /** All-channel run count (webui + feishu + cron), maintained by multitenancy. */
   use_count?: number
+  /**
+   * Guided opening lines the expert author wrote (`ui.sample_prompts` in
+   * expert.yaml) — the 「试试这样问我」 rows in the detail panel. At most 5;
+   * absent means the client generates its own from tags/name/skills.
+   */
+  sample_prompts?: string[]
 }
 
 export interface ExpertListResult {
@@ -87,6 +93,7 @@ interface ExpertRowDict {
   release_version?: unknown
   release_installed_at?: unknown
   use_count?: unknown
+  sample_prompts?: unknown
   owner_open_ids?: unknown
   active?: unknown
   status?: unknown
@@ -145,6 +152,28 @@ function strArray(raw: unknown): string[] | undefined {
   return out.length ? out : undefined
 }
 
+/**
+ * `sample_prompts` rows, validated on their own rather than through `strArray`.
+ *
+ * `strArray` calls `String(v)` on every member, which turns a non-string into a
+ * clickable nonsense prompt and THROWS on a value with a broken `toString`
+ * (`{"toString": null}`). One such row from the broker would take the whole
+ * catalog request down with it, because every expert is mapped in the same pass.
+ * So: strings only, trimmed, empties dropped, at most five, and the field is
+ * omitted when nothing survives.
+ */
+function samplePromptArray(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out: string[] = []
+  for (const item of raw) {
+    if (typeof item !== 'string') continue
+    const line = item.trim()
+    if (line) out.push(line)
+    if (out.length === 5) break
+  }
+  return out.length ? out : undefined
+}
+
 function coerceGovernance(raw: ExpertRowDict['governance']): ExpertGovernance | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const gov: ExpertGovernance = {}
@@ -198,6 +227,11 @@ export function mapExpertRow(r: ExpertRowDict): ExpertEntry {
   if (typeof r.use_count === 'number' && Number.isSafeInteger(r.use_count) && r.use_count >= 0) {
     entry.use_count = r.use_count
   }
+  // 「试试这样问我」: author-written openers. This BFF re-maps a whitelist, so a
+  // field the broker adds is invisible to the browser until it is named here
+  // (release_version shipped broken for exactly this reason).
+  const samplePrompts = samplePromptArray(r.sample_prompts)
+  if (samplePrompts) entry.sample_prompts = samplePrompts
   return entry
 }
 

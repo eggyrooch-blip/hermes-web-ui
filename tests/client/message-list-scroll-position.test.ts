@@ -106,6 +106,8 @@ describe('MessageList session scroll position', () => {
     vi.clearAllMocks()
 
     const sessionASnapshot = {
+      anchorMessageId: 'scroll-session-a-message',
+      anchorOffset: -24,
       scrollTop: 320,
       scrollHeight: 1200,
       clientHeight: 500,
@@ -120,6 +122,8 @@ describe('MessageList session scroll position', () => {
 
     vi.clearAllMocks()
     mockCaptureViewportPosition.mockReturnValue({
+      anchorMessageId: 'scroll-session-b-message',
+      anchorOffset: 12,
       scrollTop: 40,
       scrollHeight: 1000,
       clientHeight: 500,
@@ -132,6 +136,113 @@ describe('MessageList session scroll position', () => {
 
     expect(mockRestoreViewportPosition).toHaveBeenCalledWith(sessionASnapshot)
     expect(mockScrollToBottom).not.toHaveBeenCalled()
+  })
+
+  // Regression: the transcript hydrates asynchronously. Consuming the pending
+  // scroll key while the list is still empty used to lose the saved position
+  // for good, because the anchor cannot be found and the retry watcher bails.
+  it('restores a slow-loading session once its messages finish hydrating', async () => {
+    const chatStore = useChatStore()
+    chatStore.activeSessionId = 'slow-session'
+    chatStore.activeSession = makeSession('slow-session')
+
+    mount(MessageList, {
+      global: { stubs: { Transition: false } },
+    })
+    await flushSessionScroll()
+
+    const slowSnapshot = {
+      anchorMessageId: 'slow-session-message',
+      anchorOffset: -24,
+      scrollTop: 500,
+      scrollHeight: 2000,
+      clientHeight: 500,
+      wasNearBottom: false,
+    }
+    mockCaptureViewportPosition.mockReturnValue(slowSnapshot)
+
+    // Leave the session so its position is remembered.
+    chatStore.activeSessionId = 'other-session'
+    chatStore.activeSession = makeSession('other-session')
+    await flushSessionScroll()
+
+    // Come back while the transcript is still loading: no messages rendered, so
+    // the real VirtualMessageList cannot find the anchor and reports false.
+    vi.clearAllMocks()
+    mockRestoreViewportPosition.mockImplementation(
+      () => (chatStore.activeSession?.messages.length ?? 0) > 0,
+    )
+
+    const reloading = makeSession('slow-session')
+    reloading.messages = []
+    chatStore.isLoadingMessages = true
+    chatStore.activeSessionId = 'slow-session'
+    chatStore.activeSession = reloading
+    await flushSessionScroll()
+
+    expect(mockRestoreViewportPosition).toHaveBeenCalledWith(slowSnapshot)
+    expect(mockRestoreViewportPosition).toHaveLastReturnedWith(false)
+
+    // Messages land; the pending key must still be armed so the restore retries.
+    vi.clearAllMocks()
+    chatStore.activeSession!.messages = [makeMessage('slow-session-message')]
+    chatStore.isLoadingMessages = false
+    await flushSessionScroll()
+
+    expect(mockRestoreViewportPosition).toHaveBeenCalledWith(slowSnapshot)
+    expect(mockRestoreViewportPosition).toHaveLastReturnedWith(true)
+  })
+
+  it('keeps restoration pending beyond eight seconds until hydration settles', async () => {
+    vi.useFakeTimers()
+    try {
+      const chatStore = useChatStore()
+      chatStore.activeSessionId = 'stuck-session'
+      chatStore.activeSession = makeSession('stuck-session')
+
+      mount(MessageList, {
+        global: { stubs: { Transition: false } },
+      })
+      await flushSessionScroll()
+
+      const stuckSnapshot = {
+        anchorMessageId: 'stuck-session-message',
+        anchorOffset: 0,
+        scrollTop: 400,
+        scrollHeight: 1800,
+        clientHeight: 500,
+        wasNearBottom: false,
+      }
+      mockCaptureViewportPosition.mockReturnValue(stuckSnapshot)
+
+      chatStore.activeSessionId = 'away-session'
+      chatStore.activeSession = makeSession('away-session')
+      await flushSessionScroll()
+
+      // Messages are on screen but the load never settles and the anchor is
+      // gone, so the restore can never succeed.
+      mockRestoreViewportPosition.mockReturnValue(false)
+      const stuck = makeSession('stuck-session')
+      chatStore.isLoadingMessages = true
+      chatStore.activeSessionId = 'stuck-session'
+      chatStore.activeSession = stuck
+      await flushSessionScroll()
+
+      vi.clearAllMocks()
+      mockRestoreViewportPosition.mockReturnValue(false)
+      await vi.advanceTimersByTimeAsync(8000)
+
+      // A slow resume/fallback must not discard the saved position.
+      expect(mockScrollToBottom).not.toHaveBeenCalled()
+
+      // It still retries when loading eventually completes.
+      vi.clearAllMocks()
+      chatStore.isLoadingMessages = false
+      await flushSessionScroll()
+      expect(mockRestoreViewportPosition).toHaveBeenCalledWith(stuckSnapshot)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('disables virtual scrolling for the live chat transcript', async () => {

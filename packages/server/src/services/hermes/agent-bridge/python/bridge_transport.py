@@ -24,6 +24,10 @@ class WorkerProcess:
     def __init__(self, key: str, profile: str, endpoint: str, agent_root: str | None, hermes_home: str | None) -> None:
         self.key = key or profile or "default"
         self.profile = profile or "default"
+        # `endpoint` is what we ask for; `requested_endpoint` is replayed on every
+        # restart so an OS-assigned port is re-drawn instead of re-binding a port
+        # that may have been taken since.
+        self.requested_endpoint = endpoint
         self.endpoint = endpoint
         self.agent_root = agent_root
         self.hermes_home = hermes_home
@@ -43,6 +47,7 @@ class WorkerProcess:
         with self._lock:
             if self.running:
                 return
+            self.endpoint = self.requested_endpoint
             args = [
                 sys.executable,
                 str(Path(__file__).with_name("hermes_bridge.py").resolve()),
@@ -131,6 +136,10 @@ class WorkerProcess:
             try:
                 data = json.loads(text)
                 if data.get("event") == "ready":
+                    # An OS-assigned port is only knowable from the worker.
+                    reported = str(data.get("endpoint") or "").strip()
+                    if reported:
+                        self.endpoint = reported
                     ready_event.set()
                     return
             except Exception:
@@ -164,16 +173,37 @@ class WorkerProcess:
         return _send_bridge_request(self.endpoint, req, request_timeout)
 
 
+# Unix-domain socket paths are limited by sun_path (macOS/BSD: 104 bytes,
+# Linux: 108 bytes, including the trailing NUL). Keep a small safety margin.
+_AF_UNIX_MAX_PATH = 104 if sys.platform == "darwin" else 108
+
+# Ask the OS for a free loopback port; the listener reports the concrete one.
+TCP_ANY_PORT_ENDPOINT = "tcp://127.0.0.1:0"
+
+
 def _worker_endpoint(key: str, namespace: str | None = None) -> str:
     namespace_key = f"{namespace or ''}\0{key}"
     safe = hashlib.sha256(namespace_key.encode("utf-8")).hexdigest()[:16]
     transport = os.environ.get("HERMES_AGENT_BRIDGE_WORKER_TRANSPORT", "").strip().lower()
-    use_tcp = transport == "tcp" or (transport not in {"ipc", "unix"} and os.name == "nt")
-    if use_tcp:
-        port_base = int(os.environ.get("HERMES_AGENT_BRIDGE_WORKER_PORT_BASE", "18780"))
-        return f"tcp://127.0.0.1:{port_base + int(safe[:4], 16) % 1000}"
-    root = Path(tempfile.gettempdir()) / "hermes-agent-bridge-workers"
-    return f"ipc://{root / f'{safe}.sock'}"
+    forced_ipc = transport in {"ipc", "unix"}
+    use_tcp = transport == "tcp" or (not forced_ipc and os.name == "nt")
+    if not use_tcp:
+        root = Path(tempfile.gettempdir()) / "hermes-agent-bridge-workers"
+        sock_path = root / f"{safe}.sock"
+        # A deep temp dir can push the socket path past the platform's sun_path
+        # limit; the worker then fails to bind and exits before it can report
+        # ready (surfaced as "profile worker ... exited before ready"). Fall
+        # back to a TCP endpoint in that case.
+        if forced_ipc or len(os.fsencode(str(sock_path))) < _AF_UNIX_MAX_PATH - 1:
+            return f"ipc://{sock_path}"
+        # Port 0 asks the OS for a free port. The hashed port below only has 1000
+        # slots, so two profiles of the same namespace collide often enough that
+        # the second worker fails to bind and never reports ready — the exact
+        # failure this fallback exists to avoid. The worker reports the port it
+        # actually bound on its ready line.
+        return TCP_ANY_PORT_ENDPOINT
+    port_base = int(os.environ.get("HERMES_AGENT_BRIDGE_WORKER_PORT_BASE", "18780"))
+    return f"tcp://127.0.0.1:{port_base + int(safe[:4], 16) % 1000}"
 
 
 def _connect_bridge_socket(endpoint: str, timeout: float) -> socket.socket:
@@ -326,13 +356,28 @@ def _make_listen_socket(endpoint: str) -> socket.socket:
     if parsed.scheme != "tcp":
         raise RuntimeError(f"unsupported endpoint scheme: {endpoint}")
     host = parsed.hostname or "127.0.0.1"
-    port = int(parsed.port or 0)
-    if port <= 0:
+    port = parsed.port
+    if port is None or port < 0:
         raise RuntimeError(f"tcp endpoint requires a port: {endpoint}")
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((host, port))
+    # Port 0 binds an OS-assigned free port; callers read it back with
+    # `_endpoint_for_listen_socket` and publish it on the ready line.
+    server.bind((host, int(port)))
     return server
+
+
+def _endpoint_for_listen_socket(endpoint: str, server: socket.socket) -> str:
+    """The concrete endpoint a bound listener is reachable at."""
+    if endpoint.startswith("ipc://"):
+        return endpoint
+    try:
+        host, port = server.getsockname()[:2]
+    except OSError:
+        return endpoint
+    if not port:
+        return endpoint
+    return f"tcp://{host}:{port}"
 
 
 def _read_json_request(conn: socket.socket) -> dict[str, Any]:

@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { type Session } from '@/stores/hermes/chat'
 import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
-import { useSessionBrowserPrefsStore } from '@/stores/hermes/session-browser-prefs'
+import { useSessionPinsStore } from '@/stores/hermes/session-pins'
 import { NButton, NDropdown, NPopconfirm, NTooltip, useMessage, type DropdownOption } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { getSourceLabel } from '@/shared/session-display'
@@ -18,7 +18,7 @@ import { batchDeleteSessions, deleteSession, fetchHermesSessions, fetchHermesSes
 
 const appStore = useAppStore()
 const profilesStore = useProfilesStore()
-const sessionBrowserPrefsStore = useSessionBrowserPrefsStore()
+const sessionPinsStore = useSessionPinsStore()
 const message = useMessage()
 const { t } = useI18n()
 const route = useRoute()
@@ -74,6 +74,15 @@ async function loadHermesSessions() {
     if (requestId !== hermesSessionsRequestId) return
     hermesSessions.value = sessions
     hermesSessionsLoaded.value = true
+    // Pins used to live in this browser's localStorage. Replay them onto the
+    // session rows once, then the key is gone and the server is the only source.
+    const migrated = await sessionPinsStore.migrateLegacyPins(hermesSessions.value)
+    if (migrated.length > 0 && requestId === hermesSessionsRequestId) {
+      const migratedIds = new Set(migrated)
+      hermesSessions.value = hermesSessions.value.map(session =>
+        migratedIds.has(session.id) ? { ...session, is_pinned: true } : session,
+      )
+    }
   } catch (err) {
     console.error('Failed to load Hermes sessions:', err)
   } finally {
@@ -99,7 +108,7 @@ const contextSessionSummary = computed(() =>
 )
 
 const contextSessionPinned = computed(() =>
-  contextSessionId.value ? sessionBrowserPrefsStore.isPinned(contextSessionId.value) : false,
+  Boolean(contextSessionSummary.value?.is_pinned),
 )
 
 const contextMenuOptions = computed<DropdownOption[]>(() => {
@@ -163,6 +172,7 @@ function sessionFromSummary(summary: SessionSummary, messages: Session['messages
     lastActiveAt: summary.last_active ? summary.last_active * 1000 : undefined,
     workspace: summary.workspace || undefined,
     isArchived: summary.is_archived === true,
+    isPinned: summary.is_pinned === true,
     messages,
   }
 }
@@ -368,6 +378,7 @@ function sessionSummaryToSession(summary: SessionSummary): Session {
     lastActiveAt: summary.last_active ? summary.last_active * 1000 : undefined,
     workspace: summary.workspace || undefined,
     isArchived: summary.is_archived === true,
+    isPinned: summary.is_pinned === true,
     messages: [],
   }
 }
@@ -450,13 +461,13 @@ interface SessionGroup {
 }
 
 const pinnedSessions = computed(() =>
-  sortSessionsWithActiveFirst(historySessions.value.filter(session => sessionBrowserPrefsStore.isPinned(session.id))),
+  sortSessionsWithActiveFirst(historySessions.value.filter(session => session.isPinned)),
 )
 
 const groupedSessions = computed<SessionGroup[]>(() => {
   const map = new Map<string, Session[]>()
   for (const s of historySessions.value) {
-    if (sessionBrowserPrefsStore.isPinned(s.id)) continue
+    if (s.isPinned) continue
     const key = s.source || ''
     if (!map.has(key)) map.set(key, [])
     map.get(key)!.push(s)
@@ -601,7 +612,20 @@ async function handleContextMenuSelect(key: string) {
   showContextMenu.value = false
   if (!contextSessionId.value) return
   if (key === 'pin') {
-    sessionBrowserPrefsStore.togglePinned(contextSessionId.value)
+    const summary = contextSessionSummary.value
+    if (!summary) return
+    try {
+      // Pins live on the Studio session row. History also lists Hermes sessions
+      // that have no such row yet, and those stay pinnable: the store builds the
+      // row through the fenced import endpoint before writing the flag.
+      summary.is_pinned = await sessionPinsStore.setPinned(summary.id, summary.is_pinned !== true, {
+        profile: summary.profile ?? null,
+        importIfMissing: summary.webui_imported === false,
+      })
+      if (summary.is_pinned) summary.webui_imported = true
+    } catch (error: any) {
+      message.error(error?.message || t('common.saveFailed'))
+    }
   } else if (key === 'copy-link') {
     await copySessionLink(contextSessionId.value)
   } else if (key === 'copy-id') {
@@ -622,7 +646,6 @@ async function handleDeleteSession(id: string, profile?: string | null) {
     return
   }
 
-  sessionBrowserPrefsStore.removePinned(id)
   hermesSessions.value = hermesSessions.value.filter(s => s.id !== id)
 
   if (historySessionId.value === id) {
@@ -654,10 +677,6 @@ async function handleBatchDelete() {
   try {
     const result = await batchDeleteSessions(targets)
     if (result.deleted > 0) {
-      for (const target of targets) {
-        sessionBrowserPrefsStore.removePinned(target.id)
-      }
-
       await loadHermesSessions()
 
       if (activeWasSelected || (historySessionId.value && !findHistorySession(historySessionId.value))) {
@@ -879,6 +898,7 @@ function handleBatchDeleteConfirm() {
             ref="historyMessageListRef"
             :session="historySession"
             :load-older="loadOlderHistoryMessages"
+            scroll-scope="history"
           />
         </div>
         <OutlinePanel

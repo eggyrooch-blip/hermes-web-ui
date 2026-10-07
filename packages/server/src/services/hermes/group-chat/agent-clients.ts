@@ -15,6 +15,7 @@ import {
 } from './mention-routing'
 
 export const GROUP_CHAT_AGENT_SOCKET_SECRET = randomBytes(32).toString('hex')
+const REJOIN_ACK_TIMEOUT_MS = 10_000
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -853,20 +854,39 @@ class AgentClient {
             this.handlers.onMemberLeft?.(data)
         })
 
-        // Auto rejoin rooms on reconnect
-        s.io.on('reconnect', async () => {
+        s.on('disconnect', (reason) => {
+            logger.info({ agentId: this.agentId, reason, willReconnect: s.active }, '[AgentClient] group socket disconnected')
+        })
+
+        // Manager reconnect fires before this namespace is connected, when
+        // joinRoom still fails ensureConnected(). Rejoin after socket connect.
+        s.on('connect', async () => {
+            if (s !== this.socket || this.joinedRooms.size === 0) return
             if (this._reconnecting) return
             this._reconnecting = true
             logger.info(`[AgentClients] ${this.name} reconnecting, rejoining ${this.joinedRooms.size} rooms...`)
             const rooms = Array.from(this.joinedRooms)
-            for (const roomId of rooms) {
-                try {
-                    await this.joinRoom(roomId)
-                } catch (err: any) {
-                    logger.error(`[AgentClients] ${this.name} failed to rejoin room ${roomId}: ${err.message}`)
+            try {
+                for (const roomId of rooms) {
+                    let timer: ReturnType<typeof setTimeout> | undefined
+                    try {
+                        // A lost join ack must not leave _reconnecting stuck,
+                        // or every later reconnect would skip the rejoin.
+                        await Promise.race([
+                            this.joinRoom(roomId),
+                            new Promise((_, reject) => {
+                                timer = setTimeout(() => reject(new Error('rejoin ack timeout')), REJOIN_ACK_TIMEOUT_MS)
+                            }),
+                        ])
+                    } catch (err: any) {
+                        logger.error(`[AgentClients] ${this.name} failed to rejoin room ${roomId}: ${err.message}`)
+                    } finally {
+                        if (timer) clearTimeout(timer)
+                    }
                 }
+            } finally {
+                this._reconnecting = false
             }
-            this._reconnecting = false
         })
     }
 }

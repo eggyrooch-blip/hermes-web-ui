@@ -347,6 +347,70 @@ export function fetchCatalogConnectorStatus(opts: {
   )
 }
 
+/** 员工自己的 Figma MCP 授权 —— start/revoke 都只经这一条 owner-bound 通道。
+ *
+ * 身份来自已验证的会话（ownerHeaders 里的 `X-Hermes-Owner-Open-Id`），broker 侧再用
+ * routing 表把它解析成 profile，所以浏览器无法把别人的授权指过来。
+ */
+export async function startFigmaAuthorization(opts: {
+  profileName: string
+  ownerOpenId: string
+}): Promise<{ authorization_url: string }> {
+  const body = await ownerBrokerJson<{ authorization_url?: unknown }>('/api/run-broker/credentials/figma', {
+    ...opts,
+    method: 'POST',
+    body: {},
+    // 起授权要向 Figma 的 OAuth 元数据端点拉一圈，比一次本地状态读慢。
+    timeoutMs: 60_000,
+  })
+  const raw = String(body?.authorization_url || '').trim()
+  // 这个串会被客户端直接塞进新标签的 location —— 非 https 的（尤其 javascript:）
+  // 一律当作"没启动"，绝不下发。broker 正常只会给 www.figma.com 的 https 链接。
+  let parsed: URL
+  try {
+    parsed = new URL(raw)
+  } catch {
+    throw new BrokerUnavailableError('Figma 授权服务没有返回可用的授权链接，请稍后重试。', 502)
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new BrokerUnavailableError('Figma 授权服务返回的授权链接不是 https，已拒绝打开。', 502)
+  }
+  return { authorization_url: parsed.toString() }
+}
+
+/** MT 的 `DELETE /api/run-broker/credentials/figma` 只有一种成功形状：
+ *  `{"ok": true, "revoked": <bool>}`（webui_broker_server.handle_figma_credential）。
+ *
+ *  这里必须**校验业务成功标记**，不能只看 HTTP 200：broker 若回 200 `{ok:false}`，
+ *  或者回一段解析不出来的 body（`ownerBrokerJson` 在 JSON 解析失败时给的是 `{}`），
+ *  旧写法都会静默降级成 `revoked:false` 交给控制器，控制器再答 `ok:true` ——
+ *  员工看到「已撤销」，磁盘上的 token 可能还在（codex review 2026-09-21,
+ *  `revokefigmaauthorization:unvalidated-success`）。
+ *
+ *  `{ok:true, revoked:false}` 是**真**的幂等成功（本来就没授权），照旧放行。 */
+export async function revokeFigmaAuthorization(opts: {
+  profileName: string
+  ownerOpenId: string
+}): Promise<{ revoked: boolean }> {
+  const body = await ownerBrokerJson<unknown>('/api/run-broker/credentials/figma', {
+    ...opts,
+    method: 'DELETE',
+  })
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new BrokerUnavailableError('Figma 授权服务返回了无法识别的撤销结果，请稍后重试。', 502)
+  }
+  const result = body as { ok?: unknown; revoked?: unknown; error?: unknown }
+  if (result.ok !== true) {
+    // broker 自己给了理由就原样报出来，别翻译成一个空洞的成功。
+    const reason = typeof result.error === 'string' && result.error.trim() ? result.error.trim() : ''
+    throw new BrokerUnavailableError(reason || 'Figma 授权服务没有确认撤销成功，请稍后重试。', 502)
+  }
+  if (typeof result.revoked !== 'boolean') {
+    throw new BrokerUnavailableError('Figma 授权服务返回了无法识别的撤销结果，请稍后重试。', 502)
+  }
+  return { revoked: result.revoked }
+}
+
 export function deleteCustomConnector(opts: { profileName: string; ownerOpenId: string; connectorId: string }) {
   return ownerBrokerJson<{ ok: true }>(`/api/run-broker/custom-connectors/${encodeURIComponent(opts.connectorId)}`, {
     ...opts,
@@ -354,18 +418,69 @@ export function deleteCustomConnector(opts: { profileName: string; ownerOpenId: 
   })
 }
 
-export async function completeCatalogOAuth(opts: { state: string; code: string }) {
+/** OAuth 2.0 的 `iss`（RFC 9207 授权服务器标识）—— Figma 的回调真的带它：
+ *  `?code=…&iss=https%3A%2F%2Fapi.figma.com&state=…`。
+ *
+ *  三态，**不是**两态：`absent`（回调根本没带）/ `valid`（原样转给 MT 去比对）/
+ *  `invalid`（带了但不合法）。把 invalid 静默降级成 absent 会让 broker 分不清
+ *  「没提供 issuer」和「提供了错的 issuer」，等于把身份校验边界让给攻击者
+ *  （codex review 2026-09-21, `sanitizeoauthissuer:invalid-issuer-downgrade`）——
+ *  所以 invalid 一律当场 400，连 broker 都不调。
+ *
+ *  规矩仍然只有一条：**照抄或拒绝，绝不编**。 */
+export type OAuthIssuerCheck =
+  | { kind: 'absent' }
+  | { kind: 'valid'; value: string }
+  | { kind: 'invalid'; reason: string }
+
+export function classifyOAuthIssuer(raw: unknown): OAuthIssuerCheck {
+  // 只有"键根本不在 query 里"才算没提供。空串是带了一个空 issuer，是错，不是没带。
+  if (raw === undefined || raw === null) return { kind: 'absent' }
+  // Koa 对重复 query 键给数组：`?iss=a&iss=b` 属于提供了一个无法判定的 issuer。
+  if (Array.isArray(raw)) return { kind: 'invalid', reason: 'OAuth issuer is repeated' }
+  if (typeof raw !== 'string') return { kind: 'invalid', reason: 'OAuth issuer is not a string' }
+  const value = raw.trim()
+  if (!value) return { kind: 'invalid', reason: 'OAuth issuer is empty' }
+  // 256 足够放下任何真实 issuer；长过这个的只可能是塞垃圾。
+  if (value.length > 256) return { kind: 'invalid', reason: 'OAuth issuer is too long' }
+  if (/[\u0000-\u001f\u007f\s]/.test(value)) return { kind: 'invalid', reason: 'OAuth issuer contains control characters' }
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    return { kind: 'invalid', reason: 'OAuth issuer is not an absolute URL' }
+  }
+  if (parsed.protocol !== 'https:' || !parsed.hostname) return { kind: 'invalid', reason: 'OAuth issuer is not an https URL' }
+  return { kind: 'valid', value }
+}
+
+/** 只取"能原样转发的值"这一面；缺失和非法都给空串。判 400 要用
+ *  `classifyOAuthIssuer`，别拿这个函数的空串当"没带"。 */
+export function sanitizeOAuthIssuer(raw: unknown): string {
+  const checked = classifyOAuthIssuer(raw)
+  return checked.kind === 'valid' ? checked.value : ''
+}
+
+export async function completeCatalogOAuth(opts: { state: string; code: string; iss?: unknown }) {
   if (!config.runBrokerUrl) throw new BrokerUnavailableError('HERMES_RUN_BROKER_URL is not configured', 503)
   if (!opts.state || opts.state.length > 512 || !opts.code || opts.code.length > 8192) {
     throw new BrokerUnavailableError('invalid catalog OAuth callback', 400)
   }
+  // 逐字段重建请求体：MT 的 `complete_catalog_oauth` 对多余的键是拒的，所以这里既不能
+  // 透传调用方的整个对象，也不能把一个没通过校验的 iss 留在里面。
+  const issuer = classifyOAuthIssuer(opts.iss)
+  if (issuer.kind === 'invalid') {
+    // 提供了但不合法 —— 在打 broker 之前就断掉，别让它以为这是一次"没带 issuer"的回调。
+    throw new BrokerUnavailableError('invalid catalog OAuth issuer', 400)
+  }
+  const payload = { state: opts.state, code: opts.code, ...(issuer.kind === 'valid' ? { iss: issuer.value } : {}) }
   const response = await fetch(`${config.runBrokerUrl}/api/run-broker/connector-catalog/oauth/callback`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...(config.runBrokerKey ? { Authorization: `Bearer ${config.runBrokerKey}` } : {}),
     },
-    body: JSON.stringify(opts),
+    body: JSON.stringify(payload),
     signal: AbortSignal.timeout(60000),
   }).catch((err: any) => {
     throw new BrokerUnavailableError(`connector broker request failed: ${err?.message || err}`, 503)

@@ -19,6 +19,7 @@ const chatStoreMock = vi.hoisted(() => ({
   isStreaming: false,
   isAborting: false,
   setAutoPlaySpeech: vi.fn(),
+  consumeStagedComposerDraft: vi.fn(() => ''),
   setSessionReasoningEffort: vi.fn(),
   sendMessage: vi.fn(),
   stopStreaming: vi.fn(),
@@ -88,6 +89,16 @@ vi.mock('naive-ui', () => ({
   NModal: {
     props: ['show'],
     template: '<div v-if="show"><slot /><slot name="footer" /></div>',
+  },
+  NPopover: {
+    name: 'NPopover',
+    template: '<div><slot name="trigger" /><slot /></div>',
+  },
+  NSlider: {
+    name: 'NSlider',
+    props: ['value', 'min', 'max', 'step', 'formatTooltip'],
+    emits: ['update:value'],
+    template: '<div class="n-slider-stub" />',
   },
   NInputNumber: {
     template: '<input />',

@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, mount } from '@vue/test-utils'
 
 const fetchSkillCredentialsMock = vi.hoisted(() => vi.fn())
 const submitGitlabTokenMock = vi.hoisted(() => vi.fn())
 const submitGithubTokenMock = vi.hoisted(() => vi.fn())
 const revokeGithubTokenMock = vi.hoisted(() => vi.fn())
+const revokeFigmaCredentialMock = vi.hoisted(() => vi.fn())
 const startSkillCredentialAuthMock = vi.hoisted(() => vi.fn())
 const completeSkillCredentialAuthMock = vi.hoisted(() => vi.fn())
 const pollFeishuUatSessionMock = vi.hoisted(() => vi.fn())
@@ -27,6 +28,7 @@ vi.mock('@/api/skillCredentials', () => ({
   submitGitlabToken: submitGitlabTokenMock,
   submitGithubToken: submitGithubTokenMock,
   revokeGithubToken: revokeGithubTokenMock,
+  revokeFigmaCredential: revokeFigmaCredentialMock,
 }))
 
 vi.mock('@/api/connectorCatalog', () => ({
@@ -59,6 +61,11 @@ vi.mock('vue-i18n', () => ({
       'skillCredentials.github.revokeConfirm': 'Revoke GitHub?',
       'skillCredentials.github.revoked': 'GitHub revoked',
       'skillCredentials.github.failed': 'GitHub failed',
+      'skillCredentials.figma.revoke': 'Revoke Figma',
+      'skillCredentials.figma.revokeConfirm': 'Revoke Figma?',
+      'skillCredentials.figma.revoked': 'Figma revoked',
+      'skillCredentials.figma.failed': 'Figma failed',
+      'skillCredentials.figma.cancel': 'Cancel',
     } as Record<string, string>)[key] || key,
   }),
 }))
@@ -102,6 +109,10 @@ vi.mock('naive-ui', async () => {
     },
   }
 })
+
+// Unmount after each test so an OAuth poll left running on real timers stops (pollAbort)
+// instead of calling the shared fetchSkillCredentials mock during a later test.
+enableAutoUnmount(afterEach)
 
 describe('CredentialsView', () => {
   beforeEach(() => {
@@ -243,6 +254,19 @@ describe('CredentialsView', () => {
     const html = wrapper.html()
     expect(html).not.toContain('keep-secret-token')
     expect(html).not.toContain('gitlab-secret-token')
+  })
+
+  it('retries a failed catalog when the page refresh button is clicked', async () => {
+    fetchConnectorCatalogMock.mockRejectedValueOnce(new Error('catalog timeout'))
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('catalog timeout')
+    const refresh = wrapper.findAll('button').find(button => button.text() === '刷新')!
+    await refresh.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+    expect(fetchConnectorCatalogMock).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).not.toContain('catalog timeout')
   })
 
   it('shows the owner-scoped catalog and rejects command-based custom imports', async () => {
@@ -637,6 +661,163 @@ describe('CredentialsView', () => {
     expect(messageSuccessMock).not.toHaveBeenCalled()
     expect(messageErrorMock).toHaveBeenCalledWith('vault unavailable')
     expect(wrapper.find('[data-testid="github-revoke-confirm"]').exists()).toBe(true)
+  })
+
+  // --- Figma 卡：授权走通用 oauth_url，撤销是这张卡自己的第二颗按钮 -----------
+
+  const figmaRow = (status: string, hint?: string) => ({
+    profile_name: 'feishu_g41a5b5g',
+    credentials: [{
+      id: 'figma', title: 'Figma', provider: 'figma', installed: true,
+      status,
+      account_hint: hint,
+      detail: 'Figma 官方远端 MCP · 用你自己的 Figma 账号授权',
+      action: { kind: 'oauth_url', label: status === 'authenticated' ? '重新授权' : '授权' },
+    }],
+  })
+
+  it('opens the Figma authorization URL returned by the broker-backed start', async () => {
+    const authWindow = { opener: {}, location: { href: '' } } as any
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(authWindow)
+    fetchSkillCredentialsMock.mockResolvedValue(figmaRow('needs_auth'))
+    startSkillCredentialAuthMock.mockResolvedValueOnce({
+      id: 'figma',
+      verification_uri: 'https://www.figma.com/oauth/mcp?state=abc',
+    })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    // 未认证态不渲染撤销按钮 —— 没东西可撤。
+    expect(wrapper.find('[data-credential-revoke="figma"]').exists()).toBe(false)
+    await wrapper.find('[data-credential-action="figma"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(startSkillCredentialAuthMock).toHaveBeenCalledWith('figma', 'feishu_g41a5b5g')
+    expect(openSpy).toHaveBeenCalledWith('about:blank', '_blank')
+    expect(authWindow.location.href).toBe('https://www.figma.com/oauth/mcp?state=abc')
+  })
+
+  it('revokes the authenticated Figma authorization for the active profile', async () => {
+    fetchSkillCredentialsMock
+      .mockResolvedValueOnce(figmaRow('authenticated', 'alice@example.com'))
+      .mockResolvedValueOnce(figmaRow('needs_auth'))
+    revokeFigmaCredentialMock.mockResolvedValueOnce({ ok: true, revoked: true })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('alice@example.com')
+    await wrapper.find('[data-credential-revoke="figma"]').trigger('click')
+    await wrapper.find('[data-testid="figma-revoke-confirm"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(revokeFigmaCredentialMock).toHaveBeenCalledWith('feishu_g41a5b5g')
+    expect(fetchSkillCredentialsMock).toHaveBeenLastCalledWith('feishu_g41a5b5g', { fresh: true })
+    expect(messageSuccessMock).toHaveBeenCalledWith('Figma revoked')
+    expect(wrapper.find('[data-testid="figma-revoke-confirm"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('未认证')
+    expect(wrapper.text()).not.toContain('alice@example.com')
+  })
+
+  // 幂等撤销：broker 说"本来就没绑"(revoked:false) 仍然是 ok —— 弹窗照样要关，
+  // 否则员工会以为没撤成功而反复点。
+  it('closes the Figma dialog on an idempotent revoke (ok without revoked)', async () => {
+    fetchSkillCredentialsMock
+      .mockResolvedValueOnce(figmaRow('authenticated', 'alice@example.com'))
+      .mockResolvedValueOnce(figmaRow('needs_auth'))
+    revokeFigmaCredentialMock.mockResolvedValueOnce({ ok: true, revoked: false })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-credential-revoke="figma"]').trigger('click')
+    await wrapper.find('[data-testid="figma-revoke-confirm"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(messageSuccessMock).toHaveBeenCalledWith('Figma revoked')
+    expect(messageErrorMock).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="figma-revoke-confirm"]').exists()).toBe(false)
+  })
+
+  // 请求本身失败（路由不存在 / 面不对 / 网络断）时必须有话说：弹窗留着，但员工看得到
+  // 是什么挡住了。真机走查里"弹窗不动又没提示"就是这条分支没被证据覆盖。
+  it('keeps the Figma dialog open and surfaces the reason when the revoke request fails', async () => {
+    fetchSkillCredentialsMock.mockResolvedValue(figmaRow('authenticated', 'alice@example.com'))
+    revokeFigmaCredentialMock.mockRejectedValueOnce(
+      Object.assign(new Error('API Error 404: not found'), { status: 404 }),
+    )
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-credential-revoke="figma"]').trigger('click')
+    await wrapper.find('[data-testid="figma-revoke-confirm"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(messageSuccessMock).not.toHaveBeenCalled()
+    expect(messageErrorMock).toHaveBeenCalledWith('API Error 404: not found')
+    expect(wrapper.find('[data-testid="figma-revoke-confirm"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('已认证')
+  })
+
+  it('does not claim a Figma revoke succeeded when the server rejects it', async () => {
+    fetchSkillCredentialsMock.mockResolvedValue(figmaRow('authenticated', 'alice@example.com'))
+    revokeFigmaCredentialMock.mockResolvedValueOnce({ ok: false, error: 'Figma 授权服务暂不可用，请稍后重试。' })
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-credential-revoke="figma"]').trigger('click')
+    await wrapper.find('[data-testid="figma-revoke-confirm"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(messageSuccessMock).not.toHaveBeenCalled()
+    expect(messageErrorMock).toHaveBeenCalledWith('Figma 授权服务暂不可用，请稍后重试。')
+    // 弹窗留在原地，卡片仍是已认证 —— 没撤成就别装作撤了。
+    expect(wrapper.find('[data-testid="figma-revoke-confirm"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('已认证')
+  })
+
+  // 撤销只在 chat 面有服务端（控制器的 isChatPlaneRequest 闸）。别的面上这颗按钮点下去
+  // 只会拿到 404，所以那里根本不渲染它 —— 按钮和端点必须同进同退。
+  const authStatusReturning = (status: Record<string, unknown>) =>
+    vi.spyOn(globalThis, 'fetch' as any).mockResolvedValue({ ok: true, json: async () => status } as any)
+
+  it('hides the Figma revoke button on a plane where the revoke endpoint does not exist', async () => {
+    const fetchSpy = authStatusReturning({ plane: 'both', gitlabBaseUrl: '' })
+    fetchSkillCredentialsMock.mockResolvedValue(figmaRow('authenticated', 'alice@example.com'))
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-credential-revoke="figma"]').exists()).toBe(false)
+    // 卡片本身照常：授权按钮还在，藏的只是撤销。
+    expect(wrapper.find('[data-credential-action="figma"]').exists()).toBe(true)
+    fetchSpy.mockRestore()
+  })
+
+  it('shows the Figma revoke button on the chat plane', async () => {
+    const fetchSpy = authStatusReturning({ plane: 'chat', gitlabBaseUrl: '' })
+    fetchSkillCredentialsMock.mockResolvedValue(figmaRow('authenticated', 'alice@example.com'))
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-credential-revoke="figma"]').exists()).toBe(true)
+    fetchSpy.mockRestore()
+  })
+
+  it('keeps the Figma revoke button when the plane cannot be read', async () => {
+    // /api/auth/status 抖一下不该把生产上唯一的撤销入口藏掉：问不到就照常渲染。
+    const fetchSpy = vi.spyOn(globalThis, 'fetch' as any).mockRejectedValue(new Error('offline'))
+    fetchSkillCredentialsMock.mockResolvedValue(figmaRow('authenticated', 'alice@example.com'))
+    const CredentialsView = (await import('@/views/hermes/CredentialsView.vue')).default
+    const wrapper = mount(CredentialsView)
+    await new Promise(resolve => setTimeout(resolve, 0)); await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-credential-revoke="figma"]').exists()).toBe(true)
+    fetchSpy.mockRestore()
   })
 
   it('keeps legacy kep-cli credential rows grouped with internal systems', async () => {

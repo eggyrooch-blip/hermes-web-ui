@@ -3,6 +3,8 @@ import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from
 import { join } from 'path'
 import { promisify } from 'util'
 import { readAppConfig, type GatewayAutoStartConfig } from '../app-config'
+import { config } from '../../config'
+import { GatewayRestartDisabledError } from './gateway-restart-guard'
 import { logger } from '../logger'
 import { getHermesBaseDir, getProfileDir, listProfileNamesFromDisk } from './hermes-profile'
 import { retireManagedGatewayForProfile, startGatewayRunManaged } from './gateway-runner'
@@ -403,6 +405,12 @@ export async function prepareGatewayForProfileDelete(profile: string): Promise<v
     logger.warn(err, '[gateway-autostart] failed to retire managed gateway before profile delete profile=%s home=%s', profile, profileDir)
   }
 
+  // In broker mode the host gateway is the MT router; the delete proceeds without touching it.
+  if (config.webuiRunBroker) {
+    logger.info('[gateway-autostart] broker mode: skipping gateway stop before profile delete profile=%s home=%s', profile, profileDir)
+    return
+  }
+
   try {
     await execHermesWithBin(hermesBin, ['gateway', 'stop'], {
       timeout: 10000,
@@ -465,6 +473,10 @@ export async function getGatewayRuntimeStatusForProfile(profile: string): Promis
 }
 
 export async function restartGatewayForProfile(profile: string): Promise<{ running: boolean; profile: string }> {
+  // hermes-agent 0.21.4 runs one gateway per host, and in broker mode that host
+  // gateway is the MT router. Stopping or starting a gateway from a profile home
+  // can interfere with it, so the WebUI leaves gateway lifecycle to the router.
+  if (config.webuiRunBroker) throw new GatewayRestartDisabledError()
   const hermesBin = resolveHermesBin()
   const profileDir = getProfileDir(profile)
   await stopGatewayForProfile(hermesBin, profile, profileDir)

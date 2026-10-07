@@ -103,6 +103,52 @@ describe('expert registry client', () => {
     }
   })
 
+  it('passes sample_prompts through the BFF whitelist and drops non-array values', async () => {
+    const { mapExpertRow } = await import(SERVICE)
+
+    expect(
+      mapExpertRow({ id: 'kep', name: 'x', sample_prompts: ['a', 'b'] }).sample_prompts,
+    ).toEqual(['a', 'b'])
+    // the panel shows at most five rows
+    expect(
+      mapExpertRow({
+        id: 'kep',
+        name: 'x',
+        sample_prompts: ['1', '2', '3', '4', '5', '6'],
+      }).sample_prompts,
+    ).toEqual(['1', '2', '3', '4', '5'])
+    for (const bad of ['x', 42, null, {}, [], ['']]) {
+      expect(
+        mapExpertRow({ id: 'kep', name: 'x', sample_prompts: bad }).sample_prompts,
+        String(JSON.stringify(bad)),
+      ).toBeUndefined()
+    }
+  })
+
+  it('keeps one malformed prompt member from coercing into a prompt or killing the whole catalog', async () => {
+    const { mapExpertRow } = await import(SERVICE)
+
+    // String(v) on a member with a broken toString throws; every expert is mapped
+    // in the same pass, so one poisoned row must not take the list down.
+    const poisoned = { id: 'kep', name: 'x', sample_prompts: [{ toString: null }, '带我走一遍流程'] }
+    expect(() => mapExpertRow(poisoned)).not.toThrow()
+    expect(mapExpertRow(poisoned).sample_prompts).toEqual(['带我走一遍流程'])
+
+    // non-strings are dropped, never rendered as clickable nonsense
+    expect(
+      mapExpertRow({
+        id: 'kep',
+        name: 'x',
+        sample_prompts: [42, null, {}, ['nested'], true, '  真提示词  ', '   '],
+      }).sample_prompts,
+    ).toEqual(['真提示词'])
+
+    // nothing valid at all → field omitted rather than an empty section
+    expect(
+      mapExpertRow({ id: 'kep', name: 'x', sample_prompts: [42, {}, null] }).sample_prompts,
+    ).toBeUndefined()
+  })
+
   it('drops malformed release metadata instead of forwarding it', async () => {
     const { mapExpertRow } = await import(SERVICE)
 

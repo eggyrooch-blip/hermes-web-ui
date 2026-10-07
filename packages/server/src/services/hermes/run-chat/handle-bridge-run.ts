@@ -34,6 +34,7 @@ import { markAbortCompleted } from './abort'
 import { writeModelRunProfileToken } from './model-run-prompt'
 import type { AuthenticatedUser } from '../../../middleware/user-auth'
 import { ensureHermesRunWorkspace, normalizeHermesSessionWorkspace } from './workspace'
+import { resolveRunReasoningEffort } from './reasoning-effort'
 import { completeWorkspaceRunCheckpoint, discardWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint, type WorkspaceRunCheckpointHandle, type WorkspaceRunDiffCompletion } from './workspace-diff-tracker'
 import { captureSessionRunOwnership, ownsSessionGeneration, ownsSessionRun, type SessionRunOwnership } from './session-run-ownership'
 import { finalizeBridgeAbort, registerBridgeAbortFinalizer, unregisterBridgeAbortFinalizer } from './bridge-abort-finalizer'
@@ -360,7 +361,23 @@ export async function handleBridgeRun(
   let diffWorkspace = ''
   let resolvedModel = ''
   let resolvedProvider = ''
+  // True once this run cleared the session's end markers. Everything after that
+  // point must close the session again on failure, or the row stays "running"
+  // forever.
+  let reopenedSession = false
+  let runReasoningEffort = ''
   try {
+    // Reopen before any preflight work (state load, workspace resolve, model
+    // resolve, run-token write) so a failure in any of it is covered by the
+    // terminal handling in the catch below.
+    if (getSession(session_id)) {
+      try {
+        updateSession(session_id, { ended_at: null, end_reason: null, last_active: Math.floor(Date.now() / 1000) })
+        reopenedSession = true
+      } catch (err) {
+        bridgeLogger.warn(err, '[chat-run-socket] failed to reopen session %s for bridge run', session_id)
+      }
+    }
     if (runOwnership.needsStateLoad) {
       const loadedState = await awaitWithAbortSignal(
         loadSessionStateFromDbFn(session_id, sessionMap),
@@ -397,6 +414,7 @@ export async function handleBridgeRun(
     }
     const sessionModel = sessionRow?.model || ''
     const sessionProvider = sessionRow?.provider || ''
+    runReasoningEffort = resolveRunReasoningEffort(data.reasoning_effort, sessionRow?.reasoning_effort)
     const resolved = await awaitWithAbortSignal(resolveBridgeRunModelConfig({
       profile,
       sessionModel,
@@ -426,7 +444,18 @@ export async function handleBridgeRun(
       return
     }
     if (!ownsRun()) return
+    const hasQueuedRun = (state.queue?.length ?? 0) > 0
     releaseBridgeRunAdmission(sessionMap, runOwnership)
+    // Preflight failed after this run reopened the session. No terminal chunk and
+    // no stream catch will run, so write the end marker here unless a queued run
+    // will carry the session on. Ownership was just confirmed above.
+    if (reopenedSession && !hasQueuedRun) {
+      try {
+        updateSession(session_id, { ended_at: Math.floor(Date.now() / 1000), end_reason: 'error' })
+      } catch (endErr) {
+        bridgeLogger.warn(endErr, '[chat-run-socket] failed to write ended_at for session %s', session_id)
+      }
+    }
     throw err
   }
 
@@ -680,7 +709,9 @@ export async function handleBridgeRun(
         ...(resolvedModel ? { model: resolvedModel } : {}),
         ...(resolvedProvider ? { provider: resolvedProvider } : {}),
         // Local patch (reasoning-effort): per-session reasoning effort override.
-        ...(data.reasoning_effort ? { reasoning_effort: data.reasoning_effort } : {}),
+        // Unset stays unset — an empty field would look like an explicit choice
+        // to the agent instead of "use the profile default".
+        ...(runReasoningEffort ? { reasoning_effort: runReasoningEffort } : {}),
       },
     ), runOwnership.abortController.signal)
     if (!ownsRun()) {
@@ -848,7 +879,15 @@ export async function handleBridgeRun(
     state.activeRunMarker = undefined
     state.events = []
     unregisterBridgeAbortFinalizer(state, bridgeAbortFinalizer)
-    if (queueLen > 0) dequeueNextQueuedRun(socket, session_id)
+    if (queueLen > 0) {
+      dequeueNextQueuedRun(socket, session_id)
+    } else {
+      try {
+        updateSession(session_id, { ended_at: Math.floor(Date.now() / 1000), end_reason: 'error' })
+      } catch (endErr) {
+        bridgeLogger.warn(endErr, '[chat-run-socket] failed to write ended_at for session %s', session_id)
+      }
+    }
   }
 }
 
@@ -1045,7 +1084,15 @@ export async function resumeBridgeRun(
     state.responseRun = undefined
     state.events = []
     unregisterBridgeAbortFinalizer(state, resumeAbortFinalizer)
-    if (queueLength > 0) dequeueNextQueuedRun(socket, sessionId, profile)
+    if (queueLength > 0) {
+      dequeueNextQueuedRun(socket, sessionId, profile)
+    } else {
+      try {
+        updateSession(sessionId, { ended_at: Math.floor(Date.now() / 1000), end_reason: 'error' })
+      } catch (endErr) {
+        bridgeLogger.warn(endErr, '[chat-run-socket] failed to write ended_at for session %s', sessionId)
+      }
+    }
   }
 }
 
@@ -1604,6 +1651,12 @@ async function applyBridgeChunkAsync(
 
   if (hasQueuedRun) {
     dequeueNextQueuedRun(socket, sessionId)
+  } else {
+    try {
+      updateSession(sessionId, { ended_at: Math.floor(Date.now() / 1000), end_reason: terminalError ? 'error' : 'complete' })
+    } catch (endErr) {
+      bridgeLogger.warn(endErr, '[chat-run-socket] failed to write ended_at for session %s', sessionId)
+    }
   }
 }
 

@@ -4,7 +4,7 @@ import { NButton, NSwitch, NSelect, NInputNumber, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import { useTheme, type BrightnessMode } from '@/composables/useTheme'
-import { requestCompletionNotificationPermission, showCompletionNotification, type CompletionNotificationPermissionResult } from '@/utils/completion-notification'
+import { requestCompletionNotificationPermission, showCompletionNotification, showSystemNotification, type CompletionNotificationPermissionResult } from '@/utils/completion-notification'
 import { CHAT_INPUT_HEIGHT_DEFAULT, CHAT_INPUT_HEIGHT_MAX, CHAT_INPUT_HEIGHT_MIN, clampChatInputHeight } from '@/utils/chat-input-height'
 import SettingRow from './SettingRow.vue'
 
@@ -43,6 +43,42 @@ function notificationPermissionErrorKey(result: CompletionNotificationPermission
   if (result.reason === 'insecure') return 'settings.display.notifyOnCompleteInsecure'
   if (result.reason === 'unsupported') return 'settings.display.notifyOnCompleteUnsupported'
   return 'settings.display.notifyOnCompleteDenied'
+}
+
+// Default ON: an unset `notify_on_approval` reads as enabled, so the switch
+// must not render as off just because the profile has never saved this key.
+const notifyOnApproval = computed(() => settingsStore.display.notify_on_approval !== false)
+
+async function handleNotifyOnApprovalChange(value: boolean) {
+  // The OS permission prompt only ever fires from this user gesture — never on
+  // app start, and never from the switch being default-on.
+  if (value) {
+    const result = await requestCompletionNotificationPermission()
+    if (!result.granted) {
+      message.error(t(notificationPermissionErrorKey(result)))
+      return
+    }
+  }
+  await save({ notify_on_approval: value })
+}
+
+async function testApprovalNotification() {
+  const result = await requestCompletionNotificationPermission()
+  if (!result.granted) {
+    message.error(t(notificationPermissionErrorKey(result)))
+    return
+  }
+  const shown = await showSystemNotification({
+    title: 'Hermes',
+    body: t('settings.display.notifyOnApprovalTest'),
+    icon: '/coding-agents/hermes.png',
+    tag: `hermes-approval-test-${Date.now()}`,
+  })
+  if (!shown) {
+    message.error(t('settings.display.notifyOnApprovalTestFailed'))
+    return
+  }
+  message.success(t('settings.display.notifyOnApprovalTestSent'))
 }
 
 async function handleNotifyOnCompleteChange(value: boolean) {
@@ -117,6 +153,14 @@ async function testCompletionNotification() {
     </SettingRow>
     <SettingRow :label="t('settings.display.bellOnComplete')" :hint="t('settings.display.bellOnCompleteHint')">
       <NSwitch :value="settingsStore.display.bell_on_complete" @update:value="v => save({ bell_on_complete: v })" />
+    </SettingRow>
+    <SettingRow :label="t('settings.display.notifyOnApproval')" :hint="`${t('settings.display.notifyOnApprovalHint')} ${t('settings.display.notifyOnCompleteMacHint')}`">
+      <div class="notify-controls">
+        <NSwitch :value="notifyOnApproval" @update:value="handleNotifyOnApprovalChange" />
+        <NButton size="tiny" secondary @click="testApprovalNotification">
+          {{ t('settings.display.notifyOnApprovalTestButton') }}
+        </NButton>
+      </div>
     </SettingRow>
     <SettingRow :label="t('settings.display.notifyOnComplete')" :hint="`${t('settings.display.notifyOnCompleteHint')} ${t('settings.display.notifyOnCompleteMacHint')}`">
       <div class="notify-controls">

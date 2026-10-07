@@ -1,4 +1,4 @@
-import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondToolApproval, onPeerUserMessage, onSessionCommand, onSessionTitleUpdated, onAuthResolved, respondClarify, type ChatRunTransport, type RunEvent, type ResumeSessionPayload, type StartRunRequest, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
+import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondToolApproval, respondAuthorization, onPeerUserMessage, onSessionCommand, onSessionTitleUpdated, onAuthResolved, respondClarify, type ChatRunTransport, type RunEvent, type ResumeSessionPayload, type StartRunRequest, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
 import {
   deleteSession as deleteSessionApi,
   fetchSessionMessagesPage,
@@ -7,6 +7,7 @@ import {
   setSessionArchived as setSessionArchivedApi,
   setSessionExpert,
   setSessionModel,
+  setSessionReasoningEffort as persistSessionReasoningEffort,
   type HermesMessage,
   type ProviderApiMode,
   type SessionSummary,
@@ -21,7 +22,15 @@ import { useAppStore } from './app'
 import { useProfilesStore } from './profiles'
 import { useSettingsStore } from './settings'
 import { primeCompletionSound, playCompletionSound } from '@/utils/completion-sound'
-import { showCompletionNotification } from '@/utils/completion-notification'
+import { showCompletionNotification, showSystemNotification } from '@/utils/completion-notification'
+import { pendingRequestClickUrl } from '@/utils/pending-request-route'
+import {
+  PENDING_REQUEST_NOTIFICATION_LEDGER_LIMIT,
+  clearNotifiedPendingRequests,
+  forgetNotifiedPendingRequest,
+  loadNotifiedPendingRequests,
+  persistNotifiedPendingRequest,
+} from '@/utils/pending-request-notification-ledger'
 import { detectThinkingBoundary } from '@/utils/thinking-parser'
 import { responseErrorMessage } from '@/utils/http-error'
 import { collectSessionArtifacts } from '@/utils/hermes/session-artifacts'
@@ -78,6 +87,9 @@ export interface Message {
   sourceRefs?: import('@/api/hermes/chat').SourceRef[]
 }
 
+/** What kind of pending request a background system notification is about. */
+export type PendingRequestNotificationKind = 'approval' | 'clarify' | 'authorization'
+
 export interface PendingApproval {
   sessionId: string
   approvalId: string
@@ -115,6 +127,34 @@ export interface PendingReauth {
   requestedAt: number
   /** true once the user authorized and the broker replay was kicked off */
   retrying: boolean
+}
+
+/**
+ * Inline authorization card (TRAE-style). Distinct from PendingReauth: this one
+ * never triggers a run replay — the broker keeps the run parked and releases it
+ * itself once the handshake resolves.
+ */
+export interface PendingAuthorization {
+  sessionId: string
+  authorizationId: string
+  /** Raw broker service id (lark-cli / kep-cli-online / kep-cli-pre) — never rendered raw. */
+  service: string
+  scopes: string[]
+  /** Epoch seconds. 0 means the broker did not give a deadline. */
+  expiresAt: number
+  state: 'pending' | 'authorizing' | 'success' | 'cancelled' | 'expired' | 'failed'
+  verificationUri?: string
+  submitting: boolean
+  error?: string
+  /**
+   * True only once a server `authorization.resolved` event confirmed the
+   * broker's own pending entry is gone. A LOCAL-only terminal state (e.g.
+   * `authorization.failed`, or an optimistic client `cancel`) leaves this
+   * false — the broker may still be holding the request open. Stop uses this
+   * to decide whether it still owes the broker a cancel (see
+   * `clearPendingInteractionsForStop`).
+   */
+  serverTerminal?: boolean
 }
 
 export interface WorkflowStage {
@@ -165,9 +205,15 @@ export interface Session {
   projectName?: string
   projectBound?: boolean
   isArchived?: boolean
-  /** Per-session reasoning effort override.
+  /**
+   * Cross-device pin, stored on the session row (not in browser storage).
+   * `undefined` means the server never reported one — the signal the legacy
+   * pin migration needs to tell an unpinned session from an old backend.
+   */
+  isPinned?: boolean
+  /** Per-session reasoning effort override, persisted on the session row.
    * Empty string / undefined = use config.yaml default.
-   * Values: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' */
+   * Values: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' */
   reasoningEffort?: string
 }
 
@@ -664,6 +710,7 @@ function mapHermesSession(s: SessionSummary): Session {
     updatedAt: Math.round((s.last_active || s.ended_at || s.started_at) * 1000),
     model: s.model,
     provider: s.provider || (s as any).billing_provider || '',
+    reasoningEffort: s.reasoning_effort || undefined,
     messageCount: s.message_count,
     messageTotal: s.message_count,
     loadedMessageCount: 0,
@@ -677,6 +724,7 @@ function mapHermesSession(s: SessionSummary): Session {
     projectName: s.project_name || undefined,
     projectBound: s.project_bound === true,
     isArchived: s.is_archived === true,
+    isPinned: s.is_pinned === undefined ? undefined : s.is_pinned === true,
   }
 }
 
@@ -792,6 +840,12 @@ function removeItem(key: string) {
 // Strip the circular `file: File` reference from attachments before caching —
 // File objects don't serialize and we only need name/type/size/url for display.
 
+// Stores in this codebase are not wired to vue-i18n (same reason
+// `completionNotificationBody` falls back to `Message complete.`), and `@/i18n`
+// exports no eager instance since locales became lazy. The RESULT payload is
+// diagnostic JSON, so an English marker is right here.
+const SUBAGENT_TRUNCATED_SUFFIX = ' ... (truncated)'
+
 export const useChatStore = defineStore('chat', () => {
   const runtimeMode = ref<ChatRuntimeMode>(activeRuntimeMode)
   const seenSessionCommandEvents = new WeakSet<RunEvent>()
@@ -846,6 +900,26 @@ export const useChatStore = defineStore('chat', () => {
     const sid = activeSessionId.value
     return sid ? pendingReauths.value.get(sid) || null : null
   })
+
+  const pendingAuthorizations = ref<Map<string, PendingAuthorization>>(new Map())
+  const activePendingAuthorization = computed(() => {
+    const sid = activeSessionId.value
+    return sid ? pendingAuthorizations.value.get(sid) || null : null
+  })
+
+  /**
+   * Request keys (`kind:sessionId:requestId`) we already raised a system
+   * notification for. The same `approval.requested` / `clarify.requested` /
+   * `authorization.required` event is replayed on resume, reconnect and F5, so
+   * without this ledger a single pending request would notify repeatedly.
+   *
+   * Seeded from `sessionStorage` because a reload rebuilds this store from
+   * scratch while the server still holds the request open and replays it — an
+   * in-memory-only Set would notify the user a second time about something
+   * they have already been told about. In-flight claims live only in the Set;
+   * only a delivery that reached the user is written through.
+   */
+  const notifiedPendingRequests = new Set<string>(loadNotifiedPendingRequests())
 
   // 自动播放语音开关
   const autoPlaySpeechEnabled = ref(false)
@@ -906,6 +980,9 @@ export const useChatStore = defineStore('chat', () => {
     pendingApprovals.value = new Map()
     pendingClarifies.value = new Map()
     pendingReauths.value = new Map()
+    pendingAuthorizations.value = new Map()
+    notifiedPendingRequests.clear()
+    clearNotifiedPendingRequests()
     streamStates.value = new Map()
     serverWorking.value = new Set()
     abortStates.value = new Map()
@@ -985,6 +1062,15 @@ export const useChatStore = defineStore('chat', () => {
   const expertPersistence = new Map<string, Promise<boolean>>()
   const expertPersistenceResult = new Map<string, boolean>()
   const expertSelectionRevision = new Map<string, number>()
+  // Per-session reasoning-effort write bookkeeping: the in-flight chain, the
+  // last value the server confirmed, and a monotonic revision per user pick.
+  // The revision is what makes a stale write or a stale list response
+  // identifiable — value equality cannot tell high → low → high apart. Like
+  // expertSelectionRevision it is never pruned; it is one small int per
+  // session and resetting it would make stale responses look current.
+  const reasoningEffortWriteChains = new Map<string, Promise<boolean>>()
+  const reasoningEffortConfirmedValues = new Map<string, string | undefined>()
+  const reasoningEffortRevision = new Map<string, number>()
   function setActiveExpertDisplay(display: { avatar?: string; label?: string } | null) {
     activeExpertAvatar.value = display?.avatar?.trim() || ''
     activeExpertLabel.value = display?.label?.trim() || ''
@@ -1153,6 +1239,10 @@ export const useChatStore = defineStore('chat', () => {
         session.id,
         expertSelectionRevision.get(session.id) || 0,
       ]))
+      const reasoningRevisions = new Map(sessions.value.map(session => [
+        session.id,
+        reasoningEffortRevision.get(session.id) || 0,
+      ]))
       const sessionsBeforeRequest = new Map(sessions.value.map(session => [session.id, session]))
       const list = await fetchRuntimeSessions(profile)
       if (requestEpoch !== loadSessionsRequestEpoch) return
@@ -1168,6 +1258,16 @@ export const useChatStore = defineStore('chat', () => {
         session.expertLabel = local.expertLabel
         session.expertAvatar = local.expertAvatar
         session.executionEngine = local.executionEngine
+      }
+      // Same staleness rule as the expert block, in its own pass because that
+      // one short-circuits on the match case. `fresh` here is a REPLACEMENT
+      // object, so a pick made while this request was in flight has to be
+      // copied forward or it is simply gone.
+      for (const session of fresh) {
+        if ((reasoningEffortRevision.get(session.id) || 0) === (reasoningRevisions.get(session.id) || 0)) continue
+        const local = sessionsBeforeRequest.get(session.id)
+        if (!local) continue
+        session.reasoningEffort = local.reasoningEffort
       }
       // Preserve already-loaded messages for sessions that are still present,
       // so we don't blow away the active session's messages on refresh.
@@ -1254,6 +1354,10 @@ export const useChatStore = defineStore('chat', () => {
         session.id,
         expertSelectionRevision.get(session.id) || 0,
       ]))
+      const reasoningRevisions = new Map(sessions.value.map(session => [
+        session.id,
+        reasoningEffortRevision.get(session.id) || 0,
+      ]))
       const list = await fetchRuntimeSessions(profile ?? sessionProfileFilter.value)
       if (requestEpoch !== loadSessionsRequestEpoch) return
       const incoming = list.map(mapHermesSession)
@@ -1275,6 +1379,13 @@ export const useChatStore = defineStore('chat', () => {
           existing.endedAt = fresh.endedAt
           existing.model = fresh.model
           existing.provider = fresh.provider
+          // Accept the server's value only if the user has not picked a new
+          // stop since this request went out. Checking "is a write pending"
+          // at RESPONSE time was not enough: a GET issued before the POST can
+          // land after it finished, and would then overwrite the saved pick.
+          if ((reasoningEffortRevision.get(fresh.id) || 0) === (reasoningRevisions.get(fresh.id) || 0)) {
+            existing.reasoningEffort = fresh.reasoningEffort
+          }
           existing.messageCount = fresh.messageCount
           existing.inputTokens = fresh.inputTokens
           existing.outputTokens = fresh.outputTokens
@@ -1283,6 +1394,7 @@ export const useChatStore = defineStore('chat', () => {
           existing.projectName = fresh.projectName
           existing.projectBound = fresh.projectBound
           existing.isArchived = fresh.isArchived
+          existing.isPinned = fresh.isPinned
           if ((expertSelectionRevision.get(fresh.id) || 0) === (expertRevisions.get(fresh.id) || 0)) {
             existing.expertId = fresh.expertId
             existing.expertLabel = fresh.expertLabel
@@ -1607,6 +1719,14 @@ export const useChatStore = defineStore('chat', () => {
                 setPendingClarify({ ...e, session_id: sessionId } as RunEvent)
               } else if (e.event === 'clarify.resolved') {
                 clearPendingClarify({ ...e, session_id: sessionId } as RunEvent)
+              } else if (e.event === 'authorization.required') {
+                setPendingAuthorization({ ...e, session_id: sessionId } as RunEvent)
+              } else if (e.event === 'authorization.resolved') {
+                clearPendingAuthorization({ ...e, session_id: sessionId } as RunEvent)
+              } else if (e.event === 'authorization.url') {
+                applyAuthorizationUrl({ ...e, session_id: sessionId } as RunEvent)
+              } else if (e.event === 'authorization.failed') {
+                applyAuthorizationFailure({ ...e, session_id: sessionId } as RunEvent)
               } else if (e.event === 'auth.required') {
                 setPendingReauth({ ...e, session_id: sessionId } as RunEvent)
               } else if (e.event === 'auth.resolved') {
@@ -1794,6 +1914,47 @@ export const useChatStore = defineStore('chat', () => {
     // last-browsed/activated expert on every new chat (prod bug, sunke profile).
     void switchSession(session.id)
     return session
+  }
+
+  /**
+   * One-shot composer draft addressed to ONE session.
+   *
+   * 「试试这样问我」 has to both open a new chat with the expert AND put the
+   * sentence in the box. Writing the localStorage draft table directly loses
+   * the race: `newChat` flips `activeSession.id`, and ChatInput's watcher on it
+   * runs first and overwrites the box with the new session's (empty) draft.
+   * Staging here instead lets that same watcher pick the text up after it
+   * loads.
+   *
+   * It carries its target session id because consumption is not guaranteed to
+   * happen on the session we aimed at: a router guard can redirect (expired
+   * login, a pending OAuth hop), or the user can open some other session first.
+   * An unaddressed draft would then be typed into whatever session mounted next
+   * and overwrite that session's own draft. Matching on the id makes a missed
+   * navigation a no-op instead.
+   */
+  const stagedComposerDraft = ref<{ sessionId: string; text: string } | null>(null)
+
+  function stageComposerDraft(sessionId: string, text: string) {
+    const id = typeof sessionId === 'string' ? sessionId.trim() : ''
+    const value = typeof text === 'string' ? text : ''
+    stagedComposerDraft.value = id && value ? { sessionId: id, text: value } : null
+  }
+
+  /** Returns the staged text only for the session it was addressed to, once. */
+  function consumeStagedComposerDraft(sessionId: string): string {
+    const staged = stagedComposerDraft.value
+    if (!staged || !sessionId || staged.sessionId !== sessionId) return ''
+    stagedComposerDraft.value = null
+    return staged.text
+  }
+
+  /** Drop a staged draft whose navigation never reached its session. */
+  function clearStagedComposerDraft(sessionId?: string) {
+    const staged = stagedComposerDraft.value
+    if (!staged) return
+    if (sessionId && staged.sessionId !== sessionId) return
+    stagedComposerDraft.value = null
   }
 
   function newChatWithExpert(
@@ -2120,6 +2281,8 @@ export const useChatStore = defineStore('chat', () => {
 
     const msgs = getSessionMsgs(sessionId)
     const existing = msgs.find(m => m.role === 'tool' && m.toolCallId === toolCallId)
+    if (existing && (existing.toolStatus === 'done' || existing.toolStatus === 'error')
+      && eventName !== 'subagent.complete') return
     const toolStatus = eventName === 'subagent.complete'
       ? ((evt as any).status && String((evt as any).status) !== 'completed' ? 'error' : 'done')
       : 'running'
@@ -2132,7 +2295,8 @@ export const useChatStore = defineStore('chat', () => {
       toolResult: eventName === 'subagent.complete'
         ? JSON.stringify({
             status: (evt as any).status || 'completed',
-            summary: summary || text,
+            summary: (summary || text) + ((evt as any).summary_truncated || (evt as any).text_truncated
+              ? SUBAGENT_TRUNCATED_SUFFIX : ''),
             api_calls: (evt as any).api_calls,
             input_tokens: (evt as any).input_tokens,
             output_tokens: (evt as any).output_tokens,
@@ -2145,13 +2309,17 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
 
-    addMessage(sessionId, {
+    const createdAt = Number((evt as any).created_at)
+    const message: Message = {
       id: uid(),
       role: 'tool',
       content: '',
-      timestamp: Date.now(),
+      timestamp: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : Date.now(),
       ...update,
-    })
+    }
+    const insertAt = msgs.findIndex(item => item.timestamp > message.timestamp)
+    if (insertAt < 0) addMessage(sessionId, message)
+    else msgs.splice(insertAt, 0, message)
   }
 
   function addAgentErrorMessage(sessionId: string, error?: unknown) {
@@ -2509,6 +2677,99 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
+  /**
+   * Pending-request system notifications.
+   *
+   * The event source is our own inline approval / clarify / TRAE-style
+   * authorization cards — every socket path (`run` events, resume replay,
+   * global-agent and group runs) funnels into the three setters below, so this
+   * is the single place that sees each pending request exactly once.
+   *
+   * Copy stays English here because stores in this codebase are not wired to
+   * vue-i18n (same reason `completionNotificationBody` falls back to
+   * `Message complete.`); the body carries the agent's own words, which are
+   * already in the user's language.
+   */
+  function pendingRequestNotificationKey(
+    kind: PendingRequestNotificationKind,
+    sessionId: string,
+    requestId: string,
+  ): string {
+    return `${kind}:${sessionId}:${requestId}`
+  }
+
+  const PENDING_REQUEST_NOTIFICATION_LABEL: Record<PendingRequestNotificationKind, string> = {
+    approval: 'Approval needed',
+    clarify: 'Clarification needed',
+    authorization: 'Authorization needed',
+  }
+
+  function pendingNotificationsEnabled(): boolean {
+    // Default ON: an unset `notify_on_approval` still notifies. Nothing is ever
+    // shown without an OS permission the user granted from the Display switch.
+    return useSettingsStore().display.notify_on_approval !== false
+  }
+
+  function notifyPendingRequest(
+    kind: PendingRequestNotificationKind,
+    sessionId: string,
+    requestId: string,
+    summary: string,
+  ) {
+    if (!pendingNotificationsEnabled()) return
+    // The card is already on screen when the tab is in front of the user.
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') return
+
+    const key = pendingRequestNotificationKey(kind, sessionId, requestId)
+    if (notifiedPendingRequests.has(key)) return
+    if (notifiedPendingRequests.size >= PENDING_REQUEST_NOTIFICATION_LEDGER_LIMIT) {
+      const oldest = notifiedPendingRequests.values().next().value
+      if (oldest !== undefined) notifiedPendingRequests.delete(oldest)
+    }
+    // Claimed BEFORE delivery so a burst of duplicate events cannot each start
+    // their own notification while the first is still in flight. A delivery
+    // that never reached the user (permission still `default`, a throwing
+    // Notification constructor) releases the claim again — otherwise the user
+    // grants permission, reconnects, and the replay of that same still-pending
+    // request is swallowed by a ledger entry for a notification nobody saw.
+    notifiedPendingRequests.add(key)
+
+    const session = sessions.value.find(s => s.id === sessionId)
+    const label = PENDING_REQUEST_NOTIFICATION_LABEL[kind]
+    const detail = truncateNotificationText(summary, 140)
+    void (async () => {
+      let shown = false
+      try {
+        shown = await showSystemNotification({
+          title: truncateNotificationText(session?.title || 'Hermes', 80),
+          body: detail ? `${label}: ${detail}` : label,
+          icon: '/coding-agents/hermes.png',
+          tag: `hermes-pending-${key}`,
+          clickUrl: pendingRequestClickUrl(sessionId, session?.profile),
+        }, { requireBackground: true })
+      } catch {
+        shown = false
+      }
+      if (shown) persistNotifiedPendingRequest(key)
+      else notifiedPendingRequests.delete(key)
+    })()
+  }
+
+  /**
+   * Called when the server resolves a pending request: the card is gone, so the
+   * ledger entry has done its job. Leaving it behind would only age out through
+   * the LRU cap.
+   */
+  function forgetPendingRequestNotification(
+    kind: PendingRequestNotificationKind,
+    sessionId: string,
+    requestId: string,
+  ) {
+    const key = pendingRequestNotificationKey(kind, sessionId, requestId)
+    notifiedPendingRequests.delete(key)
+    forgetNotifiedPendingRequest(key)
+  }
+
   function setPendingApproval(evt: RunEvent) {
     const sid = evt.session_id
     const approvalId = (evt as any).approval_id as string | undefined
@@ -2547,6 +2808,7 @@ export const useChatStore = defineStore('chat', () => {
       error: '',
     })
     pendingApprovals.value = new Map(pendingApprovals.value)
+    notifyPendingRequest('approval', sid, approvalId, description || String((evt as any).command || ''))
   }
 
   function setWorkflowStage(evt: RunEvent) {
@@ -2584,21 +2846,24 @@ export const useChatStore = defineStore('chat', () => {
     }
     pendingApprovals.value.delete(sid)
     pendingApprovals.value = new Map(pendingApprovals.value)
+    forgetPendingRequestNotification('approval', sid, current.approvalId)
   }
 
   function setPendingClarify(evt: RunEvent) {
     const sid = evt.session_id
     const clarifyId = (evt as any).clarify_id as string | undefined
     if (!sid || !clarifyId) return
+    const question = String((evt as any).question || '')
     pendingClarifies.value.set(sid, {
       sessionId: sid,
       clarifyId,
-      question: String((evt as any).question || ''),
+      question,
       choices: Array.isArray((evt as any).choices) ? (evt as any).choices : null,
       timeoutMs: Number((evt as any).timeout_ms) || 300000,
       requestedAt: Date.now(),
     })
     pendingClarifies.value = new Map(pendingClarifies.value)
+    notifyPendingRequest('clarify', sid, clarifyId, question)
   }
 
   function clearPendingClarify(evt: RunEvent) {
@@ -2610,6 +2875,132 @@ export const useChatStore = defineStore('chat', () => {
     if (clarifyId && current.clarifyId !== clarifyId) return
     pendingClarifies.value.delete(sid)
     pendingClarifies.value = new Map(pendingClarifies.value)
+    forgetPendingRequestNotification('clarify', sid, current.clarifyId)
+  }
+
+  function setPendingAuthorization(evt: RunEvent) {
+    const sid = evt.session_id
+    const authorizationId = String((evt as any).authorization_id || '')
+    if (!sid || !authorizationId) return
+    const current = pendingAuthorizations.value.get(sid)
+    const scopes = Array.isArray((evt as any).scopes)
+      ? (evt as any).scopes.map((scope: unknown) => String(scope))
+      : []
+    pendingAuthorizations.value.set(sid, {
+      sessionId: sid,
+      authorizationId,
+      service: String((evt as any).service || ''),
+      scopes,
+      expiresAt: Number((evt as any).expires_at) || 0,
+      // A replayed `authorization.required` (F5) must not throw away a URL the
+      // user is already acting on — nor revert a state the server already
+      // resolved (a stale replay of the same id after `.resolved` landed).
+      state: current?.authorizationId === authorizationId ? current.state : 'pending',
+      verificationUri: current?.authorizationId === authorizationId ? current.verificationUri : undefined,
+      submitting: false,
+      error: current?.authorizationId === authorizationId ? current.error : undefined,
+      serverTerminal: current?.authorizationId === authorizationId ? current.serverTerminal : false,
+    })
+    pendingAuthorizations.value = new Map(pendingAuthorizations.value)
+    // A replay of an id the server already resolved must not notify — only a
+    // card that is still waiting on the user is worth waking them for.
+    if (pendingAuthorizations.value.get(sid)?.state === 'pending') {
+      const service = String((evt as any).service || '')
+      notifyPendingRequest('authorization', sid, authorizationId, [service, scopes.join(' ')].filter(Boolean).join(' — '))
+    }
+  }
+
+  /**
+   * The server resolved the authorization. Unlike approval/clarify this does
+   * NOT delete the card — a real success must still show 已授权 (and a real
+   * failure must show why) instead of the card just vanishing. The card is
+   * only removed later, the same way any other pending card is (session
+   * switch, abort, Stop). A resolution already confirmed by the server is
+   * final: a later stale/duplicate `.resolved` for the same id cannot flip it.
+   */
+  function clearPendingAuthorization(evt: RunEvent) {
+    const sid = evt.session_id
+    if (!sid) return
+    const current = pendingAuthorizations.value.get(sid)
+    if (!current) return
+    const authorizationId = String((evt as any).authorization_id || '')
+    if (authorizationId && current.authorizationId !== authorizationId) return
+    if (current.serverTerminal) return
+    const rawState = String((evt as any).state || '')
+    const state: PendingAuthorization['state'] =
+      rawState === 'success' || rawState === 'cancelled' || rawState === 'expired'
+        ? rawState
+        : 'failed'
+    const reason = (evt as any).reason
+    pendingAuthorizations.value.set(sid, {
+      ...current,
+      state,
+      submitting: false,
+      serverTerminal: true,
+      error: reason ? String(reason) : current.error,
+    })
+    pendingAuthorizations.value = new Map(pendingAuthorizations.value)
+    forgetPendingRequestNotification('authorization', sid, current.authorizationId)
+  }
+
+  /** Reply to an `authorize` action: the broker-minted verification URL. */
+  function applyAuthorizationUrl(evt: RunEvent) {
+    const sid = evt.session_id
+    const authorizationId = String((evt as any).authorization_id || '')
+    const verificationUri = String((evt as any).verification_uri || '')
+    if (!sid || !authorizationId || !verificationUri) return
+    const current = pendingAuthorizations.value.get(sid)
+    if (!current || current.authorizationId !== authorizationId) return
+    pendingAuthorizations.value.set(sid, {
+      ...current,
+      verificationUri,
+      state: 'authorizing',
+      submitting: false,
+      error: undefined,
+    })
+    pendingAuthorizations.value = new Map(pendingAuthorizations.value)
+  }
+
+  /**
+   * Terminal failure (the broker answered 404/409, or the handshake blew up).
+   * Keeps the card so the user sees WHY it stopped — and stops any poll, because
+   * `failed` is terminal. Never a retry loop.
+   */
+  function applyAuthorizationFailure(evt: RunEvent) {
+    const sid = evt.session_id
+    const authorizationId = String((evt as any).authorization_id || '')
+    if (!sid || !authorizationId) return
+    const current = pendingAuthorizations.value.get(sid)
+    if (!current || current.authorizationId !== authorizationId) return
+    pendingAuthorizations.value.set(sid, {
+      ...current,
+      state: 'failed',
+      submitting: false,
+      error: String((evt as any).error || ''),
+    })
+    pendingAuthorizations.value = new Map(pendingAuthorizations.value)
+  }
+
+  /**
+   * Drive the inline authorization handshake. This path NEVER emits
+   * `credential.replay` and never calls triggerReauthReplay — the broker owns
+   * the parked run and releases it itself.
+   */
+  function respondToAuthorization(action: 'authorize' | 'confirm' | 'cancel') {
+    const pending = activePendingAuthorization.value
+    if (!pending) return
+    if (action === 'authorize' && pending.submitting) return
+    const next: PendingAuthorization = { ...pending }
+    if (action === 'authorize') {
+      next.submitting = true
+      next.error = undefined
+    } else if (action === 'cancel') {
+      next.state = 'cancelled'
+      next.submitting = false
+    }
+    pendingAuthorizations.value.set(pending.sessionId, next)
+    pendingAuthorizations.value = new Map(pendingAuthorizations.value)
+    respondAuthorization(pending.sessionId, pending.authorizationId, action, runtimeTransport())
   }
 
   function setPendingReauth(evt: RunEvent) {
@@ -2747,9 +3138,59 @@ export const useChatStore = defineStore('chat', () => {
       pendingClarifies.value.delete(sessionId)
       changed = true
     }
+    if (pendingAuthorizations.value.has(sessionId)) {
+      pendingAuthorizations.value.delete(sessionId)
+      changed = true
+    }
     if (changed) {
       pendingApprovals.value = new Map(pendingApprovals.value)
       pendingClarifies.value = new Map(pendingClarifies.value)
+      pendingAuthorizations.value = new Map(pendingAuthorizations.value)
+    }
+  }
+
+  /**
+   * Stop-specific interaction teardown. Approvals and clarifies still clear
+   * immediately — they have no server-side "pending" that survives past the
+   * client giving up on them. An inline authorization is different: the
+   * broker keeps the pending request alive until it is told otherwise, so a
+   * late confirm could still be accepted after Stop. When there is a live run
+   * to abort, cancel the authorization on the broker FIRST and leave the card
+   * for the `authorization.resolved` echo to clear (see `clearPendingAuthorization`)
+   * — never optimistically here.
+   *
+   * The decision to cancel is keyed on `serverTerminal`, NOT on the local
+   * `state`. A LOCAL-only terminal state — `authorization.failed` (broker
+   * answered 404/409, or the handshake blew up), or an optimistic client
+   * `cancel` whose echo has not landed yet — does not mean the broker's own
+   * pending entry is gone: a later provider callback could still authorize
+   * and resume it. Those still get a cancel sent; the broker's cancel route
+   * is idempotent, so a redundant cancel is harmless. Only a card the server
+   * itself resolved (`serverTerminal`) has nothing left to wait for, so it
+   * clears immediately like the other cards.
+   */
+  function clearPendingInteractionsForStop(sessionId: string, hasActiveRun: boolean) {
+    let changed = false
+    if (pendingApprovals.value.has(sessionId)) {
+      pendingApprovals.value.delete(sessionId)
+      changed = true
+    }
+    if (pendingClarifies.value.has(sessionId)) {
+      pendingClarifies.value.delete(sessionId)
+      changed = true
+    }
+    const pendingAuth = pendingAuthorizations.value.get(sessionId)
+    const needsServerCancel = !!pendingAuth && !pendingAuth.serverTerminal
+    if (needsServerCancel && hasActiveRun) {
+      respondAuthorization(sessionId, pendingAuth.authorizationId, 'cancel', runtimeTransport())
+    } else if (pendingAuthorizations.value.has(sessionId)) {
+      pendingAuthorizations.value.delete(sessionId)
+      changed = true
+    }
+    if (changed) {
+      pendingApprovals.value = new Map(pendingApprovals.value)
+      pendingClarifies.value = new Map(pendingClarifies.value)
+      pendingAuthorizations.value = new Map(pendingAuthorizations.value)
     }
   }
 
@@ -2999,9 +3440,12 @@ export const useChatStore = defineStore('chat', () => {
               apiMode: codingAgentMode === 'global' ? undefined : activeSession.value?.apiMode || providerGroup?.api_mode || undefined,
             }
           : {}),
-        // Per-session reasoning effort override. Coding Agent runners do not
-        // consume this setting yet, so keep their payloads explicit.
-        reasoning_effort: sessionSource === 'coding_agent' ? undefined : activeSession.value?.reasoningEffort || undefined,
+        // Per-session reasoning effort override, ALWAYS sent as a string for
+        // runners that consume it: '' is the user saying "no override" and the
+        // server reads it with `??`, so it beats a stale value still on the
+        // session row. Omitting it instead would let that stale row win.
+        // Coding Agent runners do not consume this setting, so they send nothing.
+        reasoning_effort: sessionSource === 'coding_agent' ? undefined : (activeSession.value?.reasoningEffort ?? ''),
         expert_id: expertIdForRun,
         project_id: activeSession.value?.projectId,
         expert_label: expertLabelForRun,
@@ -3210,6 +3654,18 @@ export const useChatStore = defineStore('chat', () => {
                 break
               case 'clarify.resolved':
                 clearPendingClarify({ ...e, session_id: sid })
+                break
+              case 'authorization.required':
+                setPendingAuthorization({ ...e, session_id: sid })
+                break
+              case 'authorization.resolved':
+                clearPendingAuthorization({ ...e, session_id: sid })
+                break
+              case 'authorization.url':
+                applyAuthorizationUrl({ ...e, session_id: sid })
+                break
+              case 'authorization.failed':
+                applyAuthorizationFailure({ ...e, session_id: sid })
                 break
               case 'run.failed':
                 if (data.isWorking) addHistoricalAgentErrorMessage(sid, e.error, activeAssistantMessageId)
@@ -3627,6 +4083,26 @@ export const useChatStore = defineStore('chat', () => {
 
             case 'clarify.resolved': {
               clearPendingClarify(evt)
+              break
+            }
+
+            case 'authorization.required': {
+              setPendingAuthorization(evt)
+              break
+            }
+
+            case 'authorization.resolved': {
+              clearPendingAuthorization(evt)
+              break
+            }
+
+            case 'authorization.url': {
+              applyAuthorizationUrl(evt)
+              break
+            }
+
+            case 'authorization.failed': {
+              applyAuthorizationFailure(evt)
               break
             }
 
@@ -4336,6 +4812,26 @@ export const useChatStore = defineStore('chat', () => {
           break
         }
 
+        case 'authorization.required': {
+          setPendingAuthorization(evt)
+          break
+        }
+
+        case 'authorization.resolved': {
+          clearPendingAuthorization(evt)
+          break
+        }
+
+        case 'authorization.url': {
+          applyAuthorizationUrl(evt)
+          break
+        }
+
+        case 'authorization.failed': {
+          applyAuthorizationFailure(evt)
+          break
+        }
+
         case 'run.completed': {
           setRunStatusText(sid, null)
           clearAgentEventMessages(sid)
@@ -4615,6 +5111,14 @@ export const useChatStore = defineStore('chat', () => {
           setPendingReauth({ ...event, session_id: event.session_id || sid })
         } else if (event.event === 'auth.resolved') {
           applyAuthResolved({ ...event, session_id: event.session_id || sid })
+        } else if (event.event === 'authorization.required') {
+          setPendingAuthorization({ ...event, session_id: event.session_id || sid })
+        } else if (event.event === 'authorization.resolved') {
+          clearPendingAuthorization({ ...event, session_id: event.session_id || sid })
+        } else if (event.event === 'authorization.url') {
+          applyAuthorizationUrl({ ...event, session_id: event.session_id || sid })
+        } else if (event.event === 'authorization.failed') {
+          applyAuthorizationFailure({ ...event, session_id: event.session_id || sid })
         } else if (event.event === 'run.reattach_failed' && (event as any).terminal === true) {
           if (data.isWorking) addHistoricalAgentErrorMessage(sid, (event as any).error || (event as any).message, currentAssistant?.id)
           else addAgentErrorMessage(sid, (event as any).error || (event as any).message)
@@ -4660,6 +5164,10 @@ export const useChatStore = defineStore('chat', () => {
       onClarifyRequested: (evt) => handleEvent(evt),
       onClarifyResolved: (evt) => handleEvent(evt),
       onAuthRequired: (evt) => handleEvent(evt),
+      onAuthorizationRequired: (evt) => handleEvent(evt),
+      onAuthorizationResolved: (evt) => handleEvent(evt),
+      onAuthorizationUrl: (evt) => handleEvent(evt),
+      onAuthorizationFailed: (evt) => handleEvent(evt),
       onWorkspaceDiffCompleted: (evt) => handleEvent(evt),
     }, {
       profile: sessions.value.find(session => session.id === sid)?.profile,
@@ -4764,8 +5272,12 @@ export const useChatStore = defineStore('chat', () => {
     const session = activeSession.value
     if (!sid || !session || session.id !== sid) return
     if (isAborting.value) return
-    clearPendingInteractions(sid)
     const ctrl = streamStates.value.get(sid)
+    const hasActiveRun = !!ctrl || serverWorking.value.has(sid)
+    // A pending inline authorization must be cancelled on the broker BEFORE
+    // the run stream is aborted/detached, so a late confirm cannot be
+    // accepted after Stop (PRD §4 「取消/停止：终结等待」).
+    clearPendingInteractionsForStop(sid, hasActiveRun)
     if (ctrl) {
       setAbortState(session, { aborting: true, synced: null })
       ctrl.abort()
@@ -4864,6 +5376,14 @@ export const useChatStore = defineStore('chat', () => {
                 setPendingReauth({ ...event, session_id: event.session_id || sid })
               } else if (event.event === 'auth.resolved') {
                 applyAuthResolved({ ...event, session_id: event.session_id || sid })
+              } else if (event.event === 'authorization.required') {
+                setPendingAuthorization({ ...event, session_id: event.session_id || sid })
+              } else if (event.event === 'authorization.resolved') {
+                clearPendingAuthorization({ ...event, session_id: event.session_id || sid })
+              } else if (event.event === 'authorization.url') {
+                applyAuthorizationUrl({ ...event, session_id: event.session_id || sid })
+              } else if (event.event === 'authorization.failed') {
+                applyAuthorizationFailure({ ...event, session_id: event.session_id || sid })
               } else if (event.event === 'run.reattach_failed' && (event as any).terminal === true) {
                 if (data.isWorking) addHistoricalAgentErrorMessage(sid, (event as any).error || (event as any).message, currentAssistant?.id)
                 else addAgentErrorMessage(sid, (event as any).error || (event as any).message)
@@ -4962,41 +5482,71 @@ export const useChatStore = defineStore('chat', () => {
     return session.id
   }
 
-  // Persisted in localStorage keyed by sessionId so the choice survives
-  // page reloads. Cleared on session deletion is NOT implemented (best-effort
-  // — orphan keys are tiny and never read again).
-  const REASONING_LS_PREFIX = 'hermes:reasoning_effort:'
-  function setSessionReasoningEffort(sessionId: string, effort: string) {
-    const session = sessions.value.find(s => s.id === sessionId)
-    if (!session) return
-    session.reasoningEffort = effort || undefined
-    try {
-      if (effort) {
-        localStorage.setItem(REASONING_LS_PREFIX + sessionId, effort)
-      } else {
-        localStorage.removeItem(REASONING_LS_PREFIX + sessionId)
-      }
-    } catch {
-      // localStorage may be unavailable (private mode); silently ignore
-    }
+  /**
+   * Persist the per-session reasoning effort on the session row.
+   *
+   * The UI updates optimistically (dragging a slider must not wait on a round
+   * trip), then the write is serialized per session: a fast drag fires one POST
+   * per stop and the LAST one must win, so each write is chained onto the
+   * previous one rather than racing it.
+   *
+   * A failed write rolls the UI back to the last value the server confirmed,
+   * but only when no newer choice is already pending — otherwise a stale
+   * rejection would yank the slider away from what the user just picked.
+   */
+  async function setSessionReasoningEffort(sessionId: string, effort: string): Promise<boolean> {
+    const target = sessions.value.find(s => s.id === sessionId)
+    const activeTarget = activeSession.value?.id === sessionId ? activeSession.value : null
+    const session = target || activeTarget
+    if (!session) return false
+
+    const nextEffort = effort || undefined
+    const previousEffort = session.reasoningEffort
+    const hasPendingWrite = reasoningEffortWriteChains.has(sessionId)
+
+    // Re-picking the stop the session already sits on is not a change. Sending
+    // it anyway would queue a write whose failure could roll a LATER pick back.
+    if (previousEffort === nextEffort && !hasPendingWrite) return true
+
+    // Every pick gets its own revision, and it is the revision — not the value
+    // — that says whether a write or a list response is still the newest word
+    // on this session.
+    const revision = (reasoningEffortRevision.get(sessionId) || 0) + 1
+    reasoningEffortRevision.set(sessionId, revision)
+
+    if (target) target.reasoningEffort = nextEffort
+    if (activeTarget) activeTarget.reasoningEffort = nextEffort
+
+    // A brand-new chat has no server row yet, so POST sessions/:id/reasoning-effort
+    // would 404 and bounce the slider back to Default. The choice rides the
+    // first run request instead, and the server writes it when it creates the
+    // row (bridge-run-admission / broker-controller).
+    if (session.localCreated) return true
+
+    if (!hasPendingWrite) reasoningEffortConfirmedValues.set(sessionId, previousEffort)
+    const previousWrite = reasoningEffortWriteChains.get(sessionId) || Promise.resolve(true)
+    const write: Promise<boolean> = previousWrite
+      .catch(() => false)
+      .then(() => persistSessionReasoningEffort(sessionId, effort))
+      .then((ok) => {
+        if (ok) reasoningEffortConfirmedValues.set(sessionId, nextEffort)
+        // Only the newest pick may roll back. Comparing values instead would
+        // let a failed `high` roll back a later, successful `high`.
+        if (!ok && reasoningEffortRevision.get(sessionId) === revision) {
+          const confirmedEffort = reasoningEffortConfirmedValues.get(sessionId)
+          if (target) target.reasoningEffort = confirmedEffort
+          if (activeTarget) activeTarget.reasoningEffort = confirmedEffort
+        }
+        return ok
+      })
+      .finally(() => {
+        if (reasoningEffortWriteChains.get(sessionId) !== write) return
+        reasoningEffortWriteChains.delete(sessionId)
+        reasoningEffortConfirmedValues.delete(sessionId)
+      })
+    reasoningEffortWriteChains.set(sessionId, write)
+    return write
   }
-  function getStoredReasoningEffort(sessionId: string): string | undefined {
-    try {
-      return localStorage.getItem(REASONING_LS_PREFIX + sessionId) || undefined
-    } catch {
-      return undefined
-    }
-  }
-  // Hydrate reasoningEffort onto sessions whenever they come in fresh from
-  // the server (mapHermesSession doesn't carry this — it's client-only state).
-  watch(sessions, (list) => {
-    for (const s of list) {
-      if (s.reasoningEffort === undefined) {
-        const stored = getStoredReasoningEffort(s.id)
-        if (stored) s.reasoningEffort = stored
-      }
-    }
-  }, { deep: false })
 
   function clearThinkingObservationFor(_sessionId: string) {
     // messageId 与 sessionId 的关联未单独持有；方案是切会话时一律清空。
@@ -5043,13 +5593,23 @@ export const useChatStore = defineStore('chat', () => {
     queuedUserMessages,
     pendingApprovals,
     activePendingApproval,
+    setPendingApproval,
+    clearPendingApproval,
     workflowStages,
     activeWorkflowStage,
     activePendingClarify,
+    setPendingClarify,
+    clearPendingClarify,
     pendingReauths,
     activePendingReauth,
     triggerReauthReplay,
     clearPendingReauth,
+    pendingAuthorizations,
+    activePendingAuthorization,
+    setPendingAuthorization,
+    clearPendingAuthorization,
+    applyAuthorizationUrl,
+    applyAuthorizationFailure,
     removeQueuedMessage,
     isLoadingSessions,
     sessionsLoaded,
@@ -5057,6 +5617,10 @@ export const useChatStore = defineStore('chat', () => {
 
     newChat,
     newChatWithExpert,
+    stagedComposerDraft,
+    stageComposerDraft,
+    consumeStagedComposerDraft,
+    clearStagedComposerDraft,
     newCliSession,
     switchSession,
     loadOlderMessages,
@@ -5069,6 +5633,7 @@ export const useChatStore = defineStore('chat', () => {
     stopStreaming,
     respondApproval,
     respondToClarify,
+    respondToAuthorization,
     loadSessions,
     refreshSessionListOnly,
     refreshActiveSession,

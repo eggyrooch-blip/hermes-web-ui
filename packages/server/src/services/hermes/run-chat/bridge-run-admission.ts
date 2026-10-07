@@ -26,6 +26,9 @@ interface BridgeRunAdmissionData {
   workspace?: string | null
   source?: string
   session_source?: 'global_agent'
+  /** Reasoning-effort override chosen before the session had a row. '' means
+   *  "no override"; the row is created with whatever this says. */
+  reasoning_effort?: string
 }
 
 function resetBridgeRunState(state: SessionState, profile: string, source: 'cli' | 'global_agent', runMarker: string) {
@@ -81,6 +84,9 @@ export function reserveBridgeRunAdmission(
       provider: data.provider,
       title: preview || contentBlocksToString(data.input).substring(0, 100),
       workspace: data.workspace || undefined,
+      // A brand-new chat has no row to POST the slider to, so the choice rides
+      // this first run. Dropping it here would lose the user's pick silently.
+      reasoning_effort: data.reasoning_effort || '',
     })
   }
 

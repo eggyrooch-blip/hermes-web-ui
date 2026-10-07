@@ -1204,4 +1204,60 @@ assert events == [
 ], events
 `)
   })
+
+  it('switches a session model even when reasoning config cannot be resolved', () => {
+    runPython(String.raw`
+${harness}
+
+def fake_resolve_runtime(model, provider=None):
+    return {
+        "provider": provider or "openai",
+        "base_url": f"https://{provider or 'openai'}.example/v1",
+        "api_key": f"key:{model}",
+        "api_mode": "chat_completions",
+    }
+
+def exploding_agent_imports():
+    raise RuntimeError(
+        "hermes-agent run_agent.py not found in source locations and the "
+        "current Python environment cannot import run_agent."
+    )
+
+bridge._resolve_runtime = fake_resolve_runtime
+bridge._ensure_agent_imports = exploding_agent_imports
+pool, _fake_db = make_pool()
+
+class SwitchableAgent:
+    def __init__(self):
+        self.model = "old-model"
+        self.provider = "openai"
+        self.reasoning_config = {"effort": "high"}
+        self.switch_calls = []
+
+    def switch_model(self, **kwargs):
+        self.switch_calls.append(kwargs)
+        self.model = kwargs["new_model"]
+        self.provider = kwargs["new_provider"]
+
+agent = SwitchableAgent()
+session = bridge.AgentSession(
+    session_id="session-no-agent-imports",
+    agent=agent,
+    config={"profile": "default", "model": "old-model", "provider": "openai"},
+)
+pool._sessions["session-no-agent-imports"] = session
+
+assert bridge._load_reasoning_config("new-model") is None
+
+result = pool.switch_session_model(
+    "session-no-agent-imports", "new-model", "anthropic", "default"
+)
+
+assert result["switched"] is True, result
+assert session.config["model"] == "new-model"
+assert session.config["provider"] == "anthropic"
+assert agent.model == "new-model"
+assert agent.reasoning_config is None
+`)
+  })
 })

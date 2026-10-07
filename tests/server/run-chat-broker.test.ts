@@ -8,6 +8,7 @@ import {
   buildRunBrokerHeaders,
   mapRunBrokerFrameForChat,
   readSseFrames,
+  rememberBrokerWorkflowEvent,
   resolveProjectRunBinding,
 } from '../../packages/server/src/services/hermes/run-chat/handle-broker-run'
 
@@ -122,6 +123,53 @@ describe('run-chat broker compatibility module', () => {
     }))
     expect(request.metadata.instructions).toContain('[Current working directory: project]')
     expect(request.metadata.instructions).toContain('answer briefly')
+  })
+
+  // The slider is only real once the depth reaches the agent. It rides in
+  // METADATA, beside model/provider/expert_id — that is the envelope the broker
+  // forwards as event.raw_event.metadata for the multitenancy layer to read.
+  // A top-level field would be rejected by the broker's frozen RunRequest.
+  it('carries the session reasoning effort in the broker request metadata', async () => {
+    const request = await buildRunBrokerRequest({
+      input: 'think hard',
+      profile: 'user_a',
+      ownerOpenId: 'ou_owner',
+      sessionId: 'session-reasoning',
+      model: 'gpt-5.4',
+      provider: 'openai',
+      reasoningEffort: 'high',
+    })
+
+    expect(request.metadata).toEqual(expect.objectContaining({
+      model: 'gpt-5.4',
+      provider: 'openai',
+      reasoning_effort: 'high',
+    }))
+    // Never at the top level: the broker's RunRequest is frozen and would refuse it.
+    expect(request).not.toHaveProperty('reasoning_effort')
+  })
+
+  // Unset must stay off the wire: an empty string would read as an explicit
+  // choice and override the profile/config default.
+  it('omits reasoning effort entirely when the session has no override', async () => {
+    const unset = await buildRunBrokerRequest({
+      input: 'no override',
+      profile: 'user_a',
+      ownerOpenId: 'ou_owner',
+      sessionId: 'session-plain',
+    })
+    const cleared = await buildRunBrokerRequest({
+      input: 'cleared override',
+      profile: 'user_a',
+      ownerOpenId: 'ou_owner',
+      sessionId: 'session-cleared',
+      reasoningEffort: '',
+    })
+
+    expect(unset.metadata).not.toHaveProperty('reasoning_effort')
+    expect(cleared.metadata).not.toHaveProperty('reasoning_effort')
+    expect(unset).not.toHaveProperty('reasoning_effort')
+    expect(cleared).not.toHaveProperty('reasoning_effort')
   })
 
   it('uses an explicit per-turn idempotency key for WebUI broker runs', async () => {
@@ -303,6 +351,147 @@ describe('run-chat broker compatibility module', () => {
         arguments: JSON.stringify({ cmd: "printf 'ok'" }),
       }),
     }))
+  })
+
+  it('maps broker subagent frames onto the same chat events bridge mode emits', () => {
+    // The broker SSE frame shape is {kind, name, payload:{...}}; the client
+    // store keys its delegate_task card off the event name plus subagent_id /
+    // task_index, so both must survive the mapping untouched.
+    expect(mapRunBrokerFrameForChat({
+      kind: 'subagent.start',
+      payload: { subagent_id: 'sa-0-ab', parent_id: 'p1', depth: 1, task_index: 0, task_count: 2, goal: 'x', model: 'claude', toolsets: ['core'] },
+    }, undefined, 'resp_run_1')).toEqual(expect.objectContaining({
+      type: 'emit',
+      event: 'subagent.start',
+      appendFinalText: false,
+      persistAssistantContent: false,
+      payload: expect.objectContaining({
+        event: 'subagent.start',
+        run_id: 'resp_run_1',
+        response_id: 'resp_run_1',
+        subagent_id: 'sa-0-ab',
+        parent_id: 'p1',
+        depth: 1,
+        task_index: 0,
+        task_count: 2,
+        goal: 'x',
+        model: 'claude',
+        toolsets: ['core'],
+      }),
+    }))
+
+    expect(mapRunBrokerFrameForChat({
+      kind: 'subagent.tool',
+      run_id: 'run-7',
+      name: 'terminal',
+      text: 'ls -la',
+      payload: { subagent_id: 'sa-1-cd', task_index: 1, task_count: 2, tool_count: 3, goal: 'y' },
+    })).toEqual(expect.objectContaining({
+      type: 'emit',
+      event: 'subagent.tool',
+      payload: expect.objectContaining({
+        run_id: 'run-7',
+        subagent_id: 'sa-1-cd',
+        task_index: 1,
+        task_count: 2,
+        tool_count: 3,
+        goal: 'y',
+        tool: 'terminal',
+        name: 'terminal',
+        text: 'ls -la',
+        preview: 'ls -la',
+      }),
+    }))
+
+    expect(mapRunBrokerFrameForChat({
+      kind: 'subagent.progress',
+      run_id: 'run-7',
+      payload: { subagent_id: 'sa-1-cd', task_index: 1, task_count: 2, goal: 'y', text: 'read, grep, edit' },
+    })).toEqual(expect.objectContaining({
+      type: 'emit',
+      event: 'subagent.progress',
+      payload: expect.objectContaining({
+        run_id: 'run-7',
+        subagent_id: 'sa-1-cd',
+        task_index: 1,
+        task_count: 2,
+        goal: 'y',
+        text: 'read, grep, edit',
+        preview: 'read, grep, edit',
+      }),
+    }))
+
+    expect(mapRunBrokerFrameForChat({
+      kind: 'subagent.complete',
+      run_id: 'run-7',
+      payload: {
+        subagent_id: 'sa-1-cd', task_index: 1, task_count: 2, goal: 'y',
+        status: 'completed', summary: 'done it', duration_seconds: 12.5,
+        input_tokens: 100, output_tokens: 20, api_calls: 4,
+      },
+    })).toEqual(expect.objectContaining({
+      type: 'emit',
+      event: 'subagent.complete',
+      payload: expect.objectContaining({
+        run_id: 'run-7',
+        subagent_id: 'sa-1-cd',
+        task_index: 1,
+        task_count: 2,
+        goal: 'y',
+        status: 'completed',
+        summary: 'done it',
+        duration: 12.5,
+        duration_seconds: 12.5,
+        input_tokens: 100,
+        output_tokens: 20,
+        api_calls: 4,
+      }),
+    }))
+  })
+
+  it('ignores broker frames whose kind is unknown', () => {
+    expect(mapRunBrokerFrameForChat({ kind: 'subagentish', run_id: 'r1', payload: {} })).toEqual({ type: 'ignore' })
+    expect(mapRunBrokerFrameForChat({ kind: 'totally_new_kind', run_id: 'r1', payload: { subagent_id: 'sa-0' } })).toEqual({ type: 'ignore' })
+  })
+
+  it.each(['payload', 'top-level'])('forwards all four subagent truncation keys from %s', (location) => {
+    const flags = { text_truncated: true, args_truncated: true, args_bytes: 32768, summary_truncated: true }
+    const mapped = mapRunBrokerFrameForChat({
+      kind: 'subagent.complete', run_id: 'run-1',
+      ...(location === 'top-level' ? flags : {}),
+      payload: { subagent_id: 'sa-0', ...(location === 'payload' ? flags : {}) },
+    })
+    expect(mapped).toMatchObject({ type: 'emit', payload: flags })
+  })
+
+  it('keeps one replayable subagent event per card so resume rebuilds the panel', () => {
+    const state: any = { events: [] }
+    const frames = [
+      { kind: 'subagent.start', run_id: 'run-9', payload: { subagent_id: 'sa-0', task_index: 0, task_count: 2, goal: 'a' } },
+      { kind: 'subagent.tool', run_id: 'run-9', name: 'terminal', payload: { subagent_id: 'sa-0', task_index: 0, task_count: 2 } },
+      { kind: 'subagent.complete', run_id: 'run-9', payload: { subagent_id: 'sa-0', task_index: 0, task_count: 2, status: 'completed', summary: 'a done' } },
+      { kind: 'subagent.start', run_id: 'run-9', payload: { subagent_id: 'sa-1', task_index: 1, task_count: 2, goal: 'b' } },
+    ]
+    for (const frame of frames) {
+      const mapped = mapRunBrokerFrameForChat(frame)
+      if (mapped.type !== 'emit') throw new Error(`expected emit for ${frame.kind}`)
+      rememberBrokerWorkflowEvent(state, mapped.event, mapped.payload)
+    }
+
+    expect(state.events.map((item: any) => [item.event, item.data.subagent_id])).toEqual([
+      ['subagent.complete', 'sa-0'],
+      ['subagent.start', 'sa-1'],
+    ])
+    expect(state.events[0].data.status).toBe('completed')
+
+    // A second run in the same session gets its own cards — the client card id
+    // is scoped by run_id, so replay must not collapse them together.
+    const second = mapRunBrokerFrameForChat({
+      kind: 'subagent.start', run_id: 'run-10', payload: { subagent_id: 'sa-0', task_index: 0, task_count: 1, goal: 'c' },
+    })
+    if (second.type !== 'emit') throw new Error('expected emit')
+    rememberBrokerWorkflowEvent(state, second.event, second.payload)
+    expect(state.events).toHaveLength(3)
   })
 
   it('maps an auth_required frame to an auth.required chat event', () => {

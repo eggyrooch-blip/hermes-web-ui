@@ -1,6 +1,10 @@
-import type { ChildProcess } from 'child_process'
+import type { ChildProcess, ExecFileOptions } from 'child_process'
+import { mkdtemp, rm, writeFile } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { logger } from '../logger'
 import { execHermes, spawnHermes } from './hermes-process'
+import { detectHermesRootHome } from './hermes-path'
 
 const execOpts = { windowsHide: true }
 const BOARD_SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -43,6 +47,22 @@ export interface KanbanTask {
   tenant: string | null
   result: string | null
   skills: string[] | null
+  // Present on hermes-agent 0.21.3 `kanban list/show/create --json` payloads.
+  branch_name?: string | null
+  project_id?: string | null
+  session_id?: string | null
+  workflow_template_id?: string | null
+  current_step_key?: string | null
+  completion_contract?: string | null
+  model_override?: string | null
+  provider_override?: string | null
+  max_retries?: number | null
+  last_failure_error?: string | null
+  // Added to task payloads by hermes-agent 0.21.4.
+  max_runtime_seconds?: number | null
+  // Persisted by core but not emitted on 0.21.3 task payloads; kept optional so
+  // a future core that does emit it round-trips instead of being dropped.
+  goal_mode?: boolean
 }
 
 export interface KanbanRun {
@@ -58,7 +78,7 @@ export interface KanbanRun {
 }
 
 export interface KanbanComment {
-  id: number
+  id: number | string
   task_id: string
   author: string
   body: string
@@ -66,7 +86,7 @@ export interface KanbanComment {
 }
 
 export interface KanbanEvent {
-  id: number
+  id: number | string
   task_id: string
   kind: string
   payload: Record<string, unknown> | null
@@ -101,6 +121,8 @@ export interface KanbanBoard {
   color: string
   created_at: number | null
   archived: boolean
+  default_workdir?: string | null
+  project_id?: string | null
   db_path?: string
   is_current?: boolean
   counts: Record<string, number>
@@ -156,6 +178,7 @@ export interface KanbanBulkTaskUpdateOptions extends KanbanBoardOptions {
   archive?: boolean
   summary?: string
   reason?: string
+  operatorOverride?: boolean
 }
 
 export interface KanbanBulkTaskResult {
@@ -284,20 +307,38 @@ function textFromExecValue(value: unknown): string {
   return value === undefined || value === null ? '' : String(value)
 }
 
-async function execKanbanMutation(args: string[], logMessage: string, errorPrefix: string): Promise<string> {
+async function execKanbanMutation(
+  args: string[],
+  logMessage: string,
+  errorPrefix: string,
+  options: ExecFileOptions = {},
+): Promise<string> {
   try {
     const { stdout, stderr } = await execHermes(args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: 30000,
       ...execOpts,
+      ...options,
     })
     const stderrText = textFromExecValue(stderr).trim()
     if (stderrText) throw new Error(stderrText)
     return textFromExecValue(stdout)
   } catch (err: any) {
     logger.error(err, logMessage)
-    throw new Error(`${errorPrefix}: ${err.message}`)
+    throw new Error(`${errorPrefix}: ${cliFailureDetail(err)}`)
   }
+}
+
+// execFile rejects with a bare "Command failed: <the whole argv>" and parks the
+// CLI's own explanation on err.stderr/err.stdout. Surfacing err.message alone
+// therefore tells the operator nothing and echoes the full command line back to
+// the client; prefer what the CLI actually said.
+function cliFailureDetail(err: any): string {
+  const streams = [err?.stderr, err?.stdout]
+    .map(value => textFromExecValue(value).trim())
+    .filter(Boolean)
+  if (streams.length > 0) return streams.join(' | ')
+  return String(err?.message || err)
 }
 
 export function buildWatchArgs(opts?: KanbanWatchOptions): string[] {
@@ -393,7 +434,11 @@ export async function getDiagnostics(opts?: KanbanBoardOptions & { task?: string
       timeout: 30000,
       ...execOpts,
     })
-    return JSON.parse(stdout)
+    // hermes-agent 0.21.4 appends a home-scope row (`task_id: null`, carrying
+    // `dispatch_profiles`) after the per-task rows. It describes the host, not a
+    // task the caller owns, so it never reaches the API.
+    const rows: unknown[] = JSON.parse(stdout)
+    return rows.filter(row => !(row && typeof row === 'object' && (row as { task_id?: unknown }).task_id === null))
   } catch (err: any) {
     logger.error(err, 'Hermes CLI: kanban diagnostics failed')
     throw new Error(`Failed to get kanban diagnostics: ${err.message}`)
@@ -500,7 +545,21 @@ export async function getTask(taskId: string, opts?: KanbanBoardOptions): Promis
       timeout: 30000,
       ...execOpts,
     })
-    return JSON.parse(stdout)
+    const detail = JSON.parse(stdout) as KanbanTaskDetail
+    // hermes-agent 0.21.3 `kanban show --json` emits comments/events without an
+    // `id` or `task_id`. Synthesize stable ones so list keys stay unique.
+    const resolvedTaskId = detail.task?.id || taskId
+    detail.comments = (detail.comments || []).map((comment, index) => ({
+      ...comment,
+      id: comment.id ?? `${resolvedTaskId}:comment:${index}`,
+      task_id: comment.task_id || resolvedTaskId,
+    }))
+    detail.events = (detail.events || []).map((event, index) => ({
+      ...event,
+      id: event.id ?? `${resolvedTaskId}:event:${index}`,
+      task_id: event.task_id || resolvedTaskId,
+    }))
+    return detail
   } catch (err: any) {
     if (err.code === 1 || err.status === 1) return null
     logger.error(err, 'Hermes CLI: kanban show failed')
@@ -514,6 +573,7 @@ export async function createTask(
     board?: string
     body?: string
     assignee?: string
+    createdBy?: string
     priority?: number
     tenant?: string
     workspace?: string
@@ -529,6 +589,9 @@ export async function createTask(
   const args = [...boardArgs(opts?.board), 'create', title, '--json']
   if (opts?.body) args.push('--body', opts.body)
   if (opts?.assignee) args.push('--assignee', opts.assignee)
+  // Core defaults created_by to the literal "user", which fails every
+  // owner check downstream. Always record a profile the owner actually owns.
+  if (opts?.createdBy) args.push('--created-by', opts.createdBy)
   if (opts?.priority !== undefined) args.push('--priority', String(opts.priority))
   if (opts?.tenant) args.push('--tenant', opts.tenant)
   if (opts?.workspace) args.push('--workspace', opts.workspace)
@@ -555,11 +618,62 @@ export async function createTask(
   }
 }
 
-export async function completeTasks(taskIds: string[], summary?: string, opts?: KanbanBoardOptions): Promise<void> {
+export async function completeTasks(
+  taskIds: string[],
+  summary?: string,
+  opts?: KanbanBoardOptions & { operatorOverride?: boolean },
+): Promise<void> {
   const args = [...boardArgs(opts?.board), 'complete', ...taskIds]
   if (summary) args.push('--summary', summary)
 
-  await execKanbanMutation(args, 'Hermes CLI: kanban complete failed', 'Failed to complete kanban tasks')
+  if (!opts?.operatorOverride) {
+    await execKanbanMutation(args, 'Hermes CLI: kanban complete failed', 'Failed to complete kanban tasks')
+    return
+  }
+
+  // hermes-agent 0.21.4 refuses to complete a running task under a live worker
+  // claim unless the caller passes `--force` (core's own dashboard does the same
+  // for a human completion). 0.21.3 has no such flag, so retry without it there.
+  try {
+    await execOperatorCompletion([...args, '--force'])
+  } catch (err: any) {
+    if (!/unrecognized arguments: --force/.test(err?.message || '')) throw err
+    await execOperatorCompletion(args)
+  }
+}
+
+async function execOperatorCompletion(args: string[]): Promise<void> {
+  // A completion a human clicked in the dashboard is an explicit operator
+  // override. hermes-agent 0.21.3 still runs `_goal_mode_handoff_rejection`
+  // (hermes_cli/kanban.py) on every `complete` of a goal-mode task, so an
+  // auxiliary LLM judge can refuse the operator. Run the CLI with an isolated
+  // HERMES_HOME whose config disables only that judge, while keeping the real
+  // shared kanban home so the write still lands on the same board DB.
+  const isolatedHome = await mkdtemp(join(tmpdir(), 'hermes-kanban-operator-'))
+  try {
+    await writeFile(
+      join(isolatedHome, 'config.yaml'),
+      'auxiliary:\n  goal_judge:\n    provider: __operator_override_disabled__\n',
+      'utf8',
+    )
+    const kanbanHome = process.env.HERMES_KANBAN_HOME?.trim() || detectHermesRootHome()
+    await execKanbanMutation(
+      args,
+      'Hermes CLI: kanban operator completion failed',
+      'Failed to complete kanban tasks',
+      {
+        env: {
+          ...process.env,
+          HERMES_HOME: isolatedHome,
+          HERMES_KANBAN_HOME: kanbanHome,
+        },
+      },
+    )
+  } finally {
+    await rm(isolatedHome, { recursive: true, force: true }).catch(err => {
+      logger.error(err, 'Hermes CLI: failed to clean up operator completion config')
+    })
+  }
 }
 
 export async function blockTask(taskId: string, reason: string, opts?: KanbanBoardOptions): Promise<void> {
@@ -634,13 +748,42 @@ export async function getStats(opts?: KanbanBoardOptions): Promise<KanbanStats> 
       timeout: 30000,
       ...execOpts,
     })
-    const stats = JSON.parse(stdout) as KanbanStats
+    // hermes-agent 0.21.3 `kanban stats --json` returns
+    // `{ by_status, by_assignee, oldest_ready_age_seconds, now }` — there is no
+    // `total`, and `by_assignee` is nested per status ({alice: {ready: 1}}),
+    // not a flat count. Flatten both here so the API contract stays numeric.
+    const raw = JSON.parse(stdout) as {
+      by_status?: Record<string, unknown>
+      by_assignee?: Record<string, unknown>
+    }
+    const byStatus: Record<string, number> = {}
+    for (const [status, value] of Object.entries(raw.by_status || {})) {
+      const count = Number(value)
+      if (Number.isFinite(count) && count >= 0) byStatus[status] = count
+    }
+    const byAssignee: Record<string, number> = {}
+    for (const [assignee, value] of Object.entries(raw.by_assignee || {})) {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        byAssignee[assignee] = value
+        continue
+      }
+      if (value && typeof value === 'object') {
+        byAssignee[assignee] = Object.values(value as Record<string, unknown>)
+          .reduce<number>((total, count) => total + (Number.isFinite(Number(count)) ? Number(count) : 0), 0)
+      }
+    }
+    // `stats` never counts archived tasks, so fold them in from an explicit list.
     const archivedTasks = await listTasks({ board: opts?.board, status: 'archived', includeArchived: true })
-    const existingArchived = stats.by_status?.archived || 0
-    const archivedCount = archivedTasks.length
-    stats.by_status = { ...(stats.by_status || {}), archived: archivedCount }
-    stats.total = (stats.total || 0) + Math.max(0, archivedCount - existingArchived)
-    return stats
+    byStatus.archived = archivedTasks.length
+    for (const task of archivedTasks) {
+      const assignee = task.assignee?.trim() || 'default'
+      byAssignee[assignee] = (byAssignee[assignee] || 0) + 1
+    }
+    return {
+      by_status: byStatus,
+      by_assignee: byAssignee,
+      total: Object.values(byStatus).reduce((total, count) => total + count, 0),
+    }
   } catch (err: any) {
     logger.error(err, 'Hermes CLI: kanban stats failed')
     throw new Error(`Failed to get kanban stats: ${err.message}`)

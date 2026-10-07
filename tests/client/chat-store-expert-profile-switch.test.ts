@@ -122,3 +122,54 @@ describe('chat store — central stale-expert clear on profile switch', () => {
     expect(session.expertLabel).toBeUndefined()
   })
 })
+
+describe('chat store — staged composer draft is addressed to one session', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+  })
+
+  it('hands the line only to the session it was staged for, exactly once', () => {
+    const chat = useChatStore()
+    chat.stageComposerDraft('session-a', '帮我做一次「财务分析」的任务')
+
+    // another session mounting first must not receive it
+    expect(chat.consumeStagedComposerDraft('session-b')).toBe('')
+    expect(chat.consumeStagedComposerDraft('')).toBe('')
+    expect(chat.stagedComposerDraft).toEqual({
+      sessionId: 'session-a',
+      text: '帮我做一次「财务分析」的任务',
+    })
+
+    expect(chat.consumeStagedComposerDraft('session-a')).toBe('帮我做一次「财务分析」的任务')
+    // one shot: a later mount of the same session gets nothing
+    expect(chat.consumeStagedComposerDraft('session-a')).toBe('')
+    expect(chat.stagedComposerDraft).toBeNull()
+  })
+
+  it('lets a second staged line replace an unconsumed one and clears on a failed navigation', () => {
+    const chat = useChatStore()
+
+    // rapid successive clicks: the last one wins, the first never resurfaces
+    chat.stageComposerDraft('session-a', '第一句')
+    chat.stageComposerDraft('session-b', '第二句')
+    expect(chat.consumeStagedComposerDraft('session-a')).toBe('')
+    expect(chat.consumeStagedComposerDraft('session-b')).toBe('第二句')
+
+    // a navigation that never arrived drops its own staged line
+    chat.stageComposerDraft('session-c', '第三句')
+    chat.clearStagedComposerDraft('session-other')
+    expect(chat.stagedComposerDraft).not.toBeNull()
+    chat.clearStagedComposerDraft('session-c')
+    expect(chat.stagedComposerDraft).toBeNull()
+    expect(chat.consumeStagedComposerDraft('session-c')).toBe('')
+  })
+
+  it('ignores an empty session id or empty text instead of staging a ghost draft', () => {
+    const chat = useChatStore()
+    chat.stageComposerDraft('', '有文案没会话')
+    expect(chat.stagedComposerDraft).toBeNull()
+    chat.stageComposerDraft('session-a', '')
+    expect(chat.stagedComposerDraft).toBeNull()
+  })
+})

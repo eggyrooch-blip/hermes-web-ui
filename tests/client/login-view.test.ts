@@ -112,7 +112,7 @@ describe('LoginView password login', () => {
   // the user out for real — both because this view woke OAuth without ever
   // asking whether the httpOnly session cookie was still good.
   describe('feishu-oauth-dev mode', () => {
-    const mockAuthMe = vi.hoisted(() => vi.fn())
+    const mockAuthMe = vi.fn()
 
     beforeEach(() => {
       mockFetchAuthStatus.mockResolvedValue({

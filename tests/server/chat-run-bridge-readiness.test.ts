@@ -37,7 +37,7 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/session-command', ()
 }))
 
 vi.mock('../../packages/server/src/services/hermes/agent-bridge', () => ({
-  AgentBridgeClient: vi.fn(() => bridgeMock),
+  AgentBridgeClient: vi.fn(function () { return bridgeMock }),
 }))
 
 vi.mock('../../packages/server/src/services/hermes/agent-bridge/manager', () => ({

@@ -149,3 +149,17 @@ export function revokeGithubToken(profile?: string) {
     method: 'DELETE',
   })
 }
+
+export interface FigmaCredentialResult {
+  ok: boolean
+  revoked?: boolean
+  error?: string
+}
+
+/** 撤销我自己的 Figma MCP 授权。身份由服务端从已验证会话推导，浏览器不发任何身份字段；
+ *  面板 profile 仅作为 query 提示随行。启动授权走通用的 skill-credentials start 路由。 */
+export function revokeFigmaCredential(profile?: string) {
+  return request<FigmaCredentialResult>(withProfile('/api/hermes/credentials/figma', profile), {
+    method: 'DELETE',
+  })
+}

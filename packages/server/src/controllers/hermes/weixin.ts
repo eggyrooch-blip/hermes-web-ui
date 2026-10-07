@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { getActiveProfileName } from '../../services/hermes/hermes-profile'
 import { restartGatewayForProfile } from '../../services/hermes/gateway-autostart'
+import { isGatewayRestartDisabledError } from '../../services/hermes/gateway-restart-guard'
 import { saveEnvValueForProfile } from '../../services/config-helpers'
 
 const ILINK_BASE = 'https://ilinkai.weixin.qq.com'
@@ -50,6 +51,10 @@ export async function save(ctx: any) {
     await restartGatewayForProfile(profile)
     ctx.body = { success: true }
   } catch (err: any) {
+    if (isGatewayRestartDisabledError(err)) {
+      ctx.status = 409; ctx.body = { error: `微信凭据已保存。${err.message}` }
+      return
+    }
     ctx.status = 500; ctx.body = { error: err.message }
   }
 }

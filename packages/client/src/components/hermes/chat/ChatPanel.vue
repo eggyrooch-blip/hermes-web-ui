@@ -13,6 +13,7 @@ import { useAppStore } from "@/stores/hermes/app";
 import { useFilesStore } from "@/stores/hermes/files";
 import { useProfilesStore } from "@/stores/hermes/profiles";
 import { useSessionBrowserPrefsStore } from "@/stores/hermes/session-browser-prefs";
+import { useSessionPinsStore } from "@/stores/hermes/session-pins";
 import {
   NButton,
   NDrawer,
@@ -54,6 +55,7 @@ const appStore = useAppStore();
 const filesStore = useFilesStore();
 const profilesStore = useProfilesStore();
 const sessionBrowserPrefsStore = useSessionBrowserPrefsStore();
+const sessionPinsStore = useSessionPinsStore();
 const route = useRoute();
 const router = useRouter();
 const isCoworkRoute = computed(() => route.name === "hermes.cowork");
@@ -334,7 +336,7 @@ async function selectWorkspaceGroup(group: { profile: string; workspace: string;
 const pinnedSessions = computed(() =>
   sortSessionsForSidebar(
     chatStore.sessions.filter((session) =>
-      sessionBrowserPrefsStore.isPinned(session.id) && matchesWorkspaceFilter(session),
+      session.isPinned && matchesWorkspaceFilter(session),
     ),
   ),
 );
@@ -342,20 +344,34 @@ const pinnedSessions = computed(() =>
 const unpinnedSessions = computed(() =>
   sortSessionsForSidebar(
     chatStore.sessions.filter(
-      (session) => !sessionBrowserPrefsStore.isPinned(session.id),
+      (session) => !session.isPinned,
     ).filter(matchesWorkspaceFilter),
   ),
 );
 
+// Pins moved from localStorage onto the session row. The first session list that
+// carries is_pinned is also the moment the old per-browser pins can be replayed
+// onto the server, once, and then dropped. The profile name is part of the watch
+// source because it resolves asynchronously: a first pass under the fallback
+// "default" must not be the only one a profile-scoped pin set ever gets. The
+// list itself is handed over so the store can see whether this server reports
+// pins at all before it touches the legacy key.
 watch(
-  () => [
-    chatStore.sessionsLoaded,
-    ...chatStore.sessions.map((session) => session.id),
-  ],
-  (value) => {
-    const sessionIds = value.slice(1) as string[];
-    if (!value[0] || sessionIds.length === 0) return;
-    sessionBrowserPrefsStore.pruneMissingSessions(sessionIds);
+  () => [chatStore.sessionsLoaded, sessionBrowserPrefsStore.profileName] as const,
+  async ([loaded]) => {
+    if (!loaded) return;
+    const migrated = await sessionPinsStore.migrateLegacyPins(
+      chatStore.sessions.map((session) => ({
+        id: session.id,
+        is_pinned: session.isPinned,
+        profile: session.profile ?? null,
+      })),
+    );
+    if (migrated.length === 0) return;
+    const migratedIds = new Set(migrated);
+    for (const session of chatStore.sessions) {
+      if (migratedIds.has(session.id)) session.isPinned = true;
+    }
   },
   { immediate: true },
 );
@@ -823,7 +839,6 @@ async function handleDeleteSession(id: string) {
     message.error(t("common.deleteFailed"));
     return;
   }
-  sessionBrowserPrefsStore.removePinned(id);
   message.success(t("chat.sessionDeleted"));
 }
 
@@ -871,11 +886,6 @@ async function handleBatchDelete() {
   try {
     const result = await batchDeleteSessions(targets);
     if (result.deleted > 0) {
-      // Remove from pinned sessions
-      for (const target of targets) {
-        sessionBrowserPrefsStore.removePinned(target.id);
-      }
-
       // Remove deleted sessions from local store (without calling API again)
       // Use loadSessions to refresh from server instead of manual filtering
       await chatStore.loadSessions(chatStore.sessionProfileFilter);
@@ -920,9 +930,7 @@ const canSelectAll = computed(() => {
 
 const contextSessionId = ref<string | null>(null);
 const contextSessionPinned = computed(() =>
-  contextSessionId.value
-    ? sessionBrowserPrefsStore.isPinned(contextSessionId.value)
-    : false,
+  Boolean(contextSession.value?.isPinned),
 );
 const contextSession = computed(() =>
   contextSessionId.value
@@ -1002,7 +1010,13 @@ async function handleContextMenuSelect(key: string) {
   showContextMenu.value = false;
   if (!contextSessionId.value) return;
   if (key === "pin") {
-    sessionBrowserPrefsStore.togglePinned(contextSessionId.value);
+    const session = contextSession.value;
+    if (!session) return;
+    try {
+      session.isPinned = await sessionPinsStore.setPinned(session.id, !session.isPinned);
+    } catch (error: any) {
+      message.error(error?.message || t("common.saveFailed"));
+    }
     return;
   }
   if (key === "copy-link") {
@@ -1014,7 +1028,6 @@ async function handleContextMenuSelect(key: string) {
   } else if (key === "archive") {
     const archived = await chatStore.archiveSession(contextSessionId.value);
     if (archived) {
-      sessionBrowserPrefsStore.removePinned(contextSessionId.value);
       message.success(t("chat.sessionArchived"));
     } else {
       message.error(t("chat.archiveFailed"));
@@ -2098,7 +2111,7 @@ async function handleSessionModelCustomSubmit() {
             <JobsView v-else embedded />
           </div>
           <div v-else class="chat-main-content">
-            <MessageList ref="messageListRef" />
+            <MessageList ref="messageListRef" scroll-scope="chat" />
             <ChatInput ref="chatInputRef" />
             <button
               v-if="showWorkspaceSelection && !isCoworkRoute && isHermesChatSession(chatStore.activeSession)"

@@ -178,15 +178,15 @@ function profileAuthPath(profile: string): string {
   return join(getProfileDir(profile), 'auth.json')
 }
 
-function envReader(envContent: string) {
+export function envReader(envContent: string) {
   const envHasValue = (key: string): boolean => {
     if (!key) return false
-    const match = envContent.match(new RegExp(`^${key}\\s*=\\s*(.+)`, 'm'))
+    const match = envContent.match(new RegExp(`^${key}[ \\t]*=[ \\t]*(.+)`, 'm'))
     return !!match && match[1].trim() !== '' && !match[1].trim().startsWith('#')
   }
   const envGetValue = (key: string): string => {
     if (!key) return ''
-    const match = envContent.match(new RegExp(`^${key}\\s*=\\s*(.+)`, 'm'))
+    const match = envContent.match(new RegExp(`^${key}[ \\t]*=[ \\t]*(.+)`, 'm'))
     return match?.[1]?.trim() || ''
   }
   return { envHasValue, envGetValue }
@@ -592,12 +592,12 @@ export async function getAvailableChatPlane(ctx: any) {
 
     const envHasValue = (key: string): boolean => {
       if (!key) return false
-      const match = envContent.match(new RegExp(`^${key}\\s*=\\s*(.+)`, 'm'))
+      const match = envContent.match(new RegExp(`^${key}[ \\t]*=[ \\t]*(.+)`, 'm'))
       return !!match && match[1].trim() !== '' && !match[1].trim().startsWith('#')
     }
     const envGetValue = (key: string): string => {
       if (!key) return ''
-      const match = envContent.match(new RegExp(`^${key}\\s*=\\s*(.+)`, 'm'))
+      const match = envContent.match(new RegExp(`^${key}[ \\t]*=[ \\t]*(.+)`, 'm'))
       return match?.[1]?.trim() || ''
     }
     const addGroup = (provider: string, label: string, base_url: string, models: string[], api_key: string, builtin?: boolean, model_meta?: Record<string, ModelMeta>) => {
@@ -864,12 +864,12 @@ export async function getAvailable(ctx: any) {
 
     const envHasValue = (key: string): boolean => {
       if (!key) return false
-      const match = envContent.match(new RegExp(`^${key}\\s*=\\s*(.+)`, 'm'))
+      const match = envContent.match(new RegExp(`^${key}[ \\t]*=[ \\t]*(.+)`, 'm'))
       return !!match && match[1].trim() !== '' && !match[1].trim().startsWith('#')
     }
     const envGetValue = (key: string): string => {
       if (!key) return ''
-      const match = envContent.match(new RegExp(`^${key}\\s*=\\s*(.+)`, 'm'))
+      const match = envContent.match(new RegExp(`^${key}[ \\t]*=[ \\t]*(.+)`, 'm'))
       return match?.[1]?.trim() || ''
     }
     const addGroup = (provider: string, label: string, base_url: string, models: string[], api_key: string, builtin?: boolean, model_meta?: Record<string, ModelMeta>, extra?: Pick<AvailableGroup, 'provider_source' | 'provider_key'>) => {

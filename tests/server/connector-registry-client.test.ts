@@ -236,6 +236,72 @@ describe('connector catalog and custom installation broker calls', () => {
     expect(JSON.parse(callbackInit.body)).toEqual({ state: 'opaque-state', code: 'oauth-code' })
   })
 
+  // RFC 9207 的 `iss`：Figma 的真实回调带它（`?code=…&iss=https%3A%2F%2Fapi.figma.com&state=…`）。
+  // MT 对 figma 的 state 接受可选 iss，对别的 state 仍要求精确 {state, code}，所以这一层
+  // 只做两件事：像样就原样转，不像样就当没有 —— 任何情况下都不自己拼一个。
+  it('forwards a plausible https iss verbatim on the catalog OAuth callback', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) })
+    const { completeCatalogOAuth } = await import(MODULE)
+    await completeCatalogOAuth({ state: 'opaque-state', code: 'oauth-code', iss: 'https://api.figma.com' })
+    const [, init] = (globalThis.fetch as any).mock.calls[0]
+    expect(JSON.parse(init.body)).toEqual({
+      state: 'opaque-state', code: 'oauth-code', iss: 'https://api.figma.com',
+    })
+  })
+
+  it('keeps the exact {state, code} body when no iss comes back', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) })
+    const { completeCatalogOAuth } = await import(MODULE)
+    await completeCatalogOAuth({ state: 'opaque-state', code: 'oauth-code' })
+    const [, init] = (globalThis.fetch as any).mock.calls[0]
+    expect(JSON.parse(init.body)).toEqual({ state: 'opaque-state', code: 'oauth-code' })
+    expect(init.body).not.toContain('iss')
+  })
+
+  // 「没带 issuer」和「带了个错的 issuer」必须是两件事。把后者静默降级成前者，
+  // broker 就再也分不出来，回调的身份校验边界等于送人（codex review 2026-09-21,
+  // `sanitizeoauthissuer:invalid-issuer-downgrade`）。
+  it('classifies absent / valid / invalid iss as three distinct states', async () => {
+    const { classifyOAuthIssuer, sanitizeOAuthIssuer } = await import(MODULE)
+    // 只有键根本不在 query 里才算没带。
+    expect(classifyOAuthIssuer(undefined)).toEqual({ kind: 'absent' })
+    expect(classifyOAuthIssuer(null)).toEqual({ kind: 'absent' })
+    expect(classifyOAuthIssuer('https://api.figma.com')).toEqual({
+      kind: 'valid', value: 'https://api.figma.com',
+    })
+    const invalid = [
+      'http://api.figma.com',                 // 非 https
+      'javascript:alert(1)',                  // 不是 http(s) 的 scheme
+      'api.figma.com',                        // 不是绝对 URL
+      'https://',                             // 没有 host
+      `https://api.figma.com/${'a'.repeat(300)}`,  // 超长
+      'https://api.figma.com\nX-Injected: 1', // 控制字符
+      '',                                     // 带了一个空 issuer —— 是错，不是没带
+      '   ',
+      ['https://api.figma.com'],              // 重复 query 键
+      ['https://api.figma.com', 'https://evil.example'],
+      42,
+    ]
+    for (const iss of invalid) {
+      expect(classifyOAuthIssuer(iss as any), JSON.stringify(iss)).toMatchObject({ kind: 'invalid' })
+      // sanitize 只取「能转发的值」那一面，判 400 要看 classify。
+      expect(sanitizeOAuthIssuer(iss as any), JSON.stringify(iss)).toBe('')
+    }
+    expect(sanitizeOAuthIssuer(undefined)).toBe('')
+  })
+
+  it('rejects an explicitly invalid iss with 400 and never reaches the broker', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) })
+    const { completeCatalogOAuth } = await import(MODULE)
+    for (const iss of ['http://api.figma.com', 'javascript:alert(1)', '', ['https://api.figma.com']]) {
+      const err = await completeCatalogOAuth({ state: 'opaque-state', code: 'oauth-code', iss: iss as any })
+        .then(() => null, (e: any) => e)
+      expect(err, JSON.stringify(iss)).toBeInstanceOf(Error)
+      expect(err.status, JSON.stringify(iss)).toBe(400)
+    }
+    expect((globalThis.fetch as any)).not.toHaveBeenCalled()
+  })
+
   it('fails closed on a malformed catalog and keeps icon paths on the BFF', async () => {
     ;(globalThis.fetch as any).mockResolvedValueOnce({
       ok: true,
@@ -286,6 +352,66 @@ describe('connector catalog and custom installation broker calls', () => {
       config: 'x'.repeat(64 * 1024 + 1),
     })).toThrow('connector config is empty or too large')
     expect(globalThis.fetch).not.toHaveBeenCalled()
+  })
+})
+
+// 撤销是唯一一个「答错了员工就不再看」的动作：告诉他"已撤销"而 token 还在盘上，
+// 比直接报错坏得多。MT 的成功形状只有 `{ok:true, revoked:<bool>}`
+// （webui_broker_server.handle_figma_credential），其余一律当失败抛出。
+// codex review 2026-09-21, `revokefigmaauthorization:unvalidated-success`。
+describe('revokeFigmaAuthorization validates the broker business result', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()))
+
+  const owner = { profileName: 'p1', ownerOpenId: 'ou_alice' }
+
+  it('returns revoked:true on the documented success body', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: true, status: 200, json: async () => ({ ok: true, revoked: true }),
+    })
+    const { revokeFigmaAuthorization } = await import(MODULE)
+    await expect(revokeFigmaAuthorization(owner)).resolves.toEqual({ revoked: true })
+  })
+
+  it('keeps the genuine idempotent success {ok:true, revoked:false}', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: true, status: 200, json: async () => ({ ok: true, revoked: false }),
+    })
+    const { revokeFigmaAuthorization } = await import(MODULE)
+    await expect(revokeFigmaAuthorization(owner)).resolves.toEqual({ revoked: false })
+  })
+
+  it('throws on HTTP 200 with ok:false instead of reporting a silent revoked:false', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: true, status: 200, json: async () => ({ ok: false, error: 'Figma 授权服务暂不可用，请稍后重试。' }),
+    })
+    const { revokeFigmaAuthorization } = await import(MODULE)
+    const err = await revokeFigmaAuthorization(owner).then(() => null, (e: any) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(err.status).toBe(502)
+    // broker 自己给的理由要带出去，控制器才能把它显示给员工。
+    expect(err.message).toContain('Figma 授权服务暂不可用')
+  })
+
+  it('throws when the body does not parse to the expected shape', async () => {
+    // ownerBrokerJson 在 JSON 解析失败时交出 `{}` —— 旧写法把它当成 revoked:false。
+    const bodies = [{}, { revoked: true }, { ok: 'true', revoked: true }, [], null, 'revoked']
+    const { revokeFigmaAuthorization } = await import(MODULE)
+    for (const body of bodies) {
+      ;(globalThis.fetch as any).mockResolvedValue({ ok: true, status: 200, json: async () => body })
+      const err = await revokeFigmaAuthorization(owner).then(() => null, (e: any) => e)
+      expect(err, JSON.stringify(body)).toBeInstanceOf(Error)
+      expect(err.status, JSON.stringify(body)).toBe(502)
+    }
+  })
+
+  it('throws when ok is true but revoked is not a boolean', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: true, status: 200, json: async () => ({ ok: true, revoked: 'yes' }),
+    })
+    const { revokeFigmaAuthorization } = await import(MODULE)
+    const err = await revokeFigmaAuthorization(owner).then(() => null, (e: any) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(err.status).toBe(502)
   })
 })
 

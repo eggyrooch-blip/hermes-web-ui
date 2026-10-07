@@ -1,4 +1,5 @@
 import { ref, computed, onUnmounted } from 'vue'
+import { parseThinking } from '@/utils/thinking-parser'
 import {
   generateSpeech,
   playAudioBlob,
@@ -93,11 +94,13 @@ export function useSpeech() {
   function extractReadableText(content: string): string {
     if (!content) return ''
 
-    let text = content
-
-    // 移除 thinking 标签内容
-    text = text.replace(/<thinking[^>]*>[\s\S]*?<\/thinking>/gi, '')
-    text = text.replace(/<thinking[^>]*>[\s\S]*/gi, '')
+    let text = parseThinking(content, { streaming: false }).body
+    // parseThinking only matches bare tags and, with streaming:false, folds an
+    // unclosed block back into body. Speech must never read hidden reasoning:
+    // drop attribute-carrying blocks and any trailing unclosed block (a reply
+    // aborted mid-thinking).
+    text = text.replace(/<(think|thinking|reasoning)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+    text = text.replace(/<(think|thinking|reasoning)\b[^>]*>[\s\S]*$/i, '')
 
     // 移除代码块
     text = text.replace(/```[\s\S]*?```/g, '')
@@ -106,7 +109,7 @@ export function useSpeech() {
     // 移除 HTML 标签
     text = text.replace(/<[^>]+>/g, '')
 
-    text = text.replace(/[^\p{L}\p{N}\s.。!?;,，。！？；：、""''（）【】《》\n一-鿿㐀-䶿]/gu, '')
+    text = text.replace(/[^\p{L}\p{N}\s.。!?;,，。！？；：、""''（）【】《》+\-%:\/=~\n一-鿿㐀-䶿]/gu, '')
 
     text = text.replace(/\s+/g, ' ').trim()
 

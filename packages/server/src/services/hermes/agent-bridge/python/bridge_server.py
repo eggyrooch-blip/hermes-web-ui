@@ -23,7 +23,7 @@ from bridge_runtime import (
     _start_parent_process_watchdog,
     _worker_profile,
 )
-from bridge_transport import _make_listen_socket, _read_json_request, _write_json_response
+from bridge_transport import _endpoint_for_listen_socket, _make_listen_socket, _read_json_request, _write_json_response
 
 class BridgeServer:
     IDLE_TIMEOUT_SECONDS = 30 * 60  # 30 minutes
@@ -599,6 +599,9 @@ class BridgeServer:
         try:
             server.listen(16)
             server.settimeout(0.2)
+            # With an OS-assigned port the requested endpoint has no port yet;
+            # publish the one actually bound so the broker connects to it.
+            self.endpoint = _endpoint_for_listen_socket(self.endpoint, server)
             print(json.dumps({"event": "ready", "endpoint": self.endpoint}), flush=True)
 
             while not self._stop.is_set():

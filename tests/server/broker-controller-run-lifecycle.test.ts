@@ -2310,3 +2310,97 @@ describe('BrokerRunController run lifecycle', () => {
     ]))
   })
 })
+
+/**
+ * A queued run must carry the depth the user picked when they hit send, not
+ * whatever the slider or the session row says by the time the run drains.
+ * REVIEW drops-queued-reasoning-effort#p1 / unset-falls-back-to-stale-value#p1.
+ */
+describe('BrokerRunController queued reasoning effort', () => {
+  function metadataOfRunCall(fetchMock: any, index: number) {
+    const runCalls = fetchMock.mock.calls.filter((call: any[]) => String(call[0]).endsWith('/runs'))
+    return JSON.parse(String(runCalls[index][1].body)).metadata
+  }
+
+  it('dispatches a queued run at the depth chosen when it was sent', async () => {
+    // The row remembers 'low'; the queued turn was sent at 'high'.
+    store.getSession.mockReturnValue({ id: 'q1', profile: 'research', workspace: null, reasoning_effort: 'low' })
+    store.getSessionRowId.mockReturnValue(1)
+    store.getSessionIncarnation.mockReturnValue(1)
+    const firstRun = deferred<any>()
+    const fetchMock = vi.fn(() => firstRun.promise)
+    vi.stubGlobal('fetch', fetchMock)
+    const { handlers, emitted } = makeHarness()
+
+    const first = handlers.get('run')!({ input: 'first', session_id: 'q1', reasoning_effort: 'medium' })
+    await vi.waitFor(() => expect(fetchMock.mock.calls.length).toBe(1))
+
+    // Typed ahead while the first turn is still streaming.
+    void handlers.get('run')!({ input: 'second', session_id: 'q1', reasoning_effort: 'high', queue_id: 'q-2' })
+    // The second turn must really have been QUEUED; if it dispatched straight
+    // through, this test would prove nothing about the queue.
+    await vi.waitFor(() => expect(emitted.some(e => e.event === 'run.queued')).toBe(true))
+
+    fetchMock.mockImplementation(() => Promise.resolve({ ok: true, status: 200, body: sseDone('run-2') }))
+    firstRun.resolve({ ok: true, status: 200, body: sseDone('run-1') })
+    await first
+    await vi.waitFor(() => expect(
+      fetchMock.mock.calls.filter((call: any[]) => String(call[0]).endsWith('/runs')).length,
+    ).toBe(2))
+
+    expect(metadataOfRunCall(fetchMock, 0).reasoning_effort).toBe('medium')
+    expect(metadataOfRunCall(fetchMock, 1).reasoning_effort).toBe('high')
+  })
+
+  it('keeps a queued run cleared when the user cleared the slider before sending', async () => {
+    // The row still holds 'high'; the user cleared before sending, so the run
+    // must carry no override at all rather than inheriting the row.
+    store.getSession.mockReturnValue({ id: 'q2', profile: 'research', workspace: null, reasoning_effort: 'high' })
+    store.getSessionRowId.mockReturnValue(1)
+    store.getSessionIncarnation.mockReturnValue(1)
+    const fetchMock = vi.fn(() => Promise.resolve({ ok: true, status: 200, body: sseDone('run-3') }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { handlers } = makeHarness()
+
+    await handlers.get('run')!({ input: 'cleared', session_id: 'q2', reasoning_effort: '' })
+
+    expect(metadataOfRunCall(fetchMock, 0)).not.toHaveProperty('reasoning_effort')
+  })
+
+  // The run a /plan or /goal DERIVES must inherit the depth the command was
+  // sent at. It reaches handleRun through handleBrokerSessionCommand, whose
+  // own parameter list used to drop the field on the floor.
+  it('carries the send-time depth into the run derived from a session command', async () => {
+    store.getSession.mockReturnValue({ id: 'cmd1', profile: 'research', workspace: null, reasoning_effort: 'low' })
+    store.getSessionRowId.mockReturnValue(1)
+    store.getSessionIncarnation.mockReturnValue(1)
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).endsWith('/session-commands')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ handled: true, command: 'plan', action: 'plan', kickoff_prompt: 'hidden plan' }),
+        })
+      }
+      return Promise.resolve({ ok: true, status: 200, body: sseDone('run-plan') })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { handlers } = makeHarness()
+
+    await handlers.get('run')!({ input: '/plan build it', session_id: 'cmd1', reasoning_effort: 'high' })
+
+    expect(metadataOfRunCall(fetchMock, 0).reasoning_effort).toBe('high')
+  })
+
+  it('falls back to the row for a run that never carried the field', async () => {
+    store.getSession.mockReturnValue({ id: 'q3', profile: 'research', workspace: null, reasoning_effort: 'xhigh' })
+    store.getSessionRowId.mockReturnValue(1)
+    store.getSessionIncarnation.mockReturnValue(1)
+    const fetchMock = vi.fn(() => Promise.resolve({ ok: true, status: 200, body: sseDone('run-4') }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { handlers } = makeHarness()
+
+    await handlers.get('run')!({ input: 'no field', session_id: 'q3' })
+
+    expect(metadataOfRunCall(fetchMock, 0).reasoning_effort).toBe('xhigh')
+  })
+})

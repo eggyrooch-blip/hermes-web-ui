@@ -41,9 +41,17 @@ export const SESSIONS_SCHEMA: Record<string, string> = {
   expert_avatar: 'TEXT',
   execution_engine: "TEXT NOT NULL DEFAULT 'hermes'",
   is_archived: 'INTEGER NOT NULL DEFAULT 0',
+  // Cross-device session pin. INTEGER + DEFAULT so addMissingSafeColumns() can
+  // ALTER it onto existing databases (same additive path as family_switch_noticed).
+  is_pinned: 'INTEGER NOT NULL DEFAULT 0',
   user_id: 'TEXT',
   model: 'TEXT NOT NULL DEFAULT \'\'',
   provider: 'TEXT NOT NULL DEFAULT \'\'',
+  // Per-session reasoning-effort override. Nullable TEXT so
+  // addMissingSafeColumns() can ALTER it onto existing databases; NULL and ''
+  // both mean "unset — use the profile/config default", and readers normalize
+  // both to ''.
+  reasoning_effort: 'TEXT',
   title: 'TEXT',
   started_at: 'INTEGER NOT NULL',
   ended_at: 'INTEGER',

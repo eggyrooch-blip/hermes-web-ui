@@ -97,6 +97,21 @@ describe('config controller locked file updates', () => {
   })
 
 
+  it('keeps the saved platform section and returns 409 when Run Broker mode refuses the gateway restart', async () => {
+    await writeFile(join(hermesHome, 'config.yaml'), 'telegram:\n  enabled: false\n', 'utf-8')
+    const { GatewayRestartDisabledError } = await import('../../packages/server/src/services/hermes/gateway-restart-guard')
+    mockRestartGateway.mockRejectedValueOnce(new GatewayRestartDisabledError())
+    const { updateConfig } = await loadController()
+    const ctx = makeCtx({ section: 'telegram', values: { enabled: true } })
+
+    await updateConfig(ctx)
+
+    expect(ctx.status).toBe(409)
+    expect(ctx.body.error).toBe('配置已保存。Run Broker 模式下 WebUI 不再启停 Hermes gateway，以免影响 MT router；请重启 MT router 使改动生效。')
+    const config = YAML.load(await readFile(join(hermesHome, 'config.yaml'), 'utf-8')) as any
+    expect(config.telegram.enabled).toBe(true)
+  })
+
   it('reads and writes gateway auto-start policy from Web UI app config', async () => {
     await writeFile(join(hermesHome, 'config.yaml'), [
       'model:',

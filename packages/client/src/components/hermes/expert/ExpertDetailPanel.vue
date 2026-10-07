@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
+  expertSamplePrompts,
   formatExpertReleaseVersion,
   formatExpertUpdatedFull,
   isExpertRecentlyUpdated,
@@ -27,6 +28,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'activate', expert: ExpertInfo, engine: 'hermes' | 'harness'): void
+  (e: 'ask', prompt: string, engine: 'hermes' | 'harness'): void
 }>()
 const executionEngine = ref<'hermes' | 'harness'>('hermes')
 
@@ -38,6 +40,9 @@ const initial = computed(() => {
   return src ? Array.from(src)[0] : '?'
 })
 const skills = computed(() => props.expert.skills ?? [])
+// Never empty: absent sample_prompts fall back to three generated from this
+// expert's own tags/name/skills, so the section is never a blank heading.
+const samplePrompts = computed(() => expertSamplePrompts(props.expert))
 const approvalRequired = computed(() => props.expert.governance?.approval_required ?? [])
 const envDefault = computed(() => props.expert.governance?.env_default || '')
 
@@ -77,6 +82,25 @@ watch(() => props.expert.id, () => {
     <div v-if="expert.display_tags?.length" class="detail-tags">
       <span v-for="tag in expert.display_tags" :key="tag" class="detail-tag">{{ tag }}</span>
     </div>
+
+    <section v-if="samplePrompts.length" class="detail-samples">
+      <h3 class="samples-title">{{ t('expert.detail.samplePrompts') }}</h3>
+      <div class="samples-list">
+        <div
+          v-for="prompt in samplePrompts"
+          :key="prompt"
+          class="sample-row"
+          role="button"
+          tabindex="0"
+          @click="emit('ask', prompt, executionEngine)"
+          @keydown.enter.prevent="emit('ask', prompt, executionEngine)"
+          @keydown.space.prevent="emit('ask', prompt, executionEngine)"
+        >
+          <span class="sample-text">{{ prompt }}</span>
+          <svg class="sample-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
+      </div>
+    </section>
 
     <section class="detail-section">
       <h3 class="section-title">{{ t('expert.detail.capabilities') }}</h3>
@@ -253,6 +277,54 @@ watch(() => props.expert.id, () => {
   border-radius: 999px;
   background: $bg-card;
   color: $text-secondary;
+}
+
+.detail-samples {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.samples-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 400;
+  color: $text-muted;
+}
+
+.samples-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sample-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: $bg-card;
+  cursor: pointer;
+  transition: background-color $transition-fast;
+
+  &:hover,
+  &:focus-visible {
+    background: $bg-card-hover;
+  }
+}
+
+.sample-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: $text-primary;
+}
+
+.sample-arrow {
+  flex: 0 0 auto;
+  color: $text-muted;
 }
 
 .detail-section {

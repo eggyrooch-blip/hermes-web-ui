@@ -17,9 +17,11 @@ const removeMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const renameMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const archiveSessionMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true, archived: true } })
 const unarchiveSessionMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true, archived: false } })
+const setPinnedMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true, is_pinned: ctx.request?.body?.is_pinned === true } })
 const setWorkspaceMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const setExpertMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const setModelMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
+const setReasoningEffortMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const listWorkspaceFoldersMock = vi.fn(async (ctx: any) => { ctx.body = { folders: [] } })
 const createWorkspaceFolderMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
 const renameWorkspaceFolderMock = vi.fn(async (ctx: any) => { ctx.body = { ok: true } })
@@ -53,9 +55,11 @@ vi.mock('../../packages/server/src/controllers/hermes/sessions', () => ({
   rename: renameMock,
   archiveSession: archiveSessionMock,
   unarchiveSession: unarchiveSessionMock,
+  setPinned: setPinnedMock,
   setWorkspace: setWorkspaceMock,
   setExpert: setExpertMock,
   setModel: setModelMock,
+  setReasoningEffort: setReasoningEffortMock,
   listWorkspaceFolders: listWorkspaceFoldersMock,
   createWorkspaceFolder: createWorkspaceFolderMock,
   renameWorkspaceFolder: renameWorkspaceFolderMock,
@@ -94,6 +98,7 @@ describe('session routes', () => {
     unarchiveSessionMock.mockClear()
     setExpertMock.mockClear()
     setModelMock.mockClear()
+    setReasoningEffortMock.mockClear()
     listWorkspaceFoldersMock.mockClear()
     createWorkspaceFolderMock.mockClear()
     renameWorkspaceFolderMock.mockClear()
@@ -127,6 +132,7 @@ describe('session routes', () => {
       '/api/hermes/sessions/:sessionId/runs/:runId/feedback',
       '/api/hermes/sessions/:id/archive',
       '/api/hermes/sessions/:id/unarchive',
+      '/api/hermes/sessions/:id/pin',
       '/api/hermes/sessions/:id/rename',
       '/api/hermes/sessions/:id/model',
       '/api/hermes/workspace/folders',
@@ -277,6 +283,17 @@ describe('session routes', () => {
     expect(exportSessionMock).toHaveBeenCalledWith(ctx)
   })
 
+  it('delegates the reasoning-effort route to the controller', async () => {
+    const { sessionRoutes } = await import('../../packages/server/src/routes/hermes/sessions')
+    const layer = sessionRoutes.stack.find((entry: any) => entry.path === '/api/hermes/sessions/:id/reasoning-effort')
+    const ctx: any = { params: { id: 'session-abc' }, query: {}, request: { body: { reasoningEffort: 'high' } }, body: null }
+
+    await layer.stack[0](ctx)
+
+    expect(setReasoningEffortMock).toHaveBeenCalledWith(ctx)
+    expect(ctx.body).toEqual({ ok: true })
+  })
+
   it('delegates archive and unarchive routes to the controller', async () => {
     const { sessionRoutes } = await import('../../packages/server/src/routes/hermes/sessions')
     const archiveLayer = sessionRoutes.stack.find((entry: any) => entry.path === '/api/hermes/sessions/:id/archive')
@@ -291,5 +308,15 @@ describe('session routes', () => {
     await unarchiveLayer.stack[0](unarchiveCtx)
     expect(unarchiveSessionMock).toHaveBeenCalledWith(unarchiveCtx)
     expect(unarchiveCtx.body).toEqual({ ok: true, archived: false })
+  })
+
+  it('delegates the pin route to the controller', async () => {
+    const { sessionRoutes } = await import('../../packages/server/src/routes/hermes/sessions')
+    const pinLayer = sessionRoutes.stack.find((entry: any) => entry.path === '/api/hermes/sessions/:id/pin')
+
+    const pinCtx: any = { params: { id: 'session-abc' }, query: {}, request: { body: { is_pinned: true } }, body: null }
+    await pinLayer.stack[0](pinCtx)
+    expect(setPinnedMock).toHaveBeenCalledWith(pinCtx)
+    expect(pinCtx.body).toEqual({ ok: true, is_pinned: true })
   })
 })

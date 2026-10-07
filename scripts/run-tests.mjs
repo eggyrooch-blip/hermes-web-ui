@@ -25,6 +25,32 @@ const WORKER_OPTIONS = new Set([
     ]),
   ]),
 ])
+// CI common 阶段的并发度：默认 1（2026-08-30 起的稳定基线），caller 显式传的
+// --maxWorkers / --max-workers 放行，封顶 CI_WORKER_CEILING。封顶不是 runner 的 docker
+// cpus 配额（16）：一条 MR pipeline 的 8 个 job 同时起在同一台 188 主机（40 核）上，
+// 各 job 再各开 8 / 12 个 worker 就互相抢核 —— pipeline 546165（2026-09-09）实测
+// server 8 / client 12 比串行还慢（489s vs 508s、477s vs 403s），并把 3 条时序敏感用例
+// 挤红（credentials-view UAT poll ×2、skill-credentials handoff 30s 超时）。8 job × 4
+// worker = 32 ≤ 40 核，是不抢核的上限。--minWorkers 与 --poolOptions.* 仍一律剥掉：
+// 前者跟 max 打架，后者静默盖 cap。
+const CI_WORKER_CEILING = 4
+const CI_DEFAULT_WORKERS = 1
+const MAX_WORKER_OPTIONS = new Set(['--maxWorkers', '--max-workers'])
+
+export function ciCommonWorkers(rawArgs) {
+  let requested = null
+  for (let index = 0; index < rawArgs.length; index += 1) {
+    const arg = rawArgs[index]
+    const equalAt = arg.indexOf('=')
+    const name = equalAt < 0 ? arg : arg.slice(0, equalAt)
+    if (!MAX_WORKER_OPTIONS.has(name)) continue
+    const value = equalAt < 0 ? rawArgs[++index] : arg.slice(equalAt + 1)
+    const count = Number.parseInt(value, 10)
+    if (Number.isInteger(count) && count >= 1) requested = count
+  }
+  if (requested === null) return CI_DEFAULT_WORKERS
+  return Math.min(requested, CI_WORKER_CEILING)
+}
 const args = process.argv.slice(2)
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const vitestBin = resolve(scriptDir, '../node_modules/vitest/vitest.mjs')
@@ -107,7 +133,7 @@ export function buildCiTestPlan(rawArgs, ciValue = process.env.CI) {
   ])
   const common = [
     ...stripOptions(rawArgs, workerOptions),
-    '--maxWorkers=1',
+    `--maxWorkers=${ciCommonWorkers(rawArgs)}`,
     '--exclude',
     WORKSPACE_DIFF_TEST,
     // filter 只命中被隔离的那个文件时（`npm test -- workspace-diff`），common 阶段

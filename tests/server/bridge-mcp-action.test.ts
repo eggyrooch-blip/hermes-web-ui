@@ -4,9 +4,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mcpToolsMock = vi.fn()
 
 vi.mock('../../packages/server/src/services/hermes/agent-bridge/client', () => ({
-  AgentBridgeClient: vi.fn().mockImplementation(() => ({
+  AgentBridgeClient: vi.fn().mockImplementation(function () { return {
     mcpTools: mcpToolsMock,
-  })),
+  } }),
 }))
 
 vi.mock('../../packages/server/src/services/logger', () => ({

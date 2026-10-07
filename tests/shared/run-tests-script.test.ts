@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   buildCiTestPlan,
+  ciCommonWorkers,
   ciEnabled,
   runVitest,
 } from '../../scripts/run-tests.mjs'
@@ -11,16 +12,35 @@ import {
 const workspaceTest = 'tests/server/workspace-diff-tracker.test.ts'
 
 describe('CI test split', () => {
-  it('caps every max-worker spelling and isolates workspace-diff', () => {
-    expect(buildCiTestPlan(['--max-workers', '8'], '1')).toEqual({
-      common: ['--maxWorkers=1', '--exclude', workspaceTest],
+  it('honours an explicit max-worker cap in common, clamps it, and keeps workspace-diff at 1', () => {
+    expect(buildCiTestPlan(['--max-workers', '3'], '1')).toEqual({
+      common: ['--maxWorkers=3', '--exclude', workspaceTest],
       isolated: [workspaceTest, '--maxWorkers=1', '--no-file-parallelism'],
     })
+    // 封顶 4：8 个并行 job × 4 worker = 32 ≤ 188 主机 40 核；8 / 12 在 pipeline 546165 实测更慢且挤红时序用例
     expect(buildCiTestPlan(['--maxWorkers=99'], '1')?.common).toEqual([
-      '--maxWorkers=1',
+      '--maxWorkers=4',
       '--exclude',
       workspaceTest,
     ])
+    // 不传 / 传非法值 → 回到 08-30 起的串行基线
+    expect(buildCiTestPlan([], '1')?.common).toContain('--maxWorkers=1')
+    expect(buildCiTestPlan(['--maxWorkers=0'], '1')?.common).toContain('--maxWorkers=1')
+    expect(buildCiTestPlan(['--maxWorkers=abc'], '1')?.common).toContain('--maxWorkers=1')
+    expect(ciCommonWorkers(['--maxWorkers=2', '--max-workers', '3'])).toBe(3)
+  })
+
+  it('clamps the CI lanes exactly as .ftask/ci.yml invokes them (server 8 / client 12 → 4 / 4)', () => {
+    // 与 .ftask/ci.yml 的 test-server / test-client cmd 同步；改一处必须改另一处。
+    // 清单请求 8 / 12，运行时封顶到 4（见 scripts/run-tests.mjs CI_WORKER_CEILING）
+    expect(buildCiTestPlan(['tests/server', '--maxWorkers=8'], '1')).toEqual({
+      common: ['tests/server', '--maxWorkers=4', '--exclude', workspaceTest, '--passWithNoTests'],
+      isolated: [workspaceTest, '--maxWorkers=1', '--no-file-parallelism'],
+    })
+    expect(buildCiTestPlan(['tests/client', '--maxWorkers=12'], '1')).toEqual({
+      common: ['tests/client', '--maxWorkers=4', '--exclude', workspaceTest, '--passWithNoTests'],
+      isolated: null,
+    })
   })
 
   it('keeps CI isolation when a path filter includes workspace-diff', () => {
@@ -58,6 +78,9 @@ describe('CI test split', () => {
         isolated: null,
       })
     }
+    // 显式 max 放行，但同行的 min / poolOptions 仍被剥：留下的只有一条 --maxWorkers
+    expect(buildCiTestPlan(['tests/client', '--maxWorkers=12', '--minWorkers=8', '--poolOptions.forks.maxForks=40'], '1')?.common)
+      .toEqual(['tests/client', '--maxWorkers=4', '--exclude', workspaceTest, '--passWithNoTests'])
   })
 
   it('does not fail the common phase when a filter selects only the isolated file', () => {

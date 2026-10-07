@@ -78,6 +78,17 @@ describe('resolveCopilotOAuthToken', () => {
     expect(await resolveCopilotOAuthToken('GH_TOKEN=# comment\n')).toBe('')
   })
 
+  it('空值 KEY 不跨行吞掉下一行内容（回归：env 正则 \\s 跨行 bug，上游 #2884）', async () => {
+    // GH_TOKEN 为空值时，修复前的 /^GH_TOKEN\s*=\s*(.+)/ 中 \s* 包含换行符，
+    // 会跨过换行把下一行整行（含 KEY 名前缀）当成 GH_TOKEN 的值。
+    const env = 'GH_TOKEN=\nGITHUB_TOKEN=gho_github\n'
+    expect(await resolveCopilotOAuthToken(env)).toBe('gho_github')
+  })
+
+  it('KEY 与 = 之间的换行也不跨行', async () => {
+    expect(await resolveCopilotOAuthToken('GH_TOKEN\n=gho_wrong\nGITHUB_TOKEN=gho_github\n')).toBe('gho_github')
+  })
+
   it('回退到 ~/.config/github-copilot/apps.json 的 oauth_token', async () => {
     mockReadFile.mockImplementation(async (p: string) => {
       if (p.includes('apps.json')) {

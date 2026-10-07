@@ -416,7 +416,7 @@ export interface LogFileInfo {
  */
 export async function getVersion(): Promise<string> {
   try {
-    const { stdout } = await execHermesWithBin(HERMES_BIN, ['--version'], { timeout: 5000, ...execOpts })
+    const { stdout } = await execHermesWithBin(HERMES_BIN, ['--version'], { timeout: 10000, ...execOpts })
     return stdout.trim()
   } catch {
     return ''

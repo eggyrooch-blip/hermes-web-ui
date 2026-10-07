@@ -45,16 +45,16 @@ vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({
 }))
 
 vi.mock('../../packages/server/src/services/hermes/agent-bridge', () => ({
-  AgentBridgeClient: vi.fn(() => ({
+  AgentBridgeClient: vi.fn(function () { return {
     destroyAll: agentBridgeMocks.destroyAll,
     destroyProfile: agentBridgeMocks.destroyProfile,
-  })),
+  } }),
 }))
 
 vi.mock('../../packages/server/src/services/hermes/skill-injector', () => {
-  const HermesSkillInjector = vi.fn(() => ({
+  const HermesSkillInjector = vi.fn(function () { return {
     injectMissingSkills: skillInjectorMocks.injectMissingSkills,
-  })) as any
+  } }) as any
   HermesSkillInjector.resolveTargetDirForProfile = skillInjectorMocks.resolveTargetDirForProfile
   return { HermesSkillInjector }
 })
@@ -535,6 +535,32 @@ describe('Profile Routes', () => {
       expect(ctx.status).toBe(400)
       expect(ctx.body).toEqual({ error: "Profile name 'hermes' is reserved and cannot be used" })
       expect(hermesCli.renameProfile).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('profile gateway restart', () => {
+    it('maps the Run Broker refusal to 409 with the MT-router message', async () => {
+      const { GatewayRestartDisabledError } = await import('../../packages/server/src/services/hermes/gateway-restart-guard')
+      gatewayAutostartMocks.restartGatewayForProfile.mockRejectedValueOnce(new GatewayRestartDisabledError())
+      const { restartGatewayForProfile } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = { params: { name: 'work' }, state: {}, status: 200, body: undefined }
+
+      await restartGatewayForProfile(ctx)
+
+      expect(gatewayAutostartMocks.restartGatewayForProfile).toHaveBeenCalledWith('work')
+      expect(ctx.status).toBe(409)
+      expect(ctx.body.error).toBe('Run Broker 模式下 WebUI 不再启停 Hermes gateway，以免影响 MT router；请重启 MT router 使改动生效。')
+    })
+
+    it('keeps ordinary restart failures as 500', async () => {
+      gatewayAutostartMocks.restartGatewayForProfile.mockRejectedValueOnce(new Error('boom'))
+      const { restartGatewayForProfile } = await import('../../packages/server/src/controllers/hermes/profiles')
+      const ctx: any = { params: { name: 'work' }, state: {}, status: 200, body: undefined }
+
+      await restartGatewayForProfile(ctx)
+
+      expect(ctx.status).toBe(500)
+      expect(ctx.body).toEqual({ error: 'boom' })
     })
   })
 

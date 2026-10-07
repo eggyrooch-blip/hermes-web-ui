@@ -119,3 +119,26 @@ export function getFilePreviewUrl(relativePath: string, fileName?: string): stri
   if (token) params.set('token', token)
   return `${base}/api/hermes/preview?${params.toString()}`
 }
+
+// Binary preview fetch for pdf / docx / pptx / xlsx. These never go through
+// `readFile` (which decodes as UTF-8 and would corrupt the bytes) and never
+// through the download URL (Content-Disposition: attachment), so they get the
+// allowlisted, size-capped inline endpoint instead. Auth travels in headers
+// rather than the query string because nothing here is an <img src>.
+export async function fetchFilePreviewBlob(relativePath: string, signal?: AbortSignal): Promise<Blob> {
+  const base = getBaseUrlValue()
+  const url = `${base}/api/hermes/files/preview?path=${encodeURIComponent(relativePath)}`
+
+  const headers: Record<string, string> = {}
+  const token = getApiKey()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const profileName = getActiveProfileName()
+  if (profileName) headers['X-Hermes-Profile'] = profileName
+
+  const res = await fetch(url, { headers, signal })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
+    throw new Error(body.error || `Preview failed: ${res.status}`)
+  }
+  return res.blob()
+}

@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import type { Message, ContentBlock, Session, WorkspaceDiffInlineFile } from "@/stores/hermes/chat";
-import { computed, onBeforeUnmount, onMounted, ref, watch, watchEffect } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
 import { useMessage } from "naive-ui";
 import { downloadFile, getDownloadUrl } from "@/api/hermes/download";
 import { copyToClipboard } from "@/utils/clipboard";
-import MarkdownRenderer from "./MarkdownRenderer.vue";
 import FeedbackControl from "./FeedbackControl.vue";
 import SourceRefs from "./SourceRefs.vue";
 import FeishuLinkPreviewCard from "./FeishuLinkPreviewCard.vue";
@@ -25,6 +24,11 @@ import { useVoiceSettings } from "@/composables/useVoiceSettings";
 import { speedToEdgeRate, hzToEdgePitch } from "@/utils/ttsHelpers";
 import { formatChatTimestamp } from "@/utils/chat-timestamp";
 import { extractFeishuUrls, fetchLinkPreviews, stripCardifiedFeishuUrls, type FeishuLinkPreview } from "@/api/hermes/link-previews";
+import ImagePreviewOverlay from "./ImagePreviewOverlay.vue";
+
+// Markdown pulls in markdown-it, KaTeX and highlight.js — load it per message
+// rather than in the entry chunk.
+const MarkdownRenderer = defineAsyncComponent(async () => (await import("./MarkdownRenderer.vue")).default);
 
 const TOOL_PAYLOAD_DISPLAY_LIMIT = 1000;
 const JSON_STRING_DISPLAY_LIMIT = 200;
@@ -1133,11 +1137,12 @@ onBeforeUnmount(() => {
       </div>
     </template>
   </div>
-  <Teleport to="body">
-    <div v-if="previewUrl" class="image-preview-overlay" @click.self="previewUrl = null">
-      <img :src="previewUrl" class="image-preview-img" @click="previewUrl = null" />
-    </div>
-  </Teleport>
+  <ImagePreviewOverlay
+    v-if="previewUrl"
+    :src="previewUrl"
+    alt=""
+    @close="previewUrl = null"
+  />
 </template>
 
 <style scoped lang="scss">
@@ -1788,23 +1793,7 @@ onBeforeUnmount(() => {
   }
 }
 
-.image-preview-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-  background: rgba(0, 0, 0, 0.85);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
 
-.image-preview-img {
-  max-width: 90vw;
-  max-height: 90vh;
-  object-fit: contain;
-  border-radius: 4px;
-}
 
 @media (max-width: $breakpoint-mobile) {
   .message.user .msg-body {

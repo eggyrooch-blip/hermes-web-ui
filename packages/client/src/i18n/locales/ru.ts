@@ -448,6 +448,7 @@ export default {
     attachFiles: 'Прикрепить файлы',
     reasoningEffort: {
       tooltip: 'Глубина рассуждений',
+      dragHint: 'Перетащите, чтобы выбрать · {count} уровней',
       defaultLabel: 'По умолчанию',
       options: {
         default: 'По умолчанию (config.yaml)',
@@ -457,6 +458,7 @@ export default {
         medium: 'Средняя',
         high: 'Высокая',
         xhigh: 'Очень высокая',
+        max: 'Максимальная',
       },
     },
     autoPlaySpeech: 'Автовоспроизведение речи',
@@ -525,6 +527,30 @@ export default {
     approvalGate: 'Gate {gate}',
     harnessBadge: 'Codex · hermes-web-ui',
     harnessBadgeTitle: 'Codex · hermes-web-ui',
+    authorizationKicker: 'Требуется авторизация',
+    authorizationTitle: 'Инструменту нужна ваша авторизация',
+    authorizationDesc: 'Чтобы продолжить этот запрос, требуется ваша авторизация в {service}.',
+    authorizationScopes: 'Запрошенные права',
+    authorizationScopesGrantHint: 'Авторизация предоставляет приложению коннектора все разрешения, перечисленные на странице согласия, а не только указанную выше область.',
+    authorizationAuthorize: 'Авторизовать',
+    authorizationCancel: 'Отмена',
+    authorizationRecheck: 'Не продолжается автоматически? Проверить снова',
+    authorizationRecheckAria: 'Попросить сервер повторно проверить эту авторизацию',
+    authorizationStatePending: 'Ожидание',
+    authorizationStateAuthorizing: 'Ждём завершения авторизации',
+    authorizationStateSuccess: 'Авторизовано',
+    authorizationStateCancelled: 'Отменено',
+    authorizationStateExpired: 'Истекло',
+    authorizationStateFailed: 'Ошибка',
+    authorizationRemaining: 'Осталось {time}',
+    authorizationExpiredHint: 'Срок этого запроса истёк. Спросите ещё раз, чтобы начать новый.',
+    authorizationFailedHint: 'Этот запрос больше недействителен. Спросите ещё раз, чтобы начать новый.',
+    authorizationCardAria: 'Запрос авторизации',
+    authorizationAuthorizeAria: 'Открыть страницу авторизации для {service}',
+    authorizationCancelAria: 'Отменить запрос авторизации для {service}',
+    authorizationServiceLarkCli: 'Feishu',
+    authorizationServiceKepOnline: 'KEP (продакшн)',
+    authorizationServiceKepPre: 'KEP (предрелиз)',
     newCliChat: 'Новый CLI',
     deleteSession: 'Удалить этот сеанс?',
     sessionDeleted: 'Сеанс удалён',
@@ -725,6 +751,10 @@ export default {
       loadLog: 'Загрузить журнал',
       loadDiagnostics: 'Загрузить диагностику',
     },
+    drag: {
+      blockReason: 'Перемещено на доске',
+      failed: 'Не удалось переместить задачу',
+    },
     message: {
       taskCreated: 'Задача создана',
       taskCompleted: 'Задача завершена',
@@ -745,6 +775,27 @@ export default {
   },
 
 
+  scheduleBuilder: {
+
+
+    hour: 'Час',
+
+
+    minute: 'Минута',
+
+
+    weekday: 'День недели',
+
+
+    monthDay: 'День месяца',
+
+
+    time: 'Время',
+
+
+  },
+
+
   jobs: {
     title: 'Автоматизация',
     createJob: 'Создать задачу',
@@ -761,15 +812,16 @@ export default {
     namePlaceholder: 'Название задачи',
     schedule: 'Выражение расписания (Cron)',
     schedulePlaceholder: 'Например, 0 9 * * *',
-    quickPresets: 'Быстрые предустановки',
+    frequency: 'Частота',
     selectPreset: 'Выберите предустановку...',
     presetEveryMinute: 'Каждую минуту',
     presetEvery5Min: 'Каждые 5 минут',
+    presetEvery30Min: 'Каждые 30 минут',
     presetEveryHour: 'Каждый час',
-    presetEveryDay: 'Каждый день в 00:00',
-    presetEveryDay9: 'Каждый день в 09:00',
-    presetEveryMonday: 'Каждый понедельник в 09:00',
-    presetEveryMonth: '1-го числа каждого месяца в 09:00',
+    frequencyDaily: 'Ежедневно',
+    frequencyWeekly: 'Еженедельно',
+    frequencyMonthly: 'Ежемесячно',
+    customSchedule: 'Свой Cron',
     prompt: 'Подсказка (промпт)',
     promptPlaceholder: 'Содержимое для выполнения',
     skills: 'Навыки',
@@ -1271,6 +1323,12 @@ export default {
       inlineDiffsHint: 'Отображать изменения в коде внутри строки',
       bellOnComplete: 'Звук завершения',
       bellOnCompleteHint: 'Воспроизводить звук по окончании ответа AI',
+      notifyOnApproval: 'Уведомление об утверждении',
+      notifyOnApprovalHint: 'Отправляет системное уведомление, когда утверждение, уточнение или авторизация ожидает ответа, а вкладка находится в фоне.',
+      notifyOnApprovalTest: 'Уведомления об утверждении включены.',
+      notifyOnApprovalTestButton: 'Проверить',
+      notifyOnApprovalTestSent: 'Тестовое уведомление отправлено',
+      notifyOnApprovalTestFailed: 'Не удалось отправить уведомление',
       notifyOnComplete: 'Уведомление о завершении',
       notifyOnCompleteHint: 'Показывать системное уведомление по окончании ответа AI',
       notifyOnCompleteMacHint: 'В macOS разрешите уведомления браузера в системных настройках.',
@@ -1906,6 +1964,13 @@ export default {
       token: 'GitHub PAT', placeholder: 'Вставьте GitHub PAT', connect: 'Подключить', cancel: 'Отмена', revoke: 'Отозвать',
       revokeConfirm: 'Отозвать учётные данные GitHub MCP этого пользователя?', failed: 'Не удалось сохранить. Повторите позже.', revoked: 'Учётные данные GitHub MCP отозваны',
     },
+    figma: {
+      revoke: 'Отозвать',
+      revokeConfirm: 'Отозвать авторизацию Figma этого пользователя?',
+      revoked: 'Авторизация Figma отозвана',
+      failed: 'Не удалось выполнить. Повторите попытку позже.',
+      cancel: 'Отмена',
+    },
   },
 
   
@@ -1969,6 +2034,17 @@ export default {
     previewContentUnavailable: 'Не удалось загрузить содержимое файла — возможно, он был удалён или перемещён; изменения запуска по-прежнему доступны',
     diffPatchEmpty: 'Для этого изменения нет текстового патча (возможно, бинарный файл или переименование)',
     saveFile: 'Сохранить',
+    previewLoading: 'Загрузка предпросмотра...',
+    previewFailed: 'Не удалось показать предпросмотр',
+    downloadInstead: 'Скачать вместо этого',
+    previewMimeMismatch: 'Сервер вернул неожиданный тип содержимого; отображение отклонено',
+    previousPage: 'Назад',
+    nextPage: 'Вперёд',
+    pageStatus: 'Страница {page} / {total}',
+    zoom: 'Масштаб',
+    pdfPageLimit: 'Показаны только первые {count} страниц',
+    worksheet: 'Лист',
+    tableTruncated: 'Таблица усечена; показаны только первые строки и столбцы',
   },
   
   download: {

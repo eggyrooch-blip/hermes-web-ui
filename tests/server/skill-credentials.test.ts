@@ -355,6 +355,34 @@ describe('skill credential status', () => {
     })
   })
 
+  it.each([true, false])('waits for complete device-code JSON before selecting its authorization URL (complete=%s)', async (includeComplete) => {
+    const { startFeishuProjectAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = mkdtempSync(join(tmpdir(), 'hermes-meegle-json-url-'))
+    roots.push(profileDir)
+    const meegle = join(profileDir, 'fake-meegle')
+    const bare = 'https://project.feishu.cn/oauth/device'
+    const complete = `${bare}?user_code=TEST-FIXTURE`
+    const payload = JSON.stringify({
+      client_id: 'fixture-client', device_code: 'fixture-device', expires_in: 600,
+      interval: 5, user_code: 'TEST-FIXTURE', verification_uri: bare,
+      ...(includeComplete ? { verification_uri_complete: complete } : {}),
+    })
+    // First chunk already contains a complete bare URI; the final JSON field
+    // and closing brace arrive later, as with the real Meegle CLI stdout.
+    const split = payload.indexOf(bare) + bare.length + 1
+    writeFileSync(meegle, [
+      '#!/bin/sh',
+      'case "$*" in *"auth login"*) ;; *) exit 0 ;; esac',
+      `printf '%s' '${payload.slice(0, split)}'`,
+      'sleep 0.15',
+      `printf '%s\\n' '${payload.slice(split)}'`,
+    ].join('\n'), 'utf-8')
+    chmodSync(meegle, 0o755)
+    process.env.HERMES_MEEGLE_BIN = meegle
+    const result = await startFeishuProjectAuth({ id: 'feishu-project', profileName: 'feishu_user_a', profileDir })
+    expect(result.verification_uri).toBe(includeComplete ? complete : bare)
+  })
+
   it('starts Feishu Project CLI device-code auth without writing MCP config', async () => {
     const { startFeishuProjectAuth } = await import('../../packages/server/src/services/hermes/skill-credentials')
     const profileDir = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-meegle-start-'))
@@ -379,7 +407,7 @@ describe('skill credential status', () => {
       '  test "$3" = "--device-code" || exit 7',
       '  test "$4" = "--host" || exit 6',
       '  test "$5" = "project.feishu.cn" || exit 5',
-      '  echo "Open https://project.feishu.cn/oauth/device?user_code=ABCD-1234" >&2',
+      `  echo 'Open "https://project.feishu.cn/oauth/device?user_code=ABCD-1234".' >&2`,
       '  sleep 0.2',
       '  exit 0',
       'fi',
@@ -1623,6 +1651,397 @@ describe('skill credential status', () => {
     // local reader's 'configured'. No fallback to a source that could lie.
     expect(ctx.body.credentials.every((c: any) => c.status === 'error')).toBe(true)
     expect(ctx.body.credentials.find((c: any) => c.id === 'gitlab')?.status).toBe('error')
+    fetchSpy.mockRestore()
+  })
+
+  // --- Figma MCP：WebUI 只做代理，MT 才有授权链接 --------------------------
+  //
+  // 这一组盯死两条线：① 身份只从已验证会话来；② MT 说失败就失败，绝不在 WebUI
+  // 侧把它翻译成一个空操作 200（ligaofeng 2026-08-06 的假「认证流程已启动」）。
+
+  function figmaBrokerHome() {
+    const hermesHome = mkdtempSync(join(tmpdir(), 'hermes-skill-credentials-home-'))
+    roots.push(hermesHome)
+    process.env.HERMES_HOME = hermesHome
+    process.env.HERMES_RUN_BROKER_URL = 'http://broker.test'
+    mkdirSync(join(hermesHome, 'profiles', 'preview'), { recursive: true })
+    writeFileSync(join(hermesHome, 'active_profile'), 'preview\n', 'utf-8')
+    return hermesHome
+  }
+
+  function figmaStartCtx() {
+    return {
+      params: { id: 'figma' },
+      query: { profile: 'preview' },
+      request: { body: {} },
+      state: { user: { profile: 'preview', openid: 'ou_owner_alice' } },
+      origin: 'http://127.0.0.1:8648',
+      get: () => '',
+    } as any
+  }
+
+  it('starts Figma authorization by proxying the broker and returns its authorization_url', async () => {
+    figmaBrokerHome()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        ok: true,
+        profile_name: 'preview',
+        authorization_url: 'https://www.figma.com/oauth/mcp?state=abc&code_challenge=xyz',
+        state: 'abc',
+      }), { status: 202 }) as any,
+    )
+
+    vi.resetModules()
+    const { skillCredentialStart } = await import('../../packages/server/src/controllers/auth')
+    const ctx = figmaStartCtx()
+    await skillCredentialStart(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body).toEqual({
+      id: 'figma',
+      verification_uri: 'https://www.figma.com/oauth/mcp?state=abc&code_challenge=xyz',
+    })
+    const [url, init] = fetchSpy.mock.calls[0] as [string, any]
+    expect(url).toBe('http://broker.test/api/run-broker/credentials/figma')
+    expect(init.method).toBe('POST')
+    // 身份断言来自已验证会话，不是请求体。
+    expect(init.headers['X-Hermes-Owner-Open-Id']).toBe('ou_owner_alice')
+    fetchSpy.mockRestore()
+  })
+
+  it('passes the broker 503 (public origin unset) through instead of claiming a started flow', async () => {
+    figmaBrokerHome()
+    const message = 'HERMES_MCP_PUBLIC_ORIGIN 未配置，请管理员在 run-broker 上设置公网回调地址后再授权。'
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: message }), { status: 503 }) as any,
+    )
+
+    vi.resetModules()
+    const { skillCredentialStart } = await import('../../packages/server/src/controllers/auth')
+    const ctx = figmaStartCtx()
+    await skillCredentialStart(ctx)
+
+    expect(ctx.status).toBe(503)
+    expect(ctx.body).toEqual({ error: message })
+    expect(JSON.stringify(ctx.body)).not.toContain('verification_uri')
+    fetchSpy.mockRestore()
+  })
+
+  it('refuses a Figma start without a verified owner identity', async () => {
+    figmaBrokerHome()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, authorization_url: 'https://www.figma.com/oauth/mcp' }), { status: 202 }) as any,
+    )
+
+    vi.resetModules()
+    const { skillCredentialStart } = await import('../../packages/server/src/controllers/auth')
+    const ctx = figmaStartCtx()
+    ctx.state = {}
+    await skillCredentialStart(ctx)
+
+    expect(ctx.status).toBe(403)
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(JSON.stringify(ctx.body)).not.toContain('figma.com')
+    fetchSpy.mockRestore()
+  })
+
+  it('never hands the browser a non-https authorization_url', async () => {
+    figmaBrokerHome()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, authorization_url: 'javascript:alert(1)' }), { status: 202 }) as any,
+    )
+
+    vi.resetModules()
+    const { skillCredentialStart } = await import('../../packages/server/src/controllers/auth')
+    const ctx = figmaStartCtx()
+    await skillCredentialStart(ctx)
+
+    expect(ctx.status).toBe(502)
+    expect(JSON.stringify(ctx.body)).not.toContain('javascript:')
+    fetchSpy.mockRestore()
+  })
+
+  it('keeps unknown connectors at 400 after the Figma branch was added', async () => {
+    const { getSkillCredentialStartAction } = await import('../../packages/server/src/services/hermes/skill-credentials')
+    const profileDir = makeProfile()
+    for (const id of ['gitlab', 'no-such-connector']) {
+      const err = await getSkillCredentialStartAction({
+        id,
+        profileName: 'feishu_user_a',
+        profileDir,
+        ownerOpenId: 'ou_owner_alice',
+      }).then(() => null, (e: any) => e)
+      expect(err, `${id} must not report a started flow`).toBeInstanceOf(Error)
+      expect(err.status).toBe(400)
+    }
+  })
+
+  it('revokes the caller own Figma authorization through the owner-bound broker route', async () => {
+    figmaBrokerHome()
+    process.env.HERMES_WEB_PLANE = 'chat'
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, revoked: true }), { status: 200 }) as any,
+    )
+
+    vi.resetModules()
+    const { revokeFigmaCredential } = await import('../../packages/server/src/controllers/hermes/gitlab-credential')
+    const ctx: any = {
+      query: { profile: 'preview' },
+      request: { body: {} },
+      state: { user: { profile: 'preview', openid: 'ou_owner_alice' } },
+      get: () => '',
+    }
+    await revokeFigmaCredential(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body).toEqual({ ok: true, revoked: true })
+    const [url, init] = fetchSpy.mock.calls[0] as [string, any]
+    expect(url).toBe('http://broker.test/api/run-broker/credentials/figma')
+    expect(init.method).toBe('DELETE')
+    expect(init.headers['X-Hermes-Owner-Open-Id']).toBe('ou_owner_alice')
+    fetchSpy.mockRestore()
+  })
+
+  // 真机走查里弹窗撤销后不关（2026-09-21）：客户端只在 `ok` 为真时关弹窗，所以这条
+  // 链上任何一环把 `ok` 丢了都会让员工对着一个点不动的确认框。下面两条把 WebUI 侧
+  // 实际回给浏览器的 body 钉死。
+  it('reports ok:true on an idempotent Figma revoke so the client closes its dialog', async () => {
+    figmaBrokerHome()
+    process.env.HERMES_WEB_PLANE = 'chat'
+    // broker 对"本来就没授权"回 revoked:false —— 对员工同样是"现在没绑"，不是失败。
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, revoked: false }), { status: 200 }) as any,
+    )
+
+    vi.resetModules()
+    const { revokeFigmaCredential } = await import('../../packages/server/src/controllers/hermes/gitlab-credential')
+    const ctx: any = {
+      query: { profile: 'preview' },
+      request: { body: {} },
+      state: { user: { profile: 'preview', openid: 'ou_owner_alice' } },
+      get: () => '',
+    }
+    await revokeFigmaCredential(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.body).toEqual({ ok: true, revoked: false })
+    // 客户端的判据就是这一行（CredentialsView.confirmFigmaRevoke: `if (!result?.ok)`）。
+    expect((ctx.body as any).ok).toBe(true)
+    fetchSpy.mockRestore()
+  })
+
+  // 这颗撤销按钮由客户端在 status === 'authenticated' 时无条件渲染，而控制器只在
+  // chat 面存在。非 chat 面（webPlane 默认 'both'，即 token 认证的运维面）上按钮点下去
+  // 只会拿到 404，弹窗留在原地 —— 记在这里，免得下次又当成客户端 bug 查。
+  it('refuses the Figma revoke outside the chat plane (button renders there anyway)', async () => {
+    figmaBrokerHome()
+    delete process.env.HERMES_WEB_PLANE
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+
+    vi.resetModules()
+    const { revokeFigmaCredential } = await import('../../packages/server/src/controllers/hermes/gitlab-credential')
+    const ctx: any = {
+      query: { profile: 'preview' },
+      request: { body: {} },
+      state: { user: { profile: 'preview', openid: 'ou_owner_alice' } },
+      get: () => '',
+    }
+    await revokeFigmaCredential(ctx)
+
+    expect(ctx.status).toBe(404)
+    expect((ctx.body as any).ok).toBeUndefined()
+    expect(fetchSpy).not.toHaveBeenCalled()
+    fetchSpy.mockRestore()
+  })
+
+  it('does not report a Figma revoke success when the broker rejects it', async () => {
+    figmaBrokerHome()
+    process.env.HERMES_WEB_PLANE = 'chat'
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: 'Figma 授权服务暂不可用，请稍后重试。' }), { status: 500 }) as any,
+    )
+
+    vi.resetModules()
+    const { revokeFigmaCredential } = await import('../../packages/server/src/controllers/hermes/gitlab-credential')
+    const ctx: any = {
+      query: { profile: 'preview' },
+      request: { body: {} },
+      state: { user: { profile: 'preview', openid: 'ou_owner_alice' } },
+      get: () => '',
+    }
+    await revokeFigmaCredential(ctx)
+
+    expect(ctx.status).toBe(500)
+    expect(ctx.body.ok).toBe(false)
+    expect(ctx.body.error).toContain('Figma')
+    fetchSpy.mockRestore()
+  })
+
+  // HTTP 200 不等于撤销成功。broker 的成功形状是 `{ok:true, revoked:<bool>}`；
+  // 少了 `ok:true`、或者 body 根本解析不出来，都不能让员工看到「已撤销」。
+  // codex review 2026-09-21, `revokefigmaauthorization:unvalidated-success`。
+  it('does not report success when the broker answers HTTP 200 with ok:false', async () => {
+    figmaBrokerHome()
+    process.env.HERMES_WEB_PLANE = 'chat'
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: false, error: 'Figma 授权服务暂不可用，请稍后重试。' }), { status: 200 }) as any,
+    )
+
+    vi.resetModules()
+    const { revokeFigmaCredential } = await import('../../packages/server/src/controllers/hermes/gitlab-credential')
+    const ctx: any = {
+      query: { profile: 'preview' },
+      request: { body: {} },
+      state: { user: { profile: 'preview', openid: 'ou_owner_alice' } },
+      get: () => '',
+    }
+    await revokeFigmaCredential(ctx)
+
+    expect(ctx.status).toBe(502)
+    expect(ctx.body.ok).toBe(false)
+    expect(ctx.body.revoked).toBeUndefined()
+    expect(ctx.body.error).toContain('Figma 授权服务暂不可用')
+    fetchSpy.mockRestore()
+  })
+
+  it('does not report success when the broker body does not parse to the revoke shape', async () => {
+    figmaBrokerHome()
+    process.env.HERMES_WEB_PLANE = 'chat'
+    // 网关塞了一页 HTML 回来：解析失败后旧链路会静默变成 revoked:false + ok:true。
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('<html>502 Bad Gateway</html>', { status: 200 }) as any,
+    )
+
+    vi.resetModules()
+    const { revokeFigmaCredential } = await import('../../packages/server/src/controllers/hermes/gitlab-credential')
+    const ctx: any = {
+      query: { profile: 'preview' },
+      request: { body: {} },
+      state: { user: { profile: 'preview', openid: 'ou_owner_alice' } },
+      get: () => '',
+    }
+    await revokeFigmaCredential(ctx)
+
+    expect(ctx.status).toBe(502)
+    expect(ctx.body.ok).toBe(false)
+    expect(ctx.body.revoked).toBeUndefined()
+    fetchSpy.mockRestore()
+  })
+
+  // --- 目录 OAuth 回调：Figma 真的会带 iss ---------------------------------
+  //
+  // 回调的 query 闸是"只许出现列出的键"，所以 `iss` 不列进去的话，员工点完 Allow 回来
+  // 拿到的是 400，连 MT 都到不了。列进去之后仍然只转"像样的 https issuer"。
+
+  function catalogCallbackCtx(query: Record<string, string>) {
+    return {
+      query,
+      request: { body: {} },
+      state: {},
+      redirect: vi.fn(),
+      get: () => '',
+    } as any
+  }
+
+  it('forwards the iss that Figma puts on the OAuth redirect', async () => {
+    figmaBrokerHome()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }) as any,
+    )
+
+    vi.resetModules()
+    const { connectorCatalogOAuthCallback } = await import('../../packages/server/src/controllers/auth')
+    const ctx = catalogCallbackCtx({
+      state: 'opaque-state',
+      code: 'oauth-code',
+      iss: 'https://api.figma.com',
+    })
+    await connectorCatalogOAuthCallback(ctx)
+
+    // 闸没把带 iss 的回调拦下来。
+    expect(ctx.status).not.toBe(400)
+    expect(ctx.redirect).toHaveBeenCalledWith('/hermes/connectors?catalog_oauth=success')
+    const [url, init] = fetchSpy.mock.calls[0] as [string, any]
+    expect(url).toBe('http://broker.test/api/run-broker/connector-catalog/oauth/callback')
+    expect(JSON.parse(init.body)).toEqual({
+      state: 'opaque-state', code: 'oauth-code', iss: 'https://api.figma.com',
+    })
+    fetchSpy.mockRestore()
+  })
+
+  it('keeps the exact {state, code} body for a redirect without iss', async () => {
+    figmaBrokerHome()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }) as any,
+    )
+
+    vi.resetModules()
+    const { connectorCatalogOAuthCallback } = await import('../../packages/server/src/controllers/auth')
+    const ctx = catalogCallbackCtx({ state: 'opaque-state', code: 'oauth-code' })
+    await connectorCatalogOAuthCallback(ctx)
+
+    expect(ctx.redirect).toHaveBeenCalled()
+    const [, init] = fetchSpy.mock.calls[0] as [string, any]
+    expect(JSON.parse(init.body)).toEqual({ state: 'opaque-state', code: 'oauth-code' })
+    fetchSpy.mockRestore()
+  })
+
+  // 带了一个不合法的 iss 不是"没带"：静默丢掉会让 MT 把「错的签发方」当成
+  // 「没有签发方」走兼容路径。400 当场断掉，broker 一个字节都收不到。
+  // codex review 2026-09-21, `sanitizeoauthissuer:invalid-issuer-downgrade`。
+  it('rejects an explicitly invalid iss with 400 and never calls the broker', async () => {
+    figmaBrokerHome()
+
+    for (const iss of ['javascript:alert(1)', 'http://api.figma.com', '', 'api.figma.com']) {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ ok: true }), { status: 200 }) as any,
+      )
+      vi.resetModules()
+      const { connectorCatalogOAuthCallback } = await import('../../packages/server/src/controllers/auth')
+      const ctx = catalogCallbackCtx({ state: 'opaque-state', code: 'oauth-code', iss })
+      await connectorCatalogOAuthCallback(ctx)
+
+      expect(ctx.status, iss).toBe(400)
+      expect(ctx.redirect, iss).not.toHaveBeenCalled()
+      expect(fetchSpy, iss).not.toHaveBeenCalled()
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('rejects a repeated iss query key with 400 and never calls the broker', async () => {
+    figmaBrokerHome()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }) as any,
+    )
+
+    vi.resetModules()
+    const { connectorCatalogOAuthCallback } = await import('../../packages/server/src/controllers/auth')
+    // Koa 对 `?iss=a&iss=b` 给数组 —— 两个签发方等于没法判定是哪个。
+    const ctx = catalogCallbackCtx({
+      state: 'opaque-state',
+      code: 'oauth-code',
+      iss: ['https://api.figma.com', 'https://evil.example'] as any,
+    })
+    await connectorCatalogOAuthCallback(ctx)
+
+    expect(ctx.status).toBe(400)
+    expect(ctx.redirect).not.toHaveBeenCalled()
+    expect(fetchSpy).not.toHaveBeenCalled()
+    fetchSpy.mockRestore()
+  })
+
+  it('still rejects a callback query key that is not state/code/iss', async () => {
+    figmaBrokerHome()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+
+    vi.resetModules()
+    const { connectorCatalogOAuthCallback } = await import('../../packages/server/src/controllers/auth')
+    const ctx = catalogCallbackCtx({ state: 'opaque-state', code: 'oauth-code', profile: 'preview' })
+    await connectorCatalogOAuthCallback(ctx)
+
+    expect(ctx.status).toBe(400)
+    expect(ctx.redirect).not.toHaveBeenCalled()
+    expect(fetchSpy).not.toHaveBeenCalled()
     fetchSpy.mockRestore()
   })
 })

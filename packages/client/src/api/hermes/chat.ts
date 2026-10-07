@@ -204,6 +204,10 @@ const sessionEventHandlers = new Map<string, {
   onClarifyRequested?: (event: RunEvent) => void
   onClarifyResolved?: (event: RunEvent) => void
   onAuthRequired?: (event: RunEvent) => void
+  onAuthorizationRequired?: (event: RunEvent) => void
+  onAuthorizationResolved?: (event: RunEvent) => void
+  onAuthorizationUrl?: (event: RunEvent) => void
+  onAuthorizationFailed?: (event: RunEvent) => void
   onWorkspaceDiffCompleted?: (event: RunEvent) => void
 }>()
 interface SessionHandlerOwner {
@@ -595,6 +599,48 @@ function globalAuthResolvedHandler(event: RunEvent): void {
   })
 }
 
+// Inline authorization card events. Session-scoped like clarify: they belong to
+// one chat session's float stack, never to a global listener set.
+function globalAuthorizationRequiredHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onAuthorizationRequired) {
+    handlers.onAuthorizationRequired(event)
+  }
+}
+
+function globalAuthorizationResolvedHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onAuthorizationResolved) {
+    handlers.onAuthorizationResolved(event)
+  }
+}
+
+function globalAuthorizationUrlHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onAuthorizationUrl) {
+    handlers.onAuthorizationUrl(event)
+  }
+}
+
+function globalAuthorizationFailedHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onAuthorizationFailed) {
+    handlers.onAuthorizationFailed(event)
+  }
+}
+
 function globalClarifyResolvedHandler(event: RunEvent): void {
   const sid = event.session_id
   if (!sid) return
@@ -654,6 +700,10 @@ export function registerSessionHandlers(
     onClarifyRequested?: (event: RunEvent) => void
     onClarifyResolved?: (event: RunEvent) => void
     onAuthRequired?: (event: RunEvent) => void
+    onAuthorizationRequired?: (event: RunEvent) => void
+    onAuthorizationResolved?: (event: RunEvent) => void
+    onAuthorizationUrl?: (event: RunEvent) => void
+    onAuthorizationFailed?: (event: RunEvent) => void
     onWorkspaceDiffCompleted?: (event: RunEvent) => void
   },
   options?: {
@@ -810,6 +860,24 @@ export function respondClarify(
   })
 }
 
+/**
+ * Drive one step of the inline authorization handshake. Deliberately separate
+ * from the credential.replay emitter: this never resurrects a run.
+ */
+export function respondAuthorization(
+  sessionId: string,
+  authorizationId: string,
+  action: 'authorize' | 'confirm' | 'cancel',
+  transport: ChatRunTransport = 'chat-run',
+): void {
+  const socket = connectChatRun(null, transport)
+  socket.emit('authorization.respond', {
+    session_id: sessionId,
+    authorization_id: authorizationId,
+    action,
+  })
+}
+
 export function respondToolApproval(
   sessionId: string,
   approvalId: string,
@@ -930,6 +998,10 @@ export function connectChatRun(requestedProfile?: string | null, transport: Chat
     chatRunSocket.on('auth.required', globalAuthRequiredHandler)
     chatRunSocket.on('auth.resolved', globalAuthResolvedHandler)
     chatRunSocket.on('clarify.resolved', globalClarifyResolvedHandler)
+    chatRunSocket.on('authorization.required', globalAuthorizationRequiredHandler)
+    chatRunSocket.on('authorization.resolved', globalAuthorizationResolvedHandler)
+    chatRunSocket.on('authorization.url', globalAuthorizationUrlHandler)
+    chatRunSocket.on('authorization.failed', globalAuthorizationFailedHandler)
 
     // Compression events
     chatRunSocket.on('compression.started', globalCompressionStartedHandler)
@@ -1343,6 +1415,22 @@ export function startRunViaSocket(
       onEvent(evt)
     },
     onAuthRequired: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
+    onAuthorizationRequired: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
+    onAuthorizationResolved: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
+    onAuthorizationUrl: (evt: RunEvent) => {
+      if (closed) return
+      onEvent(evt)
+    },
+    onAuthorizationFailed: (evt: RunEvent) => {
       if (closed) return
       onEvent(evt)
     },

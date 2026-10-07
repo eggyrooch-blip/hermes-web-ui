@@ -75,6 +75,31 @@ describe('weixin controller', () => {
     expect(researchEnv).toContain('WEIXIN_BASE_URL=https://weixin.invalid')
   })
 
+  it('keeps saved credentials and returns 409 when Run Broker mode refuses the gateway restart', async () => {
+    const { GatewayRestartDisabledError } = await import('../../packages/server/src/services/hermes/gateway-restart-guard')
+    mockRestartGatewayForProfile.mockRejectedValueOnce(new GatewayRestartDisabledError())
+    const { save } = await loadController()
+    const ctx = makeCtx({ account_id: 'new-research-account', token: 'new-research-token' })
+
+    await save(ctx)
+
+    expect(ctx.status).toBe(409)
+    expect(ctx.body.error).toBe('微信凭据已保存。Run Broker 模式下 WebUI 不再启停 Hermes gateway，以免影响 MT router；请重启 MT router 使改动生效。')
+    const researchEnv = await readFile(join(hermesHome, 'profiles', 'research', '.env'), 'utf-8')
+    expect(researchEnv).toContain('WEIXIN_TOKEN=new-research-token')
+  })
+
+  it('still reports ordinary gateway restart failures as 500', async () => {
+    mockRestartGatewayForProfile.mockRejectedValueOnce(new Error('boom'))
+    const { save } = await loadController()
+    const ctx = makeCtx({ account_id: 'new-research-account', token: 'new-research-token' })
+
+    await save(ctx)
+
+    expect(ctx.status).toBe(500)
+    expect(ctx.body).toEqual({ error: 'boom' })
+  })
+
   it('rejects missing required credentials without touching the profile env', async () => {
     const { save } = await loadController()
     const ctx = makeCtx({ account_id: 'new-research-account' })

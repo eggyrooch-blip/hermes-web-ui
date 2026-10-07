@@ -4,7 +4,7 @@ import { useChatStore } from '@/stores/hermes/chat'
 import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useSettingsStore } from '@/stores/hermes/settings'
-import { fetchContextLength } from '@/api/hermes/sessions'
+import { consumeSessionExpertSaveError, fetchContextLength } from '@/api/hermes/sessions'
 import { setModelContext } from '@/api/hermes/model-context'
 import { fetchSkills, type SkillCategory, type SkillInfo } from '@/api/hermes/skills'
 import { fetchExperts, type ExpertInfo } from '@/api/hermes/experts'
@@ -18,7 +18,7 @@ import {
   type FeishuLinkPreview,
 } from '@/api/hermes/link-previews'
 import { isStoredSuperAdmin } from '@/api/client'
-import { NButton, NTooltip, NSwitch, NModal, NInputNumber, NPopselect, useMessage } from 'naive-ui'
+import { NButton, NTooltip, NSwitch, NModal, NInputNumber, NPopover, NPopselect, NSlider, useMessage } from 'naive-ui'
 import { computed, ref, nextTick, onMounted, onUnmounted, watch, getCurrentInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToolTraceVisibility } from '@/composables/useToolTraceVisibility'
@@ -37,6 +37,7 @@ import type { StoredSttProvider } from '@/api/hermes/stt-settings'
 import { useSttSettings } from '@/composables/useSttSettings'
 import { useBrowserSpeechRecognition } from '@/composables/useBrowserSpeechRecognition'
 import { CHAT_INPUT_HEIGHT_MOBILE_QUERY, chatInputHeightStyle, clampChatInputHeight } from '@/utils/chat-input-height'
+import ImagePreviewOverlay from './ImagePreviewOverlay.vue'
 
 const chatStore = useChatStore()
 const appStore = useAppStore()
@@ -124,10 +125,34 @@ const reasoningEffortOptions = computed(() => [
   { label: t('chat.reasoningEffort.options.medium'), value: 'medium' },
   { label: t('chat.reasoningEffort.options.high'), value: 'high' },
   { label: t('chat.reasoningEffort.options.xhigh'), value: 'xhigh' },
+  { label: t('chat.reasoningEffort.options.max'), value: 'max' },
 ])
 const currentReasoningEffort = computed<string>(() =>
   chatStore.activeSession?.reasoningEffort || ''
 )
+// The slider's position is the option INDEX, so the stop order in
+// reasoningEffortOptions is the scale. An unknown stored value falls back to
+// stop 0 (the config default) rather than leaving the handle unplaced.
+const reasoningEffortSliderValue = computed(() => {
+  const index = reasoningEffortOptions.value.findIndex(option => option.value === currentReasoningEffort.value)
+  return index >= 0 ? index : 0
+})
+// One accent per stop, cool to hot, applied to both the button and the popover
+// heading so the chosen depth is readable without opening the popover.
+const reasoningEffortAccentColors = [
+  '#94a3b8',
+  '#2ac8e9',
+  '#2bd9b4',
+  '#4ed786',
+  '#b9d93a',
+  '#f9c33c',
+  '#f77734',
+  '#ef4444',
+] as const
+const reasoningEffortAccentStyle = computed(() => ({
+  '--reasoning-effort-accent-color': reasoningEffortAccentColors[reasoningEffortSliderValue.value]
+    || reasoningEffortAccentColors[0],
+}))
 const reasoningEffortLabel = computed<string>(() => {
   const v = currentReasoningEffort.value
   if (!v) return t('chat.reasoningEffort.defaultLabel')
@@ -137,7 +162,15 @@ const reasoningEffortLabel = computed<string>(() => {
 function onReasoningEffortChange(value: string | null | undefined) {
   const sid = chatStore.activeSessionId
   if (!sid) return
-  chatStore.setSessionReasoningEffort(sid, value || '')
+  void chatStore.setSessionReasoningEffort(sid, value || '')
+}
+function reasoningEffortSliderLabel(value: number) {
+  return reasoningEffortOptions.value[Math.round(value)]?.label || reasoningEffortLabel.value
+}
+function onReasoningEffortSliderChange(value: number | [number, number]) {
+  const numericValue = Array.isArray(value) ? value[0] : value
+  const option = reasoningEffortOptions.value[Math.round(numericValue)]
+  if (option) onReasoningEffortChange(option.value)
 }
 
 // --- Expert slot (专家广场) -------------------------------------------------
@@ -168,8 +201,22 @@ const expertOptions = computed(() => [
   { label: t('chat.expertSlot.none'), value: '' },
   ...experts.value.map(e => ({ label: e.title || e.name, value: e.id })),
 ])
-const expertSelectionLocked = computed(() => Boolean(
-  chatStore.activeSession?.expertId && (chatStore.activeSession.messageCount || chatStore.activeSession.messages.length),
+// The server fixes a session's expert the moment it has messages: changing it
+// afterwards is a 409 from persistSessionExpert, whether or not an expert is
+// bound yet. Mirror that rule here so the slot never offers a pick that is
+// guaranteed to fail. BOTH counts, same reasoning as canPickAgent below: a
+// hydrated session keeps messageCount at 0 until the server round-trips, so the
+// local array is what catches the message the user just sent.
+const sessionHasMessages = computed(() => Boolean(
+  chatStore.activeSession && (chatStore.activeSession.messageCount || chatStore.activeSession.messages?.length),
+))
+const expertSelectionLocked = computed(() => sessionHasMessages.value)
+// Locked with no expert bound is the case users hit blind: say why instead of
+// showing an empty "No expert" tooltip on a dead control.
+const expertSlotHint = computed<string>(() => (
+  expertSelectionLocked.value && !activeExpertId.value
+    ? t('chat.expertSlot.lockedByMessages')
+    : `${t('chat.expertSlot.tooltip')}: ${activeExpertLabel.value || t('chat.expertSlot.none')}`
 ))
 const scheduledExpert = computed(() => {
   const session = chatStore.activeSession
@@ -178,14 +225,30 @@ const scheduledExpert = computed(() => {
 })
 async function onExpertChange(value: string | null | undefined) {
   if (expertSelectionLocked.value) return
+  // Pin the session this save belongs to: the user can switch sessions while
+  // the request is in flight, so `activeSession` afterwards is not necessarily
+  // the one the server answered about.
+  const sessionId = chatStore.activeSession?.id
   const expert = experts.value.find(e => e.id === value)
   const saved = await chatStore.selectActiveExpert(value || null, expert ? {
     avatar: expert.avatar || '',
     label: expert.title || expert.name || expert.id,
   } : undefined)
   if (!saved) {
-    await chatStore.refreshSessionListOnly()
-    message.error(t('common.saveFailed'))
+    // Keep re-syncing the list, but never let it decide the copy: it returns
+    // early while streaming or loading and only logs on error, so post-refresh
+    // state says nothing about why this save failed. A failed refresh must not
+    // swallow the toast either.
+    try {
+      await chatStore.refreshSessionListOnly()
+    } catch {
+      // The list stays stale; the user still gets the reason below.
+    }
+    // The reason comes from the 409 of this very request, keyed to its session.
+    const failure = sessionId ? consumeSessionExpertSaveError(sessionId) : null
+    message.error(failure?.status === 409
+      ? t('chat.expertSlot.lockedByMessages')
+      : t('common.saveFailed'))
   }
 }
 async function loadExpertsForSlot() {
@@ -204,6 +267,7 @@ const textareaRef = ref<HTMLTextAreaElement>()
 const commandDropdownRef = ref<HTMLDivElement>()
 const fileInputRef = ref<HTMLInputElement>()
 const attachments = ref<Attachment[]>([])
+const previewAttachment = ref<Attachment | null>(null)
 const linkPreviews = ref<FeishuLinkPreview[]>([])
 const linkPreviewSlots = ref<string[]>([])
 let linkPreviewRequest = 0
@@ -569,6 +633,24 @@ function loadDraftForActiveSession() {
   inputText.value = sessionId ? readDraftMap()[sessionId] || '' : ''
 }
 
+/**
+ * Take the one-shot draft the expert catalog staged (「试试这样问我」) and put it
+ * in the box for the session we just landed on. Runs AFTER the normal draft
+ * load, because the session-switch watcher would otherwise overwrite it with
+ * the fresh session's empty draft. The store hands it over only when this is
+ * the session it was addressed to, so landing anywhere else leaves it alone
+ * instead of overwriting that session's draft. Returns whether anything was
+ * consumed.
+ */
+function applyStagedComposerDraft(): boolean {
+  const staged = chatStore.consumeStagedComposerDraft(getActiveDraftSessionId())
+  if (!staged) return false
+  inputText.value = staged
+  saveDraftForActiveSession(staged)
+  queueLinkPreviews(staged)
+  return true
+}
+
 function saveDraftForActiveSession(value: string) {
   saveDraftForSession(getActiveDraftSessionId(), value)
 }
@@ -591,6 +673,10 @@ function saveDraftForSession(sessionId: string, value: string) {
 // 从 localStorage 读取设置
 onMounted(() => {
   loadDraftForActiveSession()
+  // Routing straight into a brand-new expert session can mount ChatInput after
+  // the session id was already set, so the watcher below never fires — consume
+  // here too.
+  applyStagedComposerDraft()
   mobileInputQuery = window.matchMedia?.(CHAT_INPUT_HEIGHT_MOBILE_QUERY) ?? null
   syncMobileInputState()
   mobileInputQuery?.addEventListener?.('change', syncMobileInputState)
@@ -641,6 +727,7 @@ watch(() => chatStore.activeSession?.id, (_newId, oldId) => {
     return
   }
   loadDraftForActiveSession()
+  applyStagedComposerDraft()
 })
 
 watch(
@@ -1055,6 +1142,7 @@ function handleSend() {
   linkPreviews.value = []
   linkPreviewSlots.value = []
   saveDraftForActiveSession('')
+  previewAttachment.value = null
   attachments.value = []
   slashActive.value = false
 
@@ -1238,6 +1326,7 @@ onUnmounted(() => {
 function removeAttachment(id: string) {
   const idx = attachments.value.findIndex(a => a.id === id)
   if (idx !== -1) {
+    if (previewAttachment.value?.id === id) previewAttachment.value = null
     URL.revokeObjectURL(attachments.value[idx].url)
     attachments.value.splice(idx, 1)
   }
@@ -1251,6 +1340,11 @@ function formatSize(bytes: number): string {
 
 function isImage(type: string): boolean {
   return type.startsWith('image/')
+}
+
+function openAttachmentPreview(attachment: Attachment) {
+  if (!isImage(attachment.type)) return
+  previewAttachment.value = attachment
 }
 </script>
 
@@ -1269,34 +1363,59 @@ function isImage(type: string): boolean {
         {{ t('chat.attachFiles') }}
       </NTooltip>
 
-      <NPopselect
+      <NPopover
         v-if="!isCodingAgentSession"
-        :value="currentReasoningEffort"
-        :options="reasoningEffortOptions"
         trigger="click"
-        @update:value="onReasoningEffortChange"
+        placement="top-start"
       >
-        <NTooltip trigger="hover">
-          <template #trigger>
-            <NButton
-              quaternary
-              size="tiny"
-              circle
-              class="reasoning-effort-button"
-              :class="{ active: !!currentReasoningEffort }"
-              :aria-label="`${t('chat.reasoningEffort.tooltip')}: ${reasoningEffortLabel}`"
-            >
-              <template #icon>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/>
-                  <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/>
-                </svg>
-              </template>
-            </NButton>
-          </template>
-          {{ t('chat.reasoningEffort.tooltip') }}: {{ reasoningEffortLabel }}
-        </NTooltip>
-      </NPopselect>
+        <template #trigger>
+          <NTooltip trigger="hover">
+            <template #trigger>
+              <NButton
+                quaternary
+                size="tiny"
+                circle
+                class="reasoning-effort-button"
+                :class="{ active: !!currentReasoningEffort }"
+                :style="reasoningEffortAccentStyle"
+                :aria-label="`${t('chat.reasoningEffort.tooltip')}: ${reasoningEffortLabel}`"
+              >
+                <template #icon>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/>
+                    <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/>
+                  </svg>
+                </template>
+              </NButton>
+            </template>
+            {{ t('chat.reasoningEffort.tooltip') }}: {{ reasoningEffortLabel }}
+          </NTooltip>
+        </template>
+
+        <div class="reasoning-effort-slider-popover" :style="reasoningEffortAccentStyle">
+          <div class="reasoning-effort-slider-heading">
+            <span>{{ t('chat.reasoningEffort.tooltip') }}</span>
+            <strong>{{ reasoningEffortLabel }}</strong>
+          </div>
+          <NSlider
+            class="reasoning-effort-slider"
+            :class="{ 'reasoning-effort-slider--max': currentReasoningEffort === 'max' }"
+            :value="reasoningEffortSliderValue"
+            :min="0"
+            :max="reasoningEffortOptions.length - 1"
+            :step="1"
+            :format-tooltip="reasoningEffortSliderLabel"
+            @update:value="onReasoningEffortSliderChange"
+          />
+          <div class="reasoning-effort-slider-range" aria-hidden="true">
+            <span>{{ reasoningEffortOptions[0].label }}</span>
+            <span>{{ reasoningEffortOptions[reasoningEffortOptions.length - 1].label }}</span>
+          </div>
+          <div class="reasoning-effort-slider-hint">
+            {{ t('chat.reasoningEffort.dragHint', { count: reasoningEffortOptions.length }) }}
+          </div>
+        </div>
+      </NPopover>
 
       <NPopselect
         v-if="experts.length > 0"
@@ -1314,7 +1433,7 @@ function isImage(type: string): boolean {
               class="expert-slot-button"
               :class="{ active: !!activeExpertId }"
               :disabled="expertSelectionLocked"
-              :aria-label="`${t('chat.expertSlot.tooltip')}: ${activeExpertLabel || t('chat.expertSlot.none')}`"
+              :aria-label="expertSlotHint"
             >
               <template #icon>
                 <span v-if="activeExpertId && activeExpertAvatar" class="expert-slot-avatar">
@@ -1330,7 +1449,7 @@ function isImage(type: string): boolean {
               <span v-if="activeExpertId" class="expert-slot-label">{{ activeExpertLabel }}</span>
             </NButton>
           </template>
-          {{ t('chat.expertSlot.tooltip') }}: {{ activeExpertLabel || t('chat.expertSlot.none') }}
+          {{ expertSlotHint }}
         </NTooltip>
       </NPopselect>
 
@@ -1413,7 +1532,14 @@ function isImage(type: string): boolean {
         :class="{ image: isImage(att.type) }"
       >
         <template v-if="isImage(att.type)">
-          <img :src="att.url" :alt="att.name" class="attachment-thumb" />
+          <button
+            type="button"
+            class="attachment-thumb-button"
+            :aria-label="att.name"
+            @click="openAttachmentPreview(att)"
+          >
+            <img :src="att.url" :alt="att.name" class="attachment-thumb" />
+          </button>
         </template>
         <template v-else>
           <div class="attachment-file">
@@ -1427,6 +1553,12 @@ function isImage(type: string): boolean {
         </button>
       </div>
     </div>
+    <ImagePreviewOverlay
+      v-if="previewAttachment"
+      :src="previewAttachment.url"
+      :alt="previewAttachment.name"
+      @close="previewAttachment = null"
+    />
 
     <div
       ref="inputWrapperRef"
@@ -1688,8 +1820,140 @@ function isImage(type: string): boolean {
 
 .reasoning-effort-button {
   &.active {
-    color: #4caf50;
+    color: var(--reasoning-effort-accent-color);
   }
+}
+
+.reasoning-effort-slider-popover {
+  width: min(320px, calc(100vw - 64px));
+  padding: 4px 2px 2px;
+}
+
+.reasoning-effort-slider-heading,
+.reasoning-effort-slider-range {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.reasoning-effort-slider-heading {
+  margin-bottom: 10px;
+  color: $text-secondary;
+  font-size: 12px;
+
+  strong {
+    color: var(--reasoning-effort-accent-color);
+    font-weight: 600;
+  }
+}
+
+.reasoning-effort-slider {
+  --n-handle-size: 24px !important;
+  --n-rail-height: 10px !important;
+  --reasoning-effort-gradient-width: min(314px, calc(100vw - 70px));
+  margin: 0 3px;
+
+  :deep(.n-slider-rail__fill) {
+    background: linear-gradient(
+      90deg,
+      #38bdf8 0%,
+      #22d3ee 20%,
+      #34d399 40%,
+      #facc15 62%,
+      #fb923c 82%,
+      #ef4444 100%
+    );
+    background-position: left center;
+    background-repeat: no-repeat;
+    // Pinning the gradient to the FULL rail width keeps every stop on the same
+    // colour: sized to the fill it would restart at each position.
+    background-size: var(--reasoning-effort-gradient-width) 100%;
+  }
+}
+
+// Top stop only: the handle turns into a moving liquid-metal bead so "max"
+// reads as the end of the scale rather than one more notch.
+.reasoning-effort-slider--max {
+  :deep(.n-slider-handle) {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+    border-radius: 50%;
+    background:
+      radial-gradient(circle at 24% 24%, #38bdf8 0 14%, transparent 34%),
+      radial-gradient(circle at 78% 22%, #facc15 0 15%, transparent 36%),
+      radial-gradient(circle at 78% 78%, #ef4444 0 16%, transparent 38%),
+      radial-gradient(circle at 22% 76%, #34d399 0 15%, transparent 36%),
+      conic-gradient(from 30deg, #22d3ee, #34d399, #facc15, #fb923c, #ef4444, #a855f7, #38bdf8, #22d3ee);
+    background-size: 150% 150%, 145% 145%, 155% 155%, 145% 145%, 180% 180%;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.38),
+      0 0 12px rgba(239, 68, 68, 0.46),
+      0 3px 9px rgba(24, 18, 44, 0.44);
+    animation: reasoning-effort-max-liquid 3.6s ease-in-out infinite;
+  }
+
+  :deep(.n-slider-handle::after) {
+    content: '';
+    position: absolute;
+    inset: 2px 5px 11px 5px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.5);
+    filter: blur(1px);
+    animation: reasoning-effort-max-highlight 2.8s ease-in-out infinite;
+  }
+}
+
+@keyframes reasoning-effort-max-liquid {
+  0%, 100% {
+    background-position: 0% 20%, 100% 0%, 100% 100%, 0% 100%, 50% 50%;
+    background-size: 150% 150%, 145% 145%, 155% 155%, 145% 145%, 180% 180%;
+  }
+
+  33% {
+    background-position: 65% 0%, 55% 70%, 30% 100%, 0% 35%, 100% 35%;
+    background-size: 175% 135%, 135% 175%, 165% 140%, 140% 165%, 210% 170%;
+  }
+
+  66% {
+    background-position: 100% 70%, 20% 100%, 0% 35%, 75% 0%, 0% 70%;
+    background-size: 135% 175%, 170% 140%, 140% 170%, 170% 135%, 170% 210%;
+  }
+}
+
+@keyframes reasoning-effort-max-highlight {
+  0%, 100% {
+    opacity: 0.72;
+    transform: translate(-1px, -1px) rotate(0deg);
+  }
+
+  50% {
+    opacity: 0.42;
+    transform: translate(3px, 2px) rotate(180deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reasoning-effort-slider--max {
+    :deep(.n-slider-handle),
+    :deep(.n-slider-handle::after) {
+      animation: none;
+    }
+  }
+}
+
+.reasoning-effort-slider-range {
+  margin-top: 4px;
+  color: $text-muted;
+  font-size: 10px;
+}
+
+.reasoning-effort-slider-hint {
+  margin-top: 6px;
+  color: $text-muted;
+  font-size: 11px;
+  text-align: center;
 }
 
 .expert-slot-button {
@@ -1826,15 +2090,32 @@ function isImage(type: string): boolean {
   border: 1px solid $border-color;
 
   &.image {
-    width: 64px;
-    height: 64px;
+    width: 112px;
+    height: 72px;
   }
 }
 
 .attachment-thumb {
+  display: block;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+}
+
+.attachment-thumb-button {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background:
+    linear-gradient(45deg, rgba(127, 127, 127, 0.08) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(127, 127, 127, 0.08) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(127, 127, 127, 0.08) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(127, 127, 127, 0.08) 75%);
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+  background-size: 12px 12px;
+  cursor: zoom-in;
 }
 
 .attachment-file {

@@ -24,6 +24,7 @@ const localSearchSessionsByAgentMock = vi.fn()
 const localDeleteSessionMock = vi.fn()
 const localRenameSessionMock = vi.fn()
 const localSetSessionArchivedMock = vi.fn()
+const localSetSessionPinnedMock = vi.fn()
 const localCreateSessionMock = vi.fn()
 const localUpdateSessionMock = vi.fn()
 const claimFamilySwitchNoticeMock = vi.fn()
@@ -101,6 +102,7 @@ vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   deleteSession: localDeleteSessionMock,
   renameSession: localRenameSessionMock,
   setSessionArchived: localSetSessionArchivedMock,
+  setSessionPinned: localSetSessionPinnedMock,
   createSession: localCreateSessionMock,
   addMessages: localAddMessagesMock,
   getSession: getSessionMock,
@@ -151,9 +153,9 @@ vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
 }))
 
 vi.mock('../../packages/server/src/services/hermes/agent-bridge', () => ({
-  AgentBridgeClient: vi.fn().mockImplementation(() => ({
+  AgentBridgeClient: vi.fn().mockImplementation(function () { return {
     switchSessionModel: bridgeSwitchSessionModelMock,
-  })),
+  } }),
   getAgentBridgeManager: vi.fn(() => ({
     getRuntimeState: bridgeGetRuntimeStateMock,
   })),
@@ -218,6 +220,7 @@ describe('session conversations controller', () => {
     localDeleteSessionMock.mockReset()
     localRenameSessionMock.mockReset()
     localSetSessionArchivedMock.mockReset()
+    localSetSessionPinnedMock.mockReset()
     localCreateSessionMock.mockReset()
     localUpdateSessionMock.mockReset()
     claimFamilySwitchNoticeMock.mockReset()
@@ -1318,6 +1321,25 @@ describe('session conversations controller', () => {
     ])
   })
 
+  it('carries the local pin flag onto History rows', async () => {
+    localListSessionsMock.mockReturnValue([
+      { id: 'state-session', profile: 'travel', source: 'cli', is_archived: false, is_pinned: true },
+      { id: 'local-only', profile: 'travel', source: 'coding_agent', is_archived: false, is_pinned: false },
+    ])
+    listSessionSummariesMock.mockResolvedValue([
+      { id: 'state-session', profile: 'travel', source: 'cli', title: 'From Hermes state' },
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { query: { profile: 'travel' }, state: {}, body: null }
+
+    await mod.listHermesSessions(ctx)
+
+    const byId = new Map(ctx.body.sessions.map((session: any) => [session.id, session]))
+    expect(byId.get('state-session')).toEqual(expect.objectContaining({ is_pinned: true, webui_imported: true }))
+    expect(byId.get('local-only')).toEqual(expect.objectContaining({ is_pinned: false }))
+  })
+
   it('applies History source filters to local-only rows', async () => {
     localListSessionsMock.mockReturnValue([
       { id: 'cli-local', profile: 'travel', source: 'cli', is_archived: false },
@@ -1475,6 +1497,99 @@ describe('session conversations controller', () => {
     expect(localSetSessionArchivedMock).toHaveBeenCalledWith('local-session', false)
     expect(archiveCtx.body).toEqual({ ok: true, archived: true })
     expect(unarchiveCtx.body).toEqual({ ok: true, archived: false })
+  })
+
+  it('pins and unpins a session the caller can reach', async () => {
+    getSessionMock.mockReturnValue({
+      id: 'local-session',
+      profile: 'travel',
+      source: 'api_server',
+      is_pinned: false,
+    })
+    localSetSessionPinnedMock.mockReturnValue(true)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const pinCtx: any = {
+      params: { id: 'local-session' },
+      request: { body: { is_pinned: true } },
+      state: { user: { id: 1, role: 'admin', profile: 'travel' } },
+      body: null,
+    }
+    await mod.setPinned(pinCtx)
+
+    const unpinCtx: any = {
+      params: { id: 'local-session' },
+      request: { body: { is_pinned: false } },
+      state: { user: { id: 1, role: 'admin', profile: 'travel' } },
+      body: null,
+    }
+    await mod.setPinned(unpinCtx)
+
+    expect(localSetSessionPinnedMock).toHaveBeenCalledWith('local-session', true)
+    expect(localSetSessionPinnedMock).toHaveBeenCalledWith('local-session', false)
+    expect(pinCtx.body).toEqual({ ok: true, is_pinned: true })
+    expect(unpinCtx.body).toEqual({ ok: true, is_pinned: false })
+  })
+
+  it('rejects a pin request with a missing session, a non-boolean flag, or a failed write', async () => {
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+
+    getSessionMock.mockReturnValue(null)
+    const missingCtx: any = { params: { id: 'missing' }, request: { body: { is_pinned: true } }, state: {}, body: null }
+    await mod.setPinned(missingCtx)
+    expect(missingCtx.status).toBe(404)
+    expect(missingCtx.body).toEqual({ error: 'Session not found' })
+
+    getSessionMock.mockReturnValue({ id: 'local-session', profile: 'travel' })
+    const badBodyCtx: any = { params: { id: 'local-session' }, request: { body: { is_pinned: 'true' } }, state: {}, body: null }
+    await mod.setPinned(badBodyCtx)
+    expect(badBodyCtx.status).toBe(400)
+    expect(badBodyCtx.body).toEqual({ error: 'is_pinned must be a boolean' })
+
+    const emptyBodyCtx: any = { params: { id: 'local-session' }, request: {}, state: {}, body: null }
+    await mod.setPinned(emptyBodyCtx)
+    expect(emptyBodyCtx.status).toBe(400)
+
+    expect(localSetSessionPinnedMock).not.toHaveBeenCalled()
+
+    localSetSessionPinnedMock.mockReturnValue(false)
+    const failedCtx: any = { params: { id: 'local-session' }, request: { body: { is_pinned: true } }, state: {}, body: null }
+    await mod.setPinned(failedCtx)
+    expect(failedCtx.status).toBe(500)
+    expect(failedCtx.body).toEqual({ error: 'Failed to update session pin' })
+  })
+
+  it('rejects pinning a session that belongs to another profile', async () => {
+    getSessionMock.mockReturnValue({ id: 'other-session', profile: 'other', source: 'api_server' })
+    listUserProfilesMock.mockReturnValue([{ profile_name: 'travel' }])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      params: { id: 'other-session' },
+      request: { body: { is_pinned: true } },
+      state: { user: { id: 7, role: 'admin', profile: 'travel' } },
+      body: null,
+    }
+    await mod.setPinned(ctx)
+
+    expect(ctx.status).toBe(403)
+    expect(ctx.body).toEqual({ error: 'Profile "other" is not available for this user' })
+    expect(localSetSessionPinnedMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a shared viewer pinning a teammate shared-agent session', async () => {
+    stubSharedAgentRole('viewer')
+    getSessionMock.mockReturnValue(sharedAgentSession({ id: 'teammate-session' }))
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = sharedAgentCtx('ou_viewer', {
+      params: { id: 'teammate-session' },
+      request: { body: { is_pinned: true } },
+    })
+    await mod.setPinned(ctx)
+
+    expect(ctx.status).toBe(403)
+    expect(localSetSessionPinnedMock).not.toHaveBeenCalled()
   })
 
   it('rejects a shared viewer archiving a teammate shared-agent session', async () => {

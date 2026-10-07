@@ -1,6 +1,7 @@
 import type { Context } from 'koa'
 import { config } from '../../config'
 import { isChatPlaneRequest, type WebUser } from '../../services/request-context'
+import { revokeFigmaAuthorization } from '../../services/hermes/connector-registry-client'
 
 /**
  * Submit the caller's OWN GitLab personal access token.
@@ -155,4 +156,42 @@ export async function submitGithubToken(ctx: Context) {
 
 export async function revokeGithubToken(ctx: Context) {
   return githubCredential(ctx, 'DELETE')
+}
+
+/**
+ * Revoke the caller's OWN Figma MCP authorization.
+ *
+ * Same identity discipline as the GitHub path above: the owner comes from the
+ * verified session and is stamped server-side, so one employee can never revoke
+ * another's grant. Start lives on `/api/auth/skill-credentials/figma/start`
+ * (the card's `oauth_url` action); only revoke needs its own route because the
+ * card renders a second button for it.
+ */
+export async function revokeFigmaCredential(ctx: Context) {
+  if (!isChatPlaneRequest(ctx)) {
+    ctx.status = 404
+    ctx.body = { error: 'not found' }
+    return
+  }
+  const user = ctx.state?.user as WebUser | undefined
+  const openid = user?.openid?.trim()
+  if (!openid) {
+    ctx.status = 403
+    ctx.body = { error: '无法确认你的身份，请重新登录后再试' }
+    return
+  }
+  const requestedProfile = String(
+    (Array.isArray(ctx.query?.profile) ? ctx.query.profile[0] : ctx.query?.profile) ?? '',
+  ).trim()
+  const profileName = requestedProfile || (user?.profile || '').trim()
+  try {
+    const { revoked } = await revokeFigmaAuthorization({ profileName, ownerOpenId: openid })
+    // 撤销是幂等的：broker 说 revoked:false 表示本来就没有授权，对员工来说同样是
+    // "现在没绑"，不是失败。ok 如实反映这一点，卡片照常回到未认证。
+    ctx.status = 200
+    ctx.body = { ok: true, revoked }
+  } catch (err: any) {
+    ctx.status = typeof err?.status === 'number' ? err.status : 502
+    ctx.body = { ok: false, error: err?.message || '暂时联系不上凭据服务，请稍后重试' }
+  }
 }

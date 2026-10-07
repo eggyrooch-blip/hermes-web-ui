@@ -196,4 +196,125 @@ describe('GroupChatInput mentions', () => {
 
     expect((textarea.element as HTMLTextAreaElement).style.height).toBe('84px')
   })
+
+  it('does not wire the send-time image preview before any image is attached', async () => {
+    const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
+    const store = useGroupChatStore()
+    store.agents = []
+    store.emitTyping = vi.fn()
+
+    const wrapper = mount(GroupChatInput, {
+      attachTo: document.body,
+      global: { plugins: [pinia], stubs: { Transition: false } },
+    })
+    await nextTick()
+
+    expect(wrapper.find('.attachment-thumb-button').exists()).toBe(false)
+    expect(document.querySelector('.image-preview-overlay')).toBeNull()
+
+    wrapper.unmount()
+  })
+})
+
+/**
+ * Port of upstream EKKOLearnAI/hermes-web-ui 412ca4846 (#2885) for the group
+ * composer: a picked image must open as a full-size overlay before sending, and
+ * the overlay must not outlive removing or sending the attachment it shows.
+ */
+describe('GroupChatInput uploaded image preview', () => {
+  let revokedUrls: string[]
+
+  beforeEach(() => {
+    localStorage.clear()
+    mockViewport(false)
+    revokedUrls = []
+    let counter = 0
+    Object.defineProperty(URL, 'createObjectURL', {
+      writable: true,
+      value: vi.fn(() => `blob:group-attachment-${++counter}`),
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      writable: true,
+      value: vi.fn((url: string) => { revokedUrls.push(url) }),
+    })
+  })
+
+  async function mountWithFiles(files: File[]) {
+    const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
+    const store = useGroupChatStore()
+    store.agents = []
+    store.emitTyping = vi.fn()
+    const settingsStore = useSettingsStore()
+    settingsStore.display = {} as any
+    const wrapper = mount(GroupChatInput, {
+      attachTo: document.body,
+      global: { plugins: [pinia], stubs: { Transition: false } },
+    })
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: files })
+    await input.trigger('change')
+    await nextTick()
+    return wrapper
+  }
+
+  const image = () => new File(['image'], 'group-screenshot.png', { type: 'image/png' })
+
+  it('opens an uploaded image preview before sending and closes it on Escape', async () => {
+    const wrapper = await mountWithFiles([image()])
+
+    expect(wrapper.get('.attachment-thumb-button').attributes('aria-label')).toBe('group-screenshot.png')
+    expect(document.querySelector('.image-preview-overlay')).toBeNull()
+
+    await wrapper.get('.attachment-thumb-button').trigger('click')
+    await nextTick()
+    expect(document.body.querySelector('.image-preview-overlay img')?.getAttribute('src'))
+      .toBe('blob:group-attachment-1')
+    expect(wrapper.emitted('send')).toBeUndefined()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+    expect(document.querySelector('.image-preview-overlay')).toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('closes the overlay when its attachment is removed', async () => {
+    const wrapper = await mountWithFiles([image()])
+    await wrapper.get('.attachment-thumb-button').trigger('click')
+    await nextTick()
+    expect(document.querySelector('.image-preview-overlay')).not.toBeNull()
+
+    await wrapper.get('.attachment-remove').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('.attachment-preview').exists()).toBe(false)
+    expect(document.querySelector('.image-preview-overlay')).toBeNull()
+    expect(revokedUrls).toContain('blob:group-attachment-1')
+
+    wrapper.unmount()
+  })
+
+  it('closes the overlay when the message is sent', async () => {
+    const wrapper = await mountWithFiles([image()])
+    await wrapper.get('.attachment-thumb-button').trigger('click')
+    await nextTick()
+    expect(document.querySelector('.image-preview-overlay')).not.toBeNull()
+
+    await wrapper.get('textarea').trigger('keydown', { key: 'Enter' })
+    await nextTick()
+
+    expect(wrapper.emitted('send')).toHaveLength(1)
+    expect(document.querySelector('.image-preview-overlay')).toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('does not make non-image attachments clickable', async () => {
+    const wrapper = await mountWithFiles([new File(['text'], 'group-notes.txt', { type: 'text/plain' })])
+
+    expect(wrapper.find('.attachment-file').exists()).toBe(true)
+    expect(wrapper.find('.attachment-thumb-button').exists()).toBe(false)
+
+    wrapper.unmount()
+  })
 })

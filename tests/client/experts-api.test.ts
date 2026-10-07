@@ -13,7 +13,7 @@ vi.mock('@/router', () => ({
   },
 }))
 
-import { fetchExperts, isAiHubExpert } from '../../packages/client/src/api/hermes/experts'
+import { expertSamplePrompts, fetchExperts, isAiHubExpert } from '../../packages/client/src/api/hermes/experts'
 
 function jsonResponse(body: unknown) {
   return { ok: true, status: 200, json: () => Promise.resolve(body) }
@@ -104,5 +104,51 @@ describe('isAiHubExpert', () => {
     expect(isAiHubExpert({ source: 'something-else' })).toBe(false)
     expect(isAiHubExpert({})).toBe(false)
     expect(isAiHubExpert({ from_aihub: false })).toBe(false)
+  })
+})
+
+describe('expertSamplePrompts', () => {
+  it('uses the author-written sample_prompts verbatim, trimmed and capped at five', () => {
+    expect(
+      expertSamplePrompts({
+        name: '专家构建专家',
+        sample_prompts: ['  我想把我们组的业务做成一个专家  ', '', '建专家和写普通 skill 有什么区别'],
+      }),
+    ).toEqual(['我想把我们组的业务做成一个专家', '建专家和写普通 skill 有什么区别'])
+
+    expect(
+      expertSamplePrompts({ name: 'x', sample_prompts: ['1', '2', '3', '4', '5', '6'] }),
+    ).toEqual(['1', '2', '3', '4', '5'])
+  })
+
+  it('falls back to three lines built from this expert own tags, name and skills', () => {
+    const tagged = expertSamplePrompts({
+      name: '财务分析专家',
+      display_tags: ['做月度对账', '集团口径', '数据脱敏'],
+      skills: ['close-books'],
+    })
+    expect(tagged).toHaveLength(3)
+    expect(tagged[0]).toBe('帮我做月度对账，先列清你需要我提供哪些材料')
+    expect(tagged[1]).toBe('按集团口径的口径整理一版，直接给结论和依据')
+    expect(tagged[2]).toBe('这件事在数据脱敏上有哪些坑，挑最关键的三条')
+
+    // no tags: the name domain word (suffix stripped) and the first skill carry it
+    const bare = expertSamplePrompts({ name: '财务分析专家', skills: ['close-books'] })
+    expect(bare[0]).toBe('帮我做一次「财务分析」的任务，先列清你需要我提供哪些材料')
+    expect(bare[1]).toBe('从「close-books」开始，带我把「财务分析」的流程走一遍')
+    expect(bare[2]).toBe('用「财务分析」干活最容易踩哪些坑？挑最关键的三条')
+
+    // neither tags nor skills still yields three sendable lines, never a blank
+    const minimal = expertSamplePrompts({ name: 'HR' })
+    expect(minimal).toHaveLength(3)
+    expect(minimal.every(line => line.includes('HR'))).toBe(true)
+
+    // two different experts never share a line
+    expect(new Set([...bare, ...minimal]).size).toBe(6)
+  })
+
+  it('prefers title over name for the generated domain word', () => {
+    const [first] = expertSamplePrompts({ name: 'kep-expert-builder', title: '专家构建顾问' })
+    expect(first).toBe('帮我做一次「专家构建」的任务，先列清你需要我提供哪些材料')
   })
 })

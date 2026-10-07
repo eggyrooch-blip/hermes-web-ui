@@ -316,6 +316,9 @@ describe('kanban owner isolation', () => {
       board: 'default',
       body: undefined,
       assignee: 'profA',
+      // created_by must be an owned profile, else taskOwnedBy() hides the task
+      // from its creator (the CLI default is the literal "user").
+      createdBy: 'profA',
       priority: undefined,
       tenant: 'ouA',
     })
@@ -387,7 +390,7 @@ describe('kanban owner isolation', () => {
     await ctrl.complete(completeCtx)
     expect(completeCtx.status).toBe(200)
     expect(completeCtx.body).toEqual({ ok: true })
-    expect(mockCompleteTasks).toHaveBeenCalledWith(['t-complete-owned'], 'ok', { board: 'default' })
+    expect(mockCompleteTasks).toHaveBeenCalledWith(['t-complete-owned'], 'ok', { board: 'default', operatorOverride: true })
 
     const blockCtx = ctx({ openid: 'ouA', params: { id: 't-block-owned' }, body: { reason: 'hold' } })
     await ctrl.block(blockCtx)
