@@ -42,6 +42,11 @@ export default defineConfig({
       '@': resolve(__dirname, 'packages/client/src'),
     },
   },
+  esbuild: {
+    // @novnc/novnc (lazy-loaded by the Bot Screen page only) awaits a WebCodecs
+    // probe at module top level; let it through the es2020 target untouched.
+    supported: { 'top-level-await': true },
+  },
   build: {
     outDir: '../../dist/client',
     emptyOutDir: true,
@@ -64,6 +69,9 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
+    esbuildOptions: {
+      supported: { 'top-level-await': true },
+    },
     // Pre-bundle all large dependencies for faster builds
     include: [
       'monaco-editor',

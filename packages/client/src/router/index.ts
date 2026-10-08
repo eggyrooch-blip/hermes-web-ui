@@ -25,6 +25,11 @@ const router = createRouter({
       component: () => import('@/views/hermes/ChatView.vue'),
     },
     {
+      path: '/hermes/screen',
+      name: 'hermes.screen',
+      component: () => import('@/views/hermes/ScreenView.vue'),
+    },
+    {
       path: '/hermes/history',
       name: 'hermes.history',
       component: () => import('@/views/hermes/HistoryView.vue'),

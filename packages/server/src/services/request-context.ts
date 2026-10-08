@@ -318,6 +318,9 @@ function forbiddenInChatPlane(ctx: Context): boolean {
   // 同理：Figma 撤销的唯一用户就是 chat 面的员工。身份同样只从已验证会话来，
   // 控制器无身份自行 403。只放 DELETE —— 起授权走 /api/auth/skill-credentials/figma/start。
   if (path === '/api/hermes/credentials/figma' && method === 'DELETE') return false
+  // 云电脑看屏：员工看/接管自己 bot 的桌面。控制器只认已验证会话的 openid，
+  // 盖 X-Hermes-Owner-Open-Id；请求里点名的 profile/agent 不归本人则 403。
+  if (/^\/api\/hermes\/desktop\/(observe|ensure|lease\/acquire|lease\/release)$/.test(path) && method === 'POST') return false
   if (path === '/api/hermes/config/credentials') return true
   if (config.chatPlaneAllowSettings && path === '/api/hermes/config' && (method === 'GET' || method === 'PUT')) return false
   if (path === '/api/hermes/skills/skillhub/install' && method === 'POST') return false

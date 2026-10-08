@@ -31,18 +31,9 @@ import { updateUsage } from '../../db/hermes/usage-store'
 import { logger } from '../logger'
 import { config } from '../../config'
 import { getProfileDir } from './hermes-profile'
-import {
-  extractFeishuSessionFromCookieHeader,
-  getFeishuSessionSecret,
-  parseFeishuSessionCookie,
-} from '../feishu-oauth'
 import { ownerOwnsProfile, resolveOwnedProfileAgentId } from './agent-ownership'
 import { ensureWebUserForFeishu } from '../compat-user'
-import {
-  resolveProfileForOpenId,
-  verifyTrustedFeishuSocketHeaders,
-  type WebUser,
-} from '../request-context'
+import { resolveAccessibleAgentProfile, resolveFeishuHandshakeUser } from './handshake-identity'
 import { authenticateUserToken, isAuthEnabled } from '../../middleware/user-auth'
 import { userCanAccessProfile } from '../../db/hermes/users-store'
 import {
@@ -123,32 +114,6 @@ const TEXT_FILE_EXTENSIONS = new Set([
 ])
 const SPREADSHEET_FILE_EXTENSIONS = new Set(['.xlsx'])
 const MAX_INLINE_FILE_CHARS = 200_000
-
-async function resolveAccessibleSocketAgentProfile(openid: string, agentId: string, requestedProfile: string): Promise<string | null> {
-  const actor = openid.trim()
-  const requestedAgentId = agentId.trim()
-  if (!actor || !requestedAgentId) return null
-
-  if (requestedProfile && ownerOwnsProfile(actor, requestedProfile)) {
-    const ownedAgentId = resolveOwnedProfileAgentId(actor, requestedProfile)
-    if (ownedAgentId === requestedAgentId) return requestedProfile
-  }
-
-  if (!config.runBrokerUrl) return null
-  const headers: Record<string, string> = {
-    'X-Hermes-Owner-Open-Id': actor,
-  }
-  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
-  const res = await fetch(`${config.runBrokerUrl}/api/run-broker/agents/shared`, { method: 'GET', headers })
-  if (!res.ok) return null
-  const body = await res.json().catch(() => null) as any
-  const agents = Array.isArray(body?.agents) ? body.agents : []
-  const shared = agents.find((agent: any) => String(agent?.agent_id || '').trim() === requestedAgentId)
-  if (!shared) return null
-  const profileName = String(shared.profile_name || '').trim()
-  if (requestedProfile && profileName && requestedProfile !== profileName) return null
-  return profileName || requestedProfile || null
-}
 
 function resolveUploadedPath(profile: string, filePath: string): string | null {
   if (!filePath) return null
@@ -596,18 +561,8 @@ export class BrokerRunController {
   // --- Auth middleware ---
 
   private async authMiddleware(socket: Socket, next: (err?: Error) => void) {
-    let feishuUser: WebUser | null = null
-    if (config.authMode === 'feishu-oauth-dev') {
-      const sessionCookie = extractFeishuSessionFromCookieHeader(socket.handshake.headers?.cookie)
-      feishuUser = parseFeishuSessionCookie(sessionCookie, { secret: getFeishuSessionSecret() })
-      if (!feishuUser) return next(new Error('Authentication failed'))
-    } else if (config.authMode === 'trusted-feishu') {
-      const verified = verifyTrustedFeishuSocketHeaders(socket.handshake.headers)
-      if (!verified.ok) return next(new Error('Authentication failed'))
-      const profile = resolveProfileForOpenId(verified.openid)
-      if (!profile) return next(new Error('Authentication failed'))
-      feishuUser = { ...verified, profile, role: 'user' }
-    }
+    const feishuUser = resolveFeishuHandshakeUser(socket.handshake.headers)
+    if (feishuUser === null) return next(new Error('Authentication failed'))
 
     if (feishuUser) {
       const user = feishuUser
@@ -623,7 +578,7 @@ export class BrokerRunController {
       // (WebUser) is kept intact for the profile/agentId resolution just below.
       socket.data.user = { ...user, ...ensureWebUserForFeishu(user.openid) }
       const sharedAgentProfile = requestedAgentId
-        ? await resolveAccessibleSocketAgentProfile(user.openid, requestedAgentId, requestedProfile)
+        ? await resolveAccessibleAgentProfile(user.openid, requestedAgentId, requestedProfile)
         : null
       if (requestedAgentId && !sharedAgentProfile) {
         return next(new Error('Agent access denied'))

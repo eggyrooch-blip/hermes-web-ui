@@ -26,3 +26,4 @@ d0f68a3fed0de94d1c5d06103c02f028044a986d:tests/e2e/artifact-sidebar-workspace.sp
 700ae5301df5413c367742835727100270d908e2:tests/server/jobs-controller.test.ts:generic-api-key:166
 700ae5301df5413c367742835727100270d908e2:tests/server/jobs-controller.test.ts:generic-api-key:203
 610f3eb9d08e0923da4c8e9727481a41163fd136:packages/server/src/services/hermes/copilot-device-flow.ts:generic-api-key:16
+5da66273c325ccdd65cfd72c87a6c519e99e9adc:tests/server/desktop-screen-route.test.ts:generic-api-key:446

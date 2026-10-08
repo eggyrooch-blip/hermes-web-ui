@@ -265,10 +265,21 @@ function responseErrorMessage(text: string, statusText: string): string {
 
 type RequestOptions = RequestInit & {
   skipAuthRedirect?: boolean
+  /** A 403 the caller turns into its own UI state, so no global access-denied toast. */
+  suppressForbiddenNotice?: boolean
+}
+
+function responseErrorCode(text: string): string | undefined {
+  try {
+    const parsed = JSON.parse(text.trim())
+    return parsed && typeof parsed.error === 'string' ? parsed.error : undefined
+  } catch {
+    return undefined
+  }
 }
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { skipAuthRedirect, ...fetchOptions } = options
+  const { skipAuthRedirect, suppressForbiddenNotice, ...fetchOptions } = options
   const selectedProfile = modelSettingsRequestProfile(path)
   const base = getBaseUrl()
   const url = `${base}${path}`
@@ -325,16 +336,18 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
         if (router.currentRoute.value.name !== 'login') {
           router.replace({ name: 'login' })
         }
-      } else {
+      } else if (!suppressForbiddenNotice) {
         emitAuthNotice('forbidden')
       }
     }
     // Carry the numeric status on the Error: callers that turn a rejection
     // into a boolean (setSessionExpert) otherwise lose the server's reason and
-    // can only guess at it from surrounding state.
+    // can only guess at it from surrounding state. `code` is the body's
+    // machine-readable `error` field when there is one.
+    const code = responseErrorCode(text)
     throw Object.assign(
       new Error(`API Error ${res.status}: ${responseErrorMessage(text, res.statusText)}`),
-      { status: res.status },
+      code ? { status: res.status, code } : { status: res.status },
     )
   }
 

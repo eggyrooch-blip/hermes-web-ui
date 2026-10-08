@@ -13,6 +13,7 @@ import { initLoginLimiter } from './services/login-limiter'
 import { bindShutdown } from './services/shutdown'
 import { setupTerminalWebSocket } from './routes/hermes/terminal'
 import { setupKanbanEventsWebSocket } from './routes/hermes/kanban-events'
+import { DESKTOP_SCREEN_WS_PATH, setupDesktopScreenWebSocket } from './routes/hermes/desktop-screen'
 import { startVersionCheck } from './routes/health'
 import { registerRoutes } from './routes'
 import { setGroupChatServer } from './routes/hermes/group-chat'
@@ -364,8 +365,9 @@ export async function bootstrap() {
 
   setupTerminalWebSocket(servers)
   setupKanbanEventsWebSocket(servers)
+  setupDesktopScreenWebSocket(servers)
   getLanPeerSocketManager().setupServer(servers)
-  console.log('[bootstrap] terminal + kanban + LAN peer websocket setup')
+  console.log('[bootstrap] terminal + kanban + desktop screen + LAN peer websocket setup')
 
   // Group chat Socket.IO (must be after server is created)
   const groupChatServer = new GroupChatServer(servers)
@@ -400,6 +402,7 @@ export async function bootstrap() {
       const url = new URL(req.url || '', `http://${req.headers.host}`)
       if (url.pathname !== '/api/hermes/terminal' &&
         url.pathname !== '/api/hermes/kanban/events' &&
+        url.pathname !== DESKTOP_SCREEN_WS_PATH &&
         url.pathname !== getLanPeerSocketPath() &&
         !url.pathname.startsWith('/socket.io/')) {
         socket.destroy()

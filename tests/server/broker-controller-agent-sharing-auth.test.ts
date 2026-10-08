@@ -147,4 +147,29 @@ describe('BrokerRunController shared-agent socket auth', () => {
     expect(socket.data.profile).toBe('owned_agent_profile')
     expect(socket.data.agentId).toBe('agent-shared')
   })
+
+  it('bounds the shared-agents lookup and denies the handshake when the broker hangs', async () => {
+    const fetchMock = vi.fn((_url: string, options: any) => new Promise((_resolve, reject) => {
+      expect(options.signal).toBeInstanceOf(AbortSignal)
+      if (options.signal.aborted) reject(options.signal.reason)
+      else options.signal.addEventListener('abort', () => reject(options.signal.reason))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => AbortSignal.abort(new Error('timed out')))
+    try {
+      const { BrokerRunController } = await import('../../packages/server/src/services/hermes/broker-controller')
+      const controller = new BrokerRunController()
+      const next = vi.fn()
+
+      await (controller as any).authMiddleware(socketFor({
+        profile: 'owned_agent_profile',
+        agent_id: 'agent-shared',
+      }), next)
+
+      expect(timeoutSpy).toHaveBeenCalledWith(10_000)
+      expect(next.mock.calls[0][0].message).toBe('Agent access denied')
+    } finally {
+      timeoutSpy.mockRestore()
+    }
+  })
 })

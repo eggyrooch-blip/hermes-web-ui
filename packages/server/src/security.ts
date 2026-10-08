@@ -86,6 +86,15 @@ export function shouldRejectUpgradeOrigin(req: IncomingMessage, corsOrigins = ''
   return !isOriginAllowed(Array.isArray(origin) ? origin[0] : origin, req.headers.host, corsOrigins)
 }
 
+/**
+ * Socket.IO shares the HTTP servers with the terminal, kanban, LAN-peer and
+ * bot-screen sockets. By default engine.io ends any non-/socket.io upgrade
+ * that has written nothing after 1 s, which kills the bot-screen socket while
+ * it waits on the broker handshake. Each route owns its upgrades and the
+ * catch-all in index.ts destroys unknown paths, so engine.io stays out of it.
+ */
+export const SOCKET_IO_UPGRADE_OPTIONS = { destroyUpgrade: false } as const
+
 export function writeForbiddenOrigin(socket: { write: (chunk: string) => void; destroy: () => void }): void {
   socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
   socket.destroy()

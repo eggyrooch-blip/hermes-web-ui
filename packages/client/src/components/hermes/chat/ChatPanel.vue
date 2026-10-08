@@ -37,6 +37,7 @@ import { explicitSessionWorkspace, sessionWorkspaceLabel } from "@/utils/hermes/
 import FolderPicker from "./FolderPicker.vue";
 import ChatInput from "./ChatInput.vue";
 import ConversationMonitorPane from "./ConversationMonitorPane.vue";
+import BotScreenEntry from "./BotScreenEntry.vue";
 import MessageList from "./MessageList.vue";
 import SessionListItem from "./SessionListItem.vue";
 import OutlinePanel from "./OutlinePanel.vue";
@@ -2064,6 +2065,7 @@ async function handleSessionModelCustomSubmit() {
               </template>
               {{ t("chat.copySessionId") }}
             </NTooltip>
+            <BotScreenEntry />
             <NButton
               class="header-model-button"
               size="small"

@@ -1,4 +1,4 @@
-459 entries
+463 entries
 DENY    DELETE /api/auth/locked-ips
 DENY    DELETE /api/auth/password
 DENY    DELETE /api/auth/users/:id
@@ -378,6 +378,10 @@ allow   POST   /api/hermes/agents/:agentId/shares
 allow   POST   /api/hermes/cowork/projects
 allow   POST   /api/hermes/credentials/github
 allow   POST   /api/hermes/credentials/gitlab
+allow   POST   /api/hermes/desktop/ensure
+allow   POST   /api/hermes/desktop/lease/acquire
+allow   POST   /api/hermes/desktop/lease/release
+allow   POST   /api/hermes/desktop/observe
 allow   POST   /api/hermes/files/copy
 allow   POST   /api/hermes/files/mkdir
 allow   POST   /api/hermes/files/rename

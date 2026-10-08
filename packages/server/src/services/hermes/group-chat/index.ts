@@ -17,7 +17,7 @@ import {
 } from '../../../services/feishu-oauth'
 import { ensureWebUserForFeishu } from '../../../services/compat-user'
 import { config } from '../../../config'
-import { createSocketIoCorsOrigin, shouldRejectUpgradeOrigin } from '../../../security'
+import { createSocketIoCorsOrigin, shouldRejectUpgradeOrigin, SOCKET_IO_UPGRADE_OPTIONS } from '../../../security'
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -934,6 +934,7 @@ export class GroupChatServer {
         const servers = Array.isArray(httpServers) ? httpServers : [httpServers]
 
         this.io = new Server(servers[0], {
+            ...SOCKET_IO_UPGRADE_OPTIONS,
             // `credentials: true` is required so the browser keeps the httpOnly
             // `hermes_feishu_session` cookie on the handshake (client sends
             // withCredentials). The origin callback only ever echoes a specific
