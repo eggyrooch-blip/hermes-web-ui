@@ -13,6 +13,25 @@ import type {
 
 type SerializedCommand = Pick<QueuedSessionCommand, 'name' | 'rawName' | 'args'>
 
+/** Per-session queue cap for the bridge path; mirrors broker-controller's MAX_SESSION_QUEUE. */
+export const MAX_SESSION_QUEUE = 20
+export const SESSION_QUEUE_FULL_ERROR = 'Session queue is full'
+
+export function isSessionQueueFull(state: Pick<SessionState, 'queue'>): boolean {
+  return state.queue.length >= MAX_SESSION_QUEUE
+}
+
+/** Payload aligned with broker-controller's `run.rejected` for a full queue. */
+export function sessionQueueFullRejection(sessionId: string, queueId: string | undefined) {
+  return {
+    event: 'run.rejected' as const,
+    session_id: sessionId,
+    queue_id: queueId,
+    error: SESSION_QUEUE_FULL_ERROR,
+    reason: 'queue_full' as const,
+  }
+}
+
 export function enqueueSerializedSessionCommand(options: {
   sessionId: string
   command: SerializedCommand
@@ -25,7 +44,9 @@ export function enqueueSerializedSessionCommand(options: {
   instructions?: string
   profile: string
   originSocketId?: string
-}): { state: SessionState; queued: QueuedRun; canStart: boolean } {
+}):
+  | { state: SessionState; queued: QueuedRun; canStart: boolean; rejected?: undefined }
+  | { state: SessionState; queued: null; canStart: false; rejected: 'queue_full' } {
   const generation = readSessionGeneration(options.sessionId)
   let state = options.state
   if (!stateMatchesSessionGeneration(state, generation)) {
@@ -36,6 +57,8 @@ export function enqueueSerializedSessionCommand(options: {
     bindSessionGeneration(state, generation)
     options.sessionMap.set(options.sessionId, state)
   }
+
+  if (isSessionQueueFull(state)) return { state, queued: null, canStart: false, rejected: 'queue_full' }
 
   const rawCommand = `/${options.command.rawName}${options.command.args ? ` ${options.command.args}` : ''}`
   const queued: QueuedRun = {

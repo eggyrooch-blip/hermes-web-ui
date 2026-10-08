@@ -1,6 +1,6 @@
 import type { Context } from 'koa'
-import { mkdir } from 'fs/promises'
-import { join, normalize, resolve } from 'path'
+import { lstat, mkdir, readlink, realpath } from 'fs/promises'
+import { basename, dirname, join, normalize, resolve } from 'path'
 import {
   createFileProvider,
   LocalFileProvider,
@@ -9,7 +9,6 @@ import {
 import { getRequestProfileDir, isChatPlaneRequest } from '../request-context'
 import {
   isPathWithin,
-  nearestExistingRealPath,
   realPathOrResolved,
   relativePathFromBase,
 } from './hermes-path'
@@ -85,11 +84,57 @@ export function resolveFilePath(ctx: any, relativePath: string, rootDir?: string
 }
 
 export async function createRequestFileProvider(ctx: any, rootDir?: string) {
-  return rootDir ? new LocalFileProvider(rootDir) : createFileProvider(requestedProfile(ctx))
+  return rootDir ? new LocalFileProvider(rootDir, { noFollow: true }) : createFileProvider(requestedProfile(ctx))
 }
 
 function permissionDenied(message: string): Error {
   return Object.assign(new Error(message), { code: 'permission_denied' })
+}
+
+const MAX_LINK_HOPS = 8
+
+/**
+ * Canonical form of a path that may not exist yet: the realpath of the nearest
+ * existing ancestor with the missing segments appended unchanged, so a new file
+ * is written to `<real parent>/<name>` and not to the parent directory itself.
+ *
+ * Existence is tested with lstat, not stat: a dangling symlink exists as a link
+ * even though its target does not. Treating it as missing would append its name
+ * lexically and let the later open follow it to wherever it points. Instead the
+ * link is read and its target canonicalised in turn (bounded hops), so
+ * `draft.txt -> notes/todo.txt` resolves to `<root>/notes/todo.txt` and the
+ * containment check runs on where the write will really land.
+ */
+async function canonicalPath(absPath: string, hops = 0): Promise<string> {
+  const missing: string[] = []
+  let current = resolve(absPath)
+  for (;;) {
+    if (await lstat(current).then(() => true, () => false)) {
+      const tail = missing.reverse()
+      const real = await realpath(current).catch(() => null)
+      if (real) return tail.length ? join(real, ...tail) : real
+      if (hops >= MAX_LINK_HOPS) throw permissionDenied('Too many symlink hops')
+      const target = await readlink(current).catch(() => {
+        throw permissionDenied('Path contains an unresolvable symlink')
+      })
+      const resolvedTarget = await canonicalPath(resolve(dirname(current), target), hops + 1)
+      return tail.length ? join(resolvedTarget, ...tail) : resolvedTarget
+    }
+    const parent = dirname(current)
+    if (parent === current) return resolve(absPath)
+    missing.push(basename(current))
+    current = parent
+  }
+}
+
+async function assertInsideWorkspace(canonical: string, rootDir: string): Promise<void> {
+  const canonicalRoot = await realPathOrResolved(rootDir)
+  if (!isPathWithin(canonical, canonicalRoot)) throw permissionDenied('Path escapes workspace')
+  const relative = relativePathFromBase(canonical, canonicalRoot)
+  if (relative === null) throw permissionDenied('Path escapes workspace')
+  if (relative && isSensitiveFilePath(relative)) {
+    throw permissionDenied('Cannot access sensitive file')
+  }
 }
 
 /**
@@ -108,15 +153,27 @@ function permissionDenied(message: string): Error {
  */
 export async function resolveWorkspaceRealPath(absPath: string, rootDir?: string): Promise<string> {
   if (!rootDir) return absPath
-  const canonicalRoot = await realPathOrResolved(rootDir)
-  const canonical = await nearestExistingRealPath(absPath)
-  if (!isPathWithin(canonical, canonicalRoot)) throw permissionDenied('Path escapes workspace')
-  const relative = relativePathFromBase(canonical, canonicalRoot)
-  if (relative === null) throw permissionDenied('Path escapes workspace')
-  if (relative && isSensitiveFilePath(relative)) {
-    throw permissionDenied('Cannot access sensitive file')
-  }
+  const canonical = await canonicalPath(absPath)
+  await assertInsideWorkspace(canonical, rootDir)
   return canonical
+}
+
+/**
+ * For operations on the directory entry itself (unlink, rm, rename source):
+ * the canonical parent plus the original name, with the final component NOT
+ * resolved. Those syscalls never follow a final symlink, so deleting
+ * `link.txt` removes the link and leaves its target alone. The target is still
+ * validated, so a link that points outside the workspace stays refused, and
+ * the entry path itself must be inside the workspace and off the blocklist.
+ */
+export async function resolveWorkspaceEntryPath(absPath: string, rootDir?: string): Promise<string> {
+  if (!rootDir) return absPath
+  const real = await resolveWorkspaceRealPath(absPath, rootDir)
+  const canonicalRoot = await realPathOrResolved(rootDir)
+  if (real === canonicalRoot) return real
+  const entry = join(await canonicalPath(dirname(resolve(absPath))), basename(resolve(absPath)))
+  await assertInsideWorkspace(entry, rootDir)
+  return entry
 }
 
 export async function assertWorkspaceRealPath(absPath: string, rootDir?: string): Promise<void> {

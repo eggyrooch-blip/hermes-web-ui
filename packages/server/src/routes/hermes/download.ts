@@ -16,8 +16,13 @@ import {
   getRequestProfileDir,
   isChatPlaneRequest,
 } from '../../services/request-context'
-import { getActiveProfileName } from '../../services/hermes/hermes-profile'
-import { isNearestExistingRealPathWithin, isPathWithin } from '../../services/hermes/hermes-path'
+import { getActiveProfileName, getProfileDir } from '../../services/hermes/hermes-profile'
+import {
+  isNearestExistingRealPathWithin,
+  isPathWithin,
+  nearestExistingRealPath,
+} from '../../services/hermes/hermes-path'
+import { config } from '../../config'
 import { getArtifactMimeType } from '../../services/hermes/artifact-publication'
 
 export const downloadRoutes = new Router()
@@ -60,17 +65,48 @@ function legacyProfile(ctx: Context): string {
   return (ctx.state as any)?.profile?.name || getActiveProfileName() || 'default'
 }
 
+function permissionDenied(message: string): Error {
+  return Object.assign(new Error(message), { code: 'permission_denied' })
+}
+
+/**
+ * Admin / ops plane download fence, applied to every resolved target (absolute
+ * or relative). `super_admin` already has a host shell through the terminal, so
+ * it keeps host-wide reads; every other role may only read inside the shared
+ * upload dir or its current profile dir. Both checks run on the real
+ * (symlink-resolved) path so a link planted inside an allowed root — e.g.
+ * `workspace/notes.txt -> <APP_HOME>/.token` — cannot smuggle out a secret or
+ * an arbitrary host file.
+ */
+async function assertAdminPlaneTargetAllowed(ctx: Context, validPath: string): Promise<void> {
+  if (isSensitivePath(await nearestExistingRealPath(validPath))) {
+    throw permissionDenied('Cannot download sensitive file')
+  }
+  if ((ctx.state as any)?.user?.role === 'super_admin') return
+  const allowedRoots = [config.uploadDir, getProfileDir(legacyProfile(ctx))]
+  for (const root of allowedRoots) {
+    if (isPathWithin(validPath, root) && await isNearestExistingRealPathWithin(validPath, root)) return
+  }
+  throw permissionDenied('Absolute downloads are limited to the upload and profile directories')
+}
+
 async function getDownloadTarget(ctx: Context, filePath: string): Promise<{
   validPath: string
   forceLocalRoot?: string
   useLocalUploadProvider: boolean
 }> {
-  // Admin / JWT plane: unchanged upstream resolution across the active profile.
+  // Admin / JWT plane: relative paths keep upstream resolution across the
+  // active profile. Absolute targets are fenced here; relative targets are
+  // fenced in resolveAndReadHermesFile once the provider is known (see there).
   if (!isChatPlaneRequest(ctx)) {
     const profile = legacyProfile(ctx)
-    const validPath = isAbsolute(filePath)
-      ? validatePath(filePath)
-      : resolveHermesPath(filePath, profile)
+    let validPath: string
+    if (isAbsolute(filePath)) {
+      validPath = validatePath(filePath)
+      await assertAdminPlaneTargetAllowed(ctx, validPath)
+    } else {
+      validPath = resolveHermesPath(filePath, profile)
+    }
     return { validPath, useLocalUploadProvider: isInUploadDir(validPath) }
   }
 
@@ -140,11 +176,11 @@ async function resolveAndReadHermesFile(
       { code: 'permission_denied' },
     )
   }
-  if (relative && isSensitivePath(filePath)) {
-    throw Object.assign(
-      new Error('Cannot download sensitive file'),
-      { code: 'permission_denied' },
-    )
+  // Sensitive files are blocked for every role: relative paths on both planes,
+  // absolute paths on the admin plane. (Chat-plane absolute paths are already
+  // confined to the upload dir by getDownloadTarget, and keep its 400 there.)
+  if ((relative || !isChatPlaneRequest(ctx)) && isSensitivePath(filePath)) {
+    throw permissionDenied('Cannot download sensitive file')
   }
 
   const target = await getDownloadTarget(ctx, filePath)
@@ -152,6 +188,14 @@ async function resolveAndReadHermesFile(
   const provider = target.useLocalUploadProvider || target.forceLocalRoot
     ? localProvider
     : await createFileProvider(legacyProfile(ctx))
+  // Relative admin-plane targets are lexically inside the profile dir already
+  // (resolveHermesPath), but a host read follows symlinks planted there — e.g.
+  // `workspace/notes.txt -> <APP_HOME>/.token`. Fence the real target whenever
+  // the host filesystem does the read. Remote backends (docker/ssh/...) read
+  // inside their own sandbox, where a host realpath means nothing.
+  if (!isChatPlaneRequest(ctx) && !isAbsolute(filePath) && provider.type === 'local') {
+    await assertAdminPlaneTargetAllowed(ctx, target.validPath)
+  }
   let body: Buffer | ReturnType<typeof createReadStream>
   let length: number
   if (provider.type === 'local') {

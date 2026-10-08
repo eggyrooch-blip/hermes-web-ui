@@ -51,8 +51,40 @@ function now(): number {
   return Date.now()
 }
 
+function normalizeAddress(value: unknown): string {
+  const text = String(value || '').trim()
+  return text.startsWith('::ffff:') ? text.slice(7) : text
+}
+
+/** The real TCP peer address, never derived from X-Forwarded-For. */
+export function socketRemoteAddress(ctx: any): string {
+  return normalizeAddress(ctx?.req?.socket?.remoteAddress)
+}
+
+function isLoopbackAddress(address: string): boolean {
+  return address === '::1' || address.startsWith('127.')
+}
+
+/**
+ * Loopback check that only trusts the socket. `ctx.ip` follows
+ * X-Forwarded-For under `app.proxy = true` and is client-controlled on
+ * direct connections, so it must never decide trust.
+ */
+export function isLoopbackSocket(ctx: any): boolean {
+  return isLoopbackAddress(socketRemoteAddress(ctx))
+}
+
+/**
+ * Rate-limit key. Only a loopback socket (a same-host reverse proxy such as
+ * Caddy) may supply the client address via X-Forwarded-For; direct clients
+ * are keyed by their socket address so rotating XFF cannot dodge the lock.
+ */
 function extractIp(ctx: any): string {
-  return ctx?.ip || ctx?.request?.ip || 'unknown'
+  const remote = socketRemoteAddress(ctx)
+  if (remote && isLoopbackAddress(remote)) {
+    return ctx?.ip || ctx?.request?.ip || remote
+  }
+  return remote || 'unknown'
 }
 
 function pruneIpMap(map: Record<string, IpEntry>): void {

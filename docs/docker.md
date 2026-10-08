@@ -65,6 +65,7 @@ PORT=6060
 - Hermes data persists in `./hermes_data`, mapped to `/home/agent/.hermes` in the container.
 - Web UI data persists in `./hermes_data/hermes-web-ui/`, mapped to `/home/agent/.hermes-web-ui` in the container.
 - The auth token is auto-generated on first run and printed to container logs.
+- First login with `admin` / `123456` is refused (401) when the account database is empty and the request is not from loopback, which is always the case through Docker port mapping. For the first login, set `HERMES_BOOTSTRAP_ALLOW_REMOTE=1` in the container environment, log in, change the default password, then remove the variable and restart. The container log prints a warning naming this variable when a first login is refused.
 - Deleting the token file and restarting will generate a new one.
 
 ## Port Mapping

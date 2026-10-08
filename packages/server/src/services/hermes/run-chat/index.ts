@@ -21,7 +21,7 @@ import { handleBridgeRun, resumeBridgeRun } from './handle-bridge-run'
 import { handleCodingAgentRun } from './handle-coding-agent-run'
 import { handleAbort, markAbortCompleted } from './abort'
 import { handleSessionCommand, isSessionCommand, parseSessionCommand } from './session-command'
-import { reserveQueuedSessionCommand } from './session-command-queue'
+import { isSessionQueueFull, MAX_SESSION_QUEUE, reserveQueuedSessionCommand, sessionQueueFullRejection } from './session-command-queue'
 import { contentBlocksToString } from './content-blocks'
 import type { ContentBlock, ExternalRunIdentity, QueuedRun, SessionState } from './types'
 import { authenticateUserToken, isAuthEnabled, type AuthenticatedUser } from '../../../middleware/user-auth'
@@ -261,6 +261,11 @@ export class ChatRunSocket {
           return
         }
         if (state.isWorking) {
+          if (isSessionQueueFull(state)) {
+            logger.warn('[chat-run-socket] bridge session queue full, rejected run for session %s (limit %d)', data.session_id, MAX_SESSION_QUEUE)
+            socket.emit('run.rejected', sessionQueueFullRejection(data.session_id, data.queue_id))
+            return
+          }
           const queueId = data.queue_id || `queue_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
           state.queue.push({
             queue_id: queueId,

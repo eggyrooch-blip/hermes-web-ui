@@ -1,8 +1,8 @@
-import { readFile, stat as fsStat, readdir, mkdir, rm, rename, copyFile as fsCopyFile, writeFile as fsWriteFile } from 'fs/promises'
-import { resolve, normalize, isAbsolute, basename, join } from 'path'
+import { readFile, stat as fsStat, lstat, open, readdir, mkdir, rm, rename, copyFile as fsCopyFile, writeFile as fsWriteFile } from 'fs/promises'
+import { resolve, normalize, isAbsolute, basename, dirname, join, posix } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { existsSync, readFileSync } from 'fs'
+import { constants as fsConstants, existsSync, readFileSync } from 'fs'
 import YAML from 'js-yaml'
 import { config } from '../../config'
 import { getActiveProfileDir, getActiveEnvPath, getProfileDir } from './hermes-profile'
@@ -19,8 +19,12 @@ const BACKEND_TIMEOUT = 30_000
 // Max edit/upload file size (default 10MB)
 export const MAX_EDIT_SIZE = parseInt(process.env.MAX_EDIT_SIZE || '', 10) || 10 * 1024 * 1024
 
-// Sensitive files that should not be written/deleted/renamed
-const SENSITIVE_FILES = new Set(['.env', 'auth.json'])
+// Sensitive files that must never be downloaded/previewed (any role, relative or
+// absolute path). `.token` is the Web UI auth token — and the JWT HS256 secret
+// when AUTH_JWT_SECRET is unset — so leaking it is a full privilege escalation.
+const SENSITIVE_FILES = new Set(['.env', 'auth.json', '.token', 'config.yaml', 'credentials', 'credentials.json'])
+// Directory segments whose whole subtree is sensitive.
+const SENSITIVE_DIR_PARTS = new Set(['.ssh', 'credentials'])
 
 export interface FileEntry {
   name: string
@@ -109,12 +113,16 @@ function envPathForProfile(profile?: string): string {
 }
 
 /**
- * Check if a relative path refers to a sensitive file.
+ * Check if a relative or absolute path refers to a sensitive file. Matching is
+ * done on normalized path segments, case-insensitively (macOS/Windows file
+ * systems resolve `.TOKEN` to `.token`).
  */
-export function isSensitivePath(relativePath: string): boolean {
-  const parts = relativePath.replace(/\\/g, '/').split('/')
+export function isSensitivePath(filePath: string): boolean {
+  const normalized = posix.normalize(filePath.replace(/\\/g, '/'))
+  const parts = normalized.split('/').filter(part => part && part !== '.').map(part => part.toLowerCase())
+  if (parts.length === 0) return false
   const fileName = parts[parts.length - 1]
-  return SENSITIVE_FILES.has(fileName)
+  return SENSITIVE_FILES.has(fileName) || parts.slice(0, -1).some(part => SENSITIVE_DIR_PARTS.has(part))
 }
 
 /**
@@ -139,12 +147,63 @@ export function resolveHermesPath(relativePath: string, profile?: string): strin
 
 // --- Local ---
 
+export interface LocalFileProviderOptions {
+  /**
+   * Refuse to follow a symlink in the final path component. Workspace-scoped
+   * callers validate the canonical path first and then hand it here. Opening it
+   * by path again would follow a link swapped in after the check, so reads and
+   * writes go through an O_NOFOLLOW handle and delete/mkdir lstat the entry.
+   * Intermediate directories are still resolved by the kernel: Node has no
+   * openat, so swapping a parent directory for a link remains a residual race.
+   */
+  noFollow?: boolean
+}
+
+const O_NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0
+
+function symlinkRefused(): Error {
+  return Object.assign(new Error('Refusing to follow a symlink'), { code: 'permission_denied' })
+}
+
+// O_NOFOLLOW on a final-component symlink fails with ELOOP (Linux, macOS).
+async function openNoFollow(p: string, flags: number) {
+  try {
+    return await open(p, flags | O_NOFOLLOW, 0o666)
+  } catch (err: any) {
+    if (err?.code === 'ELOOP' || err?.code === 'EMLINK') throw symlinkRefused()
+    throw err
+  }
+}
+
+async function lstatOrNull(p: string) {
+  return lstat(p).catch((err: any) => {
+    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return null
+    throw err
+  })
+}
+
 export class LocalFileProvider implements FileProvider {
   type: BackendType = 'local'
-  constructor(private homeDir = getActiveProfileDir()) {}
+  private readonly noFollow: boolean
+  constructor(private homeDir = getActiveProfileDir(), options: LocalFileProviderOptions = {}) {
+    this.noFollow = options.noFollow === true
+  }
 
   async readFile(filePath: string): Promise<Buffer> {
     const p = validatePath(filePath)
+    if (this.noFollow) {
+      const handle = await openNoFollow(p, fsConstants.O_RDONLY)
+      try {
+        const s = await handle.stat()
+        if (!s.isFile()) throw Object.assign(new Error('Not a file'), { code: 'not_found' })
+        if (s.size > MAX_DOWNLOAD_SIZE) {
+          throw Object.assign(new Error(`File too large: ${s.size} bytes`), { code: 'file_too_large' })
+        }
+        return await handle.readFile()
+      } finally {
+        await handle.close()
+      }
+    }
     const s = await fsStat(p)
     if (!s.isFile()) throw Object.assign(new Error('Not a file'), { code: 'not_found' })
     if (s.size > MAX_DOWNLOAD_SIZE) {
@@ -201,11 +260,27 @@ export class LocalFileProvider implements FileProvider {
 
   async writeFile(filePath: string, content: Buffer): Promise<void> {
     const p = validatePath(filePath)
+    if (this.noFollow) {
+      const handle = await openNoFollow(p, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC)
+      try {
+        await handle.writeFile(content)
+      } finally {
+        await handle.close()
+      }
+      return
+    }
     await fsWriteFile(p, content)
   }
 
   async deleteFile(filePath: string): Promise<void> {
     const p = validatePath(filePath)
+    if (this.noFollow) {
+      // The entry itself: a link is unlinked, its target is never touched.
+      const s = await lstat(p)
+      if (!s.isFile() && !s.isSymbolicLink()) throw Object.assign(new Error('Not a file'), { code: 'not_found' })
+      await rm(p)
+      return
+    }
     const s = await fsStat(p)
     if (!s.isFile()) throw Object.assign(new Error('Not a file'), { code: 'not_found' })
     await rm(p)
@@ -213,6 +288,16 @@ export class LocalFileProvider implements FileProvider {
 
   async deleteDir(dirPath: string): Promise<void> {
     const p = validatePath(dirPath)
+    if (this.noFollow) {
+      const s = await lstat(p)
+      if (s.isSymbolicLink()) {
+        await rm(p)
+        return
+      }
+      if (!s.isDirectory()) throw Object.assign(new Error('Not a directory'), { code: 'not_found' })
+      await rm(p, { recursive: true })
+      return
+    }
     const s = await fsStat(p)
     if (!s.isDirectory()) throw Object.assign(new Error('Not a directory'), { code: 'not_found' })
     await rm(p, { recursive: true })
@@ -226,12 +311,48 @@ export class LocalFileProvider implements FileProvider {
 
   async mkDir(dirPath: string): Promise<void> {
     const p = validatePath(dirPath)
+    if (this.noFollow) {
+      // recursive mkdir follows a link at any existing hop. The last existing
+      // hop must be a real directory, not a link swapped in after validation.
+      let current = p
+      let s = await lstatOrNull(current)
+      while (!s) {
+        const parent = dirname(current)
+        if (parent === current) break
+        current = parent
+        s = await lstatOrNull(current)
+      }
+      if (s && !s.isDirectory()) {
+        if (s.isSymbolicLink()) throw symlinkRefused()
+        throw Object.assign(new Error('Not a directory'), { code: 'not_a_directory' })
+      }
+    }
     await mkdir(p, { recursive: true })
   }
 
   async copyFile(srcPath: string, destPath: string): Promise<void> {
     const sp = validatePath(srcPath)
     const dp = validatePath(destPath)
+    if (this.noFollow) {
+      const src = await openNoFollow(sp, fsConstants.O_RDONLY)
+      try {
+        if (!(await src.stat()).isFile()) throw Object.assign(new Error('Not a file'), { code: 'not_found' })
+        const dest = await openNoFollow(dp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC)
+        try {
+          const chunk = Buffer.alloc(64 * 1024)
+          for (;;) {
+            const { bytesRead } = await src.read(chunk, 0, chunk.length, null)
+            if (bytesRead === 0) break
+            await dest.write(chunk, 0, bytesRead)
+          }
+        } finally {
+          await dest.close()
+        }
+      } finally {
+        await src.close()
+      }
+      return
+    }
     await fsCopyFile(sp, dp)
   }
 }

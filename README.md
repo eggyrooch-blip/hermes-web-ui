@@ -294,6 +294,7 @@ These variables configure Hermes Web UI, its local Hermes runtime integration, a
 | `CORS_ORIGINS` | same host only | Comma- or space-separated cross-origin allowlist for HTTP, Socket.IO, and WebSocket requests. Set `*` only when you intentionally need legacy wildcard CORS. |
 | `AUTH_TOKEN` | auto-generated | Explicit bearer token. If unset, Web UI creates one under `HERMES_WEB_UI_HOME`. |
 | `AUTH_JWT_SECRET` | `AUTH_TOKEN` | JWT signing secret override for username/password sessions. |
+| `HERMES_BOOTSTRAP_ALLOW_REMOTE` | unset | With an empty account database, the default `admin` / `123456` first login is only accepted from a loopback connection. Set `1` for a container or remote first install (Docker sees the bridge gateway, not loopback); unset it after you change the default password. |
 | `PROFILE` | `default` | Startup/default Hermes profile. Runtime requests use the profile selected by the frontend and authorized for the current account. |
 | `LOG_LEVEL` | `info` | Server log level. |
 | `BRIDGE_LOG_LEVEL` | `$LOG_LEVEL` or `info` | Bridge log level. |

@@ -14,6 +14,13 @@ import { getRequestProfile, getRequestProfileDir, isChatPlaneRequest } from '../
 import { getSkillUsageStatsFromDb } from '../../db/hermes/sessions-db'
 import { safeFileStore } from '../../services/safe-file-store'
 
+// Zip import budget, checked against the sizes DECLARED in the central directory
+// before any entry is decompressed (GHSA-xcpc-8h2w-3j85 / zip bombs). A tiny zip
+// can declare gigabytes, so the upload size cap alone does not bound memory.
+const MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 50 * 1024 * 1024 // 50MB per entry
+const MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 200 * 1024 * 1024 // 200MB per archive
+const MAX_ZIP_ENTRIES = 5000
+
 // Chat-plane isolation (fork): when a request arrives on the chat plane it is
 // bound to the caller's own profile (resolved from ctx.state.user.profile via
 // the multitenancy routing table). Admin/JWT requests keep the upstream
@@ -1427,8 +1434,47 @@ export async function importSkill(ctx: any) {
         return
       }
 
+      // Check the end-record's declared entry count BEFORE getEntries(): adm-zip
+      // parses the central directory lazily on the first getEntries() call and
+      // builds one object per declared entry, and that parse throws on truncated
+      // or malformed central directories (which must stay a 400, not a 500).
+      let zipEntries: ReturnType<AdmZip['getEntries']>
       try {
-        for (const entry of zip.getEntries()) {
+        const declaredCount = zip.getEntryCount()
+        if (declaredCount > MAX_ZIP_ENTRIES) {
+          ctx.status = 400
+          ctx.body = { error: `Zip 条目数超限: ${declaredCount} entries declared (max ${MAX_ZIP_ENTRIES})` }
+          return
+        }
+        zipEntries = zip.getEntries()
+      } catch (err: any) {
+        ctx.status = 400
+        ctx.body = { error: `Failed to read zip archive: ${err?.message || err}` }
+        return
+      }
+      if (zipEntries.length > MAX_ZIP_ENTRIES) {
+        ctx.status = 400
+        ctx.body = { error: `Zip 条目数超限: ${zipEntries.length} entries (max ${MAX_ZIP_ENTRIES})` }
+        return
+      }
+      let declaredTotal = 0
+      for (const entry of zipEntries) {
+        const declaredSize = Number(entry.header.size) || 0
+        if (declaredSize > MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) {
+          ctx.status = 400
+          ctx.body = { error: `Zip 单条目解压大小超限: "${entry.entryName}" declares ${declaredSize} bytes uncompressed (max ${MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES})` }
+          return
+        }
+        declaredTotal += declaredSize
+        if (declaredTotal > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
+          ctx.status = 400
+          ctx.body = { error: `Zip 解压总量超限: total declared uncompressed size exceeds ${MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES} bytes` }
+          return
+        }
+      }
+
+      try {
+        for (const entry of zipEntries) {
           // Normalise to forward slashes; adm-zip uses POSIX separators internally
           // but be defensive.
           const rel = entry.entryName.replace(/\\/g, '/')

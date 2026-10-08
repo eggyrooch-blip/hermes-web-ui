@@ -399,6 +399,7 @@ describe('user auth tables and middleware', () => {
       request: { body: { username: 'admin', password: '123456' } },
       headers: {},
       ip: '127.0.0.1',
+      req: { socket: { remoteAddress: '127.0.0.1' } },
       status: 200,
       body: null,
     } as any

@@ -4,13 +4,14 @@ import { MAX_EDIT_SIZE } from '../../services/hermes/file-provider'
 import { requireSuperAdminOrChatPlane } from '../../middleware/user-auth'
 import { MultipartParseError, parseMultipartBoundary, parseMultipartFilename, splitMultipart } from '../../lib/multipart'
 import {
-  assertWorkspaceRealPath,
   createRequestFileProvider,
   getFileRootDir,
   isSensitiveFilePath as isSensitivePath,
   resolveFilePath,
+  resolveWorkspaceEntryPath,
+  resolveWorkspaceRealPath,
 } from '../../services/hermes/file-scope'
-import { isNearestExistingRealPathWithin } from '../../services/hermes/hermes-path'
+import { isNearestExistingRealPathWithin, realPathOrResolved } from '../../services/hermes/hermes-path'
 import { previewProfileFile } from '../../controllers/hermes/file-preview'
 
 function withAbsolutePath<T extends { path: string }>(ctx: any, entry: T, rootDir?: string): T & { absolutePath: string } {
@@ -37,6 +38,17 @@ async function filterWorkspaceEntries<T extends { path: string; name: string }>(
     filtered.push(entry)
   }
   return filtered
+}
+
+// Every operation below opens the canonical path that resolveWorkspaceRealPath
+// validated, never the alias the caller sent: checking `link.txt` and then
+// opening `link.txt` leaves the link free to be swapped in between.
+//
+// The provider is rooted at the canonical workspace too. It derives each
+// entry's workspace-relative `path` from its root, and a canonical target under
+// a non-canonical root would not be recognised as inside it.
+async function workspaceProvider(ctx: any, rootDir?: string) {
+  return createRequestFileProvider(ctx, rootDir ? await realPathOrResolved(rootDir) : undefined)
 }
 
 export const fileRoutes = new Router()
@@ -68,9 +80,17 @@ fileRoutes.get('/api/hermes/files/list', async (ctx) => {
   try {
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(ctx, relativePath, rootDir)
-    await assertWorkspaceRealPath(absPath, rootDir)
-    const provider = await createRequestFileProvider(ctx, rootDir)
-    const entries = await filterWorkspaceEntries(ctx, await provider.listDir(absPath), rootDir)
+    const realPath = await resolveWorkspaceRealPath(absPath, rootDir)
+    const provider = await workspaceProvider(ctx, rootDir)
+    let listed = await provider.listDir(realPath)
+    // The provider names entries relative to the canonical directory. Hand them
+    // back under the path the client navigated with (`linkdir/x`, not
+    // `realdir/x`) so tree keys and the next click stay where the user is;
+    // every follow-up request is validated again.
+    if (rootDir) {
+      listed = listed.map(entry => ({ ...entry, path: relativePath ? `${relativePath}/${entry.name}` : entry.name }))
+    }
+    const entries = await filterWorkspaceEntries(ctx, listed, rootDir)
     entries.sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
       return a.name.localeCompare(b.name)
@@ -93,9 +113,9 @@ fileRoutes.get('/api/hermes/files/stat', async (ctx) => {
   try {
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(ctx, relativePath, rootDir)
-    await assertWorkspaceRealPath(absPath, rootDir)
-    const provider = await createRequestFileProvider(ctx, rootDir)
-    const info = await provider.stat(absPath)
+    const realPath = await resolveWorkspaceRealPath(absPath, rootDir)
+    const provider = await workspaceProvider(ctx, rootDir)
+    const info = await provider.stat(realPath)
     ctx.body = withAbsolutePath(ctx, info, rootDir)
   } catch (err: any) {
     handleError(ctx, err)
@@ -114,9 +134,9 @@ fileRoutes.get('/api/hermes/files/read', requireSuperAdminOrChatPlane, async (ct
   try {
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(ctx, relativePath, rootDir)
-    await assertWorkspaceRealPath(absPath, rootDir)
-    const provider = await createRequestFileProvider(ctx, rootDir)
-    const data = await provider.readFile(absPath)
+    const realPath = await resolveWorkspaceRealPath(absPath, rootDir)
+    const provider = await workspaceProvider(ctx, rootDir)
+    const data = await provider.readFile(realPath)
     if (data.length > MAX_EDIT_SIZE) {
       ctx.status = 413
       ctx.body = { error: 'File too large to edit', code: 'file_too_large' }
@@ -157,9 +177,9 @@ fileRoutes.put('/api/hermes/files/write', requireSuperAdminOrChatPlane, async (c
     }
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(ctx, relativePath, rootDir)
-    await assertWorkspaceRealPath(absPath, rootDir)
-    const provider = await createRequestFileProvider(ctx, rootDir)
-    await provider.writeFile(absPath, buf)
+    const realPath = await resolveWorkspaceRealPath(absPath, rootDir)
+    const provider = await workspaceProvider(ctx, rootDir)
+    await provider.writeFile(realPath, buf)
     ctx.body = { ok: true, path: relativePath }
   } catch (err: any) {
     handleError(ctx, err)
@@ -181,12 +201,12 @@ fileRoutes.delete('/api/hermes/files/delete', requireSuperAdminOrChatPlane, asyn
   try {
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(ctx, relativePath, rootDir)
-    await assertWorkspaceRealPath(absPath, rootDir)
-    const provider = await createRequestFileProvider(ctx, rootDir)
+    const entryPath = await resolveWorkspaceEntryPath(absPath, rootDir)
+    const provider = await workspaceProvider(ctx, rootDir)
     if (recursive) {
-      await provider.deleteDir(absPath)
+      await provider.deleteDir(entryPath)
     } else {
-      await provider.deleteFile(absPath)
+      await provider.deleteFile(entryPath)
     }
     ctx.body = { ok: true }
   } catch (err: any) {
@@ -208,10 +228,10 @@ fileRoutes.post('/api/hermes/files/rename', requireSuperAdminOrChatPlane, async 
     const rootDir = await getFileRootDir(ctx)
     const absOld = resolveFilePath(ctx, oldPath, rootDir)
     const absNew = resolveFilePath(ctx, newPath, rootDir)
-    await assertWorkspaceRealPath(absOld, rootDir)
-    await assertWorkspaceRealPath(absNew, rootDir)
-    const provider = await createRequestFileProvider(ctx, rootDir)
-    await provider.renameFile(absOld, absNew)
+    const realOld = await resolveWorkspaceEntryPath(absOld, rootDir)
+    const realNew = await resolveWorkspaceRealPath(absNew, rootDir)
+    const provider = await workspaceProvider(ctx, rootDir)
+    await provider.renameFile(realOld, realNew)
     ctx.body = { ok: true }
   } catch (err: any) {
     handleError(ctx, err)
@@ -230,9 +250,9 @@ fileRoutes.post('/api/hermes/files/mkdir', requireSuperAdminOrChatPlane, async (
   try {
     const rootDir = await getFileRootDir(ctx)
     const absPath = resolveFilePath(ctx, relativePath, rootDir)
-    await assertWorkspaceRealPath(absPath, rootDir)
-    const provider = await createRequestFileProvider(ctx, rootDir)
-    await provider.mkDir(absPath)
+    const realPath = await resolveWorkspaceRealPath(absPath, rootDir)
+    const provider = await workspaceProvider(ctx, rootDir)
+    await provider.mkDir(realPath)
     ctx.body = { ok: true }
   } catch (err: any) {
     handleError(ctx, err)
@@ -253,10 +273,10 @@ fileRoutes.post('/api/hermes/files/copy', requireSuperAdminOrChatPlane, async (c
     const rootDir = await getFileRootDir(ctx)
     const absSrc = resolveFilePath(ctx, srcPath, rootDir)
     const absDest = resolveFilePath(ctx, destPath, rootDir)
-    await assertWorkspaceRealPath(absSrc, rootDir)
-    await assertWorkspaceRealPath(absDest, rootDir)
-    const provider = await createRequestFileProvider(ctx, rootDir)
-    await provider.copyFile(absSrc, absDest)
+    const realSrc = await resolveWorkspaceRealPath(absSrc, rootDir)
+    const realDest = await resolveWorkspaceRealPath(absDest, rootDir)
+    const provider = await workspaceProvider(ctx, rootDir)
+    await provider.copyFile(realSrc, realDest)
     ctx.body = { ok: true }
   } catch (err: any) {
     handleError(ctx, err)
@@ -286,7 +306,7 @@ fileRoutes.post('/api/hermes/files/upload', requireSuperAdminOrChatPlane, async 
 
   const parts = splitMultipart(raw, boundaryBuf)
   const rootDir = await getFileRootDir(ctx)
-  const provider = await createRequestFileProvider(ctx, rootDir)
+  const provider = await workspaceProvider(ctx, rootDir)
   const results: { name: string; path: string }[] = []
 
   for (const part of parts) {
@@ -324,8 +344,8 @@ fileRoutes.post('/api/hermes/files/upload', requireSuperAdminOrChatPlane, async 
 
     try {
       const absPath = resolveFilePath(ctx, filePath, rootDir)
-      await assertWorkspaceRealPath(absPath, rootDir)
-      await provider.writeFile(absPath, data)
+      const realPath = await resolveWorkspaceRealPath(absPath, rootDir)
+      await provider.writeFile(realPath, data)
     } catch (err: any) {
       handleError(ctx, err)
       return

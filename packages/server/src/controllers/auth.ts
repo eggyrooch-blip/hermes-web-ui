@@ -1,5 +1,5 @@
 import type { Context } from 'koa'
-import { checkPassword, recordPasswordFailure, recordPasswordSuccess, extractIp, getLockedIps, unlockIp, unlockAll } from '../services/login-limiter'
+import { checkPassword, recordPasswordFailure, recordPasswordSuccess, extractIp, getLockedIps, isLoopbackSocket, socketRemoteAddress, unlockIp, unlockAll } from '../services/login-limiter'
 import {
   DEFAULT_PASSWORD,
   DEFAULT_USERNAME,
@@ -139,9 +139,9 @@ export async function currentUser(ctx: Context) {
       updated_at: user.updated_at,
       last_login_at: user.last_login_at,
       avatar: user.avatar || '',
-      requiresCredentialChange: process.env.HERMES_DESKTOP === 'true'
-        ? false
-        : user.username === DEFAULT_USERNAME && verifyPassword(DEFAULT_PASSWORD, user.password_hash),
+      // Server-authoritative: true only while this account still uses the
+      // built-in default credentials, regardless of desktop/server mode.
+      requiresCredentialChange: user.username === DEFAULT_USERNAME && verifyPassword(DEFAULT_PASSWORD, user.password_hash),
       // Server-authoritative console role — drives the /console nav gating.
       // Client rendering is convenience only; the real gate is requireConsoleAdmin.
       consoleRole: resolveConsoleRole(ctx),
@@ -243,6 +243,23 @@ export async function updateMyAvatar(ctx: Context) {
   ctx.body = { success: true, avatar: validation.json }
 }
 
+// Remote addresses already told why first-login bootstrap was refused. Capped so
+// a scan from many addresses cannot grow it without bound.
+const bootstrapRefusalLogged = new Set<string>()
+const BOOTSTRAP_REFUSAL_LOG_MAX = 1000
+
+function logBootstrapRefusedOnce(ctx: Context): void {
+  const remoteAddress = socketRemoteAddress(ctx) || 'unknown'
+  if (bootstrapRefusalLogged.has(remoteAddress)) return
+  if (bootstrapRefusalLogged.size >= BOOTSTRAP_REFUSAL_LOG_MAX) bootstrapRefusalLogged.clear()
+  bootstrapRefusalLogged.add(remoteAddress)
+  logger.warn(
+    { remoteAddress },
+    'First-login bootstrap refused: the user store is empty and the request did not come from a loopback socket. '
+      + 'For a container or remote first install, set HERMES_BOOTSTRAP_ALLOW_REMOTE=1, log in once, change the default password, then unset it.',
+  )
+}
+
 async function passwordLogin(
   ctx: Context,
   username: string,
@@ -257,9 +274,14 @@ async function passwordLogin(
   }
 
   const existingUserCount = countUsers()
+  // First-login bootstrap creates a super_admin from the published default
+  // credentials, so it is only offered to a loopback socket unless the
+  // operator explicitly opts in for remote/container first installs.
+  const bootstrapAllowed = isLoopbackSocket(ctx) || process.env.HERMES_BOOTSTRAP_ALLOW_REMOTE === '1'
   const user = existingUserCount === 0
-    ? bootstrapDefaultSuperAdmin(username, password)
+    ? (bootstrapAllowed ? bootstrapDefaultSuperAdmin(username, password) : null)
     : findUserByUsername(username)
+  if (existingUserCount === 0 && !bootstrapAllowed) logBootstrapRefusedOnce(ctx)
 
   if (!user || user.status !== 'active' || (existingUserCount > 0 && !verifyPassword(password, user.password_hash))) {
     recordPasswordFailure(ip)

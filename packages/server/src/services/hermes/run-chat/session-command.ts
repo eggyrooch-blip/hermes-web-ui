@@ -11,6 +11,9 @@ import { contentBlocksToString } from './content-blocks'
 import {
   createSessionCommandFence,
   enqueueSerializedSessionCommand,
+  isSessionQueueFull,
+  MAX_SESSION_QUEUE,
+  sessionQueueFullRejection,
   reserveQueuedSessionCommand,
 } from './session-command-queue'
 import { captureSessionRunOwnership, ownsSessionGeneration } from './session-run-ownership'
@@ -140,6 +143,10 @@ async function handleSessionCommandImpl(
       originSocketId: ctx.socket.id,
     })
     state = enqueued.state
+    if (enqueued.rejected) {
+      rejectQueueFull(ctx, sessionId)
+      return
+    }
     const queued = enqueued.queued
     emitQueuedState(ctx, sessionId, state)
     if (!enqueued.canStart) return
@@ -255,6 +262,10 @@ async function handleSessionCommandImpl(
       }
 
       if (state.isWorking) {
+        if (isSessionQueueFull(state)) {
+          rejectQueueFull(ctx, sessionId, next.queue_id)
+          return
+        }
         state.queue.push(next)
         emitQueuedState(ctx, sessionId, state)
         return
@@ -366,6 +377,10 @@ async function handleSessionCommandImpl(
       }
       if (!state.isWorking) {
         emitCommand({ ok: false, action: 'queue', message: 'Session is idle. Send the message normally instead.' })
+        return
+      }
+      if (isSessionQueueFull(state)) {
+        rejectQueueFull(ctx, sessionId)
         return
       }
       const queueId = `queue_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
@@ -906,6 +921,11 @@ function removeGoalContinuationRuns(state: SessionState): number {
   const before = state.queue.length
   state.queue = state.queue.filter(item => !item.goalContinuation)
   return before - state.queue.length
+}
+
+function rejectQueueFull(ctx: SessionCommandContext, sessionId: string, queueId = ctx.queueId) {
+  logger.warn('[chat-run-socket] bridge session queue full, rejected command for session %s (limit %d)', sessionId, MAX_SESSION_QUEUE)
+  ctx.socket.emit('run.rejected', sessionQueueFullRejection(sessionId, queueId))
 }
 
 function emitQueuedState(ctx: SessionCommandContext, sessionId: string, state: SessionState) {

@@ -1,6 +1,7 @@
 import type { Context, Next } from 'koa'
 import { createHmac, timingSafeEqual } from 'crypto'
 import { getToken } from '../services/auth'
+import { isLoopbackSocket } from '../services/login-limiter'
 import {
   findUserById,
   listUserProfiles,
@@ -81,16 +82,8 @@ function allowsServerTokenPath(path: string): boolean {
   return SERVER_TOKEN_EXACT_PATHS.has(path)
 }
 
-function isLoopbackRequest(ctx: Context): boolean {
-  const ip = String(ctx.ip || ctx.request.ip || '').trim()
-  const remote = String(ctx.req.socket.remoteAddress || '').trim()
-  const values = [ip, remote].map(value => value.startsWith('::ffff:') ? value.slice(7) : value)
-  return values.some(value => (
-    value === '127.0.0.1' ||
-    value === '::1' ||
-    value === 'localhost' ||
-    value.startsWith('127.')
-  ))
+export function isLoopbackRequest(ctx: Context): boolean {
+  return isLoopbackSocket(ctx)
 }
 
 async function allowServerTokenForAgentEndpoint(ctx: Context, token: string): Promise<boolean> {

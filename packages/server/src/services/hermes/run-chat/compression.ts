@@ -610,6 +610,7 @@ export function getOrCreateSession(sessionMap: Map<string, SessionState>, sessio
 export function pushState(sessionMap: Map<string, SessionState>, sessionId: string, event: string, data: any) {
   const state = getOrCreateSession(sessionMap, sessionId)
   state.events.push({ event, data })
+  if (state.events.length > 200) state.events.splice(0, state.events.length - 200)
 }
 
 export function replaceState(sessionMap: Map<string, SessionState>, sessionId: string, event: string, data: any) {
