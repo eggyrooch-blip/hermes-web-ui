@@ -1,9 +1,10 @@
-import { writeFile } from 'fs/promises'
+import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
-import { safeReadFile, safeStat, getHermesDir } from '../../services/config-helpers'
+import { safeReadFile, safeStat } from '../../services/config-helpers'
+import { getRequestProfileDir } from '../../services/request-context'
 
 export async function get(ctx: any) {
-  const hd = getHermesDir()
+  const hd = getRequestProfileDir(ctx)
   const memoryPath = join(hd, 'memories', 'MEMORY.md')
   const userPath = join(hd, 'memories', 'USER.md')
   const soulPath = join(hd, 'SOUL.md')
@@ -19,7 +20,7 @@ export async function get(ctx: any) {
 
 export async function save(ctx: any) {
   const { section, content } = ctx.request.body as { section: string; content: string }
-  if (!section || !content) {
+  if (!section || content === undefined || content === null) {
     ctx.status = 400
     ctx.body = { error: 'Missing section or content' }
     return
@@ -30,11 +31,13 @@ export async function save(ctx: any) {
     return
   }
   let filePath: string
+  const hd = getRequestProfileDir(ctx)
   if (section === 'soul') {
-    filePath = join(getHermesDir(), 'SOUL.md')
+    filePath = join(hd, 'SOUL.md')
   } else {
     const fileName = section === 'memory' ? 'MEMORY.md' : 'USER.md'
-    filePath = join(getHermesDir(), 'memories', fileName)
+    await mkdir(join(hd, 'memories'), { recursive: true })
+    filePath = join(hd, 'memories', fileName)
   }
   try {
     await writeFile(filePath, content, 'utf-8')

@@ -4,14 +4,31 @@
  */
 import { isSqliteAvailable, getDb } from '../index'
 import { SESSIONS_TABLE, MESSAGES_TABLE } from './schemas'
+import { normalizeMessageContentForStorageRole } from './message-content'
+import { deleteWorkspaceRunChangeRowsForSession } from './workspace-run-changes-store'
+import { clearSessionIncarnation, ensureSessionIncarnation, renewSessionIncarnation } from './session-incarnation'
+import { deleteFeedbackRowsForSession } from './feedback-store'
 
 // Re-export types for compatibility with sessions-db.ts consumers
 export interface HermesSessionRow {
   id: string
   profile: string
   source: string
+  agent: string
+  agent_mode: string
+  agent_session_id: string
+  agent_native_session_id: string
+  expert_id: string | null
+  expert_label: string | null
+  expert_avatar: string | null
+  execution_engine: 'hermes' | 'harness'
+  is_archived: boolean
+  is_pinned: boolean
   user_id: string | null
   model: string
+  provider: string
+  /** Per-session reasoning-effort override; '' means "use the config default". */
+  reasoning_effort: string
   title: string | null
   started_at: number
   ended_at: number | null
@@ -30,6 +47,11 @@ export interface HermesSessionRow {
   preview: string
   last_active: number
   workspace: string | null
+  project_id: string | null
+  project_name: string | null
+  project_bound: boolean
+  /** This session already showed the cross-model-family switch notice. */
+  family_switch_noticed: boolean
 }
 
 export interface HermesMessageRow {
@@ -37,6 +59,8 @@ export interface HermesMessageRow {
   session_id: string
   role: string
   content: string
+  display_role: string | null
+  display_content: string | null
   tool_call_id: string | null
   tool_calls: any[] | null
   tool_name: string | null
@@ -46,6 +70,17 @@ export interface HermesMessageRow {
   reasoning: string | null
   reasoning_details?: string | null
   reasoning_content?: string | null
+  run_id: string
+  client_id: string
+  source_refs: SourceRef[] | null
+}
+
+export interface SourceRef {
+  id: string
+  type: 'web' | 'workspace' | 'lark_doc' | 'other'
+  label: string
+  uri?: string
+  locator?: string
 }
 
 export interface HermesSessionSearchRow extends HermesSessionRow {
@@ -75,6 +110,16 @@ function parseToolCalls(value: unknown): any[] | null {
   }
 }
 
+function parseSourceRefs(value: unknown): SourceRef[] | null {
+  if (value == null || value === '') return null
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value
+    return Array.isArray(parsed) ? parsed as SourceRef[] : null
+  } catch {
+    return null
+  }
+}
+
 function mapSessionRow(row: Record<string, unknown>): HermesSessionRow {
   const rawTitle = row.title != null ? String(row.title) : null
   const preview = String(row.preview || '')
@@ -83,8 +128,20 @@ function mapSessionRow(row: Record<string, unknown>): HermesSessionRow {
     id: String(row.id || ''),
     profile: String(row.profile || 'default'),
     source: String(row.source || 'api_server'),
+    agent: String(row.agent || ''),
+    agent_mode: String(row.agent_mode || ''),
+    agent_session_id: String(row.agent_session_id || ''),
+    agent_native_session_id: String(row.agent_native_session_id || ''),
+    expert_id: row.expert_id != null ? String(row.expert_id) : null,
+    expert_label: row.expert_label != null ? String(row.expert_label) : null,
+    expert_avatar: row.expert_avatar != null ? String(row.expert_avatar) : null,
+    execution_engine: row.execution_engine === 'harness' ? 'harness' : 'hermes',
+    is_archived: Number(row.is_archived || 0) === 1,
+    is_pinned: Number(row.is_pinned || 0) === 1,
     user_id: row.user_id != null ? String(row.user_id) : null,
     model: String(row.model || ''),
+    provider: String(row.provider || ''),
+    reasoning_effort: String(row.reasoning_effort || ''),
     title,
     started_at: Number(row.started_at || 0),
     ended_at: row.ended_at != null ? Number(row.ended_at) : null,
@@ -103,6 +160,10 @@ function mapSessionRow(row: Record<string, unknown>): HermesSessionRow {
     preview: String(row.preview || ''),
     last_active: Number(row.last_active || 0),
     workspace: row.workspace != null ? String(row.workspace) : null,
+    project_id: row.project_id != null ? String(row.project_id) : null,
+    project_name: row.project_name != null ? String(row.project_name) : null,
+    project_bound: Number(row.project_bound || 0) === 1,
+    family_switch_noticed: Number(row.family_switch_noticed || 0) === 1,
   }
 }
 
@@ -112,6 +173,8 @@ function mapMessageRow(row: Record<string, unknown>): HermesMessageRow {
     session_id: String(row.session_id || ''),
     role: String(row.role || ''),
     content: row.content != null ? String(row.content) : '',
+    display_role: row.display_role != null ? String(row.display_role) : null,
+    display_content: row.display_content != null ? String(row.display_content) : null,
     tool_call_id: row.tool_call_id != null ? String(row.tool_call_id) : null,
     tool_calls: parseToolCalls(row.tool_calls),
     tool_name: row.tool_name != null ? String(row.tool_name) : null,
@@ -121,6 +184,9 @@ function mapMessageRow(row: Record<string, unknown>): HermesMessageRow {
     reasoning: row.reasoning != null ? String(row.reasoning) : null,
     reasoning_details: row.reasoning_details != null ? String(row.reasoning_details) : null,
     reasoning_content: row.reasoning_content != null ? String(row.reasoning_content) : null,
+    run_id: String(row.run_id || ''),
+    client_id: String(row.client_id || ''),
+    source_refs: parseSourceRefs(row.source_refs),
   }
 }
 
@@ -129,27 +195,74 @@ function mapMessageRow(row: Record<string, unknown>): HermesMessageRow {
 export function createSession(data: {
   id: string
   profile?: string
+  source?: string
+  agent?: string
+  agent_mode?: string
+  agent_session_id?: string
+  agent_native_session_id?: string
+  expert_id?: string | null
+  expert_label?: string | null
+  expert_avatar?: string | null
+  user_id?: string | null
   model?: string
+  provider?: string
+  reasoning_effort?: string
   title?: string
   workspace?: string
+  execution_engine?: 'hermes' | 'harness'
 }): HermesSessionRow {
   const now = Math.floor(Date.now() / 1000)
+  const source = data.source || 'api_server'
+  const agent = data.agent || (source === 'cli' ? 'hermes' : '')
   if (!isSqliteAvailable()) {
     return {
-      id: data.id, profile: data.profile || 'default', source: 'api_server',
-      user_id: null, model: data.model || '', title: data.title || null,
+      id: data.id, profile: data.profile || 'default', source, agent,
+      agent_mode: data.agent_mode || '',
+      agent_session_id: data.agent_session_id || '', agent_native_session_id: data.agent_native_session_id || '',
+      expert_id: data.expert_id || null,
+      expert_label: data.expert_label || null,
+      expert_avatar: data.expert_avatar || null,
+      execution_engine: data.execution_engine === 'harness' ? 'harness' : 'hermes',
+      is_archived: false,
+      is_pinned: false,
+      user_id: data.user_id || null, model: data.model || '', provider: data.provider || '',
+      reasoning_effort: data.reasoning_effort || '',
+      title: data.title || null,
       started_at: now, ended_at: null, end_reason: null,
       message_count: 0, tool_call_count: 0,
       input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0,
       billing_provider: null, estimated_cost_usd: 0, actual_cost_usd: null,
       cost_status: '', preview: '', last_active: now, workspace: data.workspace || null,
+      project_id: null, project_name: null, project_bound: false,
+      family_switch_noticed: false,
     }
   }
   const db = getDb()!
   db.prepare(
-    `INSERT INTO ${SESSIONS_TABLE} (id, profile, source, model, title, started_at, last_active, workspace)
-     VALUES (?, ?, 'api_server', ?, ?, ?, ?, ?)`,
-  ).run(data.id, data.profile || 'default', data.model || '', data.title || null, now, now, data.workspace || null)
+    `INSERT INTO ${SESSIONS_TABLE} (id, profile, source, agent, agent_mode, agent_session_id, agent_native_session_id, expert_id, expert_label, expert_avatar, user_id, model, provider, reasoning_effort, title, started_at, last_active, workspace, execution_engine)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    data.id,
+    data.profile || 'default',
+    source,
+    agent,
+    data.agent_mode || '',
+    data.agent_session_id || '',
+    data.agent_native_session_id || '',
+    data.expert_id || null,
+    data.expert_label || null,
+    data.expert_avatar || null,
+    data.user_id || null,
+    data.model || '',
+    data.provider || '',
+    data.reasoning_effort || '',
+    data.title || null,
+    now,
+    now,
+    data.workspace || null,
+    data.execution_engine === 'harness' ? 'harness' : 'hermes',
+  )
+  renewSessionIncarnation(data.id)
   return getSession(data.id)!
 }
 
@@ -162,7 +275,27 @@ export function getSession(id: string): HermesSessionRow | null {
   return row ? mapSessionRow(row) : null
 }
 
-export function updateSession(id: string, data: Partial<Omit<HermesSessionRow, 'id' | 'profile'>>): void {
+export function getSessionRowId(id: string): number | null {
+  if (!isSqliteAvailable()) return null
+  const db = getDb()!
+  const row = db.prepare(
+    `SELECT rowid AS row_id FROM ${SESSIONS_TABLE} WHERE id = ?`,
+  ).get(id) as { row_id?: number } | undefined
+  return row?.row_id == null ? null : Number(row.row_id)
+}
+
+export function getSessionIncarnation(id: string, knownRowId: number | null = getSessionRowId(id)): number | null {
+  if (knownRowId == null) return null
+  return ensureSessionIncarnation(id)
+}
+
+// `reasoning_effort` widens to null on write: reads always normalize to a
+// string, but clearing the override stores SQL NULL rather than '' so "never
+// set" and "explicitly cleared" look the same to any future query.
+export function updateSession(
+  id: string,
+  data: Partial<Omit<HermesSessionRow, 'id' | 'profile' | 'reasoning_effort'>> & { reasoning_effort?: string | null },
+): void {
   if (!isSqliteAvailable()) return
   const db = getDb()!
   const fields: string[] = []
@@ -172,7 +305,7 @@ export function updateSession(id: string, data: Partial<Omit<HermesSessionRow, '
     // Skip last_active and ended_at - handle them separately below
     if (key === 'last_active' || key === 'ended_at') continue
     fields.push(`"${key}" = ?`)
-    values.push(val)
+    values.push(typeof val === 'boolean' ? Number(val) : val)
   }
 
   // Handle ended_at - only update if provided, otherwise keep existing value
@@ -194,9 +327,27 @@ export function updateSession(id: string, data: Partial<Omit<HermesSessionRow, '
 export function deleteSession(id: string): boolean {
   if (!isSqliteAvailable()) return false
   const db = getDb()!
-  db.prepare(`DELETE FROM ${MESSAGES_TABLE} WHERE session_id = ?`).run(id)
-  const result = db.prepare(`DELETE FROM ${SESSIONS_TABLE} WHERE id = ?`).run(id)
-  return result.changes > 0
+  db.exec('BEGIN')
+  try {
+    deleteFeedbackRowsForSession(db, id)
+    deleteWorkspaceRunChangeRowsForSession(db, id)
+    db.prepare(`DELETE FROM ${MESSAGES_TABLE} WHERE session_id = ?`).run(id)
+    const result = db.prepare(`DELETE FROM ${SESSIONS_TABLE} WHERE id = ?`).run(id)
+    db.exec('COMMIT')
+    if (result.changes > 0) clearSessionIncarnation(id)
+    return result.changes > 0
+  } catch (err) {
+    db.exec('ROLLBACK')
+    throw err
+  }
+}
+
+export function clearSessionMessages(id: string): number {
+  if (!isSqliteAvailable()) return 0
+  const db = getDb()!
+  const result = db.prepare(`DELETE FROM ${MESSAGES_TABLE} WHERE session_id = ?`).run(id)
+  updateSessionStats(id)
+  return Number(result.changes)
 }
 
 export function renameSession(id: string, title: string): boolean {
@@ -206,16 +357,64 @@ export function renameSession(id: string, title: string): boolean {
   return result.changes > 0
 }
 
-export function listSessions(profile: string, source?: string, limit = 2000): HermesSessionRow[] {
+/**
+ * Atomically claim the one-shot cross-family switch notice for this session.
+ *
+ * The `AND family_switch_noticed = 0` guard is the whole point: callers read
+ * the session row well before they write it (auth and workspace resolution sit
+ * in between), so two concurrent switches both see an un-noticed row. SQLite
+ * settles it here — exactly one UPDATE reports a change, and only that caller
+ * may notice.
+ */
+export function claimFamilySwitchNotice(id: string): boolean {
+  if (!isSqliteAvailable()) return false
+  const db = getDb()!
+  const result = db.prepare(
+    `UPDATE ${SESSIONS_TABLE} SET family_switch_noticed = 1 WHERE id = ? AND family_switch_noticed = 0`,
+  ).run(id)
+  return result.changes > 0
+}
+
+export function setSessionArchived(id: string, archived: boolean): boolean {
+  if (!isSqliteAvailable()) return false
+  const db = getDb()!
+  const result = db.prepare(`UPDATE ${SESSIONS_TABLE} SET is_archived = ? WHERE id = ?`).run(archived ? 1 : 0, id)
+  return result.changes > 0
+}
+
+/**
+ * Cross-device session pin. The flag lives on the session row (not in browser
+ * storage) so the same account sees the same pinned set in every browser.
+ */
+export function setSessionPinned(id: string, pinned: boolean): boolean {
+  if (!isSqliteAvailable()) return false
+  const db = getDb()!
+  const result = db.prepare(`UPDATE ${SESSIONS_TABLE} SET is_pinned = ? WHERE id = ?`).run(pinned ? 1 : 0, id)
+  return result.changes > 0
+}
+
+export function listSessions(
+  profile?: string,
+  source?: string,
+  limit = 2000,
+  options: { includeArchived?: boolean; pinned?: boolean } = {},
+): HermesSessionRow[] {
   if (!isSqliteAvailable()) return []
   const db = getDb()!
+  const profileFilter = profile?.trim()
+  const includeArchived = options.includeArchived === true
+  const pinnedFilter = options.pinned === undefined
+    ? ''
+    : options.pinned
+      ? 'AND COALESCE(s.is_pinned, 0) = 1'
+      : 'AND COALESCE(s.is_pinned, 0) = 0'
 
   // Use a subquery to generate preview from first user message if not set
   const sql = `
     SELECT
       s.*,
       COALESCE(
-        s.preview,
+        NULLIF(s.preview, ''),
         (
           SELECT SUBSTR(REPLACE(REPLACE(m.content, CHAR(10), ' '), CHAR(13), ' '), 1, 63)
           FROM ${MESSAGES_TABLE} m
@@ -226,13 +425,21 @@ export function listSessions(profile: string, source?: string, limit = 2000): He
         ''
       ) AS preview
     FROM ${SESSIONS_TABLE} s
-    WHERE s.profile = ?
+    WHERE 1 = 1
+      ${profileFilter ? 'AND s.profile = ?' : ''}
       ${source ? 'AND s.source = ?' : ''}
-    ORDER BY s.last_active DESC
+      ${includeArchived ? '' : 'AND COALESCE(s.is_archived, 0) = 0'}
+      ${pinnedFilter}
+    -- Pinned rows sort first so a truncating LIMIT can never drop a pin that
+    -- the sidebar has to render above everything else.
+    ORDER BY COALESCE(s.is_pinned, 0) DESC, s.last_active DESC
     LIMIT ?
   `
 
-  const params: any[] = [profile]
+  const params: any[] = []
+  if (profileFilter) {
+    params.push(profileFilter)
+  }
   if (source) {
     params.push(source)
   }
@@ -242,11 +449,52 @@ export function listSessions(profile: string, source?: string, limit = 2000): He
   return rows.map(mapSessionRow)
 }
 
-export function searchSessions(profile: string, query: string, limit = 20): HermesSessionSearchRow[] {
+export function listSessionsByAgent(
+  agentId: string,
+  options: { userId?: string; source?: string; limit?: number; includeArchived?: boolean } = {},
+): HermesSessionRow[] {
   if (!isSqliteAvailable()) return []
+  const agentFilter = agentId.trim()
+  if (!agentFilter) return []
+  const userId = options.userId?.trim()
+  const limit = options.limit && options.limit > 0 ? options.limit : 2000
+  const db = getDb()!
+  const sql = `
+    SELECT
+      s.*,
+      COALESCE(
+        NULLIF(s.preview, ''),
+        (
+          SELECT SUBSTR(REPLACE(REPLACE(m.content, CHAR(10), ' '), CHAR(13), ' '), 1, 63)
+          FROM ${MESSAGES_TABLE} m
+          WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+          ORDER BY m.timestamp, m.id
+          LIMIT 1
+        ),
+        ''
+      ) AS preview
+    FROM ${SESSIONS_TABLE} s
+    WHERE s.agent = ?
+      ${userId ? 'AND s.user_id = ?' : ''}
+      ${options.source ? 'AND s.source = ?' : ''}
+      ${options.includeArchived ? '' : 'AND COALESCE(s.is_archived, 0) = 0'}
+    ORDER BY s.last_active DESC
+    LIMIT ?
+  `
+  const params: any[] = [agentFilter]
+  if (userId) params.push(userId)
+  if (options.source) params.push(options.source)
+  params.push(limit)
+  const rows = db.prepare(sql).all(...params) as Record<string, unknown>[]
+  return rows.map(mapSessionRow)
+}
+
+export function searchSessions(profile: string | null | undefined, query: string, limit = 20): HermesSessionSearchRow[] {
+  if (!isSqliteAvailable()) return []
+  const profileFilter = profile?.trim()
   const trimmed = query.trim()
   if (!trimmed) {
-    return listSessions(profile, undefined, limit).map(s => ({ ...s, snippet: s.preview || '', matched_message_id: null }))
+    return listSessions(profileFilter, undefined, limit).map(s => ({ ...s, snippet: s.preview || '', matched_message_id: null }))
   }
   const db = getDb()!
   const lowered = trimmed.toLowerCase()
@@ -255,12 +503,22 @@ export function searchSessions(profile: string, query: string, limit = 20): Herm
   // Step 1: Find matching sessions
   const sessionRows = db.prepare(
     `SELECT * FROM ${SESSIONS_TABLE}
-     WHERE profile = ? AND (
+     WHERE 1 = 1
+       ${profileFilter ? 'AND profile = ?' : ''}
+       AND COALESCE(is_archived, 0) = 0
+       AND (
        LOWER(title) LIKE ? OR LOWER(preview) LIKE ?
        OR id IN (SELECT DISTINCT session_id FROM ${MESSAGES_TABLE} WHERE LOWER(content) LIKE ? OR LOWER(COALESCE(tool_name, '')) LIKE ?)
      )
      ORDER BY last_active DESC LIMIT ?`,
-  ).all(profile, pattern, pattern, pattern, pattern, limit) as Record<string, unknown>[]
+  ).all(...[
+    ...(profileFilter ? [profileFilter] : []),
+    pattern,
+    pattern,
+    pattern,
+    pattern,
+    limit,
+  ]) as Record<string, unknown>[]
 
   if (sessionRows.length === 0) return []
 
@@ -301,6 +559,78 @@ export function searchSessions(profile: string, query: string, limit = 20): Herm
   })
 }
 
+export function searchSessionsByAgent(
+  agentId: string,
+  query: string,
+  options: { userId?: string; source?: string; limit?: number; includeArchived?: boolean } = {},
+): HermesSessionSearchRow[] {
+  if (!isSqliteAvailable()) return []
+  const agentFilter = agentId.trim()
+  if (!agentFilter) return []
+  const userId = options.userId?.trim()
+  const limit = options.limit && options.limit > 0 ? options.limit : 20
+  const trimmed = query.trim()
+  if (!trimmed) {
+    return listSessionsByAgent(agentFilter, { userId, source: options.source, limit, includeArchived: options.includeArchived })
+      .map(s => ({ ...s, snippet: s.preview || '', matched_message_id: null }))
+  }
+  const db = getDb()!
+  const lowered = trimmed.toLowerCase()
+  const pattern = `%${lowered}%`
+  const sessionRows = db.prepare(
+    `SELECT * FROM ${SESSIONS_TABLE}
+     WHERE agent = ?
+       ${userId ? 'AND user_id = ?' : ''}
+       ${options.source ? 'AND source = ?' : ''}
+       ${options.includeArchived ? '' : 'AND COALESCE(is_archived, 0) = 0'}
+       AND (
+       LOWER(title) LIKE ? OR LOWER(preview) LIKE ?
+       OR id IN (SELECT DISTINCT session_id FROM ${MESSAGES_TABLE} WHERE LOWER(content) LIKE ? OR LOWER(COALESCE(tool_name, '')) LIKE ?)
+     )
+     ORDER BY last_active DESC LIMIT ?`,
+  ).all(...[
+    agentFilter,
+    ...(userId ? [userId] : []),
+    ...(options.source ? [options.source] : []),
+    pattern,
+    pattern,
+    pattern,
+    pattern,
+    limit,
+  ]) as Record<string, unknown>[]
+
+  if (sessionRows.length === 0) return []
+  const msgQuery = db.prepare(
+    `SELECT id, content, tool_name FROM ${MESSAGES_TABLE}
+     WHERE session_id = ? AND (LOWER(content) LIKE ? OR LOWER(COALESCE(tool_name, '')) LIKE ?)
+     ORDER BY timestamp, id LIMIT 1`,
+  )
+
+  return sessionRows.map(row => {
+    const session = mapSessionRow(row)
+    let snippet = ''
+    let matched_message_id: number | null = null
+    const titleLower = (session.title || '').toLowerCase()
+    const previewLower = (session.preview || '').toLowerCase()
+    const titleIdx = titleLower.indexOf(lowered)
+    const previewIdx = previewLower.indexOf(lowered)
+    if (titleIdx >= 0) {
+      snippet = session.title!.substring(Math.max(0, titleIdx - 20), titleIdx + lowered.length + 60)
+    } else if (previewIdx >= 0) {
+      snippet = session.preview.substring(Math.max(0, previewIdx - 20), previewIdx + lowered.length + 60)
+    } else {
+      const msg = msgQuery.get(session.id, pattern, pattern) as { id: number; content: string; tool_name: string | null } | undefined
+      if (msg) {
+        matched_message_id = msg.id
+        const contentLower = msg.content.toLowerCase()
+        const idx = contentLower.indexOf(lowered)
+        snippet = msg.content.substring(Math.max(0, idx - 20), idx + lowered.length + 60)
+      }
+    }
+    return { ...session, snippet, matched_message_id }
+  })
+}
+
 export interface PaginatedSessionDetailResult {
   session: HermesSessionRow
   messages: HermesMessageRow[]
@@ -332,6 +662,8 @@ export function addMessage(msg: {
   session_id: string
   role: string
   content: string
+  display_role?: string | null
+  display_content?: string | null
   tool_call_id?: string | null
   tool_calls?: any[] | null
   tool_name?: string | null
@@ -341,20 +673,24 @@ export function addMessage(msg: {
   reasoning?: string | null
   reasoning_details?: string | null
   reasoning_content?: string | null
+  run_id?: string | null
+  client_id?: string | null
+  source_refs?: SourceRef[] | null
 }): number | undefined {
   if (!isSqliteAvailable()) return undefined
   const db = getDb()!
   const toolCallsJson = msg.tool_calls ? JSON.stringify(msg.tool_calls) : null
   const result = db.prepare(
-    `INSERT INTO ${MESSAGES_TABLE} (session_id, role, content, tool_call_id, tool_calls, tool_name, timestamp, token_count, finish_reason, reasoning, reasoning_details, reasoning_content)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO ${MESSAGES_TABLE} (session_id, role, content, display_role, display_content, tool_call_id, tool_calls, tool_name, timestamp, token_count, finish_reason, reasoning, reasoning_details, reasoning_content, run_id, client_id, source_refs)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
-    msg.session_id, msg.role, msg.content,
+    msg.session_id, msg.role, normalizeMessageContentForStorageRole(msg.role, msg.content),
+    msg.display_role ?? null, msg.display_content ?? null,
     msg.tool_call_id ?? null, toolCallsJson, msg.tool_name ?? null,
     msg.timestamp ?? Math.floor(Date.now() / 1000),
     msg.token_count ?? null, msg.finish_reason ?? null,
     msg.reasoning ?? null, msg.reasoning_details ?? null,
-    msg.reasoning_content ?? null,
+    msg.reasoning_content ?? null, msg.run_id ?? '', msg.client_id ?? '', msg.source_refs?.length ? JSON.stringify(msg.source_refs) : null,
   )
   return result.lastInsertRowid as number
 }
@@ -363,6 +699,8 @@ export function addMessages(msgs: Array<{
   session_id: string
   role: string
   content: string
+  display_role?: string | null
+  display_content?: string | null
   tool_call_id?: string | null
   tool_calls?: any[] | null
   tool_name?: string | null
@@ -372,24 +710,28 @@ export function addMessages(msgs: Array<{
   reasoning?: string | null
   reasoning_details?: string | null
   reasoning_content?: string | null
+  run_id?: string | null
+  client_id?: string | null
+  source_refs?: SourceRef[] | null
 }>): void {
   if (!isSqliteAvailable() || msgs.length === 0) return
   const db = getDb()!
   const insert = db.prepare(
-    `INSERT INTO ${MESSAGES_TABLE} (session_id, role, content, tool_call_id, tool_calls, tool_name, timestamp, token_count, finish_reason, reasoning, reasoning_details, reasoning_content)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO ${MESSAGES_TABLE} (session_id, role, content, display_role, display_content, tool_call_id, tool_calls, tool_name, timestamp, token_count, finish_reason, reasoning, reasoning_details, reasoning_content, run_id, client_id, source_refs)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   db.exec('BEGIN')
   try {
     for (const msg of msgs) {
       const toolCallsJson = msg.tool_calls ? JSON.stringify(msg.tool_calls) : null
       insert.run(
-        msg.session_id, msg.role, msg.content,
+        msg.session_id, msg.role, normalizeMessageContentForStorageRole(msg.role, msg.content),
+        msg.display_role ?? null, msg.display_content ?? null,
         msg.tool_call_id ?? null, toolCallsJson, msg.tool_name ?? null,
         msg.timestamp ?? Math.floor(Date.now() / 1000),
         msg.token_count ?? null, msg.finish_reason ?? null,
         msg.reasoning ?? null, msg.reasoning_details ?? null,
-        msg.reasoning_content ?? null,
+        msg.reasoning_content ?? null, msg.run_id ?? '', msg.client_id ?? '', msg.source_refs?.length ? JSON.stringify(msg.source_refs) : null,
       )
     }
     db.exec('COMMIT')
@@ -423,7 +765,7 @@ export function updateSessionStats(id: string): void {
 export function getSessionDetailPaginated(
   id: string,
   offset = 0,
-  limit = 500,
+  limit = 150,
 ): PaginatedSessionDetailResult | null {
   if (!isSqliteAvailable()) {
     return null
@@ -459,11 +801,6 @@ export function getSessionDetailPaginated(
     hasMore: offset + messages.length < total,
   }
 }
-
-// --- Session store mode ---
-
-import { config } from '../../config'
-
-export function useLocalSessionStore(): boolean {
-  return config.sessionStore === 'local'
+export function isSessionStorageAvailable(): boolean {
+  return isSqliteAvailable()
 }

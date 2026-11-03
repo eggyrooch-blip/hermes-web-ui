@@ -107,7 +107,17 @@ describe('Database Schema Synchronization', () => {
 
   describe('Normal initialization - fresh database creation', () => {
     it('creates all tables with correct schemas when database does not exist', async () => {
-      const { initAllHermesTables, USAGE_TABLE, USAGE_SCHEMA, SESSIONS_TABLE, SESSIONS_SCHEMA } =
+      const {
+        initAllHermesTables,
+        USAGE_TABLE,
+        USAGE_SCHEMA,
+        SESSIONS_TABLE,
+        SESSIONS_SCHEMA,
+        WORKSPACE_RUN_CHANGES_TABLE,
+        WORKSPACE_RUN_CHANGES_SCHEMA,
+        WORKSPACE_RUN_CHANGE_FILES_TABLE,
+        WORKSPACE_RUN_CHANGE_FILES_SCHEMA,
+      } =
         await import('../../packages/server/src/db/hermes/schemas')
 
       initAllHermesTables()
@@ -133,11 +143,32 @@ describe('Database Schema Synchronization', () => {
       expect(sessionsCols.has('id')).toBe(true)
       expect(sessionsCols.has('profile')).toBe(true)
       expect(sessionsCols.has('source')).toBe(true)
+      expect(sessionsCols.has('agent_session_id')).toBe(true)
+      expect(sessionsCols.has('agent_native_session_id')).toBe(true)
+      expect(sessionsCols.has('expert_id')).toBe(true)
+      expect(sessionsCols.has('expert_label')).toBe(true)
+      expect(sessionsCols.has('expert_avatar')).toBe(true)
+
+      expect(tableExists(db, WORKSPACE_RUN_CHANGES_TABLE)).toBe(true)
+      const changesCols = getTableColumns(db, WORKSPACE_RUN_CHANGES_TABLE)
+      expect(changesCols.size).toBe(Object.keys(WORKSPACE_RUN_CHANGES_SCHEMA).length)
+      expect(changesCols.has('change_id')).toBe(true)
+      expect(changesCols.has('session_id')).toBe(true)
+      expect(changesCols.has('files_changed')).toBe(true)
+      expect(changesCols.has('total_patch_bytes')).toBe(true)
+
+      expect(tableExists(db, WORKSPACE_RUN_CHANGE_FILES_TABLE)).toBe(true)
+      const filesCols = getTableColumns(db, WORKSPACE_RUN_CHANGE_FILES_TABLE)
+      expect(filesCols.size).toBe(Object.keys(WORKSPACE_RUN_CHANGE_FILES_SCHEMA).length)
+      expect(filesCols.has('change_id')).toBe(true)
+      expect(filesCols.has('path')).toBe(true)
+      expect(filesCols.has('patch')).toBe(true)
+      expect(filesCols.has('binary')).toBe(true)
     })
   })
 
-  describe('Schema sync with column additions', () => {
-    it('adds missing columns to existing table without rebuilding', async () => {
+  describe('Safe additive schema changes', () => {
+    it('adds missing safe columns to existing table without rebuilding', async () => {
       const { syncTable, USAGE_TABLE, USAGE_SCHEMA } = await import('../../packages/server/src/db/hermes/schemas')
 
       // Create initial table without some columns
@@ -150,7 +181,7 @@ describe('Database Schema Synchronization', () => {
       // Sync with full schema
       syncTable(USAGE_TABLE, USAGE_SCHEMA, { primaryKey: 'id' })
 
-      // Verify all columns now exist
+      // Verify safe missing columns now exist
       const cols = getTableColumns(db, USAGE_TABLE)
       expect(cols.has('input_tokens')).toBe(true)
       expect(cols.has('output_tokens')).toBe(true)
@@ -161,6 +192,70 @@ describe('Database Schema Synchronization', () => {
       const row = db.prepare(`SELECT * FROM "${USAGE_TABLE}" WHERE session_id = ?`).get('test-1')
       expect(row).toBeTruthy()
       expect(row.session_id).toBe('test-1')
+    })
+
+    it('adds created_at to legacy session_usage tables missing the column', async () => {
+      const { syncTable, USAGE_TABLE, USAGE_SCHEMA } = await import('../../packages/server/src/db/hermes/schemas')
+
+      const db = getTestDb()
+      db.exec(`CREATE TABLE "${USAGE_TABLE}" (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL)`)
+      db.prepare(`INSERT INTO "${USAGE_TABLE}" (session_id) VALUES (?)`).run('legacy-session')
+
+      syncTable(USAGE_TABLE, USAGE_SCHEMA, { primaryKey: 'id' })
+
+      const cols = getTableColumns(db, USAGE_TABLE)
+      expect(cols.has('created_at')).toBe(true)
+
+      const row = db.prepare(`SELECT session_id, created_at FROM "${USAGE_TABLE}" WHERE session_id = ?`).get('legacy-session')
+      expect(row).toMatchObject({ session_id: 'legacy-session', created_at: 0 })
+    })
+
+    it('adds family_switch_noticed to legacy sessions tables and defaults existing rows to un-noticed', async () => {
+      const { syncTable, SESSIONS_TABLE, SESSIONS_SCHEMA } = await import('../../packages/server/src/db/hermes/schemas')
+
+      const db = getTestDb()
+      db.exec(`CREATE TABLE "${SESSIONS_TABLE}" (id TEXT PRIMARY KEY, profile TEXT NOT NULL DEFAULT 'default', model TEXT NOT NULL DEFAULT '', started_at INTEGER NOT NULL, last_active INTEGER NOT NULL)`)
+      db.prepare(`INSERT INTO "${SESSIONS_TABLE}" (id, model, started_at, last_active) VALUES (?, ?, ?, ?)`)
+        .run('legacy-session', 'claude-sonnet-5', 1, 1)
+
+      syncTable(SESSIONS_TABLE, SESSIONS_SCHEMA)
+
+      expect(getTableColumns(db, SESSIONS_TABLE).has('family_switch_noticed')).toBe(true)
+
+      // Pre-existing conversations start un-noticed, so their first cross-family
+      // switch after the upgrade still gets its one notice.
+      const row = db.prepare(`SELECT model, family_switch_noticed FROM "${SESSIONS_TABLE}" WHERE id = ?`).get('legacy-session')
+      expect(row).toMatchObject({ model: 'claude-sonnet-5', family_switch_noticed: 0 })
+    })
+
+    it('adds the nullable group-chat owner column to an existing room table', async () => {
+      const { syncTable, initAllHermesTables, GC_ROOMS_TABLE, GC_ROOMS_SCHEMA } = await import('../../packages/server/src/db/hermes/schemas')
+      const db = getTestDb()
+      db.exec(`CREATE TABLE "${GC_ROOMS_TABLE}" (id TEXT PRIMARY KEY, name TEXT NOT NULL, inviteCode TEXT UNIQUE)`)
+      db.prepare(`INSERT INTO "${GC_ROOMS_TABLE}" (id, name, inviteCode) VALUES (?, ?, ?)`)
+        .run('legacy-room', 'Legacy', 'LEGACY88')
+
+      syncTable(GC_ROOMS_TABLE, GC_ROOMS_SCHEMA)
+
+      expect(getTableColumns(db, GC_ROOMS_TABLE).has('ownerAuthUserId')).toBe(true)
+      expect(db.prepare(`SELECT ownerAuthUserId FROM "${GC_ROOMS_TABLE}" WHERE id = ?`).get('legacy-room'))
+        .toEqual({ ownerAuthUserId: null })
+
+      initAllHermesTables()
+      const { ChatStorage } = await import('../../packages/server/src/services/hermes/group-chat')
+      const storage = new ChatStorage()
+      expect(storage.getRoomByInviteCode('LEGACY88')).toMatchObject({
+        id: 'legacy-room',
+        ownerAuthUserId: null,
+      })
+      expect(storage.joinRoomByInviteCode('LEGACY88', 2, 'bob')).toBeUndefined()
+      expect(db.prepare('SELECT COUNT(*) AS count FROM gc_room_members WHERE roomId = ?').get('legacy-room'))
+        .toEqual({ count: 0 })
+
+      db.prepare(`UPDATE "${GC_ROOMS_TABLE}" SET ownerAuthUserId = 1 WHERE id = ?`).run('legacy-room')
+      expect(storage.joinRoomByInviteCode('LEGACY88', 2, 'bob')).toMatchObject({ id: 'legacy-room' })
+      expect(db.prepare('SELECT authUserId FROM gc_room_members WHERE roomId = ?').get('legacy-room'))
+        .toEqual({ authUserId: 2 })
     })
   })
 
@@ -209,8 +304,8 @@ describe('Database Schema Synchronization', () => {
     })
   })
 
-  describe('Primary key changes trigger table rebuild', () => {
-    it('rebuilds table when primary key changes from single column to id column', async () => {
+  describe('Destructive schema changes are not applied automatically', () => {
+    it('does not rebuild table when primary key differs', async () => {
       const { syncTable, GC_ROOM_MEMBERS_TABLE, GC_ROOM_MEMBERS_SCHEMA } =
         await import('../../packages/server/src/db/hermes/schemas')
 
@@ -228,9 +323,9 @@ describe('Database Schema Synchronization', () => {
         primaryKey: 'id',
       })
 
-      // Verify id-based primary key
-      const pk = getTablePrimaryKey(db, GC_ROOM_MEMBERS_TABLE)
-      expect(pk).toBe('id')
+      // Verify existing primary key was left untouched
+      const tableCols = db.prepare(`PRAGMA table_info("${GC_ROOM_MEMBERS_TABLE}")`).all() as Array<{ name: string; pk: number }>
+      expect(tableCols.find(c => c.name === 'roomId')?.pk).toBe(1)
 
       // Verify data was preserved
       const row = db.prepare(`SELECT * FROM "${GC_ROOM_MEMBERS_TABLE}" WHERE roomId = ? AND userId = ?`).get('room-1', 'user-1')
@@ -238,10 +333,8 @@ describe('Database Schema Synchronization', () => {
       expect(row.roomId).toBe('room-1')
       expect(row.userId).toBe('user-1')
     })
-  })
 
-  describe('Schema sync with type changes', () => {
-    it('rebuilds table when column types change', async () => {
+    it('does not rebuild table when column types differ', async () => {
       const { syncTable, USAGE_TABLE, USAGE_SCHEMA } = await import('../../packages/server/src/db/hermes/schemas')
 
       const db = getTestDb()
@@ -255,17 +348,13 @@ describe('Database Schema Synchronization', () => {
       // Sync with correct schema
       syncTable(USAGE_TABLE, USAGE_SCHEMA, { primaryKey: 'id' })
 
-      // Verify column type is correct (should be TEXT now)
+      // Verify column type was left untouched
       const cols = getTableColumns(db, USAGE_TABLE)
-      expect(cols.get('session_id')).toBe('TEXT')
+      expect(cols.get('session_id')).toBe('INTEGER')
 
-      // Verify data was preserved (SQLite can convert INTEGER to TEXT)
+      // Verify data was preserved
       const rows = db.prepare(`SELECT COUNT(*) as count FROM "${USAGE_TABLE}"`).get() as { count: number }
       expect(rows.count).toBe(1)
-
-      // Verify the converted value
-      const row = db.prepare(`SELECT session_id FROM "${USAGE_TABLE}"`).get() as { session_id: string }
-      expect(row.session_id).toBe('12345')
     })
   })
 
@@ -287,7 +376,7 @@ describe('Database Schema Synchronization', () => {
       expect(indexes).toBeTruthy()
     })
 
-    it('removes obsolete indexes', async () => {
+    it('does not alter indexes on existing tables', async () => {
       const { syncTable, MESSAGES_TABLE, MESSAGES_SCHEMA } =
         await import('../../packages/server/src/db/hermes/schemas')
 
@@ -304,18 +393,18 @@ describe('Database Schema Synchronization', () => {
         },
       })
 
-      // Verify extra index was removed
+      // Verify extra index remains
       const extraIndex = db.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`).get('idx_extra')
-      expect(extraIndex).toBeFalsy()
+      expect(extraIndex).toBeTruthy()
 
-      // Verify correct index was created
+      // Verify expected index was not added to an existing table
       const correctIndex = db.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`).get('idx_messages_session_id')
-      expect(correctIndex).toBeTruthy()
+      expect(correctIndex).toBeFalsy()
     })
   })
 
   describe('Data preservation during schema sync', () => {
-    it('preserves data when only adding columns', async () => {
+    it('preserves data when adding safe columns', async () => {
       const { syncTable, USAGE_TABLE, USAGE_SCHEMA } = await import('../../packages/server/src/db/hermes/schemas')
 
       const db = getTestDb()
@@ -327,16 +416,19 @@ describe('Database Schema Synchronization', () => {
       const sessionId = 'test-session-123'
       db.prepare(`INSERT INTO "${USAGE_TABLE}" (session_id, created_at) VALUES (?, ?)`).run(sessionId, Date.now())
 
-      // Sync with full schema (should add columns without rebuilding)
+      // Sync with full schema (should add safe columns only)
       syncTable(USAGE_TABLE, USAGE_SCHEMA, { primaryKey: 'id' })
 
       // Verify data is still there
       const row = db.prepare(`SELECT * FROM "${USAGE_TABLE}" WHERE session_id = ?`).get(sessionId)
       expect(row).toBeTruthy()
       expect(row.session_id).toBe(sessionId)
+
+      const cols = getTableColumns(db, USAGE_TABLE)
+      expect(cols.has('input_tokens')).toBe(true)
     })
 
-    it('preserves data when rebuilding table with compatible columns', async () => {
+    it('preserves data and existing table definition when primary key is missing', async () => {
       const { syncTable, GC_ROOM_AGENTS_TABLE, GC_ROOM_AGENTS_SCHEMA } =
         await import('../../packages/server/src/db/hermes/schemas')
 
@@ -349,10 +441,12 @@ describe('Database Schema Synchronization', () => {
       db.prepare(`INSERT INTO "${GC_ROOM_AGENTS_TABLE}" (id, roomId, agentId, profile, name, description, invited) VALUES (?, ?, ?, ?, ?, ?, ?)`)
         .run('agent-1', 'room-1', 'agent-1', 'default', 'Test Agent', '', 0)
 
-      // Sync with id primary key (triggers rebuild)
+      // Sync with id primary key expectation; should not rebuild existing table
       syncTable(GC_ROOM_AGENTS_TABLE, GC_ROOM_AGENTS_SCHEMA, {
         primaryKey: 'id',
       })
+
+      expect(getTablePrimaryKey(db, GC_ROOM_AGENTS_TABLE)).toBe(null)
 
       // Verify data was preserved
       const row = db.prepare(`SELECT * FROM "${GC_ROOM_AGENTS_TABLE}" WHERE id = ?`)
@@ -365,8 +459,8 @@ describe('Database Schema Synchronization', () => {
     })
   })
 
-  describe('Column deletion', () => {
-    it('removes extra columns from existing table', async () => {
+  describe('Column preservation', () => {
+    it('keeps extra columns on existing table', async () => {
       const { syncTable, USAGE_TABLE, USAGE_SCHEMA } = await import('../../packages/server/src/db/hermes/schemas')
 
       // Create table with extra columns
@@ -377,13 +471,13 @@ describe('Database Schema Synchronization', () => {
       db.prepare(`INSERT INTO "${USAGE_TABLE}" (session_id, created_at, extra_col, another_extra) VALUES (?, ?, ?, ?)`)
         .run('test-1', Date.now(), 'value', 123)
 
-      // Sync with schema (should remove extra columns)
+      // Sync with schema (should keep extra columns)
       syncTable(USAGE_TABLE, USAGE_SCHEMA, { primaryKey: 'id' })
 
-      // Verify extra columns are gone
+      // Verify extra columns are preserved
       const cols = getTableColumns(db, USAGE_TABLE)
-      expect(cols.has('extra_col')).toBe(false)
-      expect(cols.has('another_extra')).toBe(false)
+      expect(cols.has('extra_col')).toBe(true)
+      expect(cols.has('another_extra')).toBe(true)
 
       // Verify data is still there
       const row = db.prepare(`SELECT * FROM "${USAGE_TABLE}" WHERE session_id = ?`).get('test-1')

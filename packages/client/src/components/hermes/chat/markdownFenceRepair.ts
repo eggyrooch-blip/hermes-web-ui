@@ -8,7 +8,7 @@ type FenceInfo = {
   info: string
 }
 
-function parseFence(line: string): FenceInfo | null {
+export function parseFence(line: string): FenceInfo | null {
   const match = line.match(/^( {0,3})(`{3,}|~{3,})(.*)$/)
   if (!match) return null
 
@@ -39,7 +39,7 @@ function isMarkdownFence(fence: FenceInfo): boolean {
   return MARKDOWN_FENCE_LANGUAGES.has(language)
 }
 
-function isClosingFence(line: string, opener: FenceInfo): boolean {
+export function isClosingFence(line: string, opener: FenceInfo): boolean {
   const fence = parseFence(line)
   return Boolean(
     fence

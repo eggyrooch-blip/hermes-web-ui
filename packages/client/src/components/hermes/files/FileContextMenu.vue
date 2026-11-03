@@ -2,15 +2,20 @@
 import { ref, nextTick } from 'vue'
 import { NDropdown, useMessage, useDialog } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { useFilesStore, isTextFile, isImageFile, isMarkdownFile } from '@/stores/hermes/files'
+import { DEFAULT_EDITOR_SCOPE, useFilesStore, isTextFile, isPreviewableFile } from '@/stores/hermes/files'
 import { downloadFile } from '@/api/hermes/download'
 import type { FileEntry } from '@/api/hermes/files'
 import { copyToClipboard } from '@/utils/clipboard'
+import { getClipboardPathForEntry } from '@/utils/file-path'
 
 const { t } = useI18n()
 const message = useMessage()
 const dialog = useDialog()
 const filesStore = useFilesStore()
+const props = withDefaults(defineProps<{ allowEdit?: boolean, editorScope?: string }>(), {
+  allowEdit: true,
+  editorScope: DEFAULT_EDITOR_SCOPE,
+})
 
 const showMenu = ref(false)
 const menuX = ref(0)
@@ -19,6 +24,8 @@ const targetEntry = ref<FileEntry | null>(null)
 
 const emit = defineEmits<{
   (e: 'rename', entry: FileEntry): void
+  (e: 'newFolder', entry: FileEntry): void
+  (e: 'editor-opened'): void
 }>()
 
 function show(e: MouseEvent, entry: FileEntry) {
@@ -39,16 +46,17 @@ function getOptions() {
   if (entry.isDir) {
     options.push({ label: t('files.open'), key: 'open' })
   } else {
-    if (isTextFile(entry.name)) {
+    if (props.allowEdit && isTextFile(entry.name)) {
       options.push({ label: t('files.edit'), key: 'edit' })
     }
-    if (isImageFile(entry.name) || isMarkdownFile(entry.name)) {
+    if (isPreviewableFile(entry.name)) {
       options.push({ label: t('files.preview'), key: 'preview' })
     }
     options.push({ label: t('files.download'), key: 'download' })
   }
   options.push({ type: 'divider', key: 'd1' })
   options.push({ label: t('files.copyPath'), key: 'copyPath' })
+  options.push({ label: t('files.newFolder'), key: 'newFolder' })
   options.push({ label: t('files.rename'), key: 'rename' })
   options.push({ type: 'divider', key: 'd2' })
   options.push({ label: t('files.delete'), key: 'delete' })
@@ -65,7 +73,12 @@ async function handleSelect(key: string) {
       filesStore.navigateTo(entry.path)
       break
     case 'edit':
-      try { await filesStore.openEditor(entry.path) } catch { message.error(t('files.backendError')) }
+      if (!props.allowEdit) break
+      try {
+        if (await filesStore.openEditor(entry.path, props.editorScope)) emit('editor-opened')
+      } catch {
+        message.error(t('files.backendError'))
+      }
       break
     case 'preview':
       try { await filesStore.openPreview(entry) } catch { message.error(t('files.backendError')) }
@@ -74,7 +87,7 @@ async function handleSelect(key: string) {
       try { await downloadFile(entry.path, entry.name) } catch (err: any) { message.error(err.message) }
       break
     case 'copyPath': {
-      const ok = await copyToClipboard(entry.path)
+      const ok = await copyToClipboard(getClipboardPathForEntry(entry))
       if (ok) {
         message.success(t('files.pathCopied'))
       } else {
@@ -85,6 +98,9 @@ async function handleSelect(key: string) {
     case 'rename':
       emit('rename', entry)
       break
+    case 'newFolder':
+      emit('newFolder', entry)
+      break
     case 'delete':
       dialog.warning({
         title: t('files.delete'),
@@ -93,7 +109,7 @@ async function handleSelect(key: string) {
         negativeText: t('common.cancel'),
         onPositiveClick: async () => {
           try {
-            await filesStore.deleteEntry(entry)
+            await filesStore.deleteEntry(entry, props.editorScope)
             message.success(t('files.deleted'))
           } catch {
             message.error(t('files.deleteFailed'))

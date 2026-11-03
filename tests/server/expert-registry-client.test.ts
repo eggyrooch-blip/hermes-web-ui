@@ -1,0 +1,273 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('../../packages/server/src/config', () => ({
+  config: { runBrokerUrl: 'http://broker.test', runBrokerKey: 'k-test' },
+}))
+
+vi.mock('../../packages/server/src/services/logger', () => ({
+  logger: { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() },
+}))
+
+const SERVICE = '../../packages/server/src/services/hermes/expert-registry-client'
+const CONTROLLER = '../../packages/server/src/controllers/hermes/experts'
+
+function mockImageResponse(body = new Uint8Array([1, 2, 3])) {
+  return {
+    ok: true,
+    status: 200,
+    headers: {
+      get(name: string) {
+        const key = name.toLowerCase()
+        if (key === 'content-type') return 'image/png'
+        if (key === 'cache-control') return 'public, max-age=3600'
+        return null
+      },
+    },
+    arrayBuffer: async () => body.buffer,
+  }
+}
+
+function mockCtx(params: Record<string, string>) {
+  const headers: Record<string, string> = {}
+  return {
+    params,
+    query: { profile: 'sunke' },
+    state: { user: { openid: 'ou_1', profile: 'sunke', role: 'user' } },
+    status: 200,
+    body: undefined as any,
+    get: vi.fn((name: string) => (name.toLowerCase() === 'x-hermes-profile' ? 'sunke' : '')),
+    set: vi.fn((key: string, value: string) => {
+      headers[key] = value
+    }),
+    headers,
+  } as any
+}
+
+describe('expert registry client', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn())
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('rewrites broker plugin asset URLs to browser-loadable WebUI URLs', async () => {
+    const { mapExpertRow } = await import(SERVICE)
+
+    const row = mapExpertRow({
+      id: 'kep',
+      name: '资源投放专家',
+      avatar: '/api/run-broker/plugin-assets/keep-resource-delivery/kep.png',
+    })
+
+    expect(row.avatar).toBe('/api/hermes/plugin-assets/keep-resource-delivery/kep.png')
+  })
+
+  it('does not rewrite nested broker asset paths that the WebUI route cannot proxy', async () => {
+    const { mapExpertRow } = await import(SERVICE)
+
+    const row = mapExpertRow({
+      id: 'kep',
+      name: '资源投放专家',
+      avatar: '/api/run-broker/plugin-assets/keep-resource-delivery/nested/kep.png',
+    })
+
+    expect(row.avatar).toBe('/api/run-broker/plugin-assets/keep-resource-delivery/nested/kep.png')
+  })
+
+  it('passes release_version and release_installed_at through so the catalog can render v-chip and New badge', async () => {
+    const { mapExpertRow } = await import(SERVICE)
+
+    const row = mapExpertRow({
+      id: 'kep',
+      name: '资源投放专家',
+      release_version: ' 1.0.9 ',
+      release_installed_at: 1785379743,
+    })
+
+    expect(row.release_version).toBe('1.0.9')
+    expect(row.release_installed_at).toBe(1785379743)
+  })
+
+  it('passes a sane use_count through and drops malformed ones', async () => {
+    const { mapExpertRow } = await import(SERVICE)
+
+    expect(mapExpertRow({ id: 'kep', name: 'x', use_count: 132 }).use_count).toBe(132)
+    expect(mapExpertRow({ id: 'kep', name: 'x', use_count: 0 }).use_count).toBe(0)
+    expect(
+      mapExpertRow({ id: 'kep', name: 'x', use_count: Number.MAX_SAFE_INTEGER }).use_count,
+    ).toBe(Number.MAX_SAFE_INTEGER)
+    for (const bad of [-1, 1.5, '132', NaN, Infinity, [132], true, Number.MAX_SAFE_INTEGER + 1, 1e100]) {
+      expect(mapExpertRow({ id: 'kep', name: 'x', use_count: bad }).use_count).toBeUndefined()
+    }
+  })
+
+  it('passes sample_prompts through the BFF whitelist and drops non-array values', async () => {
+    const { mapExpertRow } = await import(SERVICE)
+
+    expect(
+      mapExpertRow({ id: 'kep', name: 'x', sample_prompts: ['a', 'b'] }).sample_prompts,
+    ).toEqual(['a', 'b'])
+    // the panel shows at most five rows
+    expect(
+      mapExpertRow({
+        id: 'kep',
+        name: 'x',
+        sample_prompts: ['1', '2', '3', '4', '5', '6'],
+      }).sample_prompts,
+    ).toEqual(['1', '2', '3', '4', '5'])
+    for (const bad of ['x', 42, null, {}, [], ['']]) {
+      expect(
+        mapExpertRow({ id: 'kep', name: 'x', sample_prompts: bad }).sample_prompts,
+        String(JSON.stringify(bad)),
+      ).toBeUndefined()
+    }
+  })
+
+  it('keeps one malformed prompt member from coercing into a prompt or killing the whole catalog', async () => {
+    const { mapExpertRow } = await import(SERVICE)
+
+    // String(v) on a member with a broken toString throws; every expert is mapped
+    // in the same pass, so one poisoned row must not take the list down.
+    const poisoned = { id: 'kep', name: 'x', sample_prompts: [{ toString: null }, '带我走一遍流程'] }
+    expect(() => mapExpertRow(poisoned)).not.toThrow()
+    expect(mapExpertRow(poisoned).sample_prompts).toEqual(['带我走一遍流程'])
+
+    // non-strings are dropped, never rendered as clickable nonsense
+    expect(
+      mapExpertRow({
+        id: 'kep',
+        name: 'x',
+        sample_prompts: [42, null, {}, ['nested'], true, '  真提示词  ', '   '],
+      }).sample_prompts,
+    ).toEqual(['真提示词'])
+
+    // nothing valid at all → field omitted rather than an empty section
+    expect(
+      mapExpertRow({ id: 'kep', name: 'x', sample_prompts: [42, {}, null] }).sample_prompts,
+    ).toBeUndefined()
+  })
+
+  it('drops malformed release metadata instead of forwarding it', async () => {
+    const { mapExpertRow } = await import(SERVICE)
+
+    const row = mapExpertRow({
+      id: 'kep',
+      name: '资源投放专家',
+      release_version: '   ',
+      release_installed_at: 'soon',
+    })
+
+    expect(row.release_version).toBeUndefined()
+    expect(row.release_installed_at).toBeUndefined()
+  })
+
+  it('drops coercible-but-non-number release_installed_at values (numeric string, boolean, array)', async () => {
+    const { mapExpertRow } = await import(SERVICE)
+
+    for (const bad of ['1785379743', true, [1785379743]]) {
+      const row = mapExpertRow({
+        id: 'kep',
+        name: '资源投放专家',
+        release_installed_at: bad,
+      })
+      expect(row.release_installed_at).toBeUndefined()
+    }
+  })
+
+  it('fetchExpertCatalog returns rewritten avatar URLs and sends broker auth', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        profile_name: 'sunke',
+        experts: [
+          {
+            id: 'kep',
+            name: '资源投放专家',
+            avatar: '/api/run-broker/plugin-assets/keep-resource-delivery/kep.png',
+          },
+        ],
+      }),
+    })
+    const { fetchExpertCatalog } = await import(SERVICE)
+
+    const result = await fetchExpertCatalog({ profileName: 'sunke', userKey: 'ou_1' })
+
+    expect(result.experts[0].avatar).toBe('/api/hermes/plugin-assets/keep-resource-delivery/kep.png')
+    const [url, init] = (globalThis.fetch as any).mock.calls[0]
+    expect(url).toContain('/api/run-broker/experts')
+    expect(url).toContain('profile_name=sunke')
+    expect(url).toContain('user_key=ou_1')
+    expect(init.headers.Authorization).toBe('Bearer k-test')
+  })
+})
+
+describe('expert asset controller', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn())
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('proxies a registered broker image asset with server-side broker auth', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue(mockImageResponse())
+    const { asset } = await import(CONTROLLER)
+    const ctx = mockCtx({ pluginId: 'keep-resource-delivery', assetName: 'kep.png' })
+
+    await asset(ctx)
+
+    expect(ctx.status).toBe(200)
+    expect(ctx.set).toHaveBeenCalledWith('Content-Type', 'image/png')
+    expect(ctx.set).toHaveBeenCalledWith('Cache-Control', 'public, max-age=3600')
+    expect(Buffer.isBuffer(ctx.body)).toBe(true)
+    const [url, init] = (globalThis.fetch as any).mock.calls[0]
+    expect(url).toBe('http://broker.test/api/run-broker/plugin-assets/keep-resource-delivery/kep.png?profile_name=sunke&user_key=ou_1')
+    expect(init.headers.Authorization).toBe('Bearer k-test')
+    expect(init.headers['X-Hermes-Profile']).toBe('sunke')
+    expect(init.headers['X-Hermes-User-Key']).toBe('ou_1')
+  })
+
+  it('uses the authenticated local account id when no Feishu openid exists', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ profile_name: 'sunke', experts: [] }),
+    })
+    const { list } = await import(CONTROLLER)
+    const ctx = mockCtx({})
+    ctx.state.user = { id: 7, role: 'super_admin' }
+
+    await list(ctx)
+
+    expect((globalThis.fetch as any).mock.calls[0][0]).toContain('user_key=7')
+  })
+
+  it('rejects unsafe asset path components before touching the broker', async () => {
+    const { asset } = await import(CONTROLLER)
+    const ctx = mockCtx({ pluginId: 'keep-resource-delivery', assetName: '../secret.png' })
+
+    await asset(ctx)
+
+    expect(ctx.status).toBe(404)
+    expect(globalThis.fetch).not.toHaveBeenCalled()
+  })
+
+  it('rejects non-image broker responses', async () => {
+    ;(globalThis.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/plain' },
+      arrayBuffer: async () => new Uint8Array([1]).buffer,
+    })
+    const { asset } = await import(CONTROLLER)
+    const ctx = mockCtx({ pluginId: 'keep-resource-delivery', assetName: 'kep.png' })
+
+    await asset(ctx)
+
+    expect(ctx.status).toBe(502)
+  })
+})

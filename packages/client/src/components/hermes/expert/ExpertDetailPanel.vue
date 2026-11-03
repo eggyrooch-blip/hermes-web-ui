@@ -1,0 +1,440 @@
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import {
+  expertSamplePrompts,
+  formatExpertReleaseVersion,
+  formatExpertUpdatedFull,
+  isExpertRecentlyUpdated,
+  type ExpertInfo,
+} from '@/api/hermes/experts'
+import ExpertWorkRecord from './ExpertWorkRecord.vue'
+
+const { t } = useI18n()
+
+const nowTick = ref(Date.now())
+let nowTimer: number | undefined
+onMounted(() => {
+  nowTimer = window.setInterval(() => { nowTick.value = Date.now() }, 60_000)
+})
+onUnmounted(() => {
+  if (nowTimer !== undefined) window.clearInterval(nowTimer)
+})
+const props = defineProps<{
+  expert: ExpertInfo
+  /** Whether this expert is the currently-active overlay in the composer. */
+  active?: boolean
+}>()
+const emit = defineEmits<{
+  (e: 'close'): void
+  (e: 'activate', expert: ExpertInfo, engine: 'hermes' | 'harness'): void
+  (e: 'ask', prompt: string, engine: 'hermes' | 'harness'): void
+}>()
+const executionEngine = ref<'hermes' | 'harness'>('hermes')
+
+const displayTitle = computed(() => props.expert.title || props.expert.name)
+const avatarBroken = ref(false)
+const hasAvatar = computed(() => !!props.expert.avatar && !avatarBroken.value)
+const initial = computed(() => {
+  const src = (props.expert.name || props.expert.title || props.expert.id || '?').trim()
+  return src ? Array.from(src)[0] : '?'
+})
+const skills = computed(() => props.expert.skills ?? [])
+// Never empty: absent sample_prompts fall back to three generated from this
+// expert's own tags/name/skills, so the section is never a blank heading.
+const samplePrompts = computed(() => expertSamplePrompts(props.expert))
+const approvalRequired = computed(() => props.expert.governance?.approval_required ?? [])
+const envDefault = computed(() => props.expert.governance?.env_default || '')
+
+watch(() => props.expert.id, () => {
+  avatarBroken.value = false
+  executionEngine.value = 'hermes'
+})
+</script>
+
+<template>
+  <aside class="expert-detail-panel" role="dialog" :aria-label="displayTitle">
+    <header class="detail-header">
+      <div class="detail-avatar" :class="{ 'has-image': hasAvatar }">
+        <img v-if="hasAvatar" :src="expert.avatar" :alt="displayTitle" @error="avatarBroken = true" />
+        <span v-else class="avatar-initial">{{ initial }}</span>
+      </div>
+      <div class="detail-headings">
+        <h2 class="detail-title">{{ displayTitle }}</h2>
+        <div class="detail-meta">
+          <span v-if="expert.category" class="detail-category">{{ expert.category }}</span>
+          <span v-if="active" class="detail-active">{{ t('expert.catalog.activeBadge') }}</span>
+          <span v-if="formatExpertReleaseVersion(expert)" class="detail-version">
+            {{ formatExpertReleaseVersion(expert) }}
+          </span>
+          <span v-if="isExpertRecentlyUpdated(expert, nowTick)" class="detail-new">{{ t('expert.catalog.newBadge') }}</span>
+          <span v-if="formatExpertUpdatedFull(expert)" class="detail-updated">
+            {{ t('expert.catalog.updatedAt', { date: formatExpertUpdatedFull(expert) }) }}
+          </span>
+        </div>
+        <p v-if="expert.tagline" class="detail-tagline">{{ expert.tagline }}</p>
+      </div>
+      <button class="detail-close" type="button" :aria-label="t('expert.detail.close')" @click="emit('close')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </header>
+
+    <div v-if="expert.display_tags?.length" class="detail-tags">
+      <span v-for="tag in expert.display_tags" :key="tag" class="detail-tag">{{ tag }}</span>
+    </div>
+
+    <section v-if="samplePrompts.length" class="detail-samples">
+      <h3 class="samples-title">{{ t('expert.detail.samplePrompts') }}</h3>
+      <div class="samples-list">
+        <div
+          v-for="prompt in samplePrompts"
+          :key="prompt"
+          class="sample-row"
+          role="button"
+          tabindex="0"
+          @click="emit('ask', prompt, executionEngine)"
+          @keydown.enter.prevent="emit('ask', prompt, executionEngine)"
+          @keydown.space.prevent="emit('ask', prompt, executionEngine)"
+        >
+          <span class="sample-text">{{ prompt }}</span>
+          <svg class="sample-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
+      </div>
+    </section>
+
+    <section class="detail-section">
+      <h3 class="section-title">{{ t('expert.detail.capabilities') }}</h3>
+      <ul v-if="skills.length" class="capability-list">
+        <li v-for="skill in skills" :key="skill" class="capability-item">{{ skill }}</li>
+      </ul>
+      <p v-else class="section-empty">{{ t('expert.detail.noCapabilities') }}</p>
+    </section>
+
+    <section class="detail-section">
+      <h3 class="section-title">{{ t('expert.detail.governance') }}</h3>
+      <p class="governance-note">{{ t('expert.detail.governanceNote') }}</p>
+      <p v-if="envDefault" class="governance-line">
+        {{ t('expert.detail.envDefault') }}: <code>{{ envDefault }}</code>
+      </p>
+      <div v-if="approvalRequired.length" class="governance-approval">
+        <p class="governance-line">{{ t('expert.detail.approvalRequired') }}:</p>
+        <ul class="approval-list">
+          <li v-for="op in approvalRequired" :key="op"><code>{{ op }}</code></li>
+        </ul>
+      </div>
+    </section>
+
+    <ExpertWorkRecord :expert-id="expert.id" />
+
+    <footer class="detail-actions">
+      <fieldset class="engine-picker">
+        <legend>{{ t('expert.detail.engine') }}</legend>
+        <label><input v-model="executionEngine" type="radio" value="hermes" /> {{ t('expert.detail.engineHermes') }}</label>
+        <label v-if="expert.harness_available"><input v-model="executionEngine" type="radio" value="harness" /> {{ t('expert.detail.engineHarness') }}</label>
+      </fieldset>
+      <button
+        class="action-primary"
+        type="button"
+        @click="emit('activate', expert, executionEngine)"
+      >
+        {{ t('expert.detail.startChat') }}
+      </button>
+    </footer>
+  </aside>
+</template>
+
+<style scoped lang="scss">
+@use '@/styles/variables' as *;
+
+.expert-detail-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+  padding: 20px;
+  overflow-y: auto;
+  background: $bg-primary;
+}
+
+.detail-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid $border-color;
+}
+
+.detail-avatar {
+  flex: 0 0 auto;
+  width: 72px;
+  height: 72px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: $bg-card;
+  color: $text-primary;
+  border: 1px solid $border-color;
+  font-size: 24px;
+  font-weight: 600;
+  overflow: hidden;
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+}
+
+.detail-headings {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.detail-title {
+  margin: 0;
+  font-size: 20px;
+  line-height: 26px;
+  color: $text-primary;
+}
+
+.detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.detail-tagline {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: $text-secondary;
+}
+
+.detail-category,
+.detail-active,
+.detail-version,
+.detail-new {
+  line-height: 18px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.detail-category {
+  border: 1px solid $border-color;
+  color: $text-secondary;
+}
+
+.detail-active {
+  background: $accent-primary;
+  color: var(--text-on-accent);
+}
+
+.detail-updated {
+  line-height: 18px;
+  font-size: 12px;
+  color: $text-secondary;
+}
+
+.detail-version {
+  border: 1px solid $border-color;
+  color: $text-secondary;
+}
+
+.detail-new {
+  background: rgba(var(--accent-primary-rgb), 0.14);
+  color: $accent-primary;
+  font-weight: 600;
+}
+
+.detail-close {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: $text-secondary;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+
+  &:hover {
+    color: $text-primary;
+    background: $bg-card;
+  }
+}
+
+.detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.detail-tag {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: $bg-card;
+  color: $text-secondary;
+}
+
+.detail-samples {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.samples-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 400;
+  color: $text-muted;
+}
+
+.samples-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sample-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: $bg-card;
+  cursor: pointer;
+  transition: background-color $transition-fast;
+
+  &:hover,
+  &:focus-visible {
+    background: $bg-card-hover;
+  }
+}
+
+.sample-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: $text-primary;
+}
+
+.sample-arrow {
+  flex: 0 0 auto;
+  color: $text-muted;
+}
+
+.detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.section-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: $text-primary;
+}
+
+.section-empty {
+  margin: 0;
+  font-size: 12px;
+  color: $text-muted;
+}
+
+.capability-list,
+.approval-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.capability-item {
+  font-size: 12px;
+  color: $text-secondary;
+}
+
+.governance-note {
+  margin: 0;
+  font-size: 12px;
+  color: $text-secondary;
+}
+
+.governance-line {
+  margin: 0;
+  font-size: 12px;
+  color: $text-secondary;
+
+  code {
+    font-size: 11px;
+    background: $bg-card;
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+}
+
+.approval-list code {
+  font-size: 11px;
+  background: $bg-card;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.detail-actions {
+  margin-top: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.engine-picker {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid $border-color;
+  border-radius: 8px;
+}
+
+.engine-picker legend { padding: 0 4px; }
+.engine-picker label { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; }
+
+.action-primary,
+.action-secondary {
+  flex: 1 1 auto;
+  height: 36px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid $border-color;
+  transition:
+    background-color $transition-fast,
+    color $transition-fast;
+}
+
+.action-primary {
+  border-color: transparent;
+  background: $accent-primary;
+  color: #fff;
+
+  &:hover {
+    opacity: 0.9;
+  }
+}
+
+.action-secondary {
+  background: transparent;
+  color: $text-secondary;
+
+  &:hover {
+    color: $text-primary;
+    background: $bg-card;
+  }
+}
+</style>

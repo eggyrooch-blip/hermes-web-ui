@@ -1,10 +1,10 @@
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { join } from 'path'
 import { randomBytes } from 'crypto'
-import { homedir } from 'os'
 import { checkToken, recordTokenFailure, extractIp } from './login-limiter'
+import { config } from '../config'
 
-const APP_HOME = join(homedir(), '.hermes-web-ui')
+const APP_HOME = config.appHome
 const TOKEN_FILE = join(APP_HOME, '.token')
 
 function generateToken(): string {
@@ -12,13 +12,9 @@ function generateToken(): string {
 }
 
 /**
- * Get or create the auth token. Returns null if auth is disabled.
+ * Get or create the auth token.
  */
-export async function getToken(): Promise<string | null> {
-  if (process.env.AUTH_DISABLED === '1' || process.env.AUTH_DISABLED === 'true') {
-    return null
-  }
-
+export async function getToken(): Promise<string> {
   if (process.env.AUTH_TOKEN) {
     return process.env.AUTH_TOKEN
   }
@@ -29,7 +25,12 @@ export async function getToken(): Promise<string | null> {
   } catch {
     const token = generateToken()
     await mkdir(APP_HOME, { recursive: true })
-    await writeFile(TOKEN_FILE, token + '\n', { mode: 0o600 })
+    // Only set mode on Unix systems (Windows ignores this)
+    const options: any = {}
+    if (process.platform !== 'win32') {
+      options.mode = 0o600
+    }
+    await writeFile(TOKEN_FILE, token + '\n', options)
     return token
   }
 }
@@ -40,11 +41,6 @@ export async function getToken(): Promise<string | null> {
  */
 export function requireAuth(token: string | null) {
   return async (ctx: any, next: () => Promise<void>) => {
-    if (!token) {
-      await next()
-      return
-    }
-
     const auth = ctx.headers.authorization || ''
     const provided = auth.startsWith('Bearer ')
       ? auth.slice(7)

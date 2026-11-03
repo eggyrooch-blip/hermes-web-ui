@@ -1,0 +1,320 @@
+// @vitest-environment jsdom
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mount } from '@vue/test-utils'
+import { createTestingPinia } from '@pinia/testing'
+import { nextTick } from 'vue'
+import GroupChatInput from '@/components/hermes/group-chat/GroupChatInput.vue'
+import { useGroupChatStore } from '@/stores/hermes/group-chat'
+import { useSettingsStore } from '@/stores/hermes/settings'
+
+vi.mock('vue-i18n', () => ({
+  useI18n: () => ({ t: (key: string) => key }),
+}))
+
+vi.mock('naive-ui', () => ({
+  NButton: { template: '<button type="button" v-bind="$attrs"><slot /><slot name="icon" /></button>' },
+  NTooltip: { template: '<div><slot name="trigger" /><slot /></div>' },
+  NSwitch: { template: '<button type="button"></button>' },
+}))
+
+vi.mock('@/composables/useToolTraceVisibility', () => ({
+  useToolTraceVisibility: () => ({ toolTraceVisible: { value: true }, toggleToolTraceVisible: vi.fn() }),
+}))
+
+function mockViewport(matches: boolean) {
+  let currentMatches = matches
+  const listeners = new Set<(event: MediaQueryListEvent) => void>()
+  const mediaQuery = {
+    get matches() {
+      return currentMatches
+    },
+    media: '(max-width: 768px)',
+    addEventListener: vi.fn((event: string, listener: (event: MediaQueryListEvent) => void) => {
+      if (event === 'change') listeners.add(listener)
+    }),
+    removeEventListener: vi.fn((event: string, listener: (event: MediaQueryListEvent) => void) => {
+      if (event === 'change') listeners.delete(listener)
+    }),
+    addListener: vi.fn((listener: (event: MediaQueryListEvent) => void) => listeners.add(listener)),
+    removeListener: vi.fn((listener: (event: MediaQueryListEvent) => void) => listeners.delete(listener)),
+    dispatchEvent: vi.fn(),
+  } as unknown as MediaQueryList
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    value: vi.fn().mockImplementation(() => mediaQuery),
+  })
+
+  return {
+    setMatches(nextMatches: boolean) {
+      currentMatches = nextMatches
+      const event = { matches: nextMatches, media: mediaQuery.media } as MediaQueryListEvent
+      listeners.forEach(listener => listener(event))
+    },
+  }
+}
+
+describe('GroupChatInput mentions', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    mockViewport(false)
+  })
+
+  it('updates mention suggestions after the textarea has a custom height', async () => {
+    const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
+    const store = useGroupChatStore()
+    store.agents = [{ id: 'agent-1', agentId: 'agent-1', profile: 'worker', name: 'Worker', roomId: 'room-1', description: '', invited: 1 }]
+    store.emitTyping = vi.fn()
+
+    const wrapper = mount(GroupChatInput, {
+      attachTo: document.body,
+      global: { plugins: [pinia], stubs: { Transition: false } },
+    })
+
+    const textarea = wrapper.get('textarea')
+    const resizeHandle = wrapper.get('.resize-handle')
+    await resizeHandle.trigger('mousedown', { clientY: 100 })
+    document.dispatchEvent(new MouseEvent('mousemove', { clientY: 50 }))
+    document.dispatchEvent(new MouseEvent('mouseup'))
+    await nextTick()
+
+    await textarea.setValue('@')
+    await nextTick()
+    expect(wrapper.find('.mention-dropdown').exists()).toBe(true)
+    expect(wrapper.find('.mention-dropdown').text()).toContain('@Worker')
+  })
+
+  // Regression guard for the CJK mention bug: the prefix check used to test for
+  // whitespace, so any Chinese character before @ suppressed the dropdown. Chinese
+  // input never types a space before @, which made mentions unusable. This block
+  // exists because the buggy line was byte-identical to upstream's pre-fix code —
+  // a future upstream absorption must not silently reintroduce it.
+  describe('mention prefix boundary', () => {
+    async function mountWithAgent() {
+      const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
+      const store = useGroupChatStore()
+      store.agents = [{ id: 'agent-1', agentId: 'agent-1', profile: 'worker', name: 'Worker', roomId: 'room-1', description: '', invited: 1 }]
+      store.emitTyping = vi.fn()
+      return mount(GroupChatInput, {
+        attachTo: document.body,
+        global: { plugins: [pinia], stubs: { Transition: false } },
+      })
+    }
+
+    async function typeAndPlaceCursorAtEnd(wrapper: Awaited<ReturnType<typeof mountWithAgent>>, text: string) {
+      const textarea = wrapper.get('textarea')
+      await textarea.setValue(text)
+      const el = textarea.element as HTMLTextAreaElement
+      el.selectionStart = text.length
+      await textarea.trigger('input')
+      await nextTick()
+    }
+
+    it.each([
+      ['CJK character', '你好@'],
+      ['fullwidth punctuation', '问题，@'],
+      ['halfwidth punctuation', 'ping:@'],
+    ])('opens the dropdown when @ follows a %s', async (_label, text) => {
+      const wrapper = await mountWithAgent()
+      await typeAndPlaceCursorAtEnd(wrapper, text)
+      expect(wrapper.find('.mention-dropdown').exists()).toBe(true)
+    })
+
+    it('still suppresses the dropdown mid-word so email addresses are not hijacked', async () => {
+      const wrapper = await mountWithAgent()
+      await typeAndPlaceCursorAtEnd(wrapper, 'user@')
+      expect(wrapper.find('.mention-dropdown').exists()).toBe(false)
+    })
+  })
+
+  it('uses configured desktop input height and lets drag override it until settings change', async () => {
+    const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
+    const settingsStore = useSettingsStore()
+    settingsStore.display = { chat_input_height: 132 }
+
+    const wrapper = mount(GroupChatInput, {
+      attachTo: document.body,
+      global: { plugins: [pinia], stubs: { Transition: false } },
+    })
+    await nextTick()
+
+    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 132px')
+
+    Object.defineProperty(wrapper.get('.input-wrapper').element, 'clientHeight', { value: 132, configurable: true })
+    await wrapper.get('.resize-handle').trigger('mousedown', { clientY: 100 })
+    document.dispatchEvent(new MouseEvent('mousemove', { clientY: 70 }))
+    document.dispatchEvent(new MouseEvent('mouseup'))
+    await nextTick()
+
+    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 162px')
+
+    settingsStore.display = { chat_input_height: 118 }
+    await nextTick()
+
+    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 118px')
+  })
+
+  it('keeps mobile group chat input auto-height instead of applying configured height', async () => {
+    mockViewport(true)
+    const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
+    const settingsStore = useSettingsStore()
+    settingsStore.display = { chat_input_height: 180 }
+
+    const wrapper = mount(GroupChatInput, {
+      global: { plugins: [pinia], stubs: { Transition: false } },
+    })
+    await nextTick()
+
+    expect(wrapper.get('.input-wrapper').attributes('style') || '').not.toContain('height: 180px')
+  })
+
+  it('clears dragged desktop height after switching to mobile so input restores auto-height', async () => {
+    const viewport = mockViewport(false)
+    const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
+    const settingsStore = useSettingsStore()
+    settingsStore.display = { chat_input_height: 132 }
+
+    const wrapper = mount(GroupChatInput, {
+      attachTo: document.body,
+      global: { plugins: [pinia], stubs: { Transition: false } },
+    })
+    await nextTick()
+
+    Object.defineProperty(wrapper.get('.input-wrapper').element, 'clientHeight', { value: 132, configurable: true })
+    await wrapper.get('.resize-handle').trigger('mousedown', { clientY: 100 })
+    document.dispatchEvent(new MouseEvent('mousemove', { clientY: 70 }))
+    document.dispatchEvent(new MouseEvent('mouseup'))
+    await nextTick()
+    expect(wrapper.get('.input-wrapper').attributes('style')).toContain('height: 162px')
+
+    viewport.setMatches(true)
+    await nextTick()
+
+    const textarea = wrapper.get('textarea')
+    Object.defineProperty(textarea.element, 'scrollHeight', { value: 84, configurable: true })
+    await textarea.setValue('mobile group text')
+    await nextTick()
+
+    expect((textarea.element as HTMLTextAreaElement).style.height).toBe('84px')
+  })
+
+  it('does not wire the send-time image preview before any image is attached', async () => {
+    const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
+    const store = useGroupChatStore()
+    store.agents = []
+    store.emitTyping = vi.fn()
+
+    const wrapper = mount(GroupChatInput, {
+      attachTo: document.body,
+      global: { plugins: [pinia], stubs: { Transition: false } },
+    })
+    await nextTick()
+
+    expect(wrapper.find('.attachment-thumb-button').exists()).toBe(false)
+    expect(document.querySelector('.image-preview-overlay')).toBeNull()
+
+    wrapper.unmount()
+  })
+})
+
+/**
+ * Port of upstream EKKOLearnAI/hermes-web-ui 412ca4846 (#2885) for the group
+ * composer: a picked image must open as a full-size overlay before sending, and
+ * the overlay must not outlive removing or sending the attachment it shows.
+ */
+describe('GroupChatInput uploaded image preview', () => {
+  let revokedUrls: string[]
+
+  beforeEach(() => {
+    localStorage.clear()
+    mockViewport(false)
+    revokedUrls = []
+    let counter = 0
+    Object.defineProperty(URL, 'createObjectURL', {
+      writable: true,
+      value: vi.fn(() => `blob:group-attachment-${++counter}`),
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      writable: true,
+      value: vi.fn((url: string) => { revokedUrls.push(url) }),
+    })
+  })
+
+  async function mountWithFiles(files: File[]) {
+    const pinia = createTestingPinia({ stubActions: false, createSpy: vi.fn })
+    const store = useGroupChatStore()
+    store.agents = []
+    store.emitTyping = vi.fn()
+    const settingsStore = useSettingsStore()
+    settingsStore.display = {} as any
+    const wrapper = mount(GroupChatInput, {
+      attachTo: document.body,
+      global: { plugins: [pinia], stubs: { Transition: false } },
+    })
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: files })
+    await input.trigger('change')
+    await nextTick()
+    return wrapper
+  }
+
+  const image = () => new File(['image'], 'group-screenshot.png', { type: 'image/png' })
+
+  it('opens an uploaded image preview before sending and closes it on Escape', async () => {
+    const wrapper = await mountWithFiles([image()])
+
+    expect(wrapper.get('.attachment-thumb-button').attributes('aria-label')).toBe('group-screenshot.png')
+    expect(document.querySelector('.image-preview-overlay')).toBeNull()
+
+    await wrapper.get('.attachment-thumb-button').trigger('click')
+    await nextTick()
+    expect(document.body.querySelector('.image-preview-overlay img')?.getAttribute('src'))
+      .toBe('blob:group-attachment-1')
+    expect(wrapper.emitted('send')).toBeUndefined()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+    expect(document.querySelector('.image-preview-overlay')).toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('closes the overlay when its attachment is removed', async () => {
+    const wrapper = await mountWithFiles([image()])
+    await wrapper.get('.attachment-thumb-button').trigger('click')
+    await nextTick()
+    expect(document.querySelector('.image-preview-overlay')).not.toBeNull()
+
+    await wrapper.get('.attachment-remove').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('.attachment-preview').exists()).toBe(false)
+    expect(document.querySelector('.image-preview-overlay')).toBeNull()
+    expect(revokedUrls).toContain('blob:group-attachment-1')
+
+    wrapper.unmount()
+  })
+
+  it('closes the overlay when the message is sent', async () => {
+    const wrapper = await mountWithFiles([image()])
+    await wrapper.get('.attachment-thumb-button').trigger('click')
+    await nextTick()
+    expect(document.querySelector('.image-preview-overlay')).not.toBeNull()
+
+    await wrapper.get('textarea').trigger('keydown', { key: 'Enter' })
+    await nextTick()
+
+    expect(wrapper.emitted('send')).toHaveLength(1)
+    expect(document.querySelector('.image-preview-overlay')).toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('does not make non-image attachments clickable', async () => {
+    const wrapper = await mountWithFiles([new File(['text'], 'group-notes.txt', { type: 'text/plain' })])
+
+    expect(wrapper.find('.attachment-file').exists()).toBe(true)
+    expect(wrapper.find('.attachment-thumb-button').exists()).toBe(false)
+
+    wrapper.unmount()
+  })
+})

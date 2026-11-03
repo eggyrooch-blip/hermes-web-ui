@@ -1,17 +1,26 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { NButton, NSpin } from 'naive-ui'
+import { ref, computed, onMounted, watch } from 'vue'
+import { NButton, NSpin, NTooltip } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import JobsPanel from '@/components/hermes/jobs/JobsPanel.vue'
 import JobRunHistory from '@/components/hermes/jobs/JobRunHistory.vue'
 import JobFormModal from '@/components/hermes/jobs/JobFormModal.vue'
 import { useJobsStore } from '@/stores/hermes/jobs'
+import { useProfilesStore } from '@/stores/hermes/profiles'
 
 const { t } = useI18n()
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), {
+  embedded: false,
+})
 const jobsStore = useJobsStore()
+const profilesStore = useProfilesStore()
 const showModal = ref(false)
 const editingJob = ref<string | null>(null)
 const selectedJobId = ref<string | null>(null)
+const sortBy = ref<'time' | 'name'>('name')
+const sortAsc = ref(true)
+const activeProfileName = computed(() => profilesStore.activeProfileName || 'default')
+let profileWatchReady = false
 
 const jobNameMap = computed(() => {
   const map: Record<string, string> = {}
@@ -22,8 +31,27 @@ const jobNameMap = computed(() => {
   return map
 })
 
-onMounted(() => {
-  jobsStore.fetchJobs()
+async function ensureProfileSelection() {
+  if (!profilesStore.activeProfileName || profilesStore.profiles.length === 0) {
+    await profilesStore.fetchProfiles()
+  }
+}
+
+async function reloadJobsForProfile() {
+  selectedJobId.value = null
+  jobsStore.jobs = []
+  await ensureProfileSelection()
+  await jobsStore.fetchJobs()
+}
+
+onMounted(async () => {
+  await reloadJobsForProfile()
+  profileWatchReady = true
+})
+
+watch(() => profilesStore.activeProfileName, async (profile, previous) => {
+  if (!profileWatchReady || !profile || profile === previous) return
+  await reloadJobsForProfile()
 })
 
 function openCreateModal() {
@@ -49,18 +77,61 @@ async function handleSave() {
 function handleSelectJob(jobId: string | null) {
   selectedJobId.value = selectedJobId.value === jobId ? null : jobId
 }
+
+function toggleSort(field: 'time' | 'name') {
+  if (sortBy.value === field) {
+    sortAsc.value = !sortAsc.value
+  } else {
+    sortBy.value = field
+    sortAsc.value = true
+  }
+}
+
+function arrowIcon(field: 'time' | 'name'): string {
+  if (sortBy.value !== field) return '↕'
+  return sortAsc.value ? '↑' : '↓'
+}
 </script>
 
 <template>
-  <div class="jobs-view">
-    <header class="page-header">
-      <h2 class="header-title">{{ t('jobs.title') }}</h2>
-      <NButton type="primary" size="small" @click="openCreateModal">
-        <template #icon>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        </template>
-        {{ t('jobs.createJob') }}
-      </NButton>
+  <div class="jobs-view" :class="{ 'is-embedded': props.embedded }">
+    <header class="page-header" :class="{ 'page-header--embedded': props.embedded }">
+      <h2 v-if="!props.embedded" class="header-title">{{ t('jobs.title') }}</h2>
+      <div class="header-actions">
+        <div class="sort-toggle">
+          <NTooltip>
+            <template #trigger>
+              <NButton
+                size="tiny"
+                :type="sortBy === 'name' ? 'primary' : 'default'"
+                @click="toggleSort('name')"
+              >
+                {{ t('jobs.sortByName') }} <span class="sort-arrow">{{ arrowIcon('name') }}</span>
+              </NButton>
+            </template>
+            {{ sortBy === 'name' ? (sortAsc ? t('jobs.sortAsc') : t('jobs.sortDesc')) : t('jobs.sortByNameHint') }}
+          </NTooltip>
+          <NTooltip>
+            <template #trigger>
+              <NButton
+                size="tiny"
+                :type="sortBy === 'time' ? 'primary' : 'default'"
+                @click="toggleSort('time')"
+              >
+                {{ t('jobs.sortByTime') }} <span class="sort-arrow">{{ arrowIcon('time') }}</span>
+              </NButton>
+            </template>
+            {{ sortBy === 'time' ? (sortAsc ? t('jobs.sortAsc') : t('jobs.sortDesc')) : t('jobs.sortByTimeHint') }}
+          </NTooltip>
+        </div>
+        <span class="sort-divider"></span>
+        <NButton type="primary" size="small" @click="openCreateModal">
+          <template #icon>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </template>
+          {{ t('jobs.createJob') }}
+        </NButton>
+      </div>
     </header>
 
     <div class="jobs-split">
@@ -68,6 +139,8 @@ function handleSelectJob(jobId: string | null) {
         <NSpin :show="jobsStore.loading && jobsStore.jobs.length === 0">
           <JobsPanel
             :selected-job-id="selectedJobId"
+            :sort-by="sortBy"
+            :sort-asc="sortAsc"
             @edit="openEditModal"
             @select="handleSelectJob"
           />
@@ -80,6 +153,7 @@ function handleSelectJob(jobId: string | null) {
         <JobRunHistory
           :selected-job-id="selectedJobId"
           :job-name-map="jobNameMap"
+          :profile-key="activeProfileName"
         />
       </div>
     </div>
@@ -100,6 +174,16 @@ function handleSelectJob(jobId: string | null) {
   height: calc(100 * var(--vh));
   display: flex;
   flex-direction: column;
+}
+
+.jobs-view.is-embedded {
+  height: 100%;
+}
+
+.page-header--embedded {
+  justify-content: flex-end;
+  padding-top: 12px;
+  padding-bottom: 12px;
 }
 
 .jobs-split {
@@ -126,5 +210,29 @@ function handleSelectJob(jobId: string | null) {
   flex: 1;
   min-height: 120px;
   overflow: hidden;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sort-toggle {
+  display: flex;
+  gap: 4px;
+}
+
+.sort-arrow {
+  margin-left: 4px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.sort-divider {
+  width: 1px;
+  height: 16px;
+  background: $border-color;
+  flex-shrink: 0;
 }
 </style>

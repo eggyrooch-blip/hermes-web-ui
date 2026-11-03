@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import {
   NTabs,
   NTabPane,
@@ -9,18 +10,62 @@ import { useI18n } from "vue-i18n";
 import { useSettingsStore } from "@/stores/hermes/settings";
 import DisplaySettings from "@/components/hermes/settings/DisplaySettings.vue";
 import AgentSettings from "@/components/hermes/settings/AgentSettings.vue";
+import GatewayAutoStartSettings from "@/components/hermes/settings/GatewayAutoStartSettings.vue";
 import MemorySettings from "@/components/hermes/settings/MemorySettings.vue";
+import CompressionSettings from "@/components/hermes/settings/CompressionSettings.vue";
 import SessionSettings from "@/components/hermes/settings/SessionSettings.vue";
 import PrivacySettings from "@/components/hermes/settings/PrivacySettings.vue";
 import ModelSettings from "@/components/hermes/settings/ModelSettings.vue";
 import AccountSettings from "@/components/hermes/settings/AccountSettings.vue";
+import UserManagementSettings from "@/components/hermes/settings/UserManagementSettings.vue";
 import VoiceSettings from "@/components/hermes/settings/VoiceSettings.vue";
+import { isStoredSuperAdmin } from "@/api/client";
+import { useProfilesStore } from "@/stores/hermes/profiles";
 
 const settingsStore = useSettingsStore();
+const profilesStore = useProfilesStore();
 const { t } = useI18n();
+const canManageUsers = isStoredSuperAdmin();
+const defaultTab = canManageUsers ? "account" : "display";
+const route = useRoute();
+const router = useRouter();
+const activeTab = ref(defaultTab);
+
+const validTabs = computed(() => new Set([
+  ...(canManageUsers ? ["account", "users", "agent", "memory", "compression", "models", "voice"] : []),
+  "display",
+  "session",
+  "privacy",
+]));
+
+function normalizeTab(value: unknown): string {
+  const tab = typeof value === "string" ? value : "";
+  return validTabs.value.has(tab) ? tab : defaultTab;
+}
+
+function handleTabUpdate(tab: string) {
+  activeTab.value = normalizeTab(tab);
+  router.replace({
+    query: {
+      ...route.query,
+      tab: activeTab.value === defaultTab ? undefined : activeTab.value,
+    },
+  });
+}
+
+watch(() => route.query.tab, (tab) => {
+  activeTab.value = normalizeTab(tab);
+}, { immediate: true });
+
+async function loadSettingsForProfile() {
+  if (!profilesStore.activeProfileName || profilesStore.profiles.length === 0) {
+    await profilesStore.fetchProfiles();
+  }
+  await settingsStore.fetchSettings();
+}
 
 onMounted(() => {
-  settingsStore.fetchSettings();
+  void loadSettingsForProfile();
 });
 </script>
 
@@ -36,18 +81,25 @@ onMounted(() => {
         size="large"
         :description="t('common.loading')"
       >
-        <NTabs type="line" animated>
-          <NTabPane name="account" :tab="t('settings.tabs.account')">
+        <NTabs v-model:value="activeTab" type="line" animated @update:value="handleTabUpdate">
+          <NTabPane v-if="canManageUsers" name="account" :tab="t('settings.tabs.account')">
             <AccountSettings />
+          </NTabPane>
+          <NTabPane v-if="canManageUsers" name="users" :tab="t('settings.tabs.users')">
+            <UserManagementSettings />
           </NTabPane>
           <NTabPane name="display" :tab="t('settings.tabs.display')">
             <DisplaySettings />
           </NTabPane>
-          <NTabPane name="agent" :tab="t('settings.tabs.agent')">
+          <NTabPane v-if="canManageUsers" name="agent" :tab="t('settings.tabs.agent')">
             <AgentSettings />
+            <GatewayAutoStartSettings />
           </NTabPane>
-          <NTabPane name="memory" :tab="t('settings.tabs.memory')">
+          <NTabPane v-if="canManageUsers" name="memory" :tab="t('settings.tabs.memory')">
             <MemorySettings />
+          </NTabPane>
+          <NTabPane v-if="canManageUsers" name="compression" :tab="t('settings.tabs.compression')">
+            <CompressionSettings />
           </NTabPane>
           <NTabPane name="session" :tab="t('settings.tabs.session')">
             <SessionSettings />
@@ -55,10 +107,10 @@ onMounted(() => {
           <NTabPane name="privacy" :tab="t('settings.tabs.privacy')">
             <PrivacySettings />
           </NTabPane>
-          <NTabPane name="models" :tab="t('settings.tabs.models')">
+          <NTabPane v-if="canManageUsers" name="models" :tab="t('settings.tabs.models')">
             <ModelSettings />
           </NTabPane>
-          <NTabPane name="voice" :tab="t('settings.tabs.voice')">
+          <NTabPane v-if="canManageUsers" name="voice" :tab="t('settings.tabs.voice')">
             <VoiceSettings />
           </NTabPane>
         </NTabs>

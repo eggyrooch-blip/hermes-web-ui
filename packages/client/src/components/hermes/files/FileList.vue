@@ -1,16 +1,26 @@
 <script setup lang="ts">
 import { NButton, NSpin, NEmpty, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { useFilesStore, isImageFile, isMarkdownFile, isTextFile } from '@/stores/hermes/files'
+import { DEFAULT_EDITOR_SCOPE, useFilesStore, isHtmlFile, isPreviewableFile, isTextFile } from '@/stores/hermes/files'
 import { downloadFile } from '@/api/hermes/download'
 import type { FileEntry } from '@/api/hermes/files'
 
 const { t } = useI18n()
 const message = useMessage()
 const filesStore = useFilesStore()
+const props = withDefaults(defineProps<{
+  allowEdit?: boolean
+  doubleClickEdits?: boolean
+  editorScope?: string
+}>(), {
+  allowEdit: true,
+  doubleClickEdits: true,
+  editorScope: DEFAULT_EDITOR_SCOPE,
+})
 
 const emit = defineEmits<{
   (e: 'contextmenu-entry', event: MouseEvent, entry: FileEntry): void
+  (e: 'editor-opened'): void
 }>()
 
 function formatSize(bytes: number): string {
@@ -45,13 +55,23 @@ function getFileIcon(entry: FileEntry): string {
   return iconMap[ext] || '📄'
 }
 
-function handleDoubleClick(entry: FileEntry) {
+async function handlePreview(entry: FileEntry) {
+  try {
+    await filesStore.openPreview(entry)
+  } catch {
+    message.error(t('files.backendError'))
+  }
+}
+
+async function handleDoubleClick(entry: FileEntry) {
   if (entry.isDir) {
     filesStore.navigateTo(entry.path)
-  } else if (isTextFile(entry.name)) {
-    filesStore.openEditor(entry.path)
-  } else if (isImageFile(entry.name) || isMarkdownFile(entry.name)) {
-    filesStore.openPreview(entry)
+  } else if (isHtmlFile(entry.name)) {
+    await handlePreview(entry)
+  } else if (props.allowEdit && props.doubleClickEdits && isTextFile(entry.name)) {
+    await handleEdit(entry)
+  } else if (isPreviewableFile(entry.name)) {
+    await handlePreview(entry)
   }
 }
 
@@ -67,6 +87,10 @@ async function handleDownload(entry: FileEntry) {
     message.error(err.message || t('files.backendError'))
   }
 }
+
+async function handleEdit(entry: FileEntry) {
+  if (await filesStore.openEditor(entry.path, props.editorScope)) emit('editor-opened')
+}
 </script>
 
 <template>
@@ -74,7 +98,7 @@ async function handleDownload(entry: FileEntry) {
     <NSpin :show="filesStore.loading">
       <NEmpty v-if="!filesStore.loading && filesStore.sortedEntries.length === 0" :description="t('files.emptyDir')" />
       <div v-else class="file-list-items">
-        <div class="file-list-header">
+        <div class="file-list-header file-list-grid">
           <div class="file-name sort-header" @click="filesStore.setSort('name')">
             {{ t('files.name') }}
             <span v-if="filesStore.sortBy === 'name'" class="sort-indicator">{{ filesStore.sortOrder === 'asc' ? '↑' : '↓' }}</span>
@@ -92,18 +116,19 @@ async function handleDownload(entry: FileEntry) {
         <div
           v-for="entry in filesStore.sortedEntries"
           :key="entry.path"
-          class="file-list-row"
+          class="file-list-row file-list-grid"
           @dblclick="handleDoubleClick(entry)"
           @contextmenu="handleContextMenu($event, entry)"
         >
           <div class="file-name">
             <span class="file-icon">{{ getFileIcon(entry) }}</span>
-            <span>{{ entry.name }}</span>
+            <span class="file-label">{{ entry.name }}</span>
           </div>
           <div class="file-size">{{ entry.isDir ? '—' : formatSize(entry.size) }}</div>
           <div class="file-date">{{ formatDate(entry.modTime) }}</div>
           <div class="file-actions">
-            <NButton v-if="isTextFile(entry.name) && !entry.isDir" size="tiny" quaternary @click.stop="filesStore.openEditor(entry.path)" :title="t('files.edit')">✏️</NButton>
+            <NButton v-if="isPreviewableFile(entry.name) && !entry.isDir" size="tiny" quaternary @click.stop="handlePreview(entry)" :title="t('files.preview')">👁️</NButton>
+            <NButton v-if="allowEdit && isTextFile(entry.name) && !entry.isDir" size="tiny" quaternary @click.stop="handleEdit(entry)" :title="t('files.edit')">✏️</NButton>
             <NButton v-if="!entry.isDir" size="tiny" quaternary @click.stop="handleDownload(entry)" :title="t('files.download')">⬇️</NButton>
           </div>
         </div>
@@ -119,11 +144,15 @@ async function handleDownload(entry: FileEntry) {
   padding: 8px 16px;
 }
 
-.file-list-header {
-  display: flex;
+.file-list-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 80px 160px 60px;
   align-items: center;
+  column-gap: 16px;
+}
+
+.file-list-header {
   padding: 6px 12px;
-  gap: 16px;
   font-size: 12px;
   font-weight: 500;
   color: $text-muted;
@@ -146,17 +175,13 @@ async function handleDownload(entry: FileEntry) {
 }
 
 .file-actions-placeholder {
-  width: 60px;
-  flex-shrink: 0;
+  min-width: 0;
 }
 
 .file-list-row {
-  display: flex;
-  align-items: center;
   padding: 8px 12px;
   border-radius: $radius-sm;
   cursor: pointer;
-  gap: 16px;
   font-size: 13px;
 
   &:hover {
@@ -169,43 +194,47 @@ async function handleDownload(entry: FileEntry) {
 }
 
 .file-name {
-  flex: 1;
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .file-icon {
   flex-shrink: 0;
 }
 
+.file-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .file-size {
-  width: 80px;
   text-align: right;
   color: $text-secondary;
-  flex-shrink: 0;
 }
 
 .file-date {
-  width: 160px;
   color: $text-secondary;
-  flex-shrink: 0;
 }
 
 .file-actions {
   opacity: 0;
   transition: opacity $transition-fast;
   display: flex;
+  justify-content: flex-end;
   gap: 4px;
-  flex-shrink: 0;
 }
 
 @media (max-width: $breakpoint-mobile) {
-  .file-size, .file-date {
+  .file-list-grid {
+    grid-template-columns: minmax(0, 1fr) 60px;
+  }
+
+  .file-size,
+  .file-date {
     display: none;
   }
 }

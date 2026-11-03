@@ -1,17 +1,125 @@
-import { readFile, writeFile, copyFile } from 'fs/promises'
-import YAML from 'js-yaml'
-import { restartGateway } from '../../services/hermes/hermes-cli'
-import { getActiveConfigPath, getActiveEnvPath } from '../../services/hermes/hermes-profile'
-import { saveEnvValue } from '../../services/config-helpers'
+import { readFile } from 'fs/promises'
+import { join } from 'path'
+import { getActiveProfileName, getProfileDir } from '../../services/hermes/hermes-profile'
+import { config } from '../../config'
+import { restartGatewayForProfile } from '../../services/hermes/gateway-autostart'
+import { isGatewayRestartDisabledError } from '../../services/hermes/gateway-restart-guard'
+import { readAppConfig, writeAppConfig, normalizeGatewayAutoStartConfig } from '../../services/app-config'
+import { saveEnvValueForProfile } from '../../services/config-helpers'
+import { logger } from '../../services/logger'
+import { safeFileStore } from '../../services/safe-file-store'
+import { CHAT_PLANE_CONFIG_SECTIONS, getRequestProfile, isChatPlaneRequest } from '../../services/request-context'
 
 const PLATFORM_SECTIONS = new Set([
   'telegram', 'discord', 'slack', 'whatsapp', 'matrix',
-  'weixin', 'wecom', 'feishu', 'dingtalk',
+  'weixin', 'wecom', 'feishu', 'dingtalk', 'qqbot',
   'approvals',
 ])
 
-const configPath = () => getActiveConfigPath()
-const envPath = () => getActiveEnvPath()
+const APP_CONFIG_SECTIONS = new Set(['gatewayAutoStart'])
+const SHARED_AGENT_ROLES = new Set(['viewer', 'editor', 'manager'])
+const SHARED_AGENT_CONFIG_EDITOR_ROLES = new Set(['editor', 'manager'])
+
+type SharedAgentConfigAccess = {
+  profile: string
+  role: string
+}
+
+function actorOpenId(ctx: any): string {
+  const value = ctx.state?.user?.openid
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function requestedAgentId(ctx: any): string {
+  return typeof ctx.get === 'function' ? String(ctx.get('x-hermes-agent-id') || '').trim() : ''
+}
+
+function brokerHeadersForActor(ctx: any): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
+  const openid = actorOpenId(ctx)
+  if (openid) headers['X-Hermes-Owner-Open-Id'] = openid
+  return headers
+}
+
+async function resolveSharedAgentConfigAccess(ctx: any, agentId: string): Promise<SharedAgentConfigAccess | null> {
+  const actor = actorOpenId(ctx)
+  if (!actor) {
+    ctx.status = 403
+    ctx.body = { error: 'Feishu user identity required' }
+    return null
+  }
+  if (!config.runBrokerUrl) {
+    ctx.status = 503
+    ctx.body = { error: 'HERMES_RUN_BROKER_URL is required for shared agent config access' }
+    return null
+  }
+
+  try {
+    const res = await fetch(`${config.runBrokerUrl}/api/run-broker/agents/shared`, {
+      method: 'GET',
+      headers: brokerHeadersForActor(ctx),
+    })
+    if (!res.ok) {
+      ctx.status = res.status
+      ctx.body = await res.json().catch(() => ({ error: 'Shared agent access lookup failed' }))
+      return null
+    }
+    const body = await res.json().catch(() => ({})) as { agents?: Array<Record<string, unknown>> }
+    const shared = Array.isArray(body.agents)
+      ? body.agents.find((agent) => String(agent?.agent_id || '').trim() === agentId)
+      : null
+    const profile = String(shared?.profile_name || '').trim()
+    const role = String(shared?.role || '').trim()
+    if (!shared || !profile || !SHARED_AGENT_ROLES.has(role)) {
+      ctx.status = 403
+      ctx.body = { error: 'Shared agent access denied' }
+      return null
+    }
+    return { profile, role }
+  } catch (err: any) {
+    ctx.status = 502
+    ctx.body = { error: err?.message || 'Shared agent access lookup failed' }
+    return null
+  }
+}
+
+async function resolveConfigProfile(ctx: any, action: 'read' | 'write'): Promise<string | null> {
+  const agentId = isChatPlaneRequest(ctx) ? requestedAgentId(ctx) : ''
+  if (!agentId) return requestedProfile(ctx)
+
+  const access = await resolveSharedAgentConfigAccess(ctx, agentId)
+  if (!access) return null
+  if (action === 'write' && !SHARED_AGENT_CONFIG_EDITOR_ROLES.has(access.role)) {
+    ctx.status = 403
+    ctx.body = { error: 'Editor or manager role required for shared agent config writes' }
+    return null
+  }
+  return access.profile
+}
+
+function requestedProfile(ctx: any): string {
+  // Chat plane: the caller may not freely select a profile via header/query/body.
+  // getRequestProfile binds the request to the openid's owned profile and only
+  // honours an explicit x-hermes-profile/profile selector when ownerOwnsProfile
+  // proves the caller owns it. This strips the caller's profile/credential
+  // selector and prevents cross-profile escalation.
+  if (isChatPlaneRequest(ctx)) {
+    return getRequestProfile(ctx)
+  }
+  const headerProfile = typeof ctx.get === 'function' ? ctx.get('x-hermes-profile') : ''
+  const queryProfile = typeof ctx.query?.profile === 'string' ? ctx.query.profile : ''
+  const bodyProfile = typeof ctx.request?.body?.profile === 'string' ? ctx.request.body.profile : ''
+  return ctx.state?.profile?.name ||
+    headerProfile.trim() ||
+    queryProfile.trim() ||
+    bodyProfile.trim() ||
+    getActiveProfileName() ||
+    'default'
+}
+
+const configPath = (profile: string) => join(getProfileDir(profile), 'config.yaml')
+const envPath = (profile: string) => join(getProfileDir(profile), '.env')
 
 const envPlatformMap: Record<string, [string, string]> = {
   TELEGRAM_BOT_TOKEN: ['telegram', 'token'],
@@ -24,6 +132,13 @@ const envPlatformMap: Record<string, [string, string]> = {
   DINGTALK_CLIENT_ID: ['dingtalk', 'extra.client_id'],
   DINGTALK_CLIENT_SECRET: ['dingtalk', 'extra.client_secret'],
   DINGTALK_APP_KEY: ['dingtalk', 'extra.app_key'],
+  DINGTALK_CARD_TEMPLATE_ID: ['dingtalk', 'extra.card_template_id'],
+  DINGTALK_ALLOWED_USERS: ['dingtalk', 'allowed_users'],
+  DINGTALK_ALLOW_ALL_USERS: ['dingtalk', 'allow_all_users'],
+  QQ_APP_ID: ['qqbot', 'extra.app_id'],
+  QQ_CLIENT_SECRET: ['qqbot', 'extra.client_secret'],
+  QQ_ALLOWED_USERS: ['qqbot', 'allowed_users'],
+  QQ_ALLOW_ALL_USERS: ['qqbot', 'allow_all_users'],
   WECOM_BOT_ID: ['wecom', 'extra.bot_id'],
   WECOM_SECRET: ['wecom', 'extra.secret'],
   WEIXIN_TOKEN: ['weixin', 'token'],
@@ -71,9 +186,75 @@ function deepMerge(target: Record<string, any>, source: Record<string, any>): Re
   return target
 }
 
-async function readEnvPlatforms(): Promise<Record<string, any>> {
+const AUXILIARY_TASKS = [
+  { key: 'vision', label: 'Vision', default_timeout: 120, default_download_timeout: 30 },
+  { key: 'web_extract', label: 'Web extract', default_timeout: 360 },
+  { key: 'compression', label: 'Compression', default_timeout: 120 },
+  { key: 'skills_hub', label: 'Skills hub', default_timeout: 30 },
+  { key: 'approval', label: 'Approval', default_timeout: 30 },
+  { key: 'mcp', label: 'MCP', default_timeout: 30 },
+  { key: 'title_generation', label: 'Title generation', default_timeout: 30 },
+  { key: 'triage_specifier', label: 'Triage specifier', default_timeout: 120 },
+  { key: 'kanban_decomposer', label: 'Kanban decomposer', default_timeout: 180 },
+  { key: 'profile_describer', label: 'Profile describer', default_timeout: 60 },
+  { key: 'curator', label: 'Curator', default_timeout: 600 },
+  { key: 'session_search', label: 'Session search', default_timeout: 30 },
+  { key: 'flush_memories', label: 'Flush memories', default_timeout: 30 },
+] as const
+
+const AUX_STRING_FIELDS = new Set(['provider', 'model', 'base_url', 'api_key'])
+const AUX_NUMBER_FIELDS = new Set(['timeout', 'download_timeout'])
+
+function isPlainRecord(value: unknown): value is Record<string, any> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isSafeAuxiliaryKey(value: string): boolean {
+  return /^[A-Za-z0-9_.-]{1,80}$/.test(value) &&
+    value !== '__proto__' &&
+    value !== 'prototype' &&
+    value !== 'constructor'
+}
+
+function normalizeAuxiliaryConfig(value: unknown, options: { resetAuto?: boolean } = {}): Record<string, any> {
+  if (!isPlainRecord(value)) return {}
+  const normalized: Record<string, any> = {}
+
+  for (const [task, rawSettings] of Object.entries(value)) {
+    if (!isSafeAuxiliaryKey(task) || !isPlainRecord(rawSettings)) continue
+    const settings: Record<string, any> = {}
+    const provider = typeof rawSettings.provider === 'string' ? rawSettings.provider.trim() : ''
+    const resetToAuto = options.resetAuto === true && provider === 'auto'
+
+    for (const [field, rawValue] of Object.entries(rawSettings)) {
+      if (resetToAuto && field !== 'provider' && field !== 'timeout' && field !== 'download_timeout') continue
+      if (AUX_STRING_FIELDS.has(field)) {
+        if (typeof rawValue !== 'string') continue
+        const trimmed = rawValue.trim()
+        if (trimmed) settings[field] = trimmed
+      } else if (AUX_NUMBER_FIELDS.has(field)) {
+        if (field === 'download_timeout' && task !== 'vision') continue
+        if (rawValue === null || rawValue === undefined || rawValue === '') continue
+        const numberValue = Number(rawValue)
+        if (Number.isFinite(numberValue) && numberValue > 0) {
+          settings[field] = Math.floor(numberValue)
+        }
+      } else if (field === 'extra_body') {
+        if (isPlainRecord(rawValue) && Object.keys(rawValue).length > 0) {
+          settings.extra_body = rawValue
+        }
+      }
+    }
+
+    if (Object.keys(settings).length > 0) normalized[task] = settings
+  }
+
+  return normalized
+}
+
+async function readEnvPlatforms(profile: string): Promise<Record<string, any>> {
   try {
-    const raw = await readFile(envPath(), 'utf-8')
+    const raw = await readFile(envPath(profile), 'utf-8')
     const env = parseEnv(raw)
     const platforms: Record<string, any> = {}
     for (const [envKey, [platform, cfgPath]] of Object.entries(envPlatformMap)) {
@@ -81,51 +262,91 @@ async function readEnvPlatforms(): Promise<Record<string, any>> {
       if (val === undefined || val === '') continue
       if (!platforms[platform]) platforms[platform] = {}
       let finalVal: any = val
-      if (cfgPath === 'enabled') finalVal = val === 'true'
+      if (cfgPath === 'enabled' || cfgPath === 'allow_all_users') finalVal = val === 'true'
       setNested(platforms[platform], cfgPath, finalVal)
     }
     return platforms
   } catch { return {} }
 }
 
-async function readConfig(): Promise<Record<string, any>> {
-  const raw = await readFile(configPath(), 'utf-8')
-  return (YAML.load(raw) as Record<string, any>) || {}
+async function readConfig(profile: string): Promise<Record<string, any>> {
+  return safeFileStore.readYaml(configPath(profile))
 }
 
-async function writeConfig(data: Record<string, any>): Promise<void> {
-  const cp = configPath()
-  await copyFile(cp, cp + '.bak')
-  const yamlStr = YAML.dump(data, {
-    lineWidth: -1,
-    noRefs: true,
-    quotingType: '"',
-    forceQuotes: true, // Force quotes on all string values
-  })
-  await writeFile(cp, yamlStr, 'utf-8')
+function safeConfigSections(config: Record<string, any>): Record<string, any> {
+  const result: Record<string, any> = {}
+  for (const section of CHAT_PLANE_CONFIG_SECTIONS) {
+    result[section] = config[section] || {}
+  }
+  return result
 }
 
 export async function getConfig(ctx: any) {
   try {
-    const config = await readConfig()
-    const envPlatforms = await readEnvPlatforms()
+    const profile = await resolveConfigProfile(ctx, 'read')
+    if (!profile) return
+    const config = await readConfig(profile)
+
+    // Chat plane: never expose env-backed platform credentials, app-level
+    // gateway config, or any section outside the safe allow-list. Bound to the
+    // caller's owned profile via requestedProfile().
+    if (isChatPlaneRequest(ctx)) {
+      const { section, sections } = ctx.query
+      if (section) {
+        const key = String(section).trim()
+        if (!CHAT_PLANE_CONFIG_SECTIONS.has(key)) {
+          ctx.status = 403
+          ctx.body = { error: 'This settings section is not available in chat plane' }
+          return
+        }
+        ctx.body = { [key]: config[key] || {} }
+        return
+      }
+      if (sections) {
+        const keys = (sections as string).split(',').map((key) => key.trim()).filter(Boolean)
+        const unsafe = keys.find((key) => !CHAT_PLANE_CONFIG_SECTIONS.has(key))
+        if (unsafe) {
+          ctx.status = 403
+          ctx.body = { error: 'This settings section is not available in chat plane' }
+          return
+        }
+        const result: Record<string, any> = {}
+        for (const key of keys) { result[key] = config[key] || {} }
+        ctx.body = result
+        return
+      }
+      ctx.body = safeConfigSections(config)
+      return
+    }
+
+    const appConfig = await readAppConfig()
+    const gatewayAutoStart = normalizeGatewayAutoStartConfig(appConfig.gatewayAutoStart)
+    const envPlatforms = await readEnvPlatforms(profile)
     if (Object.keys(envPlatforms).length > 0) {
       const existing = config.platforms || {}
       for (const [platform, vals] of Object.entries(envPlatforms)) {
-        existing[platform] = { ...(existing[platform] || {}), ...(vals as Record<string, any>) }
+        existing[platform] = deepMerge(existing[platform] || {}, vals as Record<string, any>)
       }
       config.platforms = existing
     }
     const { section, sections } = ctx.query
     if (section) {
-      ctx.body = { [section as string]: config[section as string] || {} }
+      const key = section as string
+      if (key === 'gatewayAutoStart') {
+        ctx.body = { gatewayAutoStart }
+        return
+      }
+      ctx.body = { [key]: config[key] || {} }
     } else if (sections) {
       const keys = (sections as string).split(',')
       const result: Record<string, any> = {}
-      for (const key of keys) { result[key.trim()] = config[key.trim()] || {} }
+      for (const key of keys) {
+        const trimmed = key.trim()
+        result[trimmed] = trimmed === 'gatewayAutoStart' ? gatewayAutoStart : (config[trimmed] || {})
+      }
       ctx.body = result
     } else {
-      ctx.body = config
+      ctx.body = { ...config, gatewayAutoStart }
     }
   } catch (err: any) {
     ctx.status = 500; ctx.body = { error: err.message }
@@ -133,18 +354,123 @@ export async function getConfig(ctx: any) {
 }
 
 export async function updateConfig(ctx: any) {
-  const { section, values } = ctx.request.body as { section: string; values: Record<string, any> }
+  const { section, values, restart } = ctx.request.body as { section: string; values: Record<string, any>; restart?: boolean }
   if (!section || !values) {
     ctx.status = 400; ctx.body = { error: 'Missing section or values' }; return
   }
+  // Chat plane: only the safe allow-list of sections may be written, and never
+  // the app-level (gatewayAutoStart) config.
+  if (isChatPlaneRequest(ctx) && !CHAT_PLANE_CONFIG_SECTIONS.has(section)) {
+    ctx.status = 403
+    ctx.body = { error: 'This settings section is not available in chat plane' }
+    return
+  }
   try {
-    const config = await readConfig()
-    config[section] = deepMerge(config[section] || {}, values)
-    await writeConfig(config)
-    if (PLATFORM_SECTIONS.has(section)) { await restartGateway() }
+    if (APP_CONFIG_SECTIONS.has(section)) {
+      if (section === 'gatewayAutoStart') {
+        const appConfig = await readAppConfig()
+        const next: Record<string, any> = { ...(appConfig.gatewayAutoStart || {}), ...values }
+        if ('include' in values && !Array.isArray(values.include)) delete next.include
+        if ('exclude' in values && !Array.isArray(values.exclude)) delete next.exclude
+        if ('enabled' in values && typeof values.enabled !== 'boolean') delete next.enabled
+        const gatewayAutoStart = normalizeGatewayAutoStartConfig(next)
+        await writeAppConfig({ gatewayAutoStart })
+        ctx.body = { success: true, gatewayAutoStart }
+        return
+      }
+    }
+
+    const profile = await resolveConfigProfile(ctx, 'write')
+    if (!profile) return
+    await safeFileStore.updateYaml(configPath(profile), (config) => {
+      config[section] = deepMerge(config[section] || {}, values)
+      return config
+    }, {
+      backup: true,
+      dumpOptions: {
+        forceQuotes: true,
+      },
+    })
+
+    // Platform adapters run through Hermes gateway; restart it so channel
+    // config changes (Feishu/Weixin/etc.) are applied. Chat-plane callers never
+    // reach a PLATFORM_SECTIONS write (gated above), but guard the restart too.
+    if (!isChatPlaneRequest(ctx) && restart !== false && PLATFORM_SECTIONS.has(section)) {
+      try {
+        const restartResult = await restartGatewayForProfile(profile)
+        logger.info('[config] gateway restarted after config update section=%s profile=%s result=%j', section, profile, restartResult)
+      } catch (err) {
+        if (isGatewayRestartDisabledError(err)) {
+          ctx.status = 409
+          ctx.body = { error: `配置已保存。${(err as Error).message}` }
+          return
+        }
+        logger.error(err, 'Gateway restart failed')
+        ctx.status = 500
+        ctx.body = { error: err instanceof Error ? err.message : 'Gateway restart failed' }
+        return
+      }
+    }
+
     ctx.body = { success: true }
   } catch (err: any) {
     ctx.status = 500; ctx.body = { error: err.message }
+  }
+}
+
+export async function getAuxiliaryModels(ctx: any) {
+  // Auxiliary model config carries provider api_key/base_url and is outside the
+  // chat-plane safe section allow-list; never expose it to chat-plane callers.
+  if (isChatPlaneRequest(ctx)) {
+    ctx.status = 403
+    ctx.body = { error: 'This settings section is not available in chat plane' }
+    return
+  }
+  try {
+    const profile = requestedProfile(ctx)
+    const config = await readConfig(profile)
+    ctx.body = {
+      tasks: AUXILIARY_TASKS,
+      auxiliary: normalizeAuxiliaryConfig(config.auxiliary),
+    }
+  } catch (err: any) {
+    ctx.status = 500
+    ctx.body = { error: err.message }
+  }
+}
+
+export async function updateAuxiliaryModels(ctx: any) {
+  // Auxiliary model config carries provider api_key/base_url and is outside the
+  // chat-plane safe section allow-list; never let chat-plane callers write it.
+  if (isChatPlaneRequest(ctx)) {
+    ctx.status = 403
+    ctx.body = { error: 'This settings section is not available in chat plane' }
+    return
+  }
+  const body = ctx.request.body as { auxiliary?: unknown }
+  if (!body || !isPlainRecord(body.auxiliary)) {
+    ctx.status = 400
+    ctx.body = { error: 'Missing auxiliary config' }
+    return
+  }
+
+  try {
+    const profile = requestedProfile(ctx)
+    const auxiliary = normalizeAuxiliaryConfig(body.auxiliary, { resetAuto: true })
+    await safeFileStore.updateYaml(configPath(profile), (config) => {
+      if (Object.keys(auxiliary).length > 0) config.auxiliary = auxiliary
+      else delete config.auxiliary
+      return config
+    }, {
+      backup: true,
+      dumpOptions: {
+        forceQuotes: true,
+      },
+    })
+    ctx.body = { success: true, auxiliary }
+  } catch (err: any) {
+    ctx.status = 500
+    ctx.body = { error: err.message }
   }
 }
 
@@ -153,43 +479,71 @@ export async function updateCredentials(ctx: any) {
   if (!platform || !values) {
     ctx.status = 400; ctx.body = { error: 'Missing platform or values' }; return
   }
+  // Chat plane never exposes platform credentials (read or write).
+  if (isChatPlaneRequest(ctx)) {
+    ctx.status = 403
+    ctx.body = { error: 'Credentials are not available in chat plane' }
+    return
+  }
   try {
+    const profile = requestedProfile(ctx)
     const envMap = platformEnvMap[platform]
     if (!envMap) {
       ctx.status = 400; ctx.body = { error: `Unknown platform: ${platform}` }; return
     }
-    const config = await readConfig()
-    let configChanged = false
     const flatValues: Record<string, any> = {}
     for (const [key, val] of Object.entries(values)) {
       if (key === 'extra' && val && typeof val === 'object') {
         for (const [subKey, subVal] of Object.entries(val as Record<string, any>)) { flatValues[`extra.${subKey}`] = subVal }
       } else { flatValues[key] = val }
     }
-    for (const [cfgPath, val] of Object.entries(flatValues)) {
-      const envVar = envMap[cfgPath]
-      if (!envVar) continue
-      if (val === undefined || val === null || val === '') {
-        await saveEnvValue(envVar, '')
-        const parts = cfgPath.split('.')
-        let obj: any = config.platforms?.[platform]
-        if (obj) {
-          if (parts.length === 1) { delete obj[parts[0]] }
-          else {
-            let cur = obj
-            for (let i = 0; i < parts.length - 1; i++) { if (!cur[parts[i]]) break; cur = cur[parts[i]] }
-            delete cur[parts[parts.length - 1]]
-            if (obj.extra && Object.keys(obj.extra).length === 0) delete obj.extra
+    await safeFileStore.updateYaml(configPath(profile), async (config) => {
+      for (const [cfgPath, val] of Object.entries(flatValues)) {
+        const envVar = envMap[cfgPath]
+        if (!envVar) continue
+        if (val === undefined || val === null || val === '') {
+          await saveEnvValueForProfile(profile, envVar, '')
+          const parts = cfgPath.split('.')
+          let obj: any = config.platforms?.[platform]
+          if (obj) {
+            if (parts.length === 1) { delete obj[parts[0]] }
+            else {
+              let cur = obj
+              for (let i = 0; i < parts.length - 1; i++) { if (!cur[parts[i]]) break; cur = cur[parts[i]] }
+              delete cur[parts[parts.length - 1]]
+              if (obj.extra && Object.keys(obj.extra).length === 0) delete obj.extra
+            }
+            if (Object.keys(obj).length === 0) { if (!config.platforms) config.platforms = {}; delete config.platforms[platform] }
           }
-          if (Object.keys(obj).length === 0) { if (!config.platforms) config.platforms = {}; delete config.platforms[platform] }
-          configChanged = true
+        } else {
+          await saveEnvValueForProfile(profile, envVar, String(val))
         }
-      } else {
-        await saveEnvValue(envVar, String(val))
       }
+      return config
+    }, {
+      backup: true,
+      dumpOptions: {
+        forceQuotes: true,
+      },
+    })
+
+    // Platform adapters run through Hermes gateway; restart it so channel
+    // credentials are applied.
+    try {
+      const restartResult = await restartGatewayForProfile(profile)
+      logger.info('[config] gateway restarted after credentials update platform=%s profile=%s result=%j', platform, profile, restartResult)
+    } catch (err) {
+      if (isGatewayRestartDisabledError(err)) {
+        ctx.status = 409
+        ctx.body = { error: `凭据已保存。${(err as Error).message}` }
+        return
+      }
+      logger.error(err, 'Gateway restart failed')
+      ctx.status = 500
+      ctx.body = { error: err instanceof Error ? err.message : 'Gateway restart failed' }
+      return
     }
-    if (configChanged) { await writeConfig(config) }
-    await restartGateway()
+
     ctx.body = { success: true }
   } catch (err: any) {
     ctx.status = 500; ctx.body = { error: err.message }

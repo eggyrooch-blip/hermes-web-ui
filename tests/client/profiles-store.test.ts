@@ -11,6 +11,8 @@ const mockProfilesApi = vi.hoisted(() => ({
   switchProfile: vi.fn(),
   exportProfile: vi.fn(),
   importProfile: vi.fn(),
+  updateProfileAvatar: vi.fn(),
+  deleteProfileAvatar: vi.fn(),
 }))
 
 vi.mock('@/api/hermes/profiles', () => mockProfilesApi)
@@ -20,13 +22,14 @@ import { useProfilesStore } from '@/stores/hermes/profiles'
 describe('Profiles Store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.clear()
     vi.clearAllMocks()
   })
 
   it('fetchProfiles loads profiles and sets active', async () => {
     const profiles = [
-      { name: 'default', active: true, model: 'gpt-4', gateway: 'running', alias: '' },
-      { name: 'dev', active: false, model: 'gpt-4', gateway: 'stopped', alias: '' },
+      { name: 'default', active: true, model: 'gpt-4', alias: '' },
+      { name: 'dev', active: false, model: 'gpt-4', alias: '' },
     ]
     mockProfilesApi.fetchProfiles.mockResolvedValue(profiles)
 
@@ -54,8 +57,8 @@ describe('Profiles Store', () => {
   it('createProfile calls API and refreshes list', async () => {
     mockProfilesApi.createProfile.mockResolvedValue({ success: true })
     mockProfilesApi.fetchProfiles.mockResolvedValue([
-      { name: 'default', active: true, model: 'gpt-4', gateway: 'running', alias: '' },
-      { name: 'new-profile', active: false, model: 'gpt-4', gateway: 'stopped', alias: '' },
+      { name: 'default', active: true, model: 'gpt-4', alias: '' },
+      { name: 'new-profile', active: false, model: 'gpt-4', alias: '' },
     ])
 
     const store = useProfilesStore()
@@ -69,11 +72,11 @@ describe('Profiles Store', () => {
   it('deleteProfile clears detail cache', async () => {
     mockProfilesApi.deleteProfile.mockResolvedValue(true)
     mockProfilesApi.fetchProfiles.mockResolvedValue([
-      { name: 'default', active: true, model: 'gpt-4', gateway: 'running', alias: '' },
+      { name: 'default', active: true, model: 'gpt-4', alias: '' },
     ])
 
     const store = useProfilesStore()
-    store.detailMap['test'] = { name: 'test', path: '/tmp/test', model: '', provider: '', gateway: '', skills: 0, hasEnv: false, hasSoulMd: false }
+    store.detailMap['test'] = { name: 'test', path: '/tmp/test', model: '', provider: '', skills: 0, hasEnv: false, hasSoulMd: false }
 
     await store.deleteProfile('test')
 
@@ -82,7 +85,7 @@ describe('Profiles Store', () => {
   })
 
   it('fetchProfileDetail uses cache', async () => {
-    const detail = { name: 'cached', path: '/tmp/cached', model: 'gpt-4', provider: 'openai', gateway: 'running', skills: 5, hasEnv: true, hasSoulMd: false }
+    const detail = { name: 'cached', path: '/tmp/cached', model: 'gpt-4', provider: 'openai', skills: 5, hasEnv: true, hasSoulMd: false }
     const store = useProfilesStore()
     store.detailMap['cached'] = detail
 
@@ -92,11 +95,59 @@ describe('Profiles Store', () => {
     expect(mockProfilesApi.fetchProfileDetail).not.toHaveBeenCalled()
   })
 
-  it('switchProfile sets switching state', async () => {
-    mockProfilesApi.switchProfile.mockResolvedValue(true)
-    mockProfilesApi.fetchProfiles.mockResolvedValue([])
+  it('updateAvatar updates profile, detail cache, and active profile', async () => {
+    const savedAvatar = { type: 'image', dataUrl: 'data:image/png;base64,YQ==' }
+    mockProfilesApi.updateProfileAvatar.mockResolvedValue(savedAvatar)
 
     const store = useProfilesStore()
+    store.profiles = [
+      { name: 'default', active: true, model: 'gpt-4', alias: '' },
+      { name: 'dev', active: false, model: 'gpt-4', alias: '' },
+    ]
+    store.activeProfile = store.profiles[0]
+    store.detailMap.default = { name: 'default', path: '/tmp/default', model: '', provider: '', skills: 0, hasEnv: false, hasSoulMd: false }
+
+    const result = await store.updateAvatar('default', { type: 'image', dataUrl: savedAvatar.dataUrl })
+
+    expect(result).toEqual(savedAvatar)
+    expect(mockProfilesApi.updateProfileAvatar).toHaveBeenCalledWith('default', { type: 'image', dataUrl: savedAvatar.dataUrl })
+    expect(store.profiles[0].avatar).toEqual(savedAvatar)
+    expect(store.activeProfile?.avatar).toEqual(savedAvatar)
+    expect(store.detailMap.default.avatar).toEqual(savedAvatar)
+  })
+
+  it('deleteAvatar clears avatar state', async () => {
+    mockProfilesApi.deleteProfileAvatar.mockResolvedValue(undefined)
+
+    const store = useProfilesStore()
+    store.profiles = [
+      { name: 'default', active: true, model: 'gpt-4', alias: '', avatar: { type: 'generated', seed: 'old' } },
+    ]
+    store.activeProfile = store.profiles[0]
+    store.detailMap.default = {
+      name: 'default',
+      path: '/tmp/default',
+      model: '',
+      provider: '',
+      skills: 0,
+      hasEnv: false,
+      hasSoulMd: false,
+      avatar: { type: 'generated', seed: 'old' },
+    }
+
+    await store.deleteAvatar('default')
+
+    expect(mockProfilesApi.deleteProfileAvatar).toHaveBeenCalledWith('default')
+    expect(store.profiles[0].avatar).toBeNull()
+    expect(store.activeProfile?.avatar).toBeNull()
+    expect(store.detailMap.default.avatar).toBeNull()
+  })
+
+  it('switchProfile sets switching state', async () => {
+    mockProfilesApi.switchProfile.mockResolvedValue(true)
+
+    const store = useProfilesStore()
+    store.profiles = [{ name: 'dev', active: false, model: 'gpt-4', alias: '' }]
     const switchPromise = store.switchProfile('dev')
 
     expect(store.switching).toBe(true)
@@ -106,12 +157,13 @@ describe('Profiles Store', () => {
 
   it('switchProfile updates activeProfileName immediately', async () => {
     mockProfilesApi.switchProfile.mockResolvedValue(true)
-    mockProfilesApi.fetchProfiles.mockResolvedValue([
-      { name: 'default', active: false, model: 'gpt-4', gateway: 'stopped', alias: '' },
-      { name: 'dev', active: true, model: 'gpt-4', gateway: 'running', alias: '' },
-    ])
+    const profiles = [
+      { name: 'default', active: false, model: 'gpt-4', alias: '' },
+      { name: 'dev', active: true, model: 'gpt-4', alias: '' },
+    ]
 
     const store = useProfilesStore()
+    store.profiles = profiles
     await store.switchProfile('dev')
 
     // activeProfileName should be updated immediately
@@ -127,6 +179,7 @@ describe('Profiles Store', () => {
     mockProfilesApi.switchProfile.mockResolvedValue(false)  // API failed
 
     const store = useProfilesStore()
+    store.profiles = [{ name: 'dev', active: false, model: 'gpt-4', alias: '' }]
     store.activeProfileName = initialName
     const result = await store.switchProfile('dev')
 
@@ -138,6 +191,18 @@ describe('Profiles Store', () => {
     expect(localStorage.getItem('hermes_active_profile_name')).toBe(initialName)
   })
 
+  it('switchProfile returns false without changing identity when the API throws', async () => {
+    localStorage.setItem('hermes_active_profile_name', 'default')
+    mockProfilesApi.switchProfile.mockRejectedValue(new Error('unavailable'))
+    const store = useProfilesStore()
+    store.profiles = [{ name: 'dev', active: false, model: 'gpt-4', alias: '' }]
+    store.activeProfileName = 'default'
+
+    expect(await store.switchProfile('dev')).toBe(false)
+    expect(store.activeProfileName).toBe('default')
+    expect(localStorage.getItem('hermes_active_profile_name')).toBe('default')
+  })
+
   it('switchProfile keeps activeProfileName even if fetchProfiles fails', async () => {
     const initialName = 'default'
     localStorage.setItem('hermes_active_profile_name', initialName)
@@ -146,6 +211,7 @@ describe('Profiles Store', () => {
     mockProfilesApi.fetchProfiles.mockRejectedValue(new Error('Network error'))
 
     const store = useProfilesStore()
+    store.profiles = [{ name: 'dev', active: false, model: 'gpt-4', alias: '' }]
     store.activeProfileName = initialName
     const result = await store.switchProfile('dev')
 
@@ -157,26 +223,79 @@ describe('Profiles Store', () => {
     expect(localStorage.getItem('hermes_active_profile_name')).toBe('dev')
   })
 
-  it('switchProfile rolls back if backend reports different active profile', async () => {
+  it('switchProfile keeps the local selected profile independent of backend active flags', async () => {
     const initialName = 'default'
     localStorage.setItem('hermes_active_profile_name', initialName)
 
     mockProfilesApi.switchProfile.mockResolvedValue(true)
-    // Backend returns success, but active profile is still default (not the one we switched to)
     mockProfilesApi.fetchProfiles.mockResolvedValue([
-      { name: 'default', active: true, model: 'gpt-4', gateway: 'running', alias: '' },
-      { name: 'dev', active: false, model: 'gpt-4', gateway: 'stopped', alias: '' },
+      { name: 'default', active: true, model: 'gpt-4', alias: '' },
+      { name: 'dev', active: false, model: 'gpt-4', alias: '' },
     ])
 
     const store = useProfilesStore()
+    store.profiles = [
+      { name: 'default', active: true, model: 'gpt-4', alias: '' },
+      { name: 'dev', active: false, model: 'gpt-4', alias: '' },
+    ]
     store.activeProfileName = initialName
     const result = await store.switchProfile('dev')
 
-    // Should return false (backend verification failed)
-    expect(result).toBe(false)
-    // activeProfileName should be rolled back to default
+    expect(result).toBe(true)
+    expect(store.activeProfileName).toBe('dev')
+    expect(localStorage.getItem('hermes_active_profile_name')).toBe('dev')
+  })
+
+  it('rejects a profile absent from the current authorized list', async () => {
+    localStorage.setItem('hermes_active_profile_name', 'default')
+    const store = useProfilesStore()
+    store.activeProfileName = 'default'
+    store.profiles = [{ name: 'default', active: true, model: 'gpt-4', alias: '' }]
+
+    expect(await store.switchProfile('forged-profile')).toBe(false)
+    expect(mockProfilesApi.switchProfile).not.toHaveBeenCalled()
     expect(store.activeProfileName).toBe('default')
-    // localStorage should be rolled back
     expect(localStorage.getItem('hermes_active_profile_name')).toBe('default')
+  })
+
+  it('stores the Feishu bound user and selected profile for user-mode chrome', () => {
+    const store = useProfilesStore()
+    const user = {
+      id: 7,
+      username: 'feishu:ou_test',
+      role: 'user',
+      status: 'active',
+      profile: 'sunke',
+      name: '孙可',
+      avatarUrl: 'https://example.com/feishu-avatar.png',
+    }
+
+    store.setBoundProfile('sunke', user)
+
+    expect(store.currentUser).toEqual(user)
+    expect(store.activeProfileName).toBe('sunke')
+    expect(localStorage.getItem('hermes_active_profile_name')).toBe('sunke')
+    expect(localStorage.getItem('hermes_current_user')).toContain('feishu-avatar.png')
+  })
+
+  it('keeps an owned frontend profile selected when Feishu chrome refreshes the bound profile', () => {
+    localStorage.setItem('hermes_active_profile_name', 'group_agent_a')
+    const store = useProfilesStore()
+    const user = {
+      id: 7,
+      username: 'feishu:ou_test',
+      role: 'user',
+      status: 'active',
+      profile: 'feishu_user_a',
+      profiles: ['feishu_user_a', 'group_agent_a'],
+      name: '孙可',
+      avatarUrl: 'https://example.com/feishu-avatar.png',
+    }
+
+    store.setBoundProfile('feishu_user_a', user)
+
+    expect(store.currentUser).toEqual(user)
+    expect(store.activeProfileName).toBe('group_agent_a')
+    expect(localStorage.getItem('hermes_active_profile_name')).toBe('group_agent_a')
   })
 })

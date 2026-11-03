@@ -17,6 +17,7 @@ import {
   scheduleToEditableInput,
   updateJob,
 } from '../../packages/client/src/api/hermes/jobs'
+import { listCronRuns } from '../../packages/client/src/api/hermes/cron-history'
 import type { Job } from '../../packages/client/src/api/hermes/jobs'
 
 function makeJob(overrides: Partial<Job> = {}): Job {
@@ -79,6 +80,7 @@ describe('Hermes jobs edit payloads', () => {
       schedule: 'every 7200m',
       prompt,
       deliver: 'origin',
+      skills: [],
       repeat_times: null,
     })
 
@@ -95,10 +97,26 @@ describe('Hermes jobs edit payloads', () => {
       schedule: 'every 14400m',
       prompt: original.prompt,
       deliver: 'origin',
+      skills: [],
       repeat_times: null,
     })
 
     expect(payload).toEqual({ schedule: 'every 14400m' })
+  })
+
+  it('sends changed skill selections', () => {
+    const original = makeJob({ skills: ['planner'] })
+
+    const payload = buildJobUpdateRequest(original, {
+      name: original.name,
+      schedule: 'every 7200m',
+      prompt: original.prompt,
+      deliver: 'origin',
+      skills: ['planner', 'reviewer'],
+      repeat_times: null,
+    })
+
+    expect(payload).toEqual({ skills: ['planner', 'reviewer'] })
   })
 
   it('does not send a PATCH body with structured schedule objects', async () => {
@@ -117,5 +135,21 @@ describe('Hermes jobs edit payloads', () => {
       name: 'artifact cleanup renamed',
       schedule: 'every 14400m',
     })
+  })
+
+  it('sends active profile header when loading job run history', async () => {
+    localStorage.setItem('hermes_active_profile_name', 'research')
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ runs: [] }),
+    })
+
+    await listCronRuns('job-1')
+
+    expect(mockFetch).toHaveBeenCalledOnce()
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(url).toBe('/api/cron-history?jobId=job-1')
+    expect(options.headers['X-Hermes-Profile']).toBe('research')
   })
 })

@@ -1,8 +1,9 @@
-import { request, getApiKey, getBaseUrlValue } from '../client'
+import { request, getActiveProfileName, getApiKey, getBaseUrlValue } from '../client'
 
 export interface FileEntry {
   name: string
   path: string
+  absolutePath?: string
   isDir: boolean
   size: number
   modTime: string
@@ -11,15 +12,19 @@ export interface FileEntry {
 export interface FileStat {
   name: string
   path: string
+  absolutePath?: string
   isDir: boolean
   size: number
   modTime: string
   permissions?: string
 }
 
-export async function listFiles(path: string = ''): Promise<{ entries: FileEntry[]; path: string }> {
+export async function listFiles(path: string = '', profile?: string): Promise<{ entries: FileEntry[]; path: string; absolutePath?: string }> {
   const params = new URLSearchParams()
   if (path) params.set('path', path)
+  // Same trick as fetchMemory: ?profile= lets the agent hub list another owned
+  // agent's workspace without switching the active profile.
+  if (profile) params.set('profile', profile)
   const query = params.toString()
   return request<{ entries: FileEntry[]; path: string }>(`/api/hermes/files/list${query ? `?${query}` : ''}`)
 }
@@ -81,6 +86,8 @@ export async function uploadFiles(targetDir: string, files: File[]): Promise<{ n
   const headers: Record<string, string> = {}
   const token = getApiKey()
   if (token) headers['Authorization'] = `Bearer ${token}`
+  const profileName = getActiveProfileName()
+  if (profileName) headers['X-Hermes-Profile'] = profileName
 
   const res = await fetch(url, { method: 'POST', headers, body: formData })
   if (!res.ok) {
@@ -95,7 +102,43 @@ export function getFileDownloadUrl(relativePath: string, fileName?: string): str
   const base = getBaseUrlValue()
   const params = new URLSearchParams({ path: relativePath })
   if (fileName) params.set('name', fileName)
+  const profileName = getActiveProfileName()
+  if (profileName) params.set('profile', profileName)
   const token = getApiKey()
   if (token) params.set('token', token)
   return `${base}/api/hermes/download?${params.toString()}`
+}
+
+export function getFilePreviewUrl(relativePath: string, fileName?: string): string {
+  const base = getBaseUrlValue()
+  const params = new URLSearchParams({ path: relativePath })
+  if (fileName) params.set('name', fileName)
+  const profileName = getActiveProfileName()
+  if (profileName) params.set('profile', profileName)
+  const token = getApiKey()
+  if (token) params.set('token', token)
+  return `${base}/api/hermes/preview?${params.toString()}`
+}
+
+// Binary preview fetch for pdf / docx / pptx / xlsx. These never go through
+// `readFile` (which decodes as UTF-8 and would corrupt the bytes) and never
+// through the download URL (Content-Disposition: attachment), so they get the
+// allowlisted, size-capped inline endpoint instead. Auth travels in headers
+// rather than the query string because nothing here is an <img src>.
+export async function fetchFilePreviewBlob(relativePath: string, signal?: AbortSignal): Promise<Blob> {
+  const base = getBaseUrlValue()
+  const url = `${base}/api/hermes/files/preview?path=${encodeURIComponent(relativePath)}`
+
+  const headers: Record<string, string> = {}
+  const token = getApiKey()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const profileName = getActiveProfileName()
+  if (profileName) headers['X-Hermes-Profile'] = profileName
+
+  const res = await fetch(url, { headers, signal })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
+    throw new Error(body.error || `Preview failed: ${res.status}`)
+  }
+  return res.blob()
 }

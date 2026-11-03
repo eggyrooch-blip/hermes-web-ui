@@ -2,19 +2,30 @@ import type { Context } from 'koa'
 import { readdir, stat, readFile } from 'fs/promises'
 import { join } from 'path'
 import { existsSync } from 'fs'
-import { getActiveProfileDir } from '../../services/hermes/hermes-profile'
+import { getRequestProfileDir } from '../../services/request-context'
+import { getProfileDir } from '../../services/hermes/hermes-profile'
 
 const SYNTHETIC_RUN_FILE = '__scheduler_metadata__.md'
 
-function getCronOutputDir(): string {
-  // Use the active profile's directory, so cron history follows profile switches
-  const profileDir = getActiveProfileDir()
-  return join(profileDir, 'cron', 'output')
+// Fork: resolve the cron directory from the request-scoped profile so chat-plane
+// requests are pinned to the caller's owned profile (caller selectors are stripped
+// unless the owner actually owns the requested profile). On the admin/JWT (non-chat)
+// plane the resolved profile is published on `ctx.state.profile.name` by the
+// user-auth middleware, so honour it directly (matching sibling fork controllers
+// like media/chat-run/coding-agents). Falls back to getRequestProfileDir's
+// chat-plane + header/query/active resolution when no admin-plane profile is set.
+function getRequestCronProfileDir(ctx: Context): string {
+  const adminProfile = (ctx.state?.profile?.name as string | undefined)?.trim()
+  if (adminProfile) return getProfileDir(adminProfile)
+  return getRequestProfileDir(ctx)
 }
 
-function getCronJobsFile(): string {
-  const profileDir = getActiveProfileDir()
-  return join(profileDir, 'cron', 'jobs.json')
+function getCronOutputDir(ctx: Context): string {
+  return join(getRequestCronProfileDir(ctx), 'cron', 'output')
+}
+
+function getCronJobsFile(ctx: Context): string {
+  return join(getRequestCronProfileDir(ctx), 'cron', 'jobs.json')
 }
 
 export interface RunEntry {
@@ -69,8 +80,8 @@ function normaliseJobsPayload(payload: unknown): CronJobMetadata[] {
   return []
 }
 
-async function readCronJobs(): Promise<CronJobMetadata[]> {
-  const jobsFile = getCronJobsFile()
+async function readCronJobs(ctx: Context): Promise<CronJobMetadata[]> {
+  const jobsFile = getCronJobsFile(ctx)
   if (!existsSync(jobsFile)) return []
 
   try {
@@ -182,7 +193,7 @@ function buildSyntheticContent(job: CronJobMetadata, runTime: string): string {
 /** List all run output files, optionally filtered by job ID */
 export async function listRuns(ctx: Context) {
   const jobId = ctx.query.jobId as string | undefined
-  const cronOutput = getCronOutputDir()
+  const cronOutput = getCronOutputDir(ctx)
 
   try {
     const runs: RunEntry[] = []
@@ -220,7 +231,7 @@ export async function listRuns(ctx: Context) {
       }
     }
 
-    const jobs = await readCronJobs()
+    const jobs = await readCronJobs(ctx)
     const targetJobs = jobId ? jobs.filter(job => getJobId(job) === jobId) : jobs
     for (const job of targetJobs) {
       const id = getJobId(job)
@@ -250,14 +261,21 @@ export async function readRun(ctx: Context) {
   }
 
   // Prevent path traversal
-  if (jobId.includes('..') || fileName.includes('..') || jobId.includes('/') || fileName.includes('/')) {
+  if (
+    jobId.includes('..')
+    || fileName.includes('..')
+    || jobId.includes('/')
+    || fileName.includes('/')
+    || jobId.includes('\\')
+    || fileName.includes('\\')
+  ) {
     ctx.status = 400
     ctx.body = { error: 'Invalid path' }
     return
   }
 
   if (fileName === SYNTHETIC_RUN_FILE) {
-    const jobs = await readCronJobs()
+    const jobs = await readCronJobs(ctx)
     const job = jobs.find(candidate => getJobId(candidate) === jobId)
     const synthetic = job ? syntheticRunEntry(job) : null
     if (!job || !synthetic) {
@@ -275,7 +293,7 @@ export async function readRun(ctx: Context) {
     return
   }
 
-  const cronOutput = getCronOutputDir()
+  const cronOutput = getCronOutputDir(ctx)
   const filePath = join(cronOutput, jobId, fileName)
 
   if (!existsSync(filePath)) {

@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from 'fs'
 import { resolve } from 'path'
 import * as hermesCli from '../services/hermes/hermes-cli'
-import { getGatewayManagerInstance } from '../services/gateway-bootstrap'
+import { getAgentBridgeManager } from '../services/hermes/agent-bridge/manager'
+import { redactAgentBridgeError } from '../services/hermes/agent-bridge/redact'
+import { config } from '../config'
 
 declare const __APP_VERSION__: string
 
@@ -45,8 +47,45 @@ const LOCAL_VERSION = typeof __APP_VERSION__ !== 'undefined'
   : PACKAGE_INFO?.version || ''
 
 let cachedLatestVersion = ''
+const AGENT_BRIDGE_HEALTH_CACHE_TTL_MS = 250
+const AGENT_BRIDGE_HEALTH_FIRST_WAIT_MS = 75
+
+type AgentBridgeHealthPayload = {
+  status: string
+  reachable: boolean
+  ready?: boolean
+  running?: boolean
+  attached?: boolean
+  starting?: boolean
+  stopping?: boolean
+  restart_scheduled?: boolean
+  restart_attempts?: number
+  endpoint_kind?: 'ipc' | 'tcp' | 'unknown'
+  pid?: number
+  error?: string
+}
+
+let cachedAgentBridgeHealth: { value: AgentBridgeHealthPayload; expiresAt: number } | null = null
+let pendingAgentBridgeHealthRefresh: Promise<AgentBridgeHealthPayload> | null = null
+
+/**
+ * Whether the periodic npm-registry version check is disabled.
+ *
+ * Useful when hermes-web-ui is bundled inside a packaged distribution
+ * (e.g. a desktop app) where the user can't `npm install -g hermes-web-ui@latest`
+ * to upgrade — the "update available" prompt would be misleading and
+ * the periodic outbound HTTP request to the npm registry is unnecessary.
+ *
+ * Set HERMES_WEB_UI_DISABLE_UPDATE_CHECK=true (or 1, on, yes) to disable.
+ */
+function isUpdateCheckDisabled(): boolean {
+  const raw = (process.env.HERMES_WEB_UI_DISABLE_UPDATE_CHECK || '').trim().toLowerCase()
+  if (raw === 'true' || raw === '1' || raw === 'on' || raw === 'yes') return true
+  return config.webPlane === 'chat' || config.authMode === 'feishu-oauth-dev' || config.authMode === 'trusted-feishu'
+}
 
 export async function checkLatestVersion(): Promise<void> {
+  if (isUpdateCheckDisabled()) return
   try {
     const packageName = PACKAGE_INFO?.name || 'hermes-web-ui'
     const registryName = encodeURIComponent(packageName)
@@ -62,31 +101,101 @@ export async function checkLatestVersion(): Promise<void> {
 }
 
 export function startVersionCheck(): void {
+  if (isUpdateCheckDisabled()) return
   setTimeout(checkLatestVersion, 5000)
   setInterval(checkLatestVersion, 30 * 60 * 1000)
+}
+
+async function getAgentBridgeHealth() {
+  const now = Date.now()
+  if (cachedAgentBridgeHealth && cachedAgentBridgeHealth.expiresAt > now) {
+    return cachedAgentBridgeHealth.value
+  }
+
+  if (!pendingAgentBridgeHealthRefresh) {
+    pendingAgentBridgeHealthRefresh = refreshAgentBridgeHealth().finally(() => {
+      pendingAgentBridgeHealthRefresh = null
+    })
+  }
+
+  if (cachedAgentBridgeHealth) {
+    return cachedAgentBridgeHealth.value
+  }
+
+  const firstResult = await Promise.race([
+    pendingAgentBridgeHealthRefresh,
+    new Promise<AgentBridgeHealthPayload>((resolve) => {
+      setTimeout(() => resolve({ status: 'unknown', reachable: false }), AGENT_BRIDGE_HEALTH_FIRST_WAIT_MS)
+    }),
+  ])
+
+  return firstResult
+}
+
+async function refreshAgentBridgeHealth(): Promise<AgentBridgeHealthPayload> {
+  let endpoint: string | undefined
+
+  try {
+    const manager = getAgentBridgeManager()
+    endpoint = typeof manager.getRuntimeState === 'function'
+      ? manager.getRuntimeState().endpoint
+      : undefined
+
+    const readiness = await manager.checkReadiness({ timeoutMs: AGENT_BRIDGE_HEALTH_FIRST_WAIT_MS, connectRetryMs: 0 })
+    const value: AgentBridgeHealthPayload = {
+      status: readiness.status,
+      reachable: readiness.reachable,
+      ready: readiness.ready,
+      running: readiness.running,
+      attached: readiness.attached,
+      starting: readiness.starting,
+      stopping: readiness.stopping,
+      restart_scheduled: readiness.restartScheduled,
+      restart_attempts: readiness.restartAttempts,
+      endpoint_kind: readiness.endpointKind,
+      pid: readiness.pid,
+      error: redactAgentBridgeError(readiness.error, readiness.endpoint),
+    }
+    cachedAgentBridgeHealth = { value, expiresAt: Date.now() + AGENT_BRIDGE_HEALTH_CACHE_TTL_MS }
+    return value
+  } catch (err) {
+    const value: AgentBridgeHealthPayload = {
+      status: 'unknown',
+      reachable: false,
+      error: redactAgentBridgeError(err instanceof Error ? err.message : String(err), endpoint),
+    }
+    cachedAgentBridgeHealth = { value, expiresAt: Date.now() + AGENT_BRIDGE_HEALTH_CACHE_TTL_MS }
+    return value
+  }
+}
+
+/**
+ * Lightweight liveness probe — static response, no Hermes CLI version call and
+ * no Agent Bridge probe, so boot/deploy probes stay fast and never block on a
+ * slow upstream.
+ */
+export function livenessCheck(ctx: any) {
+  ctx.body = { status: 'ok' }
 }
 
 export async function healthCheck(ctx: any) {
   const raw = await hermesCli.getVersion()
   const hermesVersion = raw.split('\n')[0].replace('Hermes Agent ', '') || ''
-  let gatewayOk = false
-  try {
-    const mgr = getGatewayManagerInstance()
-    const upstream = mgr?.getUpstream()
-    if (!upstream) {
-      throw new Error('GatewayManager not initialized')
-    }
-    const res = await fetch(`${upstream.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(5000) })
-    gatewayOk = res.ok
-  } catch { }
-  ctx.body = {
-    status: gatewayOk ? 'ok' : 'error',
+  const agentBridge = await getAgentBridgeHealth()
+  const body: Record<string, unknown> = {
+    status: 'ok',
     platform: 'hermes-agent',
     version: hermesVersion,
-    gateway: gatewayOk ? 'running' : 'stopped',
+    gateway: 'running',
     webui_version: LOCAL_VERSION,
-    webui_latest: cachedLatestVersion,
-    webui_update_available: Boolean(LOCAL_VERSION && cachedLatestVersion && cachedLatestVersion !== LOCAL_VERSION),
     node_version: process.versions.node,
+    agent_bridge: agentBridge,
   }
+
+  if (!isUpdateCheckDisabled()) {
+    body.webui_latest = cachedLatestVersion
+    body.webui_update_available = Boolean(LOCAL_VERSION && cachedLatestVersion && cachedLatestVersion !== LOCAL_VERSION)
+  }
+
+  ctx.body = body
 }

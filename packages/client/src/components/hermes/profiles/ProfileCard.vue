@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { NButton, NTag, NSpin, useMessage, useDialog } from 'naive-ui'
+import { NButton, NInput, NModal, NSelect, NTag, NSpin, useMessage, useDialog } from 'naive-ui'
 import type { HermesProfile, HermesProfileDetail } from '@/api/hermes/profiles'
+import { fetchAgentShares, grantAgentShare, revokeAgentShare, type AgentShare, type AgentShareGrantee, type AgentShareRole } from '@/api/hermes/agents'
 import { useProfilesStore } from '@/stores/hermes/profiles'
+import { safeShareAvatarUrl } from '@/utils/hermes/share-identity'
 import { useI18n } from 'vue-i18n'
+import ProfileAvatar from './ProfileAvatar.vue'
 
 const props = defineProps<{ profile: HermesProfile }>()
 const emit = defineEmits<{}>()
@@ -18,8 +21,23 @@ const detailLoading = ref(false)
 const exporting = ref(false)
 const switching = ref(false)
 const detail = ref<HermesProfileDetail | null>(null)
+const shareModalVisible = ref(false)
+const shareLoading = ref(false)
+const shareSaving = ref(false)
+const shares = ref<AgentShare[]>([])
+const newGranteeQuery = ref('')
+const newRole = ref<AgentShareRole>('viewer')
 
 const isDefault = computed(() => props.profile.name === 'default')
+const canManageShares = computed(() => (
+  !!props.profile.agentId
+  && (!props.profile.shareRole || props.profile.shareRole === 'manager')
+))
+const shareRoleOptions = [
+  { label: 'viewer', value: 'viewer' },
+  { label: 'editor', value: 'editor' },
+  { label: 'manager', value: 'manager' },
+]
 
 async function toggleDetail() {
   if (expanded.value) {
@@ -36,9 +54,19 @@ async function toggleDetail() {
 }
 
 async function handleSwitch() {
+  dialog.warning({
+    title: t('profiles.switchTo'),
+    content: t('profiles.switchConfirm', { name: props.profile.name }),
+    positiveText: t('profiles.switchTo'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: performHermesSwitch,
+  })
+}
+
+async function performHermesSwitch() {
   switching.value = true
   try {
-    const ok = await profilesStore.switchProfile(props.profile.name)
+    const ok = await profilesStore.switchHermesProfile(props.profile.name)
     if (ok) {
       message.success(t('profiles.switchSuccess', { name: props.profile.name }))
       // Reload to refresh all profile-dependent data
@@ -81,12 +109,94 @@ async function handleExport() {
     exporting.value = false
   }
 }
+
+async function loadShares() {
+  if (!props.profile.agentId) return
+  shareLoading.value = true
+  try {
+    shares.value = await fetchAgentShares(props.profile.agentId)
+  } catch (err: any) {
+    message.error(err?.message || t('profiles.share.loadFailed'))
+    shares.value = []
+  } finally {
+    shareLoading.value = false
+  }
+}
+
+async function openShareModal() {
+  if (!canManageShares.value) return
+  shareModalVisible.value = true
+  await loadShares()
+}
+
+async function handleGrantShare() {
+  if (!props.profile.agentId) return
+  const grantee = newGranteeQuery.value.trim()
+  if (!grantee) return
+  shareSaving.value = true
+  try {
+    await grantAgentShare(props.profile.agentId, granteeLookupFromInput(grantee), newRole.value)
+    newGranteeQuery.value = ''
+    newRole.value = 'viewer'
+    await loadShares()
+    message.success(t('profiles.share.grantSuccess'))
+  } catch (err: any) {
+    message.error(err?.message || t('profiles.share.grantFailed'))
+  } finally {
+    shareSaving.value = false
+  }
+}
+
+async function handleRevokeShare(share: AgentShare) {
+  if (!props.profile.agentId) return
+  shareSaving.value = true
+  try {
+    const key = shareKey(share)
+    await revokeAgentShare(props.profile.agentId, key)
+    shares.value = shares.value.filter(item => shareKey(item) !== key)
+    message.success(t('profiles.share.revokeSuccess'))
+  } catch (err: any) {
+    message.error(err?.message || t('profiles.share.revokeFailed'))
+  } finally {
+    shareSaving.value = false
+  }
+}
+
+function granteeLookupFromInput(value: string): AgentShareGrantee {
+  return {
+    // Agent sharing currently supports Feishu principals only. Add a provider picker when more providers ship.
+    provider: 'feishu',
+    type: value.includes('@') ? 'email' : 'user_id',
+    value,
+  }
+}
+
+function shareKey(share: AgentShare): string {
+  return share.share_id || share.grantee_principal_id || share.grantee_open_id
+}
+
+function shareDisplayName(share: AgentShare): string {
+  return share.principal?.display_name || share.principal?.email || share.principal?.user_id || share.grantee_open_id
+}
+
+function shareSecondaryLabel(share: AgentShare): string {
+  if (!share.principal) return ''
+  const primary = shareDisplayName(share)
+  return [share.principal.email, share.principal.user_id].find(value => value && value !== primary) || ''
+}
+
+function shareAvatarUrl(share: AgentShare): string {
+  return safeShareAvatarUrl(share.principal?.avatar_url)
+}
 </script>
 
 <template>
   <div class="profile-card" :class="{ active: profile.active }">
     <div class="card-header">
-      <h3 class="profile-name">{{ profile.name }}</h3>
+      <div class="profile-title">
+        <ProfileAvatar :name="profile.name" :avatar="profile.avatar" :size="28" />
+        <h3 class="profile-name">{{ profile.name }}</h3>
+      </div>
       <NTag v-if="profile.active" size="tiny" type="success" :bordered="false">
         {{ t('profiles.active') }}
       </NTag>
@@ -96,10 +206,6 @@ async function handleExport() {
       <div class="info-row">
         <span class="info-label">{{ t('profiles.model') }}</span>
         <code class="info-value mono">{{ profile.model }}</code>
-      </div>
-      <div class="info-row">
-        <span class="info-label">{{ t('profiles.gateway') }}</span>
-        <code class="info-value mono">{{ profile.gateway }}</code>
       </div>
     </div>
 
@@ -144,6 +250,15 @@ async function handleExport() {
 
     <div class="card-actions">
       <NButton
+        v-if="canManageShares"
+        size="tiny"
+        quaternary
+        type="primary"
+        @click="openShareModal"
+      >
+        {{ t('profiles.share.manage') }}
+      </NButton>
+      <NButton
         v-if="!profile.active"
         size="tiny"
         :loading="switching"
@@ -166,6 +281,55 @@ async function handleExport() {
         {{ t('profiles.export') }}
       </NButton>
     </div>
+
+    <NModal
+      v-model:show="shareModalVisible"
+      preset="card"
+      :bordered="false"
+      :style="{ width: '520px', maxWidth: 'calc(100vw - 32px)' }"
+    >
+      <template #header>
+        <div class="share-modal-title">{{ t('profiles.share.title') }}</div>
+      </template>
+      <NSpin :show="shareLoading" size="small">
+        <div class="share-list">
+          <div v-if="shares.length === 0" class="share-empty">{{ t('profiles.share.empty') }}</div>
+          <div v-for="share in shares" :key="shareKey(share)" class="share-row">
+            <img
+              v-if="shareAvatarUrl(share)"
+              class="share-principal-avatar"
+              :src="shareAvatarUrl(share)"
+              alt=""
+            >
+            <div class="share-grantee">
+              <span class="share-grantee-name">{{ shareDisplayName(share) }}</span>
+              <span v-if="shareSecondaryLabel(share)" class="share-grantee-secondary">
+                {{ shareSecondaryLabel(share) }}
+              </span>
+            </div>
+            <NTag size="tiny" :bordered="false">{{ share.role }}</NTag>
+            <NButton size="tiny" quaternary :loading="shareSaving" @click="handleRevokeShare(share)">
+              {{ t('profiles.share.revoke') }}
+            </NButton>
+          </div>
+        </div>
+        <div class="share-form">
+          <NInput
+            v-model:value="newGranteeQuery"
+            size="small"
+            :placeholder="t('profiles.share.grantee')"
+          />
+          <NSelect
+            v-model:value="newRole"
+            size="small"
+            :options="shareRoleOptions"
+          />
+          <NButton size="small" type="primary" :loading="shareSaving" @click="handleGrantShare">
+            {{ t('profiles.share.grant') }}
+          </NButton>
+        </div>
+      </NSpin>
+    </NModal>
   </div>
 </template>
 
@@ -192,7 +356,15 @@ async function handleExport() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   margin-bottom: 12px;
+}
+
+.profile-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .profile-name {
@@ -202,7 +374,8 @@ async function handleExport() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 70%;
+  max-width: 100%;
+  margin: 0;
 }
 
 .card-body {
@@ -279,5 +452,79 @@ async function handleExport() {
   border-top: 1px solid $border-light;
   padding-top: 10px;
   flex-wrap: wrap;
+}
+
+.share-modal-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: $text-primary;
+}
+
+.share-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 48px;
+}
+
+.share-empty {
+  color: $text-muted;
+  font-size: 13px;
+}
+
+.share-row,
+.share-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.share-row {
+  justify-content: space-between;
+  padding: 8px;
+  border: 1px solid $border-light;
+  border-radius: 8px;
+}
+
+.share-principal-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: 0 0 28px;
+}
+
+.share-grantee {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.share-grantee-name,
+.share-grantee-secondary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-grantee-name {
+  color: $text-primary;
+  font-size: 12px;
+}
+
+.share-grantee-secondary {
+  color: $text-muted;
+  font-size: 11px;
+}
+
+.share-form {
+  margin-top: 12px;
+
+  :deep(.n-select) {
+    width: 116px;
+    flex: 0 0 116px;
+  }
 }
 </style>

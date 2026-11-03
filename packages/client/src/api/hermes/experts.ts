@@ -1,0 +1,208 @@
+import { request } from '../client'
+
+/**
+ * Expert catalog client (专家广场).
+ *
+ * Mirrors `api/hermes/skills.ts#fetchSkills`: a same-origin BFF call
+ * (`GET /api/hermes/experts`) that the server proxies to the multitenancy
+ * Run Broker (`GET /api/run-broker/experts`). The active-profile header is
+ * attached automatically by `request()` (see api/client.ts).
+ *
+ * Shape mirrors the plugin `experts[]` declaration (experts/expert.yaml →
+ * .hermes-plugin/plugin.json). Only display + capability fields are surfaced;
+ * persona (agent_md) NEVER reaches the client.
+ */
+
+export interface ExpertGovernance {
+  env_default?: string
+  approval_required?: string[]
+  online_requires?: string
+}
+
+export interface ExpertInfo {
+  id: string
+  name: string
+  /** Card title (职称/标题). Falls back to `name` when absent. */
+  title?: string
+  /** One-line intro shown on the card. */
+  tagline?: string
+  /** Avatar URL/asset path; empty = render an initial placeholder. */
+  avatar?: string
+  /** Grouping category (专家广场 聚合用). */
+  category?: string
+  /** Short tags shown on the card. */
+  display_tags?: string[]
+  /** Featured experts sort first (首屏置顶). */
+  featured?: boolean
+  /** Owning team (may be null). */
+  team?: string | null
+  /** Bound skill names — the capability list shown in the detail panel. */
+  skills?: string[]
+  /** Governance note (approval-required ops / env default). */
+  governance?: ExpertGovernance
+  /** Plugin id this expert was published from. */
+  plugin_id?: string
+  /**
+   * Distribution source. `aihub` = published via an ingested managed plugin
+   * (AiHub marketplace); surfaced as a "来自 AiHub" badge on the card. Absent /
+   * other values render no badge. Mirror of the plugin-distribution indicator.
+   */
+  source?: 'aihub' | 'local' | string
+  /** Convenience flag some broker payloads set instead of `source`. */
+  from_aihub?: boolean
+  /** Upstream SkillHub release, not the package's self-declared inner version. */
+  release_version?: string
+  /** Unix seconds when this release was successfully installed. */
+  release_installed_at?: number
+  /** All-channel run count (webui + feishu + cron). */
+  use_count?: number
+  /**
+   * Author-written opening lines (`ui.sample_prompts` in expert.yaml), shown as
+   * the 「试试这样问我」 rows. Absent → `expertSamplePrompts` generates three
+   * from this expert's own tags / name / skills.
+   */
+  sample_prompts?: string[]
+  /** Server capability; absent/false means Harness must not be offered. */
+  harness_available?: boolean
+}
+
+const EXPERT_NEW_WINDOW_MS = 24 * 60 * 60 * 1000
+
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+function expertUpdatedDate(expert: Pick<ExpertInfo, 'release_installed_at'>): Date | null {
+  const ts = expert.release_installed_at
+  if (typeof ts !== 'number' || !Number.isFinite(ts) || ts <= 0) return null
+  const d = new Date(ts * 1000)
+  return Number.isFinite(d.getTime()) ? d : null
+}
+
+/** Full `YYYY-MM-DD HH:mm` for catalog card and detail panel. */
+export function formatExpertUpdatedFull(expert: Pick<ExpertInfo, 'release_installed_at'>): string {
+  const d = expertUpdatedDate(expert)
+  if (!d) return ''
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+}
+
+export function formatExpertReleaseVersion(expert: Pick<ExpertInfo, 'release_version'>): string {
+  const version = expert.release_version?.trim()
+  if (!version) return ''
+  return version.startsWith('v') ? version : `v${version}`
+}
+
+export function isExpertRecentlyUpdated(
+  expert: Pick<ExpertInfo, 'release_installed_at'>,
+  now = Date.now(),
+): boolean {
+  const d = expertUpdatedDate(expert)
+  if (!d) return false
+  const age = now - d.getTime()
+  return age >= 0 && age <= EXPERT_NEW_WINDOW_MS
+}
+
+const SAMPLE_PROMPT_LIMIT = 5
+
+/**
+ * The 「试试这样问我」 rows for one expert.
+ *
+ * Author-written openers win: `sample_prompts` is what the expert's own YAML
+ * declares, so it is used verbatim (capped at five — the panel is a shortcut,
+ * not a manual). Every other expert still gets three, generated from its own
+ * material so no two experts share a canned line — the heuristic is ported from
+ * KippiesWork 专家详情 v2 (`kippies/lib/market.ts::expertAsks`), mapped
+ * tags←display_tags, name←title||name, skills←skills.
+ *
+ * Each line has to be sendable as-is (it says what the user gives and what they
+ * want back), which is why the material is embedded rather than replaced by a
+ * placeholder like 「这件事」 — that degraded into 「这件事在这件事上有哪些坑」
+ * and gave every untagged expert identical copy.
+ *
+ * Domain words are quoted with 「」: they are often ASCII (keep-aidock) and run
+ * together with the surrounding Chinese otherwise.
+ */
+export function expertSamplePrompts(
+  expert: Pick<ExpertInfo, 'sample_prompts' | 'display_tags' | 'name' | 'title' | 'skills'>,
+): string[] {
+  const authored = (expert.sample_prompts ?? [])
+    .map(line => (typeof line === 'string' ? line.trim() : ''))
+    .filter(line => line.length > 0)
+  if (authored.length) return authored.slice(0, SAMPLE_PROMPT_LIMIT)
+
+  const tags = (expert.display_tags ?? []).filter(tag => typeof tag === 'string' && tag.trim())
+  const [t1, t2, t3] = tags
+  const rawName = (expert.title || expert.name || '').trim()
+  const domain = rawName.replace(/(专家|顾问|助手)$/u, '').trim() || rawName
+  const skill = (expert.skills ?? []).find(s => typeof s === 'string' && s.trim())
+  return [
+    t1 ? `帮我${t1}，先列清你需要我提供哪些材料` : `帮我做一次「${domain}」的任务，先列清你需要我提供哪些材料`,
+    t2
+      ? `按${t2}的口径整理一版，直接给结论和依据`
+      : skill
+        ? `从「${skill}」开始，带我把「${domain}」的流程走一遍`
+        : `拿一个「${domain}」的典型场景演示一遍，直接给结论和依据`,
+    t3 ? `这件事在${t3}上有哪些坑，挑最关键的三条` : `用「${domain}」干活最容易踩哪些坑？挑最关键的三条`,
+  ]
+}
+
+/** True when an expert was distributed through the AiHub managed-plugin pipeline. */
+export function isAiHubExpert(expert: Pick<ExpertInfo, 'source' | 'from_aihub'>): boolean {
+  return expert.source === 'aihub' || expert.from_aihub === true
+}
+
+export interface ExpertListResponse {
+  experts: ExpertInfo[]
+  profile_name?: string
+  harness_enabled?: boolean
+}
+
+export interface ExpertsData {
+  experts: ExpertInfo[]
+}
+
+export type WorkRecordPartitionStatus = 'available' | 'unavailable'
+
+export interface UserWorkRecord {
+  expert_id: string
+  mode: 'user'
+  window_days: number
+  partitions: {
+    sessions: { status: WorkRecordPartitionStatus; items: Array<{ id: string; title: string; last_active: number; status: 'active' | 'completed' }> }
+    jobs: { status: WorkRecordPartitionStatus; items: Array<{ id: string; name: string; schedule?: string; status?: string }> }
+    feedback: { status: WorkRecordPartitionStatus; items: Array<{ session_id: string; run_id: string; rating: 'up' | 'down'; reason: string | null; updated_at: number }> }
+  }
+}
+
+export interface MaintainerWorkRecord {
+  expert_id: string
+  mode: 'maintainer'
+  window_days: number
+  partitions: {
+    sessions: { status: WorkRecordPartitionStatus; count?: number; active?: number; completed?: number }
+    jobs: { status: WorkRecordPartitionStatus; count?: number; active?: number; paused?: number }
+    feedback: { status: WorkRecordPartitionStatus; count?: number; positive?: number; negative?: number; positive_rate?: number }
+  }
+}
+
+export type ExpertWorkRecord = UserWorkRecord | MaintainerWorkRecord
+
+export async function fetchExpertWorkRecord(expertId: string, view?: 'maintainer'): Promise<ExpertWorkRecord> {
+  const suffix = view ? '?view=maintainer' : ''
+  return request<ExpertWorkRecord>(`/api/hermes/experts/${encodeURIComponent(expertId)}/work-record${suffix}`)
+}
+
+/**
+ * Fetch the expert catalog for the active (or given) profile.
+ * Mirrors `fetchSkills(profile?)`.
+ */
+export async function fetchExperts(profile?: string): Promise<ExpertsData> {
+  const query = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+  const res = await request<ExpertListResponse>(`/api/hermes/experts${query}`)
+  return {
+    experts: Array.isArray(res.experts)
+      ? res.experts.map(expert => ({
+          ...expert,
+          harness_available: res.harness_enabled === true,
+        }))
+      : [],
+  }
+}

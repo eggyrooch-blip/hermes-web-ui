@@ -7,3 +7,9 @@ declare module '*.vue' {
   const component: DefineComponent<{}, {}, any>
   export default component
 }
+
+// noVNC ships untyped ES modules; ScreenView narrows the RFB surface it uses.
+declare module '@novnc/novnc' {
+  const RFB: unknown
+  export default RFB
+}

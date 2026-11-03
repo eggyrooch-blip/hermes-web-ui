@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useFilesStore } from '@/stores/hermes/files'
+import { useProfilesStore } from '@/stores/hermes/profiles'
 import FileTree from '@/components/hermes/files/FileTree.vue'
 import FileBreadcrumb from '@/components/hermes/files/FileBreadcrumb.vue'
 import FileToolbar from '@/components/hermes/files/FileToolbar.vue'
@@ -13,12 +14,16 @@ import FileRenameModal from '@/components/hermes/files/FileRenameModal.vue'
 import type { FileEntry } from '@/api/hermes/files'
 
 const filesStore = useFilesStore()
+const profilesStore = useProfilesStore()
+const editorScope = computed(() => `files-view:${profilesStore.activeProfileName || '__default__'}`)
+const scopedEditingFile = computed(() => filesStore.getEditingFile(editorScope.value))
 
 const contextMenuRef = ref<InstanceType<typeof FileContextMenu> | null>(null)
 const showUpload = ref(false)
 const showRenameModal = ref(false)
 const renameMode = ref<'newFile' | 'newFolder' | 'rename'>('newFile')
 const renameEntry = ref<FileEntry | null>(null)
+const renameTargetPath = ref<string | null>(null)
 
 function handleContextMenu(e: MouseEvent, entry: FileEntry) {
   contextMenuRef.value?.show(e, entry)
@@ -27,23 +32,40 @@ function handleContextMenu(e: MouseEvent, entry: FileEntry) {
 function handleShowNewFile() {
   renameMode.value = 'newFile'
   renameEntry.value = null
+  renameTargetPath.value = null
   showRenameModal.value = true
 }
 
 function handleShowNewFolder() {
   renameMode.value = 'newFolder'
   renameEntry.value = null
+  renameTargetPath.value = null
+  showRenameModal.value = true
+}
+
+function handleContextNewFolder(entry: FileEntry) {
+  renameMode.value = 'newFolder'
+  renameEntry.value = null
+  renameTargetPath.value = entry.isDir ? entry.path : filesStore.currentPath
   showRenameModal.value = true
 }
 
 function handleRename(entry: FileEntry) {
   renameMode.value = 'rename'
   renameEntry.value = entry
+  renameTargetPath.value = null
   showRenameModal.value = true
 }
 
+async function loadRoot() {
+  if (!profilesStore.activeProfileName || profilesStore.profiles.length === 0) {
+    await profilesStore.fetchProfiles()
+  }
+  await filesStore.fetchEntries('')
+}
+
 onMounted(() => {
-  filesStore.fetchEntries('')
+  void loadRoot()
 })
 </script>
 
@@ -60,14 +82,34 @@ onMounted(() => {
       />
       <FileBreadcrumb />
       <div class="files-content">
-        <FileEditor v-if="filesStore.editingFile" />
+        <FileEditor
+          v-if="scopedEditingFile"
+          :editor-scope="editorScope"
+        />
         <FilePreview v-else-if="filesStore.previewFile" />
-        <FileList v-else @contextmenu-entry="handleContextMenu" />
+        <FileList
+          v-else
+          :allow-edit="true"
+          :editor-scope="editorScope"
+          @contextmenu-entry="handleContextMenu"
+        />
       </div>
     </div>
-    <FileContextMenu ref="contextMenuRef" @rename="handleRename" />
+    <FileContextMenu
+      ref="contextMenuRef"
+      :allow-edit="true"
+      :editor-scope="editorScope"
+      @rename="handleRename"
+      @new-folder="handleContextNewFolder"
+    />
     <FileUploadModal v-model:show="showUpload" />
-    <FileRenameModal v-model:show="showRenameModal" :mode="renameMode" :entry="renameEntry" />
+    <FileRenameModal
+      v-model:show="showRenameModal"
+      :mode="renameMode"
+      :entry="renameEntry"
+      :target-path="renameTargetPath"
+      :editor-scope="editorScope"
+    />
   </div>
 </template>
 

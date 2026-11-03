@@ -1,24 +1,7 @@
-import de from './locales/de'
-import en from './locales/en'
-import es from './locales/es'
-import fr from './locales/fr'
-import ja from './locales/ja'
-import ko from './locales/ko'
-import pt from './locales/pt'
-import zh from './locales/zh'
+export type LocaleMessages = Record<string, any>
 
-export type LocaleMessages = Record<string, unknown>
-
-export const rawMessages = {
-  en,
-  zh,
-  ja,
-  ko,
-  fr,
-  es,
-  de,
-  pt,
-} satisfies Record<string, LocaleMessages>
+export const supportedLocales = ['en', 'zh', 'zh-TW', 'ja', 'ko', 'fr', 'es', 'de', 'pt', 'ru'] as const
+export type SupportedLocale = (typeof supportedLocales)[number]
 
 function isPlainObject(value: unknown): value is LocaleMessages {
   return !!value && typeof value === 'object' && !Array.isArray(value)
@@ -40,11 +23,32 @@ export function mergeMessagesWithFallback(
   return merged
 }
 
-export const messages = Object.fromEntries(
-  Object.entries(rawMessages).map(([locale, localeMessages]) => [
-    locale,
-    locale === 'en'
-      ? localeMessages
-      : mergeMessagesWithFallback(en, localeMessages),
-  ]),
-) as typeof rawMessages
+const localeLoaders: Record<SupportedLocale, () => Promise<{ default: LocaleMessages }>> = {
+  en: () => import('./locales/en'),
+  zh: () => import('./locales/zh'),
+  'zh-TW': () => import('./locales/zh-TW'),
+  ja: () => import('./locales/ja'),
+  ko: () => import('./locales/ko'),
+  fr: () => import('./locales/fr'),
+  es: () => import('./locales/es'),
+  de: () => import('./locales/de'),
+  pt: () => import('./locales/pt'),
+  ru: () => import('./locales/ru'),
+}
+
+const localeMessagePromises = new Map<SupportedLocale, Promise<LocaleMessages>>()
+
+/** Loads one locale bundle on demand, memoized so a locale is fetched once. */
+export function loadLocaleMessages(locale: SupportedLocale): Promise<LocaleMessages> {
+  const existing = localeMessagePromises.get(locale)
+  if (existing) return existing
+
+  const pending = localeLoaders[locale]()
+    .then(module => module.default)
+    .catch((error) => {
+      localeMessagePromises.delete(locale)
+      throw error
+    })
+  localeMessagePromises.set(locale, pending)
+  return pending
+}

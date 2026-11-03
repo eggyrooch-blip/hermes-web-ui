@@ -1,11 +1,363 @@
-import { readdir, readFile } from 'fs/promises'
-import { join, resolve } from 'path'
-import { createHash } from 'crypto'
+import { lstat, mkdir, readdir, readFile, readlink, rm, stat, writeFile, cp } from 'fs/promises'
+import { homedir, tmpdir } from 'os'
+import { basename, dirname, join, relative, resolve } from 'path'
+import { createHash, randomBytes } from 'crypto'
+import AdmZip from 'adm-zip'
 import {
-  readConfigYaml, writeConfigYaml,
-  safeReadFile, extractDescription, listFilesRecursive, getHermesDir,
+  readConfigYamlForProfile, updateConfigYamlForProfile,
+  safeReadFile, extractDescription, listFilesRecursive,
 } from '../../services/config-helpers'
-import { pinSkill } from '../../services/hermes/hermes-cli'
+import type { SkillSource } from '../../services/config-helpers'
+import { isPathWithin, nearestExistingRealPath, realPathOrResolved } from '../../services/hermes/hermes-path'
+import { getActiveProfileName, getHermesBaseDir, getProfileDir } from '../../services/hermes/hermes-profile'
+import { getRequestProfile, getRequestProfileDir, isChatPlaneRequest } from '../../services/request-context'
+import { getSkillUsageStatsFromDb } from '../../db/hermes/sessions-db'
+import { safeFileStore } from '../../services/safe-file-store'
+
+// Zip import budget, checked against the sizes DECLARED in the central directory
+// before any entry is decompressed (GHSA-xcpc-8h2w-3j85 / zip bombs). A tiny zip
+// can declare gigabytes, so the upload size cap alone does not bound memory.
+const MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 50 * 1024 * 1024 // 50MB per entry
+const MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 200 * 1024 * 1024 // 200MB per archive
+const MAX_ZIP_ENTRIES = 5000
+
+// Chat-plane isolation (fork): when a request arrives on the chat plane it is
+// bound to the caller's own profile (resolved from ctx.state.user.profile via
+// the multitenancy routing table). Admin/JWT requests keep the upstream
+// active-profile behaviour. Isolation is applied ONLY when isChatPlaneRequest
+// is true so the non-chat-plane path is byte-for-byte upstream.
+function requestedProfile(ctx: any): string {
+  if (isChatPlaneRequest(ctx)) return getRequestProfile(ctx)
+  return ctx.state?.profile?.name || getActiveProfileName() || 'default'
+}
+
+function requestProfileDir(ctx: any): string {
+  if (isChatPlaneRequest(ctx)) return getRequestProfileDir(ctx)
+  return getProfileDir(requestedProfile(ctx))
+}
+
+function requestSkillsDir(ctx: any): string {
+  return join(requestProfileDir(ctx), 'skills')
+}
+
+// `getProfileDir()` silently falls back to the SHARED hermes root when the
+// profile directory does not exist (hermes-profile.ts). For skills that is a
+// privilege escalation: the caller's skills dir becomes <shared>/skills — the
+// CENTRAL repo that thousands of profiles symlink into — so an unprovisioned
+// profile could list, edit, delete or import into skills shared by everyone.
+// Production has active routing entries whose profile dir is absent, so this is
+// reachable. Detect the fallback here and refuse, rather than changing
+// getProfileDir() itself (59 call sites, several of which legitimately write
+// into the shared root for the 'default' profile).
+function isUnprovisionedProfile(ctx: any): boolean {
+  const name = requestedProfile(ctx)
+  if (!name || name === 'default') return false
+  return resolve(requestProfileDir(ctx)) === resolve(getHermesBaseDir())
+}
+
+/** Writes 403 and returns true when the request's profile was never provisioned. */
+function refuseUnprovisionedProfile(ctx: any): boolean {
+  if (!isUnprovisionedProfile(ctx)) return false
+  ctx.status = 403
+  ctx.body = { error: 'Profile is not provisioned' }
+  return true
+}
+
+function expandConfiguredPath(value: string): string {
+  const expandedEnv = value.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, braced, bare) => {
+    return process.env[braced || bare] || ''
+  })
+  if (expandedEnv === '~') return homedir()
+  if (expandedEnv.startsWith('~/')) return join(homedir(), expandedEnv.slice(2))
+  return expandedEnv
+}
+
+/** Read `config.skills.external_dirs` verbatim (after trim, dropping empties),
+ *  preserving `~`/`$VAR` so the UI can show what the user typed. */
+function readRawExternalDirs(config: Record<string, any>): string[] {
+  const rawDirs = config.skills?.external_dirs
+  const entries = typeof rawDirs === 'string'
+    ? [rawDirs]
+    : Array.isArray(rawDirs)
+      ? rawDirs
+      : []
+  const out: string[] = []
+  for (const entry of entries) {
+    const trimmed = String(entry || '').trim()
+    if (trimmed) out.push(trimmed)
+  }
+  return out
+}
+
+interface ExternalDirEntryDto {
+  raw: string
+  expanded: string
+  exists: boolean
+  isDir: boolean
+}
+
+/** Read raw entries and stat each one. Order preserved. */
+async function describeRawExternalDirs(config: Record<string, any>): Promise<ExternalDirEntryDto[]> {
+  const rawEntries = readRawExternalDirs(config)
+  return Promise.all(rawEntries.map(async (raw) => {
+    const expanded = resolve(expandConfiguredPath(raw))
+    let exists = false
+    let isDir = false
+    try {
+      const info = await stat(expanded)
+      exists = true
+      isDir = info.isDirectory()
+    } catch { /* missing → exists=false */ }
+    return { raw, expanded, exists, isDir }
+  }))
+}
+
+async function resolveExternalSkillsDirs(config: Record<string, any>, localSkillsDir: string): Promise<string[]> {
+  const rawDirs = config.skills?.external_dirs
+  const entries = typeof rawDirs === 'string'
+    ? [rawDirs]
+    : Array.isArray(rawDirs)
+      ? rawDirs
+      : []
+  const localResolved = resolve(localSkillsDir)
+  const seen = new Set<string>()
+  const dirs: string[] = []
+
+  for (const rawEntry of entries) {
+    const entry = String(rawEntry || '').trim()
+    if (!entry) continue
+    const expanded = expandConfiguredPath(entry)
+    const resolved = resolve(expanded)
+    if (resolved === localResolved || seen.has(resolved)) continue
+    try {
+      const info = await stat(resolved)
+      if (!info.isDirectory()) continue
+    } catch {
+      continue
+    }
+    seen.add(resolved)
+    dirs.push(resolved)
+  }
+
+  return dirs
+}
+
+// ── Read-path containment (fork) ──────────────────────────────────────────────
+// A profile's skills dir legitimately contains SYMLINKS into shared roots: in
+// production ~110k profile skill entries are symlinks to <shared>/skills,
+// <shared>/skill-releases and <shared>/_managed (managed/org-distributed
+// installs). `findSkillDirByName` follows them on purpose — see the comment
+// there — otherwise every managed skill 404s when clicked.
+//
+// That makes a lexical `isPathWithin` check insufficient on READ paths: the
+// string <profile>/skills/<link>/... always sits under the skills dir, while
+// the OS follows the link to wherever it points. A tenant whose agent creates
+// `skills/x -> <other profile>` (the sandbox binds PROFILE_HOME read-write)
+// can then read the other tenant's files through the WebUI process, which does
+// NOT run inside the sandbox. The write paths already defend against this via
+// `assertEditablePathHasNoSymlinks`; the read paths did not.
+//
+// Fix: resolve the real path and require it to land inside an allow-listed
+// root. Same shape as the multitenancy sandbox's `allowed_roots`
+// (hermes_multitenancy/agent_real/_core.py), so legitimate managed installs
+// keep working byte-for-byte while out-of-bounds links are refused.
+// Review round 1 found that an allow-list alone is NOT enough, because one of
+// its entries is tenant-controlled: `skills.external_dirs` lives in the
+// caller's OWN <profile>/config.yaml, which the sandbox binds read-write
+// (bwrap-default.args: `--bind ${PROFILE_HOME}`). A tenant could point
+// external_dirs at another profile and thereby allow-list it — two independent
+// reviewers reproduced a 200 with the victim's plaintext .env.
+//
+// So the allow-list is paired with a DENY rule that wins unconditionally:
+// anything resolving under <shared>/profiles that is not under the caller's own
+// profile is refused no matter which root matched. That single predicate also
+// closes the case where <profile>/skills is ITSELF a symlink pointing at
+// another profile (prod: 0 profiles have a symlinked skills dir, 2038 have a
+// real one, so this costs nothing).
+async function allowedSkillRealRoots(
+  ctx: any,
+  config: Record<string, any>,
+  profileSkillsDir: string,
+): Promise<string[]> {
+  const sharedBase = getHermesBaseDir()
+  // NOTE: the caller's own skills dir is deliberately NOT here. It is not a
+  // trust destination — staying inside the profile is handled separately, and
+  // listing it would let a tenant chain inside its own directory and out again
+  // (round-4 review finding).
+  const candidates = [
+    join(sharedBase, 'skills'),
+    join(sharedBase, 'skill-releases'),
+    join(sharedBase, '_managed'),
+    // external_dirs is admin configuration, not tenant configuration. On the
+    // chat plane the tenant cannot even PUT it (request-context forbids writes
+    // to /api/hermes/skills*), so honouring it there only creates the hole.
+    ...(isChatPlaneRequest(ctx) ? [] : await resolveExternalSkillsDirs(config, profileSkillsDir)),
+  ]
+  return Promise.all(candidates.map(realPathOrResolved))
+}
+
+/**
+ * True when `target` is readable for this request.
+ *
+ * Two independent properties, because they have different owners:
+ *
+ * 1. DENY (checked on the FULLY resolved path): the target must not land inside
+ *    another tenant's profile. This is the cross-tenant isolation property and
+ *    it outranks everything else.
+ *
+ * 2. ALLOW (checked on the TENANT-CONTROLLED hop): the tenant only controls the
+ *    entry it can create under its own <profile>/skills — the sandbox binds
+ *    PROFILE_HOME read-write and nothing above it. So the hop that must land in
+ *    a trusted root is that first hop, not the end of the chain.
+ *
+ *    Chaining beyond the shared root is the platform's business: production
+ *    installs really are two hops
+ *    (<profile>/skills/x -> <shared>/skills/x -> ~/.agents/skills/x), and
+ *    resolving to the end would refuse them. Verified in a browser against a
+ *    real profile — an earlier fully-resolved allow-check 403'd every managed
+ *    lark-* skill.
+ */
+async function isWithinAllowedSkillRoots(
+  target: string,
+  sharedRoots: string[],
+  ownProfileRealDir: string,
+  profilesRealRoot: string,
+): Promise<boolean> {
+  // Resolve via the deepest EXISTING ancestor: a not-yet-existing leaf would
+  // otherwise fall back to a purely lexical path, and on platforms where a
+  // prefix is itself a symlink (macOS /var -> /private/var) that no longer
+  // compares against the realpath'd roots — every containment check would fail
+  // closed and refuse legitimate reads.
+  const realTarget = await nearestExistingRealPath(target)
+  // 1. Deny — outranks everything.
+  if (isPathWithin(realTarget, profilesRealRoot) && !isPathWithin(realTarget, ownProfileRealDir)) return false
+  // 2. Never left the caller's own profile → nothing to authorise.
+  if (isPathWithin(realTarget, ownProfileRealDir)) return true
+  // 3. Lands directly inside a shared root — the common case for skills read
+  //    straight out of <shared>/skills or a configured external_dir, where no
+  //    symlink is involved at all. (Round-5 review: without this, direct
+  //    external_dirs reads 403'd because there was no crossing hop to inspect.)
+  if (sharedRoots.some(root => isPathWithin(realTarget, root))) return true
+  // 4. Resolves outside every root — only legal as a chained platform install.
+  //    The hop that CROSSES out of the profile is the one the tenant is
+  //    accountable for, so that is what must land in a shared root.
+  const crossing = await boundaryCrossingTarget(target, ownProfileRealDir)
+  return crossing ? sharedRoots.some(root => isPathWithin(crossing, root)) : false
+}
+
+/**
+ * Follow the symlink chain and return the first target that leaves
+ * `ownProfileRealDir`.
+ *
+ * Round-4 review found that returning merely the FIRST hop is exploitable: the
+ * tenant can chain inside its own directory —
+ *   <profile>/skills/a -> <profile>/skills/b -> /
+ * — and the first hop (`skills/b`) sits in the tenant's own skills dir, which
+ * would be "trusted". Staying inside the profile is not a trust decision at all,
+ * so those hops are followed through; only the hop that actually crosses out of
+ * the profile is authorised.
+ */
+async function boundaryCrossingTarget(target: string, ownProfileRealDir: string): Promise<string | null> {
+  let current = resolve(target)
+  for (let hops = 0; hops < 40; hops++) {
+    const linkPath = await nearestSymlinkAncestor(current)
+    if (!linkPath) return null
+    const raw = await readlink(linkPath)
+    const linked = resolve(raw.startsWith('/') ? raw : join(dirname(linkPath), raw))
+    // Normalise the CONTAINING directory only (so platform prefixes like macOS
+    // /var -> /private/var line up with the realpath'd roots) — resolving the
+    // final component would follow the link and defeat the check.
+    const normalised = join(await realPathOrResolved(dirname(linked)), basename(linked))
+    if (!isPathWithin(normalised, ownProfileRealDir)) return normalised
+    // Still inside the profile — keep following, carrying any trailing segments.
+    const rest = relative(linkPath, current)
+    current = rest && !rest.startsWith('..') ? join(normalised, rest) : normalised
+  }
+  return null
+}
+
+/** Deepest ancestor of `path` (inclusive) that is itself a symlink. */
+async function nearestSymlinkAncestor(path: string): Promise<string | null> {
+  let current = resolve(path)
+  for (let depth = 0; depth < 64; depth++) {
+    const info = await lstatOrNull(current)
+    if (info?.isSymbolicLink()) return current
+    const parent = dirname(current)
+    if (parent === current) return null
+    current = parent
+  }
+  return null
+}
+
+/** Resolve the two anchors the deny rule needs. */
+async function skillReadAnchors(ctx: any): Promise<{ own: string; profilesRoot: string }> {
+  return {
+    own: await realPathOrResolved(requestProfileDir(ctx)),
+    profilesRoot: await realPathOrResolved(join(getHermesBaseDir(), 'profiles')),
+  }
+}
+
+// Cross-model review round 2 (codex) found that the allow-list still contained a
+// tenant-replaceable entry: `profileSkillsDir` is allow-listed by its REAL path,
+// so a tenant whose own `<profile>/skills` is a symlink to `/etc` promotes
+// `/etc` to an allowed root. The deny rule does not help — it only covers
+// <shared>/profiles, and /etc is not under it.
+//
+// Rather than enumerate forbidden targets, refuse the premise: neither the
+// caller's skills directory nor the profile directory holding it may be a
+// symlink. Either one being a link lets its target become an allow-list root.
+//
+// Review round 2 correctly rejected a version that only lstat'd the skills dir:
+// lstat inspects the final component only, so a symlinked PROFILE directory with
+// a real `skills` child achieved the same promotion. Both levels are checked now.
+//
+// THREAT MODEL — why two levels and not the whole ancestor chain: the sandbox
+// binds only ${PROFILE_HOME} read-write, and mounts <shared>/profiles as an empty
+// --dir, so a tenant can create symlinks *inside* its own profile but cannot
+// replace its own profile entry, nor anything above it. Components above the
+// profile dir are therefore operator-controlled, not tenant-controlled, and are
+// out of scope here (an operator who can symlink <shared>/profiles already has
+// direct filesystem access to every tenant).
+//
+// Pointing at another profile is a different case and stays with the deny rule in
+// isWithinAllowedSkillRoots(). Production has 0 symlinked skills dirs and 0
+// symlinked profile dirs against 2038 real ones, so this rejects nothing that
+// exists today.
+async function refuseSymlinkedSkillsPath(ctx: any): Promise<boolean> {
+  const profileDir = requestProfileDir(ctx)
+  // 目录两级 + **本函数守卫的写操作真正会落笔的叶子文件**。
+  //
+  // 只看目录是不够的（2026-08-14 跨模型评审 P0，已实测复现）：writeFile 跟随叶子软链。
+  // 把 <skillsDir>/.usage.json 或 <profileDir>/config.yaml 做成指向别处的软链，
+  // pin_() 的 `writeFile(usagePath, ...)`（skills.ts:1160）与 toggle() 的 config 写回
+  // 就会**穿过软链**改写目标文件 —— 探针实测：目标文件内容被覆盖成 {"pinned": true}。
+  //
+  // ⚠️ 覆盖**不完整**，这是有意为之的中间态，别以为这道守卫已经把软链问题解决了：
+  //   - SafeFileStore 的 `*.bak` 备份目的地（copyFile 同样跟随软链）没盖到；
+  //   - importSkill / deleteSkill 的动态目录没盖到；
+  //   - lstat 与实际写入之间存在时间差，租户 agent 能并发改自己的 profile。
+  // 根治方向不是继续往这个数组里加路径，而是在 SafeFileStore 层做「临时文件 + 原子 rename」、
+  // 读取用 O_NOFOLLOW —— 见 slug `skills-write-symlink-hardening`。
+  // 注：ZIP 导入**种不下**软链（解包对每个非目录条目一律 writeFile，从不调 symlink），
+  // 租户可控的种链途径尚未定论（agent 自身的 shell 是另一条信任边界）。
+  // 这道守卫按纵深防御保留：便宜，且写入路径本就不该跟随软链。
+  const skillsDir = join(profileDir, 'skills')
+  const candidates = [
+    skillsDir,
+    profileDir,
+    join(skillsDir, '.usage.json'),
+    join(profileDir, 'config.yaml'),
+  ]
+  for (const candidate of candidates) {
+    const info = await lstatOrNull(candidate)
+    if (info?.isSymbolicLink()) {
+      ctx.status = 403
+      ctx.body = { error: 'Access denied' }
+      return true
+    }
+  }
+  return false
+}
 
 /** Read bundled manifest as a name→hash map from ~/.hermes/skills/.bundled_manifest */
 function readBundledManifest(manifestContent: string | null): Map<string, string> {
@@ -25,6 +377,18 @@ function readBundledManifest(manifestContent: string | null): Map<string, string
 
 /** Read hub-installed skill names from ~/.hermes/skills/.hub/lock.json */
 function readHubInstalledNames(lockContent: string | null): Set<string> {
+  if (!lockContent) return new Set()
+  try {
+    const data = JSON.parse(lockContent)
+    if (data?.installed && typeof data.installed === 'object') {
+      return new Set(Object.keys(data.installed))
+    }
+  } catch { /* ignore */ }
+  return new Set()
+}
+
+/** Read keephub-installed skill names from ~/.hermes/skills/.keephub/lock.json */
+function readKeephubNames(lockContent: string | null): Set<string> {
   if (!lockContent) return new Set()
   try {
     const data = JSON.parse(lockContent)
@@ -60,9 +424,11 @@ async function dirHash(directory: string): Promise<string> {
 function getSkillSource(
   dirName: string,
   bundledManifest: Map<string, string>,
+  keephubNames: Set<string>,
   hubNames: Set<string>,
-): 'builtin' | 'hub' | 'local' {
+): SkillSource {
   if (bundledManifest.has(dirName)) return 'builtin'
+  if (keephubNames.has(dirName)) return 'keephub'
   if (hubNames.has(dirName)) return 'hub'
   return 'local'
 }
@@ -82,6 +448,60 @@ function readUsageStats(usageContent: string | null): Map<string, UsageStats> {
   return map
 }
 
+async function findSkillDirByName(rootDir: string, skillName: string): Promise<string | null> {
+  let entries: import('fs').Dirent[]
+  try {
+    entries = await readdir(rootDir, { withFileTypes: true })
+  } catch {
+    return null
+  }
+
+  for (const entry of entries) {
+    // Follow symlinks: nested symlinked skills (skills/<cat>/<symlink>) are listed
+    // by scanSkillsDir, so the detail/files/readFile paths must resolve them too —
+    // otherwise a listed skill 404s on click. (Same lost-fork-fix as scanSkillsDir.)
+    if (entry.name.startsWith('.') || !(await isDirectoryLike(rootDir, entry))) continue
+
+    const entryPath = join(rootDir, entry.name)
+    const skillMd = await safeReadFile(join(entryPath, 'SKILL.md'))
+    if (skillMd !== null) {
+      if (entry.name === skillName) return entryPath
+      // This is another skill root. Do not search inside its references/scripts.
+      continue
+    }
+
+    const found = await findSkillDirByName(entryPath, skillName)
+    if (found) return found
+  }
+
+  return null
+}
+
+async function findSkillDirInRoot(rootDir: string, category: string, skillName: string): Promise<string | null> {
+  if (category === 'misc') {
+    const skillDir = join(rootDir, skillName)
+    const skillMd = await safeReadFile(join(skillDir, 'SKILL.md'))
+    return skillMd !== null ? skillDir : null
+  }
+  return findSkillDirByName(join(rootDir, category), skillName)
+}
+
+async function resolveSkillDirFromConfig(
+  config: Record<string, any>,
+  localSkillsDir: string,
+  category: string,
+  skillName: string,
+): Promise<string | null> {
+  const localSkillDir = await findSkillDirInRoot(localSkillsDir, category, skillName)
+  if (localSkillDir) return localSkillDir
+
+  for (const externalDir of await resolveExternalSkillsDirs(config, localSkillsDir)) {
+    const externalSkillDir = await findSkillDirInRoot(externalDir, category, skillName)
+    if (externalSkillDir) return externalSkillDir
+  }
+  return null
+}
+
 /**
  * Scan for skills at different directory depths.
  *
@@ -93,11 +513,40 @@ function readUsageStats(usageContent: string | null): Map<string, UsageStats> {
  * or by containing subdirectories with SKILL.md (three-level pattern).
  * Skills without a parent category (flat skills) are grouped under the "misc" category.
  */
-async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, string>, hubNames: Set<string>, disabledList: string[], usageStats: Map<string, UsageStats>) {
+// Hermes installs most skills as SYMLINKS into the profile `skills/` scan root
+// (lark-* suite, kep-*-cli, kep-trevi-*, personal/managed installs all symlink to
+// ~/.hermes/skills/<name>). Node's `readdir({withFileTypes})` reports a symlink as
+// `isDirectory()===false` (it does NOT follow the link), so a bare `isDirectory()`
+// filter silently DROPS every symlinked skill from the skills page. This helper
+// follows the link via `stat` so symlinked and real skill dirs are treated alike.
+// (Lost-fork-fix regression: the upstream re-baseline replaced the fork's original
+// `isDirectoryLike` with bare `isDirectory()`. Restored here.)
+async function isDirectoryLike(parentDir: string, entry: import('fs').Dirent): Promise<boolean> {
+  if (entry.isDirectory()) return true
+  if (!entry.isSymbolicLink()) return false
+  try {
+    return (await stat(join(parentDir, entry.name))).isDirectory()
+  } catch {
+    return false // broken symlink → skip, never throw
+  }
+}
+
+async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, string>, keephubNames: Set<string>, hubNames: Set<string>, disabledList: string[], usageStats: Map<string, UsageStats>, chatPlane = false) {
   const allEntries = await readdir(skillsDir, { withFileTypes: true })
-  const dirNames = allEntries
-    .filter(e => e.isDirectory() && !e.name.startsWith('.'))
-    .map(e => e.name)
+  const dirNames: string[] = []
+  // Symlinked skills are managed/installed (symlink into ~/.hermes/skills or a
+  // personal/managed install) — they reappear in the list (above) but must stay
+  // READ-ONLY: editing is already blocked by resolveLocalEditableSkillDir, and
+  // deleteSkill refuses them. Marking them non-editable hides the edit/delete
+  // affordances in the UI so the list metadata matches the API contract.
+  const symlinkedFlatNames = new Set<string>()
+  for (const e of allEntries) {
+    if (e.name.startsWith('.')) continue
+    if (await isDirectoryLike(skillsDir, e)) {
+      dirNames.push(e.name)
+      if (e.isSymbolicLink()) symlinkedFlatNames.add(e.name)
+    }
+  }
 
   // Classify directories: categories vs. flat skills
   const categoryDirs: { name: string; description: string }[] = []
@@ -108,7 +557,10 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
     const hasDesc = await safeReadFile(join(catDir, 'DESCRIPTION.md'))
     const hasSkillMd = await safeReadFile(join(catDir, 'SKILL.md'))
     const subEntries = await readdir(catDir, { withFileTypes: true })
-    const subDirs = subEntries.filter(se => se.isDirectory())
+    const subDirs: import('fs').Dirent[] = []
+    for (const se of subEntries) {
+      if (await isDirectoryLike(catDir, se)) subDirs.push(se)
+    }
 
     // Priority: SKILL.md at top level → flat skill
     //           DESCRIPTION.md or subdirs (without SKILL.md) → category
@@ -118,7 +570,7 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
       flatSkills.push({
         name: dirName,
         skillMd: hasSkillMd,
-        source: getSkillSource(dirName, bundledManifest, hubNames),
+        source: getSkillSource(dirName, bundledManifest, keephubNames, hubNames),
       })
     } else if (!!hasDesc || subDirs.length > 0) {
       // True category: has DESCRIPTION.md or subdirs, but no SKILL.md at top level
@@ -134,33 +586,55 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
     const catDir = join(skillsDir, cat.name)
     const subEntries = await readdir(catDir, { withFileTypes: true })
     const skills: any[] = []
-    for (const se of subEntries) {
-      if (!se.isDirectory()) continue
-      const skillMd = await safeReadFile(join(catDir, se.name, 'SKILL.md'))
-      if (skillMd) {
-        const source = getSkillSource(se.name, bundledManifest, hubNames)
-        let modified = false
-        if (source === 'builtin') {
-          const manifestHash = bundledManifest.get(se.name)
-          if (manifestHash) {
-            const currentHash = await dirHash(join(catDir, se.name))
-            modified = currentHash !== manifestHash
+    // Recursively collect skills from subdirectories (supports nested sub-categories).
+    // `viaSymlink` is true once we have descended THROUGH a symlink — every skill at
+    // or below a symlinked dir is a managed/symlinked install and must be read-only
+    // (editable:false), matching the deleteSkill/edit read-only guards.
+    async function collectSkills(dir: string, viaSymlink: boolean): Promise<any[]> {
+      const entries = await readdir(dir, { withFileTypes: true })
+      const results: any[] = []
+      for (const entry of entries) {
+        if (entry.name.startsWith('.') || !(await isDirectoryLike(dir, entry))) continue
+        const entryViaSymlink = viaSymlink || entry.isSymbolicLink()
+        const entryPath = join(dir, entry.name)
+        const skillMd = await safeReadFile(join(entryPath, 'SKILL.md'))
+        if (skillMd) {
+          const source = getSkillSource(entry.name, bundledManifest, keephubNames, hubNames)
+          let modified = false
+          // The builtin-modified check is an admin-only signal: it requires
+          // hashing the skill dir against the global bundled manifest. On the
+          // chat plane the bound profile is not authoritative for that manifest,
+          // so skip it (fork parity: never surface `modified` to chat-plane users).
+          if (source === 'builtin' && !chatPlane) {
+            const manifestHash = bundledManifest.get(entry.name)
+            if (manifestHash) {
+              const currentHash = await dirHash(entryPath)
+              modified = currentHash !== manifestHash
+            }
           }
+          const usage = usageStats.get(entry.name)
+          results.push({
+            name: entry.name,
+            description: extractDescription(skillMd),
+            enabled: !disabledList.includes(entry.name),
+            source,
+            editable: source === 'local' && !entryViaSymlink,
+            modified: modified || undefined,
+            patchCount: usage?.patch_count,
+            useCount: usage?.use_count,
+            viewCount: usage?.view_count,
+            pinned: usage?.pinned || undefined,
+          })
+        } else {
+          // No SKILL.md — might be a sub-category container, recurse deeper
+          const subResults = await collectSkills(entryPath, entryViaSymlink)
+          results.push(...subResults)
         }
-        const usage = usageStats.get(se.name)
-        skills.push({
-          name: se.name,
-          description: extractDescription(skillMd),
-          enabled: !disabledList.includes(se.name),
-          source,
-          modified: modified || undefined,
-          patchCount: usage?.patch_count,
-          useCount: usage?.use_count,
-          viewCount: usage?.view_count,
-          pinned: usage?.pinned || undefined,
-        })
       }
+      return results
     }
+    // If the category dir itself is a symlink, everything under it is read-only.
+    skills.push(...await collectSkills(catDir, symlinkedFlatNames.has(cat.name)))
     if (skills.length > 0) {
       categories.push({ name: cat.name, description: cat.description, skills })
     }
@@ -176,6 +650,7 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
         description: extractDescription(fs.skillMd),
         enabled: !disabledList.includes(fs.name),
         source: fs.source,
+        editable: fs.source === 'local' && !symlinkedFlatNames.has(fs.name),
         modified: undefined,
         patchCount: usage?.patch_count,
         useCount: usage?.use_count,
@@ -196,19 +671,101 @@ async function scanSkillsDir(skillsDir: string, bundledManifest: Map<string, str
   return categories
 }
 
+async function scanExternalSkillsDir(
+  skillsDir: string,
+  disabledList: string[],
+  usageStats: Map<string, UsageStats>,
+  sourcePath: string,
+) {
+  return scanSkillsDir(skillsDir, new Map(), new Set(), new Set(), disabledList, usageStats).then(categories =>
+    categories.map(category => ({
+      ...category,
+      skills: category.skills.map((skill: any) => ({
+        ...skill,
+        source: 'external' as SkillSource,
+        editable: false,
+        modified: undefined,
+        sourcePath,
+      })),
+    })),
+  )
+}
+
+function collectSkillNames(categories: any[]): Set<string> {
+  const names = new Set<string>()
+  for (const category of categories) {
+    for (const skill of category.skills || []) {
+      if (skill?.name) names.add(skill.name)
+    }
+  }
+  return names
+}
+
+function mergeExternalCategories(categories: any[], externalCategories: any[]): any[] {
+  const byName = new Map<string, any>()
+  for (const category of categories) {
+    byName.set(category.name, { ...category, skills: [...category.skills] })
+  }
+
+  const seenSkills = collectSkillNames(categories)
+  for (const externalCategory of externalCategories) {
+    const target = byName.get(externalCategory.name) || {
+      name: externalCategory.name,
+      description: externalCategory.description,
+      skills: [],
+    }
+    for (const skill of externalCategory.skills || []) {
+      if (seenSkills.has(skill.name)) continue
+      seenSkills.add(skill.name)
+      target.skills.push(skill)
+    }
+    if (target.skills.length > 0) byName.set(target.name, target)
+  }
+
+  const merged = [...byName.values()]
+    .filter(category => category.skills.length > 0)
+    .sort((a, b) => a.name.localeCompare(b.name))
+  for (const category of merged) {
+    category.skills.sort((a: any, b: any) => a.name.localeCompare(b.name))
+  }
+  return merged
+}
+
 export async function list(ctx: any) {
-  const skillsDir = join(getHermesDir(), 'skills')
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
+  const chatPlane = isChatPlaneRequest(ctx)
+  const skillsDir = requestSkillsDir(ctx)
   try {
-    const config = await readConfigYaml()
+    const config = await readConfigYamlForProfile(requestedProfile(ctx))
     const disabledList: string[] = config.skills?.disabled || []
 
     // Read provenance sources
     const bundledManifest = readBundledManifest(await safeReadFile(join(skillsDir, '.bundled_manifest')))
+    const keephubNames = readKeephubNames(await safeReadFile(join(skillsDir, '.keephub', 'lock.json')))
     const hubNames = readHubInstalledNames(await safeReadFile(join(skillsDir, '.hub', 'lock.json')))
     const usageStats = readUsageStats(await safeReadFile(join(skillsDir, '.usage.json')))
 
     // Scan all skills (supports both two-level and three-level directory structures)
-    const categories = await scanSkillsDir(skillsDir, bundledManifest, hubNames, disabledList, usageStats)
+    let categories = await scanSkillsDir(skillsDir, bundledManifest, keephubNames, hubNames, disabledList, usageStats, chatPlane)
+    // Map resolved → raw so we can attach the user-written path (e.g. ~/...) to
+    // each external skill — the SkillsView groups by this when the external
+    // filter is active.
+    const rawByResolved = new Map<string, string>()
+    for (const entry of await describeRawExternalDirs(config)) {
+      if (!rawByResolved.has(entry.expanded)) rawByResolved.set(entry.expanded, entry.raw)
+    }
+    // external_dirs is admin configuration living in the caller's OWN
+    // <profile>/config.yaml, which the sandbox binds read-write. Honouring it on
+    // the chat plane lets a tenant allow-list another profile. The chat plane
+    // cannot even PUT this setting (request-context forbids writes here), so
+    // suppressing it costs nothing. Same reasoning as allowedSkillRealRoots().
+    const scannableExternalDirs = chatPlane ? [] : await resolveExternalSkillsDirs(config, skillsDir)
+    for (const externalDir of scannableExternalDirs) {
+      const sourcePath = rawByResolved.get(externalDir) || externalDir
+      const externalCategories = await scanExternalSkillsDir(externalDir, disabledList, usageStats, sourcePath)
+      categories = mergeExternalCategories(categories, externalCategories)
+    }
 
     // Read archived skills from .archive/
     const archived: any[] = []
@@ -222,7 +779,7 @@ export async function list(ctx: any) {
         archived.push({
           name: entry.name,
           description: extractDescription(skillMd),
-          source: getSkillSource(entry.name, bundledManifest, hubNames),
+          source: getSkillSource(entry.name, bundledManifest, keephubNames, hubNames),
           patchCount: usage?.patch_count,
           useCount: usage?.use_count,
           viewCount: usage?.view_count,
@@ -232,14 +789,109 @@ export async function list(ctx: any) {
     }
     archived.sort((a: any, b: any) => a.name.localeCompare(b.name))
 
-    ctx.body = { categories, archived }
+    const externalDirs = await resolveExternalSkillsDirs(config, skillsDir)
+    const externalRaw = await describeRawExternalDirs(config)
+    ctx.body = {
+      categories,
+      archived,
+      paths: { local: skillsDir, external: externalDirs, externalRaw },
+    }
   } catch (err: any) {
     ctx.status = 500
     ctx.body = { error: `Failed to read skills directory: ${err.message}` }
   }
 }
 
+export async function usageStats(ctx: any) {
+  const rawDays = parseInt(String(ctx.query?.days ?? '7'), 10)
+  const days = Number.isFinite(rawDays) && rawDays > 0 ? Math.min(rawDays, 365) : 7
+
+  try {
+    ctx.body = await getSkillUsageStatsFromDb(days, undefined, requestedProfile(ctx))
+  } catch (err: any) {
+    ctx.status = 500
+    ctx.body = { error: `Failed to read skill usage stats: ${err.message}` }
+  }
+}
+
+const MAX_EXTERNAL_DIR_LEN = 2048
+
+/** GET /api/hermes/skills/external-dirs — return the raw list with existence flags */
+export async function listExternalDirs(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
+  try {
+    const config = await readConfigYamlForProfile(requestedProfile(ctx))
+    ctx.body = { dirs: await describeRawExternalDirs(config) }
+  } catch (err: any) {
+    ctx.status = 500
+    ctx.body = { error: err.message }
+  }
+}
+
+/** PUT /api/hermes/skills/external-dirs — replace the list verbatim. */
+export async function updateExternalDirs(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
+  const body = (ctx.request.body || {}) as { dirs?: unknown }
+  if (!Array.isArray(body.dirs)) {
+    ctx.status = 400
+    ctx.body = { error: 'dirs must be an array of strings' }
+    return
+  }
+  const cleaned: string[] = []
+  for (const entry of body.dirs) {
+    if (typeof entry !== 'string') {
+      ctx.status = 400
+      ctx.body = { error: 'dirs entries must be strings' }
+      return
+    }
+    if (entry.length > MAX_EXTERNAL_DIR_LEN) {
+      ctx.status = 400
+      ctx.body = { error: `Path too long (max ${MAX_EXTERNAL_DIR_LEN} chars)` }
+      return
+    }
+    // eslint-disable-next-line no-control-regex
+    if (/[\x00-\x1f]/.test(entry)) {
+      ctx.status = 400
+      ctx.body = { error: 'Path contains control characters' }
+      return
+    }
+    const trimmed = entry.trim()
+    if (trimmed) cleaned.push(trimmed)
+  }
+
+  // Dedupe verbatim (case-sensitive). Two different `~`/`$VAR` strings that
+  // resolve to the same dir are kept — the user wrote both intentionally.
+  const seen = new Set<string>()
+  const deduped: string[] = []
+  for (const entry of cleaned) {
+    if (seen.has(entry)) continue
+    seen.add(entry)
+    deduped.push(entry)
+  }
+
+  try {
+    await updateConfigYamlForProfile(requestedProfile(ctx), (config) => {
+      if (!config.skills) config.skills = {}
+      if (deduped.length === 0) {
+        delete config.skills.external_dirs
+      } else {
+        // Always normalise to array form even if the previous value was a string.
+        config.skills.external_dirs = deduped
+      }
+      return config
+    })
+    ctx.body = { success: true, dirs: deduped }
+  } catch (err: any) {
+    ctx.status = 500
+    ctx.body = { error: err.message }
+  }
+}
+
 export async function toggle(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
   const { name, enabled } = ctx.request.body as { name?: string; enabled?: boolean }
   if (!name || typeof enabled !== 'boolean') {
     ctx.status = 400
@@ -247,14 +899,15 @@ export async function toggle(ctx: any) {
     return
   }
   try {
-    const config = await readConfigYaml()
-    if (!config.skills) config.skills = {}
-    if (!Array.isArray(config.skills.disabled)) config.skills.disabled = []
-    const disabled = config.skills.disabled as string[]
-    const idx = disabled.indexOf(name)
-    if (enabled) { if (idx !== -1) disabled.splice(idx, 1) }
-    else { if (idx === -1) disabled.push(name) }
-    await writeConfigYaml(config)
+    await updateConfigYamlForProfile(requestedProfile(ctx), (config) => {
+      if (!config.skills) config.skills = {}
+      if (!Array.isArray(config.skills.disabled)) config.skills.disabled = []
+      const disabled = config.skills.disabled as string[]
+      const idx = disabled.indexOf(name)
+      if (enabled) { if (idx !== -1) disabled.splice(idx, 1) }
+      else { if (idx === -1) disabled.push(name) }
+      return config
+    })
     ctx.body = { success: true }
   } catch (err: any) {
     ctx.status = 500
@@ -263,14 +916,29 @@ export async function toggle(ctx: any) {
 }
 
 export async function listFiles(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
   const { category, skill } = ctx.params
-  const hd = getHermesDir()
-  // Handle "misc" category: real skill dir is skills/<skill>, not skills/misc/<skill>
-  const realDir = category === 'misc' ? skill : join(category, skill)
-  const skillDir = join(hd, 'skills', realDir)
+  const profileSkillsDir = requestSkillsDir(ctx)
   try {
+    const config = await readConfigYamlForProfile(requestedProfile(ctx))
+    const skillDir = await resolveSkillDirFromConfig(config, profileSkillsDir, category, skill)
+    if (!skillDir) {
+      ctx.status = 404
+      ctx.body = { error: 'Skill not found' }
+      return
+    }
+    // Real-path containment: a symlink under the skills dir must still resolve
+    // into an allow-listed root (own profile / shared installs / external dirs).
+    const allowedRoots = await allowedSkillRealRoots(ctx, config, profileSkillsDir)
+    const anchors = await skillReadAnchors(ctx)
+    if (!(await isWithinAllowedSkillRoots(skillDir, allowedRoots, anchors.own, anchors.profilesRoot))) {
+      ctx.status = 403
+      ctx.body = { error: 'Access denied' }
+      return
+    }
     const allFiles = await listFilesRecursive(skillDir, '')
-    const files = allFiles.filter(f => f.path !== 'SKILL.md')
+    const files = allFiles.filter((f: any) => f.path !== 'SKILL.md')
     ctx.body = { files }
   } catch (err: any) {
     ctx.status = 500
@@ -279,21 +947,47 @@ export async function listFiles(ctx: any) {
 }
 
 export async function readFile_(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
   const filePath = (ctx.params as any).path
-  const hd = getHermesDir()
-  // Handle "misc" category: real skill dir is skills/<skill>, not skills/misc/<skill>
+  const profileSkillsDir = requestSkillsDir(ctx)
+  // Handle 'misc' category: real skill dir is skills/<skill>, not skills/misc/<skill>
   let realPath = filePath
   if (filePath.startsWith('misc/')) {
     realPath = filePath.slice(5)
   }
-  const fullPath = resolve(join(hd, 'skills', realPath))
-  if (!fullPath.startsWith(join(hd, 'skills'))) {
+  const fullPath = resolve(join(profileSkillsDir, realPath))
+  const config = await readConfigYamlForProfile(requestedProfile(ctx))
+  const allowedRoots = await allowedSkillRealRoots(ctx, config, profileSkillsDir)
+  const anchors = await skillReadAnchors(ctx)
+  // Lexical containment first (cheap, rejects `..`), then REAL-path containment
+  // so a symlink under the skills dir cannot reach outside the allow-listed roots.
+  if (!isPathWithin(fullPath, profileSkillsDir) || !(await isWithinAllowedSkillRoots(fullPath, allowedRoots, anchors.own, anchors.profilesRoot))) {
     ctx.status = 403
     ctx.body = { error: 'Access denied' }
     return
   }
-  const content = await safeReadFile(fullPath)
+  let content = await safeReadFile(fullPath)
   if (content === null) {
+    // Fallback: recursive search for nested skills (e.g., mlops/lm-evaluation-harness/SKILL.md
+    // where actual path is mlops/evaluation/lm-evaluation-harness/SKILL.md)
+    const parts = filePath.split('/')
+    if (parts.length >= 2) {
+      const category = parts[0]
+      const skillName = parts[1]
+      const restPath = parts.slice(2).join('/')
+      const skillDir = await resolveSkillDirFromConfig(config, profileSkillsDir, category, skillName)
+      if (skillDir) {
+        const resolvedPath = resolve(join(skillDir, restPath))
+        if (isPathWithin(resolvedPath, skillDir) && await isWithinAllowedSkillRoots(resolvedPath, allowedRoots, anchors.own, anchors.profilesRoot)) {
+          const nestedContent = await safeReadFile(resolvedPath)
+          if (nestedContent !== null) {
+            ctx.body = { content: nestedContent }
+            return
+          }
+        }
+      }
+    }
     ctx.status = 404
     ctx.body = { error: 'File not found' }
     return
@@ -301,7 +995,204 @@ export async function readFile_(ctx: any) {
   ctx.body = { content }
 }
 
+const MAX_SKILL_EDIT_BYTES = 256 * 1024
+
+async function lstatOrNull(filePath: string) {
+  try {
+    return await lstat(filePath)
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return null
+    throw err
+  }
+}
+
+function normalizeEditableSkillPath(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const normalized = value.replace(/\\/g, '/')
+  if (!normalized || normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) return null
+  const parts = normalized.split('/')
+  if (parts.some(part => !part || part === '.' || part === '..' || part.includes('\0'))) return null
+  return parts.join('/')
+}
+
+async function hasSymlinkSkillDirByName(rootDir: string, skillName: string): Promise<boolean> {
+  let entries: import('fs').Dirent[]
+  try {
+    entries = await readdir(rootDir, { withFileTypes: true })
+  } catch {
+    return false
+  }
+
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue
+    const entryPath = join(rootDir, entry.name)
+    if (entry.isSymbolicLink()) {
+      if (entry.name === skillName) return true
+      continue
+    }
+    if (!entry.isDirectory()) continue
+
+    const skillMd = await safeReadFile(join(entryPath, 'SKILL.md'))
+    if (skillMd !== null) continue
+    if (await hasSymlinkSkillDirByName(entryPath, skillName)) return true
+  }
+
+  return false
+}
+
+async function resolveLocalEditableSkillDir(
+  profileSkillsDir: string,
+  category: string,
+  skillName: string,
+): Promise<{ dir: string | null; readOnly: boolean }> {
+  const directPath = category === 'misc'
+    ? join(profileSkillsDir, skillName)
+    : join(profileSkillsDir, category, skillName)
+  const directInfo = await lstatOrNull(directPath)
+  if (directInfo?.isSymbolicLink()) return { dir: null, readOnly: true }
+
+  const localSkillDir = await findSkillDirInRoot(profileSkillsDir, category, skillName)
+  if (localSkillDir) {
+    // Read-only if the resolved dir is a symlink OR sits under a symlinked ancestor
+    // (managed container) — editing a real child through a symlinked parent would
+    // write into the SHARED target. Walk root-relative so ancestors are covered.
+    if ((await assertEditablePathHasNoSymlinks(profileSkillsDir, relative(profileSkillsDir, localSkillDir))) === 'symlink') {
+      return { dir: null, readOnly: true }
+    }
+    return { dir: localSkillDir, readOnly: false }
+  }
+
+  if (category !== 'misc' && await hasSymlinkSkillDirByName(join(profileSkillsDir, category), skillName)) {
+    return { dir: null, readOnly: true }
+  }
+
+  return { dir: null, readOnly: false }
+}
+
+async function assertEditablePathHasNoSymlinks(rootDir: string, relativePath: string): Promise<'ok' | 'missing' | 'symlink'> {
+  let current = rootDir
+  for (const part of relativePath.split('/')) {
+    current = join(current, part)
+    const info = await lstatOrNull(current)
+    if (!info) return 'missing'
+    if (info.isSymbolicLink()) return 'symlink'
+  }
+  return 'ok'
+}
+
+export async function updateFile_(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
+  const body = (ctx.request.body || {}) as {
+    category?: unknown
+    skill?: unknown
+    path?: unknown
+    content?: unknown
+  }
+  const category = typeof body.category === 'string' ? body.category : ''
+  const skill = typeof body.skill === 'string' ? body.skill : ''
+  const relativePath = normalizeEditableSkillPath(body.path)
+  const content = body.content
+
+  if (!isValidSkillName(category) || !isValidSkillName(skill) || !relativePath || typeof content !== 'string') {
+    ctx.status = 400
+    ctx.body = { error: 'Invalid category, skill, path or content' }
+    return
+  }
+  if (Buffer.byteLength(content, 'utf-8') > MAX_SKILL_EDIT_BYTES) {
+    ctx.status = 413
+    ctx.body = { error: `File too large (max ${MAX_SKILL_EDIT_BYTES} bytes)` }
+    return
+  }
+
+  const profileSkillsDir = requestSkillsDir(ctx)
+  try {
+    const config = await readConfigYamlForProfile(requestedProfile(ctx))
+    const localResolution = await resolveLocalEditableSkillDir(profileSkillsDir, category, skill)
+    if (localResolution.readOnly) {
+      ctx.status = 403
+      ctx.body = { error: 'Skill is read-only' }
+      return
+    }
+
+    if (!localResolution.dir) {
+      const resolvedAnySkillDir = await resolveSkillDirFromConfig(config, profileSkillsDir, category, skill)
+      ctx.status = resolvedAnySkillDir ? 403 : 404
+      ctx.body = { error: resolvedAnySkillDir ? 'Skill is read-only' : 'Skill not found' }
+      return
+    }
+
+    const bundledManifest = readBundledManifest(await safeReadFile(join(profileSkillsDir, '.bundled_manifest')))
+    const keephubNames = readKeephubNames(await safeReadFile(join(profileSkillsDir, '.keephub', 'lock.json')))
+    const hubNames = readHubInstalledNames(await safeReadFile(join(profileSkillsDir, '.hub', 'lock.json')))
+    const source = getSkillSource(skill, bundledManifest, keephubNames, hubNames)
+    if (source !== 'local') {
+      ctx.status = 403
+      ctx.body = { error: 'Skill is read-only' }
+      return
+    }
+
+    const skillDir = resolve(localResolution.dir)
+    const fullPath = resolve(join(skillDir, relativePath))
+    if (!isPathWithin(skillDir, profileSkillsDir) || !isPathWithin(fullPath, skillDir)) {
+      ctx.status = 403
+      ctx.body = { error: 'Access denied' }
+      return
+    }
+
+    const symlinkCheck = await assertEditablePathHasNoSymlinks(skillDir, relativePath)
+    if (symlinkCheck === 'symlink') {
+      ctx.status = 403
+      ctx.body = { error: 'Access denied' }
+      return
+    }
+    if (symlinkCheck === 'missing') {
+      ctx.status = 404
+      ctx.body = { error: 'File not found' }
+      return
+    }
+
+    const targetInfo = await lstatOrNull(fullPath)
+    if (!targetInfo || !targetInfo.isFile()) {
+      ctx.status = targetInfo ? 400 : 404
+      ctx.body = { error: targetInfo ? 'Path is not a file' : 'File not found' }
+      return
+    }
+    if (targetInfo.size > MAX_SKILL_EDIT_BYTES) {
+      ctx.status = 413
+      ctx.body = { error: `File too large (max ${MAX_SKILL_EDIT_BYTES} bytes)` }
+      return
+    }
+
+    await safeFileStore.writeText(fullPath, content, { backup: true })
+    ctx.body = { success: true, content }
+  } catch (err: any) {
+    ctx.status = 500
+    ctx.body = { error: err.message }
+  }
+}
+
+async function updatePinnedSkill(skillsDir: string, name: string, pinned: boolean): Promise<void> {
+  await mkdir(skillsDir, { recursive: true })
+  const usagePath = join(skillsDir, '.usage.json')
+  let usage: Record<string, any> = {}
+  const raw = await safeReadFile(usagePath)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) usage = parsed
+    } catch { /* rewrite malformed usage file with the requested pin state */ }
+  }
+  const current = usage[name]
+  usage[name] = current && typeof current === 'object' && !Array.isArray(current)
+    ? { ...current, pinned }
+    : { patch_count: 0, use_count: 0, view_count: 0, pinned }
+  await writeFile(usagePath, `${JSON.stringify(usage, null, 2)}\n`, 'utf-8')
+}
+
 export async function pin_(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
   const { name, pinned } = ctx.request.body as { name?: string; pinned?: boolean }
   if (!name || typeof pinned !== 'boolean') {
     ctx.status = 400
@@ -309,10 +1200,443 @@ export async function pin_(ctx: any) {
     return
   }
   try {
-    await pinSkill(name, pinned)
+    await updatePinnedSkill(requestSkillsDir(ctx), name, pinned)
     ctx.body = { success: true }
   } catch (err: any) {
     ctx.status = 500
     ctx.body = { error: err.message }
+  }
+}
+
+const MAX_SKILL_UPLOAD_SIZE = 50 * 1024 * 1024 // 50MB
+
+function isValidSkillName(name: string): boolean {
+  // Reject empty / path traversal / absolute paths
+  if (!name) return false
+  if (name === '.' || name === '..') return false
+  if (name.includes('/') || name.includes('\\') || name.includes('\0')) return false
+  return true
+}
+
+function splitMultipart(raw: Buffer, boundary: Buffer): Buffer[] {
+  const parts: Buffer[] = []
+  let start = 0
+  while (true) {
+    const idx = raw.indexOf(boundary, start)
+    if (idx === -1) break
+    if (start > 0) { parts.push(raw.subarray(start + 2, idx)) }
+    start = idx + boundary.length
+  }
+  return parts
+}
+
+interface ParsedPart {
+  fieldName: string
+  filename: string | null
+  data: Buffer
+}
+
+function parsePart(part: Buffer): ParsedPart | null {
+  const headerEnd = part.indexOf(Buffer.from('\r\n\r\n'))
+  if (headerEnd === -1) return null
+  const headerBuf = part.subarray(0, headerEnd)
+  const header = headerBuf.toString('utf-8')
+  const data = part.subarray(headerEnd + 4, part.length - 2)
+
+  const dispMatch = header.match(/Content-Disposition:\s*form-data;([^\r\n]*)/i)
+  if (!dispMatch) return null
+  const disp = dispMatch[1]
+  const nameMatch = disp.match(/\bname="([^"]+)"/)
+  if (!nameMatch) return null
+  const fieldName = nameMatch[1]
+
+  let filename: string | null = null
+  const fnStarMatch = disp.match(/filename\*=UTF-8''([^;]+)/i)
+  if (fnStarMatch) {
+    filename = decodeURIComponent(fnStarMatch[1].trim().replace(/^"|"$/g, ''))
+  } else {
+    const fnMatch = disp.match(/\bfilename="([^"]*)"/)
+    if (fnMatch) filename = fnMatch[1]
+  }
+  return { fieldName, filename, data }
+}
+
+export async function deleteSkill(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
+  const category = String((ctx.params as any)?.category || '')
+  const name = String((ctx.params as any)?.skill || '')
+  if (!isValidSkillName(category) || !isValidSkillName(name)) {
+    ctx.status = 400
+    ctx.body = { error: 'Invalid category or skill name' }
+    return
+  }
+
+  const skillsDir = requestSkillsDir(ctx)
+  try {
+    // Determine source — only allow deleting `local` skills
+    const bundledManifest = readBundledManifest(await safeReadFile(join(skillsDir, '.bundled_manifest')))
+    const keephubNames = readKeephubNames(await safeReadFile(join(skillsDir, '.keephub', 'lock.json')))
+    const hubNames = readHubInstalledNames(await safeReadFile(join(skillsDir, '.hub', 'lock.json')))
+    const source = getSkillSource(name, bundledManifest, keephubNames, hubNames)
+    if (source !== 'local') {
+      ctx.status = 403
+      ctx.body = { error: `Only local skills can be deleted (this skill is ${source})` }
+      return
+    }
+
+    // Resolve via the same category-aware path used by list/listFiles/readFile_
+    // so two skills sharing a name in different categories don't collide.
+    // Skip `external_dirs` here — only the local profile dir is deletable.
+    const localSkillDir = await findSkillDirInRoot(skillsDir, category, name)
+    if (!localSkillDir) {
+      ctx.status = 404
+      ctx.body = { error: 'Skill not found' }
+      return
+    }
+    if (!isPathWithin(localSkillDir, skillsDir)) {
+      ctx.status = 403
+      ctx.body = { error: 'Access denied' }
+      return
+    }
+
+    // Read-only if the resolved path traverses a symlink at ANY level (managed/
+    // symlinked install). Covers BOTH a direct symlink skill dir AND a symlinked
+    // parent/container with real children — deleting either would unlink the
+    // install or `rm -r` content inside the SHARED target. Same invariant the edit
+    // path enforces; checked on the resolved dir so ancestors are walked.
+    if ((await assertEditablePathHasNoSymlinks(skillsDir, relative(skillsDir, localSkillDir))) === 'symlink') {
+      ctx.status = 403
+      ctx.body = { error: 'This skill is a managed (symlinked) install and is read-only; it cannot be deleted here.' }
+      return
+    }
+
+    await rm(localSkillDir, { recursive: true, force: true })
+
+    // Cleanup `disabled` list in profile config so the deleted name doesn't linger
+    try {
+      await updateConfigYamlForProfile(requestedProfile(ctx), (config) => {
+        const list = config?.skills?.disabled
+        if (Array.isArray(list)) {
+          const idx = list.indexOf(name)
+          if (idx !== -1) list.splice(idx, 1)
+        }
+        return config
+      })
+    } catch { /* config cleanup is best-effort */ }
+
+    ctx.body = { success: true }
+  } catch (err: any) {
+    ctx.status = 500
+    ctx.body = { error: err.message }
+  }
+}
+
+async function readMultipartBody(ctx: any): Promise<{ parts: ParsedPart[] } | { error: string; status: number }> {
+  const contentType = ctx.get('content-type') || ''
+  if (!contentType.startsWith('multipart/form-data')) {
+    return { error: 'Expected multipart/form-data', status: 400 }
+  }
+  const boundaryStr = contentType.split('boundary=')[1]
+  if (!boundaryStr) return { error: 'Missing boundary', status: 400 }
+  const boundary = '--' + boundaryStr.split(';')[0].trim()
+
+  const chunks: Buffer[] = []
+  let totalSize = 0
+  for await (const chunk of ctx.req) {
+    totalSize += chunk.length
+    if (totalSize > MAX_SKILL_UPLOAD_SIZE) {
+      return { error: `Upload too large (max ${MAX_SKILL_UPLOAD_SIZE / 1024 / 1024}MB)`, status: 413 }
+    }
+    chunks.push(chunk)
+  }
+  const raw = Buffer.concat(chunks)
+  const rawParts = splitMultipart(raw, Buffer.from(boundary))
+  const parts: ParsedPart[] = []
+  for (const p of rawParts) {
+    let parsed: ParsedPart | null
+    try {
+      parsed = parsePart(p)
+    } catch (err) {
+      if (err instanceof URIError) {
+        return { error: 'Invalid multipart filename encoding', status: 400 }
+      }
+      throw err
+    }
+    if (parsed) parts.push(parsed)
+  }
+  return { parts }
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try { await stat(p); return true } catch { return false }
+}
+
+export async function importSkill(ctx: any) {
+  if (refuseUnprovisionedProfile(ctx)) return
+  if (await refuseSymlinkedSkillsPath(ctx)) return
+  const parsed = await readMultipartBody(ctx)
+  if ('error' in parsed) {
+    ctx.status = parsed.status
+    ctx.body = { error: parsed.error }
+    return
+  }
+
+  const filePartsAll = parsed.parts.filter(p => p.fieldName === 'file' && p.filename !== null)
+  const categoryPart = parsed.parts.find(p => p.fieldName === 'category' && p.filename === null)
+  const category = categoryPart ? categoryPart.data.toString('utf-8').trim() : ''
+
+  if (filePartsAll.length === 0) {
+    ctx.status = 400
+    ctx.body = { error: 'No files received' }
+    return
+  }
+
+  // Sanity-check optional category — must be a single safe segment if provided
+  if (category && !isValidSkillName(category)) {
+    ctx.status = 400
+    ctx.body = { error: 'Invalid category name' }
+    return
+  }
+
+  const skillsDir = requestSkillsDir(ctx)
+  await mkdir(skillsDir, { recursive: true })
+  const targetRoot = category ? join(skillsDir, category) : skillsDir
+
+  // Provenance for conflict detection (cannot shadow builtin/hub)
+  const bundledManifest = readBundledManifest(await safeReadFile(join(skillsDir, '.bundled_manifest')))
+  const hubNames = readHubInstalledNames(await safeReadFile(join(skillsDir, '.hub', 'lock.json')))
+
+  // Decide between "zip" and "folder" mode
+  const isSingleZip = filePartsAll.length === 1 &&
+    (filePartsAll[0].filename || '').toLowerCase().endsWith('.zip') &&
+    !(filePartsAll[0].filename || '').includes('/')
+
+  let skillName = ''
+  let stagingDir = ''
+
+  try {
+    if (isSingleZip) {
+      // ============ ZIP MODE ============
+      // Extract in pure Node (adm-zip) so the server doesn't depend on a system
+      // `unzip` binary — which is missing on Windows and on slim Linux images.
+      const zipPart = filePartsAll[0]
+      stagingDir = join(tmpdir(), `hermes-skill-import-${randomBytes(6).toString('hex')}`)
+      const extractDir = join(stagingDir, 'extracted')
+      await mkdir(extractDir, { recursive: true })
+
+      let zip: AdmZip
+      try {
+        zip = new AdmZip(zipPart.data)
+      } catch (err: any) {
+        ctx.status = 400
+        ctx.body = { error: `Failed to read zip archive: ${err?.message || err}` }
+        return
+      }
+
+      // Check the end-record's declared entry count BEFORE getEntries(): adm-zip
+      // parses the central directory lazily on the first getEntries() call and
+      // builds one object per declared entry, and that parse throws on truncated
+      // or malformed central directories (which must stay a 400, not a 500).
+      let zipEntries: ReturnType<AdmZip['getEntries']>
+      try {
+        const declaredCount = zip.getEntryCount()
+        if (declaredCount > MAX_ZIP_ENTRIES) {
+          ctx.status = 400
+          ctx.body = { error: `Zip 条目数超限: ${declaredCount} entries declared (max ${MAX_ZIP_ENTRIES})` }
+          return
+        }
+        zipEntries = zip.getEntries()
+      } catch (err: any) {
+        ctx.status = 400
+        ctx.body = { error: `Failed to read zip archive: ${err?.message || err}` }
+        return
+      }
+      if (zipEntries.length > MAX_ZIP_ENTRIES) {
+        ctx.status = 400
+        ctx.body = { error: `Zip 条目数超限: ${zipEntries.length} entries (max ${MAX_ZIP_ENTRIES})` }
+        return
+      }
+      let declaredTotal = 0
+      for (const entry of zipEntries) {
+        const declaredSize = Number(entry.header.size) || 0
+        if (declaredSize > MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) {
+          ctx.status = 400
+          ctx.body = { error: `Zip 单条目解压大小超限: "${entry.entryName}" declares ${declaredSize} bytes uncompressed (max ${MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES})` }
+          return
+        }
+        declaredTotal += declaredSize
+        if (declaredTotal > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
+          ctx.status = 400
+          ctx.body = { error: `Zip 解压总量超限: total declared uncompressed size exceeds ${MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES} bytes` }
+          return
+        }
+      }
+
+      try {
+        for (const entry of zipEntries) {
+          // Normalise to forward slashes; adm-zip uses POSIX separators internally
+          // but be defensive.
+          const rel = entry.entryName.replace(/\\/g, '/')
+          if (!rel || rel.startsWith('/')) continue
+          // Skip macOS metadata and dotfile noise at the top level
+          const top = rel.split('/')[0]
+          if (top === '__MACOSX' || top.startsWith('.')) continue
+
+          const dest = resolve(join(extractDir, rel))
+          if (!isPathWithin(dest, extractDir)) {
+            ctx.status = 400
+            ctx.body = { error: `Path traversal detected in zip entry: ${rel}` }
+            return
+          }
+
+          if (entry.isDirectory) {
+            await mkdir(dest, { recursive: true })
+            continue
+          }
+          await mkdir(dirname(dest), { recursive: true })
+          await writeFile(dest, entry.getData())
+        }
+      } catch (err: any) {
+        ctx.status = 400
+        ctx.body = { error: `Failed to unzip archive: ${err?.message || err}` }
+        return
+      }
+
+      // Locate the skill root inside the extracted tree
+      const topEntries = (await readdir(extractDir, { withFileTypes: true })).filter(e => !e.name.startsWith('.') && !e.name.startsWith('__MACOSX'))
+      let skillSrcDir: string
+      const zipBaseName = (zipPart.filename || 'skill').replace(/\.zip$/i, '')
+      const rootSkillMd = await safeReadFile(join(extractDir, 'SKILL.md'))
+      if (rootSkillMd !== null) {
+        // Zip extracted directly with SKILL.md at root → use zip basename
+        skillName = zipBaseName
+        skillSrcDir = extractDir
+      } else {
+        const dirs = topEntries.filter(e => e.isDirectory())
+        if (dirs.length !== 1) {
+          ctx.status = 400
+          ctx.body = { error: 'Zip must contain a single top-level skill directory with SKILL.md (or SKILL.md at root)' }
+          return
+        }
+        skillName = dirs[0].name
+        skillSrcDir = join(extractDir, skillName)
+        const innerSkillMd = await safeReadFile(join(skillSrcDir, 'SKILL.md'))
+        if (innerSkillMd === null) {
+          ctx.status = 400
+          ctx.body = { error: `Skill directory "${skillName}" must contain a SKILL.md file` }
+          return
+        }
+      }
+
+      if (!isValidSkillName(skillName)) {
+        ctx.status = 400
+        ctx.body = { error: `Invalid skill name "${skillName}"` }
+        return
+      }
+      if (bundledManifest.has(skillName) || hubNames.has(skillName)) {
+        ctx.status = 409
+        ctx.body = { error: `Skill "${skillName}" conflicts with a builtin or hub-managed skill` }
+        return
+      }
+
+      const targetDir = join(targetRoot, skillName)
+      if (!isPathWithin(targetDir, skillsDir)) {
+        ctx.status = 400
+        ctx.body = { error: 'Resolved target path escapes skills directory' }
+        return
+      }
+      if (await pathExists(targetDir)) {
+        ctx.status = 409
+        ctx.body = { error: `Skill "${skillName}" already exists` }
+        return
+      }
+      await mkdir(targetRoot, { recursive: true })
+      await cp(skillSrcDir, targetDir, { recursive: true })
+    } else {
+      // ============ FOLDER MODE (multiple files with relative paths) ============
+      // Determine top-level dir name from the first segment of every relative path
+      const tops = new Set<string>()
+      for (const part of filePartsAll) {
+        const rel = (part.filename || '').replace(/\\/g, '/').replace(/^\.?\//, '')
+        const seg = rel.split('/')[0]
+        if (seg) tops.add(seg)
+      }
+      if (tops.size === 0) {
+        ctx.status = 400
+        ctx.body = { error: 'No valid file paths in upload' }
+        return
+      }
+      if (tops.size > 1) {
+        ctx.status = 400
+        ctx.body = { error: 'All files must share a common top-level directory (the skill folder)' }
+        return
+      }
+      skillName = [...tops][0]
+      if (!isValidSkillName(skillName)) {
+        ctx.status = 400
+        ctx.body = { error: `Invalid skill name "${skillName}"` }
+        return
+      }
+      // Must include SKILL.md
+      const hasSkillMd = filePartsAll.some(p => {
+        const rel = (p.filename || '').replace(/\\/g, '/')
+        return rel === `${skillName}/SKILL.md`
+      })
+      if (!hasSkillMd) {
+        ctx.status = 400
+        ctx.body = { error: `Skill folder "${skillName}" must contain a SKILL.md file at its root` }
+        return
+      }
+      if (bundledManifest.has(skillName) || hubNames.has(skillName)) {
+        ctx.status = 409
+        ctx.body = { error: `Skill "${skillName}" conflicts with a builtin or hub-managed skill` }
+        return
+      }
+
+      const targetDir = join(targetRoot, skillName)
+      if (!isPathWithin(targetDir, skillsDir)) {
+        ctx.status = 400
+        ctx.body = { error: 'Resolved target path escapes skills directory' }
+        return
+      }
+      if (await pathExists(targetDir)) {
+        ctx.status = 409
+        ctx.body = { error: `Skill "${skillName}" already exists` }
+        return
+      }
+      await mkdir(targetRoot, { recursive: true })
+
+      // Stage to a temp dir first, then move/copy atomically (ish) so a failed
+      // partial write doesn't leave half a skill in the live directory.
+      stagingDir = join(tmpdir(), `hermes-skill-import-${randomBytes(6).toString('hex')}`)
+      const stagingSkillDir = join(stagingDir, skillName)
+      await mkdir(stagingSkillDir, { recursive: true })
+
+      for (const part of filePartsAll) {
+        const rel = (part.filename || '').replace(/\\/g, '/').replace(/^\.?\//, '')
+        const relInsideSkill = rel.slice(skillName.length + 1) // strip "<skillName>/"
+        if (!relInsideSkill) continue // the bare folder marker
+        const dest = resolve(join(stagingSkillDir, relInsideSkill))
+        if (!isPathWithin(dest, stagingSkillDir)) {
+          ctx.status = 400
+          ctx.body = { error: `Path traversal detected in: ${rel}` }
+          return
+        }
+        await mkdir(dirname(dest), { recursive: true })
+        await writeFile(dest, part.data)
+      }
+
+      await cp(stagingSkillDir, targetDir, { recursive: true })
+    }
+
+    ctx.body = { success: true, name: skillName }
+  } catch (err: any) {
+    ctx.status = 500
+    ctx.body = { error: err.message }
+  } finally {
+    if (stagingDir) {
+      try { await rm(stagingDir, { recursive: true, force: true }) } catch { /* best-effort */ }
+    }
   }
 }

@@ -6,11 +6,19 @@ import { webhookRoutes } from './webhook'
 import { uploadRoutes } from './upload'
 import { updateRoutes } from './update'
 import { authPublicRoutes, authProtectedRoutes } from './auth'
+import { devicePublicRoutes, deviceRoutes } from './devices'
+import { codingAgentRoutes } from './coding-agents'
+import { apiDocsRoutes } from './api-docs'
+import { claudeCodeProxyRoutes } from './claude-code-proxy'
+import { codexProxyRoutes } from './codex-proxy'
 
 // Hermes route modules
 import { sessionRoutes } from './hermes/sessions'
+import { coworkRoutes } from './hermes/cowork'
 import { profileRoutes } from './hermes/profiles'
+import { agentRoutes } from './hermes/agents'
 import { skillRoutes } from './hermes/skills'
+import { expertRoutes } from './hermes/experts'
 import { pluginRoutes } from './hermes/plugins'
 import { memoryRoutes } from './hermes/memory'
 import { modelRoutes } from './hermes/models'
@@ -20,39 +28,63 @@ import { logRoutes } from './hermes/logs'
 import { codexAuthRoutes } from './hermes/codex-auth'
 import { nousAuthRoutes } from './hermes/nous-auth'
 import { copilotAuthRoutes } from './hermes/copilot-auth'
-import { gatewayRoutes } from './hermes/gateways'
+import { xaiAuthRoutes } from './hermes/xai-auth'
+import { anthropicAuthRoutes } from './hermes/anthropic-auth'
+import { geminiAuthRoutes } from './hermes/gemini-auth'
 import { weixinRoutes } from './hermes/weixin'
 import { fileRoutes } from './hermes/files'
 import { downloadRoutes } from './hermes/download'
 import { jobRoutes } from './hermes/jobs'
 import { cronHistoryRoutes } from './hermes/cron-history'
 import { kanbanRoutes } from './hermes/kanban'
-import { ttsRoutes } from './hermes/tts'
-import { proxyRoutes, proxyMiddleware } from './hermes/proxy'
+import { gitlabCredentialRoutes } from './hermes/gitlab-credential'
+import { desktopScreenRoutes } from './hermes/desktop-screen'
+import { ttsRoutes, ttsProtectedRoutes } from './hermes/tts'
+import { sttProtectedRoutes } from './hermes/stt'
+import { mediaRoutes } from './hermes/media'
 import { groupChatRoutes, setGroupChatServer } from './hermes/group-chat'
+import { chatRunRoutes } from './hermes/chat-run'
+import { performanceMonitorRoutes } from './hermes/performance-monitor'
+import { mcpRoutes } from './hermes/mcp'
+import { runtimeVersionRoutes } from './hermes/runtime-versions'
+import { writeGateRoutes } from './hermes/write-gate'
+import { slashRoutes } from './hermes/slash'
+import { linkPreviewRoutes } from './hermes/link-previews'
+import { consoleRoutes } from './hermes/console'
 
 /**
  * Register all routes on the Koa app.
  * Public routes are registered first, then auth middleware,
- * then all protected routes. Returns the proxy middleware (must be mounted last).
+ * then all protected routes.
  */
-export function registerRoutes(app: any, requireAuth: (ctx: Context, next: Next) => Promise<void>) {
+export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, next: Next) => Promise<void>>) {
   // --- Public routes (no auth required) ---
   app.use(healthRoutes.routes())
   app.use(webhookRoutes.routes())
   app.use(authPublicRoutes.routes())
-  app.use(ttsRoutes.routes())              // TTS proxy/generation — must be before auth
+  app.use(devicePublicRoutes.routes())
+  app.use(claudeCodeProxyRoutes.routes())
+  app.use(codexProxyRoutes.routes())
+  app.use(ttsRoutes.routes())
+  app.use(apiDocsRoutes.routes())
 
   // --- Auth middleware: all routes below require authentication ---
-  app.use(requireAuth)
+  authMiddleware.forEach((middleware) => app.use(middleware))
 
   // --- Protected routes (auth required) ---
   app.use(authProtectedRoutes.routes())
+  app.use(deviceRoutes.routes())
   app.use(uploadRoutes.routes())
   app.use(updateRoutes.routes())           // Must be before proxy (proxy catch-all matches everything)
+  app.use(codingAgentRoutes.routes())
   app.use(sessionRoutes.routes())
+  app.use(coworkRoutes.routes())
   app.use(profileRoutes.routes())
+  app.use(agentRoutes.routes())
   app.use(skillRoutes.routes())
+  app.use(expertRoutes.routes())           // /api/hermes/experts — expert catalog (专家广场) BFF proxy
+  app.use(slashRoutes.routes())            // /api/hermes/slash/commands (re-register: dropped in rebaseline)
+  app.use(linkPreviewRoutes.routes())      // actor-scoped Feishu/Lark URL metadata
   app.use(pluginRoutes.routes())
   app.use(memoryRoutes.routes())
   app.use(modelRoutes.routes())
@@ -62,16 +94,25 @@ export function registerRoutes(app: any, requireAuth: (ctx: Context, next: Next)
   app.use(codexAuthRoutes.routes())
   app.use(nousAuthRoutes.routes())
   app.use(copilotAuthRoutes.routes())
-  app.use(gatewayRoutes.routes())
+  app.use(xaiAuthRoutes.routes())
+  app.use(anthropicAuthRoutes.routes())
+  app.use(geminiAuthRoutes.routes())
   app.use(weixinRoutes.routes())
-  app.use(groupChatRoutes.routes())       // Must be before proxy
-  app.use(fileRoutes.routes())              // Must be before proxy (proxy catch-all matches everything)
-  app.use(downloadRoutes.routes())          // Must be before proxy
-  app.use(jobRoutes.routes())               // Must be before proxy
-  app.use(cronHistoryRoutes.routes())        // Must be before proxy
-  app.use(kanbanRoutes.routes())             // Must be before proxy
-  app.use(proxyRoutes.routes())
-
-  // Proxy catch-all middleware (must be last)
-  return proxyMiddleware
+  app.use(chatRunRoutes.routes())
+  app.use(groupChatRoutes.routes())
+  app.use(fileRoutes.routes())
+  app.use(downloadRoutes.routes())
+  app.use(jobRoutes.routes())
+  app.use(cronHistoryRoutes.routes())
+  app.use(kanbanRoutes.routes())
+  app.use(gitlabCredentialRoutes.routes())
+  app.use(desktopScreenRoutes.routes())         // /api/hermes/desktop/* — bot screen (云电脑) broker passthrough
+  app.use(ttsProtectedRoutes.routes())
+  app.use(sttProtectedRoutes.routes())
+  app.use(mediaRoutes.routes())
+  app.use(performanceMonitorRoutes.routes())
+  app.use(mcpRoutes.routes())                   // MCP management
+  app.use(runtimeVersionRoutes.routes())         // Runtime and version management
+  app.use(writeGateRoutes.routes())              // Hermes Agent write approval review
+  app.use(consoleRoutes.routes())                // /api/console/* — admin/ops plane (per-route RBAC guards)
 }

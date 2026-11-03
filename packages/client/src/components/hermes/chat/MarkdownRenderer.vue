@@ -1,11 +1,14 @@
 <script setup lang="ts">
+import 'katex/dist/katex.min.css'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useMessage } from 'naive-ui'
+import { NDrawer, NDrawerContent, NSpin, useMessage } from 'naive-ui'
 import type MarkdownIt from 'markdown-it'
 import MarkdownItConstructor from 'markdown-it'
+import katex from 'katex'
+import markdownItKatex from '@vscode/markdown-it-katex'
 import { handleCodeBlockCopyClick, renderHighlightedCodeBlock } from './highlight'
-import { repairNestedMarkdownFences } from './markdownFenceRepair'
+import { isClosingFence, parseFence, repairNestedMarkdownFences } from './markdownFenceRepair'
 import {
   MERMAID_MAX_DIAGRAMS_PER_MESSAGE,
   MERMAID_MAX_SOURCE_LENGTH,
@@ -13,32 +16,122 @@ import {
   decodeMermaidSource,
   isMermaidFence,
   renderMermaidPlaceholder,
+  SUPPORT_PREVIEW_FILE_TYPES,
 } from './mermaidRenderer'
-import { downloadFile, getDownloadUrl } from '@/api/hermes/download'
+import {
+  downloadFile,
+  getDownloadUrl,
+  fetchFileText,
+  parseArtifactPublication,
+  readbackWorkspaceArtifact,
+  type ArtifactPublication,
+} from '@/api/hermes/download'
+import { useFilesStore, isHtmlFile, isImageFile } from '@/stores/hermes/files'
+import ImagePreviewOverlay from './ImagePreviewOverlay.vue'
+import { isBinaryPreviewFile } from '@/utils/hermes/file-preview'
+
+const LATEX_FENCE_LANGS = new Set(['latex', 'tex', 'math', 'katex'])
+const PREVIEW_AREA_WIDTH = 'min(800px, 100vw)'
+
+function getFenceLanguage(info: string): string {
+  return info.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
+}
+
+function isLatexFence(info: string): boolean {
+  return LATEX_FENCE_LANGS.has(getFenceLanguage(info))
+}
+
+function normalizeLatexFenceContent(content: string): string {
+  const trimmed = content.trim()
+
+  if (trimmed.startsWith('\\[') && trimmed.endsWith('\\]')) {
+    return trimmed.slice(2, -2).trim()
+  }
+
+  if (trimmed.startsWith('$$') && trimmed.endsWith('$$')) {
+    return trimmed.slice(2, -2).trim()
+  }
+
+  if (trimmed.startsWith('\\(') && trimmed.endsWith('\\)')) {
+    return trimmed.slice(2, -2).trim()
+  }
+
+  return trimmed
+}
+
+function renderLatexFence(content: string): string {
+  const latex = normalizeLatexFenceContent(content)
+  return `<div class="latex-block">${katex.renderToString(latex, {
+    displayMode: true,
+    output: 'htmlAndMathml',
+    throwOnError: false,
+    strict: 'ignore',
+  })}</div>`
+}
+
+type WorkspaceDiffInlineFile = {
+  id: number
+  path: string
+  change_id?: string | null
+  session_id?: string | null
+  additions?: number
+  deletions?: number
+}
 
 const props = withDefaults(defineProps<{
     content: string
     mentionNames?: string[]
+    headingIdPrefix?: string
+    workspaceDiffFiles?: WorkspaceDiffInlineFile[]
 }>(), {
     mentionNames: () => [],
+    headingIdPrefix: '',
+    workspaceDiffFiles: () => [],
 })
+
+const emit = defineEmits<{
+  (e: 'workspace-diff-file-click', file: WorkspaceDiffInlineFile): void
+}>()
 
 const { t } = useI18n()
 const message = useMessage()
+// Resolved lazily inside the file-card click handler rather than at setup, so
+// MarkdownRenderer can still mount in contexts without an active Pinia (e.g.
+// the markdown-special-mentions unit test). The store is only needed when a
+// workspace artifact card is actually clicked, where Pinia is always installed.
+
+function diffFoldLabel(hiddenCount: number): string {
+  return t('chat.unchangedLines', { count: hiddenCount })
+}
 
 const md: MarkdownIt = new MarkdownItConstructor({
   html: false,
+  breaks: true,
   linkify: true,
-  typographer: true,
+  typographer: false,
   highlight(str: string, lang: string): string {
-    return renderHighlightedCodeBlock(str, lang, t('common.copy'))
+    return renderHighlightedCodeBlock(str, lang, t('common.copy'), {
+      formatDiffFoldLabel: diffFoldLabel,
+    })
   },
 })
 
+md.use(markdownItKatex, {
+  katex,
+  throwOnError: false,
+  strict: 'ignore',
+})
+
 const defaultFenceRenderer = md.renderer.rules.fence?.bind(md.renderer.rules)
+const defaultCodeInlineRenderer = md.renderer.rules.code_inline?.bind(md.renderer.rules)
+const defaultTextRenderer = md.renderer.rules.text?.bind(md.renderer.rules)
 
 md.renderer.rules.fence = (tokens, idx, options, env, self) => {
   const token = tokens[idx]
+  if (isLatexFence(token.info)) {
+    return renderLatexFence(token.content)
+  }
+
   if (isMermaidFence(token.info)) {
     return renderMermaidPlaceholder(token.content)
   }
@@ -50,40 +143,331 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
   return self.renderToken(tokens, idx, options)
 }
 
+md.renderer.rules.code_inline = (tokens, idx, options, env, self) => {
+  const file = workspaceDisplayPath(tokens[idx].content)
+  if (file) {
+    return renderFileCard(file.path, file.fileName, {
+      inline: true,
+      diffFile: findWorkspaceDiffFileByDisplayPath(file.path),
+      publication: file.publication,
+    })
+  }
+
+  if (defaultCodeInlineRenderer) {
+    return defaultCodeInlineRenderer(tokens, idx, options, env, self)
+  }
+  return self.renderToken(tokens, idx, options)
+}
+
+md.renderer.rules.text = (tokens, idx, options, env, self) => {
+  if (!isInsideLinkToken(tokens, idx)) {
+    const rendered = renderWorkspaceDiffText(tokens[idx].content)
+    if (rendered) return rendered
+  }
+  if (defaultTextRenderer) {
+    return defaultTextRenderer(tokens, idx, options, env, self)
+  }
+  return escapeHtml(tokens[idx].content)
+}
+
 const markdownBody = ref<HTMLElement | null>(null)
 const componentId = `hermes-mermaid-${Math.random().toString(36).slice(2)}`
 const previewUrl = ref<string | null>(null)
+const renderedWorkspaceDiffFileIds = new Set<number>()
+
+// Preview config variable
+const textPreviewContent = ref<string | null>(null)
+const textPreviewFileName = ref('')
+const textPreviewLoading = ref(false)
+const textPreviewVisible = ref(false)
+
+const textPreviewIsMarkdown = computed(() => /\.(md|markdown)$/i.test(textPreviewFileName.value))
+
 let renderGeneration = 0
+let artifactReadbackGeneration = 0
 let unmounted = false
+const artifactReadbacks = new Map<string, ReturnType<typeof readbackWorkspaceArtifact>>()
+const MAX_ARTIFACT_READBACKS = 20
+const ARTIFACT_READBACK_CONCURRENCY = 3
 
-const renderedHtml = computed(() => {
-  let html = md.render(repairNestedMarkdownFences(props.content))
+function isLocalFilePath(path: string): boolean {
+  return path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path)
+}
 
-  // Replace image src paths with download URLs
-  // Replace both src="/path" and src='/path' formats
-  html = html.replace(/src="\/([^"]+)"/g, (_match, path) => {
-    const originalPath = '/' + path
-    const downloadUrl = getDownloadUrl(originalPath)
-    return `src="${downloadUrl}"`
+function normalizeLocalFilePath(path: string): string {
+  return /^[a-zA-Z]:\\/.test(path) ? path.replace(/\\/g, '/') : path
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function fileNameFromPath(path: string): string {
+  return path.split('/').filter(Boolean).pop() || path
+}
+
+function hasFileExtension(path: string): boolean {
+  const clean = path.split('?')[0].split('#')[0]
+  const name = fileNameFromPath(clean)
+  return /\.[^./]+$/.test(name)
+}
+
+function workspaceDisplayPath(raw: string): {
+  path: string
+  fileName: string
+  publication: ArtifactPublication | null
+} | null {
+  const value = raw.trim()
+  if (!value || /^https?:\/\//i.test(value)) return null
+  const artifact = parseArtifactPublication(value)
+  const artifactPath = artifact.path.replace(/:\d+(?::\d+)?$/, '')
+  const marker = '/workspace/'
+  const idx = artifactPath.indexOf(marker)
+  if (idx === -1) return null
+  const rel = artifactPath.slice(idx + marker.length).replace(/^\/+/, '')
+  if (!rel || rel.endsWith('/') || !hasFileExtension(rel)) return null
+  return {
+    path: `${marker}${rel}`,
+    fileName: fileNameFromPath(rel),
+    publication: artifact.publication,
+  }
+}
+
+function displayPathForDiffFile(file: WorkspaceDiffInlineFile): string {
+  return `/workspace/${String(file.path || '').replace(/^\/+/, '')}`
+}
+
+const workspaceDiffByBasename = computed(() => {
+  const map = new Map<string, WorkspaceDiffInlineFile | null>()
+  for (const file of props.workspaceDiffFiles || []) {
+    const path = String(file.path || '').replace(/^\/+/, '')
+    if (!path || !hasFileExtension(path)) continue
+    const basename = fileNameFromPath(path)
+    const existing = map.get(basename)
+    if (existing === undefined) {
+      map.set(basename, { ...file, path })
+    } else if (existing && existing.path !== path) {
+      map.set(basename, null)
+    }
+  }
+  return map
+})
+
+function findWorkspaceDiffFileByDisplayPath(path: string): WorkspaceDiffInlineFile | null {
+  const rel = path.replace(/^\/workspace\/+/, '')
+  for (const file of workspaceDiffByBasename.value.values()) {
+    if (file && file.path === rel) return file
+  }
+  return null
+}
+
+function renderFileCard(path: string, fileName: string, options: {
+  inline?: boolean
+  diffFile?: WorkspaceDiffInlineFile | null
+  publication?: ArtifactPublication | null
+} = {}): string {
+  const tag = options.inline ? 'span' : 'div'
+  const inlineClass = options.inline ? ' markdown-inline-file-card' : ''
+  const publication = options.publication
+  const publicationAttrs = publication
+    ? ` data-artifact-state="pending" data-artifact-mime="${escapeHtml(publication.mime)}" data-artifact-bytes="${publication.bytes}"`
+    : ''
+  const publicationStatus = publication
+    ? `<span class="artifact-readback-status" title="${escapeHtml(t('download.downloading'))}">${escapeHtml(t('download.downloading'))}</span>`
+    : ''
+  const card = `<${tag} class="markdown-file-card${inlineClass}" data-path="${escapeHtml(path)}" data-filename="${escapeHtml(fileName)}"${publicationAttrs} title="${escapeHtml(t('download.downloadFile'))}">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <polyline points="14 2 14 8 20 8" />
+      </svg>
+      <span class="att-name">${escapeHtml(fileName)}</span>
+      ${publicationStatus}
+      <button class="att-download-btn" type="button" title="${escapeHtml(t('download.downloadFile'))}" aria-label="${escapeHtml(t('download.downloadFile'))}">
+        <svg class="att-download-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+      </button>
+    </${tag}>`
+  const diffFile = options.diffFile
+  if (!diffFile) return card
+  renderedWorkspaceDiffFileIds.add(diffFile.id)
+  const additions = Number(diffFile.additions ?? 0)
+  const deletions = Number(diffFile.deletions ?? 0)
+  return `<span class="markdown-inline-file-chip">${card}<button class="markdown-file-diff-btn" type="button" data-workspace-diff-file-id="${escapeHtml(String(diffFile.id))}" data-workspace-diff-change-id="${escapeHtml(String(diffFile.change_id || ''))}" data-workspace-diff-session-id="${escapeHtml(String(diffFile.session_id || ''))}" title="${escapeHtml(t('chat.workspaceDiffTitle'))}" aria-label="${escapeHtml(t('chat.workspaceDiffTitle'))}"><span class="diff-badge-add">+${Number.isFinite(additions) ? additions : 0}</span> <span class="diff-badge-del">−${Number.isFinite(deletions) ? deletions : 0}</span></button></span>`
+}
+
+function isInsideLinkToken(tokens: any[], idx: number): boolean {
+  for (let i = idx - 1; i >= 0; i -= 1) {
+    if (tokens[i]?.type === 'link_close') return false
+    if (tokens[i]?.type === 'link_open') return true
+  }
+  return false
+}
+
+function renderWorkspaceDiffText(text: string): string | null {
+  const entries = [...workspaceDiffByBasename.value.entries()]
+    .filter((entry): entry is [string, WorkspaceDiffInlineFile] => !!entry[1])
+    .sort((a, b) => b[0].length - a[0].length)
+  if (entries.length === 0) return null
+
+  const byName = new Map(entries)
+  const pattern = entries.map(([name]) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+  const re = new RegExp(`(^|[^\\w.-])(${pattern})(?=$|[^\\w.-])`, 'g')
+  let html = ''
+  let last = 0
+  let matched = false
+
+  text.replace(re, (match, prefix: string, basename: string, offset: number) => {
+    const start = offset + prefix.length
+    const file = byName.get(basename)
+    if (!file) return match
+    matched = true
+    html += escapeHtml(text.slice(last, start))
+    html += renderFileCard(displayPathForDiffFile(file), basename, { inline: true, diffFile: file })
+    last = start + basename.length
+    return match
   })
 
-  html = html.replace(/src='\/([^']+)'/g, (_match, path) => {
-    const originalPath = '/' + path
-    const downloadUrl = getDownloadUrl(originalPath)
-    return `src='${downloadUrl}'`
+  if (!matched) return null
+  html += escapeHtml(text.slice(last))
+  return html
+}
+
+const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov'])
+const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'])
+
+function hasExtension(path: string, extensions: Set<string>): boolean {
+  const clean = path.split('?')[0].split('#')[0]
+  const ext = clean.split('.').pop()?.toLowerCase()
+  return !!ext && extensions.has(ext)
+}
+
+// Turn a produced-file directive line `MEDIA:<abs-path>` into a markdown file
+// link `[name](/workspace/rel)` so the existing <a>->file-card transform renders
+// a clickable card (click -> previewByDisplayPath -> panel render). Done on the
+// CLIENT because the agent persists the raw MEDIA line and, for gateway-routed
+// profiles (e.g. Feishu users), the server never rewrites it on the serve path.
+// Remote targets (e.g. the VOD URL image_generate returns) are served by the
+// remote host, and isLocalFilePath() below keeps the local download proxy off
+// them. Returns the markdown a single MEDIA: target becomes, or null to leave
+// the directive line untouched.
+function mediaDirectiveMarkdown(target: string): string | null {
+  // Remote targets are classified FIRST: a legitimate remote URL can contain
+  // `/workspace/` in its path (https://cdn.example.com/workspace/x.jpg), and
+  // testing for that substring first mistook it for a local profile-workspace
+  // artifact — the emitted href became `/workspace/x.jpg`, which neither
+  // renders nor opens.
+  if (/^https?:\/\//i.test(target)) {
+    const name = fileNameFromPath(target.split('?')[0].split('#')[0]).replace(/[[\]]/g, '')
+    // Angle-bracket destination: markdown-it then accepts everything except
+    // `<`, `>` and whitespace verbatim, so parens/quotes in the URL survive
+    // unmangled and only those three need encoding (`%` is never touched, so an
+    // already-encoded URL is not double-encoded).
+    const href = `<${target.replace(/[\s<>]/g, encodeURIComponent)}>`
+    // Inline only https images. The server's CSP img-src allowlist
+    // (packages/server/src/security.ts: "img-src 'self' data: blob: https:")
+    // has no http:, so a cross-origin http image is blocked by the browser and
+    // renders as a broken-image icon — worse than the plain text it replaced.
+    // http images therefore degrade to the same clickable-link tier as
+    // non-images; that link still opens. VOD has historically handed back http
+    // URLs (mixed-content incident), so this tier is the defense for that case.
+    const inlineImage = /^https:\/\//i.test(target) && isImageFile(name)
+    return `${inlineImage ? '!' : ''}[${name}](${href})`
+  }
+
+  // Local targets: only workspace artifacts are linkable as cards. Non-remote,
+  // non-workspace targets (and `javascript:`-style schemes, which never reach
+  // the remote branch above) stay literal text.
+  const marker = '/workspace/'
+  const idx = target.indexOf(marker)
+  if (idx === -1) return null
+  const rel = target.slice(idx + marker.length).replace(/^\/+/, '')
+  if (!rel) return null
+  const name = rel.split('/').filter(Boolean).pop() || rel
+  const href = '/workspace/' + rel.split('/').map(encodeURIComponent).join('/')
+  return `[${name}](${href})`
+}
+
+function preprocessMediaDirectives(content: string): string {
+  if (!content || !content.includes('MEDIA:')) return content
+  const lines = content.split('\n')
+  // Fenced code blocks are skipped: a MEDIA: line inside one is source the
+  // assistant is quoting, not a produced artifact, so rewriting it corrupts the
+  // sample. Fence bookkeeping reuses markdownFenceRepair's CommonMark parser so
+  // the two agree on info strings, marker lengths and indentation, and this runs
+  // after repairNestedMarkdownFences (see renderedHtml) on already-normalized
+  // fences.
+  // ponytail: fenced blocks only — a 4-space indented code block still gets
+  // rewritten. Track indented blocks too if that ever shows up in real output.
+  let openFence: ReturnType<typeof parseFence> = null
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]
+    if (openFence) {
+      if (isClosingFence(line, openFence)) openFence = null
+      continue
+    }
+    const fence = parseFence(line)
+    if (fence) {
+      openFence = fence
+      continue
+    }
+    const directive = /^[ \t]*MEDIA:(.+)$/.exec(line)
+    if (!directive) continue
+    lines[i] = mediaDirectiveMarkdown(directive[1].trim()) ?? line
+  }
+  return lines.join('\n')
+}
+
+const renderedHtml = computed(() => {
+  renderedWorkspaceDiffFileIds.clear()
+  let html = md.render(preprocessMediaDirectives(repairNestedMarkdownFences(props.content)))
+
+  // Add IDs to headings for anchor links
+  const prefix = props.headingIdPrefix ? `${props.headingIdPrefix}-` : ''
+  let headingCounter = 0
+  // Match any h1-h6 tags, with or without attributes
+  html = html.replace(/<(h[1-6])([^>]*)>/g, (match, tag, attrs) => {
+    headingCounter++
+    const id = `${prefix}heading-${headingCounter}`
+    
+    // Check if id attribute already exists
+    if (attrs.includes('id=')) {
+      // Replace existing id
+      return match.replace(/id="[^"]*"/, `id="${id}"`).replace(/id='[^']*'/, `id="${id}"`)
+    }
+    
+    // Add new id
+    if (attrs.trim() === '') {
+      return `<${tag} id="${id}">`
+    }
+    return `<${tag} ${attrs.trim()} id="${id}">`
+  })
+
+  // Replace image src paths with download URLs
+  html = html.replace(/\bsrc=(["'])([^"']+)\1/g, (match, quote, path) => {
+    if (!isLocalFilePath(path)) return match
+    const downloadUrl = getDownloadUrl(normalizeLocalFilePath(path))
+    return `src=${quote}${downloadUrl}${quote}`
   })
 
   // Replace local file links with file card UI or video player
-  // Match <a href="/tmp/file.pdf">filename</a> or <a href="/tmp/video.mp4">filename</a>
-  html = html.replace(/<a href="(\/[^"]+)">([^<]+)<\/a>/g, (match, path, filename) => {
-    // Only replace local file paths (starting with /)
-    if (!path.startsWith('/')) return match
+  // Match <a href="/tmp/file.pdf">filename</a> or <a href="C:/tmp/file.pdf">filename</a>
+  html = html.replace(/<a href="([^"]+)">([^<]+)<\/a>/g, (match, rawPath, filename) => {
+    if (!isLocalFilePath(rawPath)) return match
 
+    const artifact = parseArtifactPublication(normalizeLocalFilePath(rawPath.replace(/&amp;/g, '&')))
+    const path = artifact.path
     const fileName = filename.trim()
-    const ext = path.split('.').pop()?.toLowerCase()
 
     // Video files: render as video player
-    if (ext === 'mp4' || ext === 'webm' || ext === 'mov') {
+    if (hasExtension(path, VIDEO_EXTENSIONS)) {
       const downloadUrl = getDownloadUrl(path)
       return `<div class="markdown-video-container">
         <video class="markdown-video" controls preload="metadata" src="${downloadUrl}"></video>
@@ -96,25 +480,46 @@ const renderedHtml = computed(() => {
       </div>`
     }
 
+    // Audio files: render as inline audio player
+    if (hasExtension(path, AUDIO_EXTENSIONS)) {
+      const downloadUrl = getDownloadUrl(path)
+      return `<div class="markdown-audio-container">
+        <audio class="markdown-audio" controls preload="metadata" src="${downloadUrl}"></audio>
+        <div class="markdown-audio-footer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M9 18V5l12-2v13" />
+            <circle cx="6" cy="18" r="3" />
+            <circle cx="18" cy="16" r="3" />
+          </svg>
+          <span class="att-name">${fileName}</span>
+        </div>
+      </div>`
+    }
+
     // Other files: render as file card
-    return `<div class="markdown-file-card" data-path="${path}" data-filename="${fileName}" title="${t('download.downloadFile')}">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-        <polyline points="14 2 14 8 20 8" />
-      </svg>
-      <span class="att-name">${fileName}</span>
-      <svg class="att-download-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-        <polyline points="7 10 12 15 17 10" />
-        <line x1="12" y1="15" x2="12" y2="3" />
-      </svg>
-    </div>`
+    return renderFileCard(path, fileName, { publication: artifact.publication })
   })
 
   if (props.mentionNames && props.mentionNames.length > 0) {
-    const escaped = props.mentionNames.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    const re = new RegExp(`(?<=[\\s>]|^)@(${escaped.join('|')})(?=\\s|$)`, 'gi')
+    const escaped = [...props.mentionNames]
+      .sort((a, b) => b.length - a.length)
+      .map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    const re = new RegExp(`(?<=[\\s>({\\[<]|^)@(${escaped.join('|')})(?=[\\s.,!?;:，。！？；：)\\]}>]|<|$)`, 'gi')
     html = html.replace(re, '<span class="mention-highlight">@$1</span>')
+  }
+  const seen = new Set<number>()
+  const unmatched = (props.workspaceDiffFiles || []).filter((file) => {
+    if (!file?.id || !file.path || renderedWorkspaceDiffFileIds.has(file.id) || seen.has(file.id)) return false
+    seen.add(file.id)
+    return true
+  })
+  if (unmatched.length > 0) {
+    html += `<div class="markdown-diff-fallback-row">${unmatched
+      .map(file => renderFileCard(displayPathForDiffFile(file), fileNameFromPath(file.path), {
+        inline: true,
+        diffFile: file,
+      }))
+      .join('')}</div>`
   }
   return html
 })
@@ -149,6 +554,10 @@ function getScrollParent(el: HTMLElement | null): HTMLElement | null {
     current = current.parentElement
   }
   return null
+}
+
+function isNearScrollBottom(el: HTMLElement, threshold = 200): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < threshold
 }
 
 function cleanupMermaidRenderArtifacts(id: string): void {
@@ -222,16 +631,16 @@ async function renderMermaidDiagrams(): Promise<void> {
       cleanupMermaidRenderArtifacts(id)
       if (unmounted || generation !== renderGeneration || !root.contains(element)) return
 
+      const scrollParent = getScrollParent(markdownBody.value)
+      const shouldKeepBottom = scrollParent ? isNearScrollBottom(scrollParent) : false
       element.removeAttribute('data-mermaid-pending')
       element.removeAttribute('data-mermaid-source')
       element.innerHTML = result.svg
-      // After mermaid renders, scroll the nearest scrollable ancestor to bottom
-      nextTick(() => {
-        const scrollParent = getScrollParent(markdownBody.value)
-        if (scrollParent) {
+      if (scrollParent && shouldKeepBottom) {
+        nextTick(() => {
           scrollParent.scrollTop = scrollParent.scrollHeight
-        }
-      })
+        })
+      }
     } catch {
       cleanupMermaidRenderArtifacts(`${componentId}-${generation}-${index}`)
       if (unmounted || generation !== renderGeneration || !root.contains(element)) return
@@ -240,17 +649,59 @@ async function renderMermaidDiagrams(): Promise<void> {
   }
 }
 
+async function verifyPublishedArtifacts(): Promise<void> {
+  const generation = ++artifactReadbackGeneration
+  await nextTick()
+  const root = markdownBody.value
+  if (unmounted || generation !== artifactReadbackGeneration || !root) return
+
+  const cards = Array.from(root.querySelectorAll<HTMLElement>('[data-artifact-state="pending"]'))
+  for (const card of cards.slice(MAX_ARTIFACT_READBACKS)) {
+    card.setAttribute('data-artifact-state', 'incomplete')
+    const status = card.querySelector<HTMLElement>('.artifact-readback-status')
+    if (status) status.textContent = status.title = t('download.downloadFailed')
+  }
+  const limitedCards = cards.slice(0, MAX_ARTIFACT_READBACKS)
+  for (let offset = 0; offset < limitedCards.length; offset += ARTIFACT_READBACK_CONCURRENCY) {
+    await Promise.all(limitedCards.slice(offset, offset + ARTIFACT_READBACK_CONCURRENCY).map(async (card) => {
+      const path = card.getAttribute('data-path') || ''
+      const mime = card.getAttribute('data-artifact-mime') || ''
+      const bytes = Number(card.getAttribute('data-artifact-bytes'))
+      const status = card.querySelector<HTMLElement>('.artifact-readback-status')
+      const readbackKey = JSON.stringify([path, mime.trim().toLowerCase(), bytes])
+      let readback = artifactReadbacks.get(readbackKey)
+      if (!readback) {
+        readback = readbackWorkspaceArtifact(path, { mime, bytes })
+        artifactReadbacks.set(readbackKey, readback)
+      }
+      const result = await readback
+      if (unmounted || generation !== artifactReadbackGeneration || !root.contains(card)) return
+      const complete = result.complete
+      card.setAttribute('data-artifact-state', complete ? 'complete' : 'incomplete')
+      if (status) {
+        status.textContent = complete ? '✓' : t('download.downloadFailed')
+        status.title = complete ? '✓' : t('download.downloadFailed')
+      }
+    }))
+    if (unmounted || generation !== artifactReadbackGeneration) return
+  }
+}
+
 onMounted(() => {
   void renderMermaidDiagrams()
+  void verifyPublishedArtifacts()
 })
 
 watch(renderedHtml, () => {
   void renderMermaidDiagrams()
+  void verifyPublishedArtifacts()
 }, { flush: 'post' })
 
 onBeforeUnmount(() => {
   unmounted = true
   renderGeneration += 1
+  artifactReadbackGeneration += 1
+  artifactReadbacks.clear()
 })
 
 async function handleMarkdownClick(event: MouseEvent): Promise<void> {
@@ -274,18 +725,87 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
     return
   }
 
+  const diffButton = target.closest('.markdown-file-diff-btn') as HTMLElement | null
+  if (diffButton) {
+    event.preventDefault()
+    event.stopPropagation()
+    const fileId = diffButton.getAttribute('data-workspace-diff-file-id')
+    const changeId = diffButton.getAttribute('data-workspace-diff-change-id') || ''
+    const sessionId = diffButton.getAttribute('data-workspace-diff-session-id') || ''
+    const file = (props.workspaceDiffFiles || []).find(candidate =>
+      String(candidate.id) === fileId
+      && String(candidate.change_id || '') === changeId
+      && String(candidate.session_id || '') === sessionId
+    )
+    if (file) emit('workspace-diff-file-click', file)
+    return
+  }
+
   // Handle file card clicks for download
   const fileCard = target.closest('.markdown-file-card') as HTMLElement | null
   if (fileCard) {
     event.preventDefault()
     event.stopPropagation()
     const path = fileCard.getAttribute('data-path')
-    const fileName = fileCard.getAttribute('data-filename')
-    if (path) {
+    const fileName = fileCard.getAttribute('data-filename') || undefined
+
+    const isDownloadBtn = target.closest('.att-download-btn')
+
+    if (isDownloadBtn && path) { // Only download file with download icon clicked.
       message.info(t('download.downloading'))
-      downloadFile(path, fileName || undefined).catch((err: Error) => {
+      downloadFile(path, fileName).catch((err: Error) => {
         message.error(err.message || t('download.downloadFailed'))
       })
+      return
+    }
+
+    if (path) {
+      const rel = path.replace(/^\/workspace\/+/, '')
+      // HTML artifacts keep the embedded-browser card click even when they
+      // changed this run — their diff stays reachable via the ± badge.
+      const cardName = fileName || rel.split('/').filter(Boolean).pop() || ''
+      const diffFile = isHtmlFile(cardName)
+        ? null
+        : (props.workspaceDiffFiles || []).find(file => file.path === rel)
+      if (diffFile) {
+        emit('workspace-diff-file-click', diffFile)
+        return
+      }
+    }
+
+    if (path) {
+      const ext = fileName?.split('.').pop()?.toLowerCase()
+      // SUPPORT_PREVIEW_FILE_TYPES is a text/image allowlist and will never
+      // list the office formats, whose cards would otherwise fall through to
+      // the download branch below — the exact case this feature exists for, an
+      // employee clicking the report.xlsx the agent just produced.
+      const cardFileName = fileName || decodeURIComponent(path.split('/').pop() || '')
+      if (SUPPORT_PREVIEW_FILE_TYPES.includes(ext || '') || isBinaryPreviewFile(cardFileName)) {
+        if (path.startsWith('/workspace/')) {
+          // Chat-produced HTML artifacts open in the embedded browser (real
+          // /api/hermes/preview URL + address bar). Other previewable workspace
+          // files keep the in-panel srcdoc/file preview.
+          if (isHtmlFile(fileName || '')) {
+            const artifactName = fileName || decodeURIComponent(path.split('/').pop() || '')
+            useFilesStore().requestBrowserArtifact(artifactName, path)
+          } else {
+            await useFilesStore().previewByDisplayPath(path, fileName || undefined)
+          }
+        } else if (isImageFile(fileName || '') || isBinaryPreviewFile(cardFileName)) {
+          // Non-workspace image and office cards cannot use the profile-scoped
+          // workspace preview endpoint, and an office file read as UTF-8 text
+          // renders as mojibake. Preserve the safe download behavior.
+          downloadFile(path, fileName).catch((err: Error) => {
+            message.error(err.message || t('download.downloadFailed'))
+          })
+        } else {
+          previewTextFile(path, fileName || '')
+        }
+      } else { // Download file immediately
+        downloadFile(path, fileName).catch((err: Error) => {
+          message.error(err.message || t('download.downloadFailed'))
+        })
+      }
     }
     return
   }
@@ -322,26 +842,69 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
   }
 
   // File path links: intercept and download
-  if (href.startsWith('/')) {
+  if (isLocalFilePath(href)) {
     event.preventDefault()
     event.stopPropagation()
     const linkText = link.textContent || ''
     const fileName = linkText.startsWith('File: ') ? linkText.slice(6).trim() : linkText.trim()
     message.info(t('download.downloading'))
-    downloadFile(href, fileName || undefined).catch((err: Error) => {
+    downloadFile(normalizeLocalFilePath(href), fileName || undefined).catch((err: Error) => {
       message.error(err.message || t('download.downloadFailed'))
     })
   }
+}
+
+// Get file content and show preview area.
+async function previewTextFile(path: string, fileName: string): Promise<void> {
+  textPreviewLoading.value = true
+  textPreviewVisible.value = true
+  textPreviewFileName.value = fileName
+  textPreviewContent.value = null
+  try {
+    textPreviewContent.value = await fetchFileText(path, fileName)
+  } catch (err: any) {
+    message.error(err.message || t('download.downloadFailed'))
+  } finally {
+    textPreviewLoading.value = false
+  }
+}
+
+function closeTextPreview(): void {
+  textPreviewVisible.value = false
 }
 </script>
 
 <template>
   <div ref="markdownBody" class="markdown-body" v-html="renderedHtml" @click="handleMarkdownClick"></div>
-  <Teleport to="body">
-    <div v-if="previewUrl" class="image-preview-overlay" @click.self="previewUrl = null">
-      <img :src="previewUrl" class="image-preview-img" @click="previewUrl = null" />
-    </div>
-  </Teleport>
+  <!-- File preview area -->
+  <NDrawer
+    v-model:show="textPreviewVisible"
+    :width="PREVIEW_AREA_WIDTH"
+    placement="right"
+    :show-mask="false"
+    :trap-focus="false"
+    class="markdown-text-preview-drawer"
+  >
+    <NDrawerContent
+      :title="t('download.contentDisplay')"
+      closable
+      :body-content-style="{ padding: 0 }"
+      @close="closeTextPreview"
+    >
+      <NSpin :show="textPreviewLoading">
+        <div v-if="textPreviewContent !== null && textPreviewIsMarkdown" class="text-preview-markdown">
+          <MarkdownRenderer :content="textPreviewContent" />
+        </div>
+        <pre v-else-if="textPreviewContent !== null" class="text-preview-body">{{ textPreviewContent }}</pre>
+      </NSpin>
+    </NDrawerContent>
+  </NDrawer>
+  <ImagePreviewOverlay
+    v-if="previewUrl"
+    :src="previewUrl"
+    alt=""
+    @close="previewUrl = null"
+  />
 </template>
 
 <style lang="scss">
@@ -350,13 +913,19 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
 .markdown-body {
   font-size: 14px;
   line-height: 1.65;
+  width: 100%;
   min-width: 0;
   max-width: 100%;
   box-sizing: border-box;
   overflow-x: auto;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 
   p {
     margin: 0 0 8px;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
 
     &:last-child {
       margin-bottom: 0;
@@ -370,6 +939,9 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
 
   li {
     margin: 2px 0;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
 
   strong {
@@ -385,6 +957,8 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
     color: $accent-primary;
     text-decoration: underline;
     text-underline-offset: 2px;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 
     &:hover {
       color: $accent-hover;
@@ -434,6 +1008,36 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
     }
   }
 
+  .markdown-audio-container {
+    margin: 12px 0;
+    padding: 10px 12px;
+    border: 1px solid $border-light;
+    border-radius: $radius-sm;
+    background-color: rgba(0, 0, 0, 0.04);
+  }
+
+  .markdown-audio {
+    display: block;
+    width: 100%;
+    max-width: 420px;
+  }
+
+  .markdown-audio-footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+    color: $text-secondary;
+    font-size: 12px;
+
+    .att-name {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  }
+
   .markdown-file-card {
     display: inline-flex;
     align-items: center;
@@ -466,9 +1070,92 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
       transition: opacity 0.15s ease;
     }
 
-    &:hover .att-download-icon {
+    .att-download-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      color: inherit;
+      background: transparent;
+      border: 0;
+      cursor: pointer;
+    }
+
+    &:hover .att-download-icon,
+    .att-download-btn:hover .att-download-icon {
       opacity: 1;
     }
+
+    .artifact-readback-status {
+      max-width: 110px;
+      overflow: hidden;
+      color: $text-secondary;
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    &[data-artifact-state='complete'] .artifact-readback-status {
+      color: #2f9e44;
+      font-weight: 700;
+    }
+
+    &[data-artifact-state='incomplete'] {
+      border-color: rgba(224, 49, 49, 0.45);
+    }
+
+    &[data-artifact-state='incomplete'] .artifact-readback-status {
+      color: #e03131;
+    }
+  }
+
+  .markdown-inline-file-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    vertical-align: middle;
+  }
+
+  .markdown-file-card.markdown-inline-file-card {
+    margin: 0 2px;
+    padding: 2px 6px;
+    vertical-align: middle;
+  }
+
+  .markdown-file-diff-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    gap: 3px;
+    padding: 0 5px;
+    font-family: $font-code;
+    font-size: 11px;
+    line-height: 1;
+    color: var(--accent-primary, #4f7cff);
+    background: rgba(var(--accent-primary-rgb), 0.08);
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.18);
+    border-radius: 999px;
+    cursor: pointer;
+  }
+
+  .diff-badge-add {
+    color: #2f9e44;
+  }
+
+  .diff-badge-del {
+    color: #d9480f;
+  }
+
+  .markdown-diff-fallback-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
   }
 
   blockquote {
@@ -485,10 +1172,14 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
     font-family: $font-code;
     font-size: 13px;
     color: $accent-primary;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   table {
     width: 100%;
+    max-width: 100%;
     border-collapse: collapse;
     margin: 8px 0;
     display: block;
@@ -545,22 +1236,53 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
   }
 }
 
-.image-preview-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-  background: rgba(0, 0, 0, 0.85);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
+
+
+.text-preview-body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+  margin: 0;
+  font-family: $font-code;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: $text-primary;
 }
 
-.image-preview-img {
-  max-width: 90vw;
-  max-height: 90vh;
-  object-fit: contain;
-  border-radius: 4px;
-  cursor: pointer;
+.text-preview-markdown {
+  padding: 16px;
+  overflow: auto;
+}
+
+.markdown-text-preview-drawer {
+  max-width: 100vw;
+
+  .n-drawer-content,
+  .n-drawer-body-content-wrapper {
+    max-width: 100vw;
+  }
+}
+
+@media (max-width: $breakpoint-mobile) {
+  .markdown-text-preview-drawer {
+    max-width: 100vw;
+
+    .n-drawer-content,
+    .n-drawer-body-content-wrapper {
+      max-width: 100vw;
+    }
+  }
+
+  .text-preview-body {
+    padding: 12px;
+    max-width: 100vw;
+  }
+
+  .text-preview-markdown {
+    padding: 12px;
+    max-width: 100vw;
+  }
 }
 </style>

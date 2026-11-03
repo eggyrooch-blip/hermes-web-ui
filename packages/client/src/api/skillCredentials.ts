@@ -1,0 +1,165 @@
+import { request } from './client'
+
+export type SkillCredentialStatus = 'authenticated' | 'configured' | 'missing' | 'needs_auth' | 'unknown' | 'error'
+export type SkillCredentialActionKind = 'feishu_device_flow' | 'skill_flow' | 'qr_flow' | 'oauth_url' | 'manual' | 'retry'
+
+export interface SkillCredentialAction {
+  kind: SkillCredentialActionKind
+  label: string
+  command?: string
+  description?: string
+  env?: string
+}
+
+export interface SkillCredentialEntry {
+  id: string
+  title: string
+  provider: string
+  installed: boolean
+  status: SkillCredentialStatus
+  account_hint?: string
+  default_identity?: string
+  detail?: string
+  required_by?: string[]
+  /** 缺省 = 这张卡没有员工可执行的操作（如管理员运维的「GitLab（全局）」）。
+   *  别拿「label 是空字符串」当这个意思的暗号 —— 那分不清「没有操作」和
+   *  「有操作但忘了填标签」，后者会静默变成一张点不动的卡。 */
+  action?: SkillCredentialAction
+}
+
+export interface SkillCredentialsResponse {
+  profile_name: string
+  credentials: SkillCredentialEntry[]
+}
+
+export interface SkillCredentialStartResponse {
+  id?: string
+  action?: SkillCredentialAction
+  status?: string
+  session_id?: string
+  verification_uri?: string
+  user_code?: string
+  qrcode_id?: string
+  qrcode_url?: string
+  redirect_url?: string
+  interval?: number
+  error?: string
+}
+
+export interface SkillCredentialCompleteResponse {
+  id: string
+  status: string
+  account_hint?: string
+}
+
+export interface FeishuUatSessionResponse {
+  session_id?: string
+  status: 'pending' | 'success' | 'error' | 'expired' | string
+  error?: string
+}
+
+function withProfile(path: string, profile?: string, extra?: Record<string, string>): string {
+  const search = new URLSearchParams()
+  const value = profile?.trim()
+  if (value) search.set('profile', value)
+  for (const [k, v] of Object.entries(extra || {})) search.set(k, v)
+  const qs = search.toString()
+  return qs ? `${path}?${qs}` : path
+}
+
+// `fresh` forces the broker to bypass its short-TTL connector cache — used by the
+// post-auth poll and the manual refresh so a just-completed login shows immediately.
+export async function fetchSkillCredentials(profile?: string, opts?: { fresh?: boolean }): Promise<SkillCredentialsResponse> {
+  return request(withProfile('/api/auth/skill-credentials', profile, opts?.fresh ? { fresh: '1' } : undefined))
+}
+
+export async function startSkillCredentialAuth(id: string, profile?: string, opts?: { env?: string }): Promise<SkillCredentialStartResponse> {
+  const body: Record<string, string> = {}
+  const env = opts?.env?.trim()
+  if (env) body.env = env
+  return request(withProfile(`/api/auth/skill-credentials/${encodeURIComponent(id)}/start`, profile), {
+    method: 'POST',
+    body: JSON.stringify(body),
+    skipAuthRedirect: true,
+  })
+}
+
+export async function completeSkillCredentialAuth(id: string, qrcodeId: string, profile?: string): Promise<SkillCredentialCompleteResponse> {
+  return request(withProfile(`/api/auth/skill-credentials/${encodeURIComponent(id)}/complete`, profile), {
+    method: 'POST',
+    body: JSON.stringify({ qrcode_id: qrcodeId }),
+  })
+}
+
+export async function pollFeishuUatSession(sessionId: string, profile?: string): Promise<FeishuUatSessionResponse> {
+  return request(withProfile(`/api/auth/feishu/uat/sessions/${encodeURIComponent(sessionId)}`, profile))
+}
+
+export interface GitlabTokenSubmitPayload {
+  /** 'read' = read_api + read_repository, 'write' = api + write_repository */
+  tier: 'read' | 'write'
+  token: string
+  // 到期日不再由员工填：broker 从 GitLab 的 token 行直接读 expires_at，
+  // 没有到期日的 token 会被拒（我们不收永久有效的）。
+}
+
+export interface GitlabTokenSubmitResult {
+  ok: boolean
+  /** user-facing rejection reason; never contains the submitted token */
+  reason?: string
+  /** broker's user-facing error field (400 bodies); same no-token guarantee */
+  error?: string
+  tier?: string
+  expires_at?: number
+  legacy_file_retired?: boolean
+  /** where the token actually landed: 'group' when a group owner bound the
+   *  panel's group profile, otherwise 'personal' */
+  profile_scope?: 'group' | 'personal'
+  /** user-facing landing note (e.g. 已绑定到本群 / 只有群主能为本群绑定) */
+  note?: string
+}
+
+/** Submit YOUR OWN GitLab token. The server derives whose vault to write from
+ *  the verified session — no identity field is sent from the browser. The
+ *  panel profile rides along as a query-only TARGET HINT (group-owner binds
+ *  land on the group profile); the broker decides whether to honour it. */
+export function submitGitlabToken(payload: GitlabTokenSubmitPayload, profile?: string) {
+  return request<GitlabTokenSubmitResult>(withProfile('/api/hermes/credentials/gitlab', profile), {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export interface GithubCredentialResult {
+  ok: boolean
+  account_hint?: string
+  revoked?: boolean
+  error?: string
+}
+
+export function submitGithubToken(token: string, profile?: string) {
+  return request<GithubCredentialResult>(withProfile('/api/hermes/credentials/github', profile), {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  })
+}
+
+export function revokeGithubToken(profile?: string) {
+  return request<GithubCredentialResult>(withProfile('/api/hermes/credentials/github', profile), {
+    method: 'DELETE',
+  })
+}
+
+export interface FigmaCredentialResult {
+  ok: boolean
+  revoked?: boolean
+  error?: string
+}
+
+/** 撤销我自己的 Figma MCP 授权。身份由服务端从已验证会话推导，浏览器不发任何身份字段；
+ *  面板 profile 仅作为 query 提示随行。启动授权走通用的 skill-credentials start 路由。 */
+export function revokeFigmaCredential(profile?: string) {
+  return request<FigmaCredentialResult>(withProfile('/api/hermes/credentials/figma', profile), {
+    method: 'DELETE',
+  })
+}

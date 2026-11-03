@@ -1,12 +1,25 @@
 import router from '@/router'
 
 const DEFAULT_BASE_URL = ''
+const AUTH_MODE_STORAGE_KEY = 'hermes_auth_mode'
+const WEB_PLANE_STORAGE_KEY = 'hermes_web_plane'
+const ACTIVE_PROFILE_STORAGE_KEY = 'hermes_active_profile_name'
+const ACTIVE_AGENT_STORAGE_KEY = 'hermes_active_agent_id'
+const ACTIVE_EXPERT_STORAGE_KEY = 'hermes_active_expert_id'
+
+function isDesktopShell(): boolean {
+  return typeof window !== 'undefined' &&
+    (window as typeof window & { hermesDesktop?: { isDesktop?: boolean } }).hermesDesktop?.isDesktop === true
+}
 
 function getBaseUrl(): string {
+  if (import.meta.env.VITE_HERMES_PREVIEW === '1') return DEFAULT_BASE_URL
+  if (isDesktopShell()) return DEFAULT_BASE_URL
   return localStorage.getItem('hermes_server_url') || DEFAULT_BASE_URL
 }
 
 export function getApiKey(): string {
+  if (!usesLocalJwtAuth()) return ''
   return localStorage.getItem('hermes_api_key') || ''
 }
 
@@ -22,33 +35,258 @@ export function clearApiKey() {
   localStorage.removeItem('hermes_api_key')
 }
 
+function clearAuthSessionState() {
+  clearApiKey()
+  clearRuntimeMode()
+  localStorage.removeItem(ACTIVE_PROFILE_STORAGE_KEY)
+  localStorage.removeItem(ACTIVE_AGENT_STORAGE_KEY)
+}
+
+/**
+ * In server-session (Feishu OAuth) mode the credential is an httpOnly cookie we
+ * cannot see, so a 401 says nothing about our localStorage. Wiping authMode here
+ * only makes the login page fall back to the password form instead of silently
+ * re-running the OAuth hop — so leave it alone and just route to /login.
+ */
+function clearAuthSessionStateUnlessServerSession() {
+  if (isServerSessionAuthMode()) return
+  clearAuthSessionState()
+}
+
 export function hasApiKey(): boolean {
   return !!getApiKey()
 }
 
 /**
- * Get current active profile name.
- * Reads from store first (authoritative source), falls back to localStorage.
+ * Feishu OAuth authenticates browser users with the httpOnly
+ * `hermes_feishu_session` cookie, so there is no JS-readable token.
  */
-function getActiveProfileName(): string | null {
-  try {
-    // Dynamic import to avoid circular dependency
-    const { useProfilesStore } = require('@/stores/hermes/profiles')
-    const store = useProfilesStore()
-    // Store is the source of truth - it's updated from /api/hermes/profiles
-    return store.activeProfileName
-  } catch {
-    // Fallback to localStorage if store is not available (e.g., during initialization)
-    return localStorage.getItem('hermes_active_profile_name')
+export function canAccessProtectedRoutes(): boolean {
+  if (getAuthMode() === 'feishu-oauth-dev' || getAuthMode() === 'trusted-feishu') return true
+  return hasApiKey()
+}
+
+export function setRuntimeMode(authMode?: string, plane?: string) {
+  if (authMode) {
+    localStorage.setItem(AUTH_MODE_STORAGE_KEY, authMode)
+  }
+  if (plane) {
+    localStorage.setItem(WEB_PLANE_STORAGE_KEY, plane)
   }
 }
 
-export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+export function clearRuntimeMode() {
+  localStorage.removeItem(AUTH_MODE_STORAGE_KEY)
+  localStorage.removeItem(WEB_PLANE_STORAGE_KEY)
+}
+
+export function getAuthMode(): string {
+  return localStorage.getItem(AUTH_MODE_STORAGE_KEY) || 'token'
+}
+
+function usesLocalJwtAuth(): boolean {
+  return !isServerSessionAuthMode()
+}
+
+export function getWebPlane(): string {
+  return localStorage.getItem(WEB_PLANE_STORAGE_KEY) || 'both'
+}
+
+export function isUserMode(): boolean {
+  return getWebPlane() === 'chat' ||
+    getAuthMode() === 'feishu-oauth-dev' ||
+    getAuthMode() === 'trusted-feishu'
+}
+
+export function isServerSessionAuthMode(): boolean {
+  const authMode = getAuthMode()
+  return authMode === 'feishu-oauth-dev' || authMode === 'trusted-feishu'
+}
+
+export type StoredUserRole = 'super_admin' | 'admin'
+
+export function getStoredUserRole(): StoredUserRole | null {
+  if (!usesLocalJwtAuth()) return null
+  const token = getApiKey()
+  const payload = token.split('.')[1]
+  if (!payload) return null
+  try {
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+    const data = JSON.parse(atob(padded)) as { role?: unknown }
+    return data.role === 'super_admin' || data.role === 'admin' ? data.role : null
+  } catch {
+    return null
+  }
+}
+
+export function isStoredSuperAdmin(): boolean {
+  return getStoredUserRole() === 'super_admin'
+}
+
+export function getStoredUsername(): string | null {
+  if (!usesLocalJwtAuth()) return null
+  const token = getApiKey()
+  const payload = token.split('.')[1]
+  if (!payload) return null
+  try {
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+    const data = JSON.parse(atob(padded)) as { username?: unknown }
+    return typeof data.username === 'string' && data.username.length > 0 ? data.username : null
+  } catch {
+    return null
+  }
+}
+
+export function getActiveProfileName(): string | null {
+  return localStorage.getItem(ACTIVE_PROFILE_STORAGE_KEY)
+}
+
+// Models 设置页把「当前看哪个 Profile」放在 URL query 里，不改全局 active profile：
+// 在那个页面上，模型/provider/凭据类请求要打到页面选中的 Profile，聊天等其它平面
+// 仍然跟着 active profile 走。
+export function getModelsPageProfile(): string | null {
+  const route = router.currentRoute.value
+  return route?.name === 'hermes.models' && typeof route.query?.modelProfile === 'string'
+    ? route.query.modelProfile.trim() || null
+    : null
+}
+
+// 只有「模型设置页自己会打的那几类端点」才吃页面选中的 Profile。范围故意收窄：
+// 会话、agent 等请求继续用 active profile。
+function modelSettingsRequestProfile(path: string): string | null {
+  const pathname = path.split('?')[0]
+  const isModelSettings = /^\/api\/hermes\/(?:config(?:\/|$)|auth\/|provider-models(?:\/|$)|model-alias$|model-visibility$|custom-model$)/.test(pathname)
+  return isModelSettings ? getModelsPageProfile() : null
+}
+
+/** Active expert overlay id (专家广场). Empty/null = default Hermes persona. */
+export function getActiveExpertId(): string | null {
+  const v = localStorage.getItem(ACTIVE_EXPERT_STORAGE_KEY)
+  return v && v.trim() ? v : null
+}
+
+export function setActiveExpertId(expertId: string | null): void {
+  if (expertId && expertId.trim()) {
+    localStorage.setItem(ACTIVE_EXPERT_STORAGE_KEY, expertId.trim())
+  } else {
+    localStorage.removeItem(ACTIVE_EXPERT_STORAGE_KEY)
+  }
+}
+
+function bodyHasProfileSelector(body: BodyInit | null | undefined): boolean {
+  if (typeof body !== 'string') return false
+  try {
+    const parsed = JSON.parse(body) as { profile?: unknown }
+    return typeof parsed?.profile === 'string' && parsed.profile.trim().length > 0
+  } catch {
+    return false
+  }
+}
+
+function shouldAttachProfileHeader(path: string, options: RequestInit): boolean {
+  try {
+    const url = new URL(path, 'http://localhost')
+    if (url.searchParams.has('profile')) return false
+    if (url.pathname.startsWith('/api/hermes/profiles')) return false
+    if (isProfileWideSessionCollection(url.pathname)) return false
+  } catch {
+    if (path.startsWith('/api/hermes/profiles')) return false
+    if (isProfileWideSessionCollection(path.split('?')[0] || path)) return false
+  }
+  return !bodyHasProfileSelector(options.body)
+}
+
+function isProfileWideSessionCollection(pathname: string): boolean {
+  return pathname === '/api/hermes/sessions' ||
+    pathname === '/api/hermes/sessions/batch-delete' ||
+    pathname === '/api/hermes/search/sessions' ||
+    pathname === '/api/hermes/sessions/search' ||
+    pathname === '/api/hermes/sessions/conversations'
+}
+
+function shouldAttachAgentHeader(path: string): boolean {
+  try {
+    const url = new URL(path, 'http://localhost')
+    return isAgentScopedSessionPath(url.pathname)
+  } catch {
+    return isAgentScopedSessionPath(path.split('?')[0] || path)
+  }
+}
+
+function isAgentScopedSessionPath(pathname: string): boolean {
+  return pathname === '/api/hermes/sessions' ||
+    pathname === '/api/hermes/sessions/batch-delete' ||
+    pathname === '/api/hermes/search/sessions' ||
+    pathname === '/api/hermes/sessions/search' ||
+    pathname === '/api/hermes/sessions/conversations' ||
+    pathname.startsWith('/api/hermes/sessions/') ||
+    pathname === '/api/hermes/config'
+}
+
+function emitAuthNotice(kind: 'expired' | 'forbidden') {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent('hermes-auth-notice', { detail: { kind } }))
+}
+
+function messageFromErrorValue(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value == null) return ''
+  if (typeof value !== 'object') return String(value)
+
+  const record = value as Record<string, unknown>
+  for (const key of ['message', 'error', 'detail', 'description']) {
+    const message = messageFromErrorValue(record[key])
+    if (message) return message
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(messageFromErrorValue).filter(Boolean).join('\n')
+  }
+
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
+function responseErrorMessage(text: string, statusText: string): string {
+  const trimmed = text.trim()
+  if (!trimmed) return statusText
+  try {
+    const parsed = JSON.parse(trimmed)
+    return messageFromErrorValue(parsed) || trimmed
+  } catch {
+    return trimmed
+  }
+}
+
+type RequestOptions = RequestInit & {
+  skipAuthRedirect?: boolean
+  /** A 403 the caller turns into its own UI state, so no global access-denied toast. */
+  suppressForbiddenNotice?: boolean
+}
+
+function responseErrorCode(text: string): string | undefined {
+  try {
+    const parsed = JSON.parse(text.trim())
+    return parsed && typeof parsed.error === 'string' ? parsed.error : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { skipAuthRedirect, suppressForbiddenNotice, ...fetchOptions } = options
+  const selectedProfile = modelSettingsRequestProfile(path)
   const base = getBaseUrl()
   const url = `${base}${path}`
+  const isFormDataBody = typeof FormData !== 'undefined' && fetchOptions.body instanceof FormData
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...options.headers as Record<string, string>,
+    ...(isFormDataBody ? {} : { 'Content-Type': 'application/json' }),
+    ...fetchOptions.headers as Record<string, string>,
   }
 
   const apiKey = getApiKey()
@@ -56,22 +294,33 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
     headers['Authorization'] = `Bearer ${apiKey}`
   }
 
-  // Inject active profile header for proxied gateway requests
-  const profileName = getActiveProfileName()
-  if (profileName && profileName !== 'default') {
+  // Inject active profile header for request-scoped endpoints. Explicit profile
+  // selectors in the URL/body and profile-name routes are validated directly.
+  const profileName = selectedProfile || getActiveProfileName()
+  if (profileName && !new Headers(fetchOptions.headers).has('X-Hermes-Profile') && shouldAttachProfileHeader(path, fetchOptions)) {
     headers['X-Hermes-Profile'] = profileName
   }
+  const agentId = localStorage.getItem(ACTIVE_AGENT_STORAGE_KEY)
+  if (agentId && shouldAttachAgentHeader(path)) {
+    headers['X-Hermes-Agent-Id'] = agentId
+  }
+  // Active expert overlay — forwarded so HTTP run-submit paths carry the expert
+  // selection (the socket run path carries it in the StartRunRequest body).
+  const expertId = getActiveExpertId()
+  if (expertId) {
+    headers['X-Hermes-Expert-Id'] = expertId
+  }
 
-  const res = await fetch(url, { ...options, headers })
+  const res = await fetch(url, { ...fetchOptions, headers })
 
   // Global 401 handler — only redirect to login for local BFF endpoints
   // Proxied gateway requests should not trigger logout
   const isLocalBff = !path.startsWith('/api/hermes/v1/') &&
-    !path.startsWith('/api/hermes/jobs') &&
-    !path.startsWith('/api/hermes/skills')
+    !path.startsWith('/v1/')
 
-  if (res.status === 401 && isLocalBff) {
-    clearApiKey()
+  if (res.status === 401 && isLocalBff && !skipAuthRedirect) {
+    clearAuthSessionStateUnlessServerSession()
+    emitAuthNotice('expired')
     if (router.currentRoute.value.name !== 'login') {
       router.replace({ name: 'login' })
     }
@@ -80,7 +329,26 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
 
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    throw new Error(`API Error ${res.status}: ${text || res.statusText}`)
+    if (res.status === 403 && isLocalBff) {
+      if (text.includes('User is disabled or does not exist')) {
+        clearAuthSessionStateUnlessServerSession()
+        emitAuthNotice('expired')
+        if (router.currentRoute.value.name !== 'login') {
+          router.replace({ name: 'login' })
+        }
+      } else if (!suppressForbiddenNotice) {
+        emitAuthNotice('forbidden')
+      }
+    }
+    // Carry the numeric status on the Error: callers that turn a rejection
+    // into a boolean (setSessionExpert) otherwise lose the server's reason and
+    // can only guess at it from surrounding state. `code` is the body's
+    // machine-readable `error` field when there is one.
+    const code = responseErrorCode(text)
+    throw Object.assign(
+      new Error(`API Error ${res.status}: ${responseErrorMessage(text, res.statusText)}`),
+      code ? { status: res.status, code } : { status: res.status },
+    )
   }
 
   return res.json()

@@ -1,8 +1,8 @@
 import { randomUUID } from 'crypto'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { homedir } from 'os'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
-import { getActiveAuthPath } from '../../services/hermes/hermes-profile'
+import { getActiveProfileName, getProfileDir } from '../../services/hermes/hermes-profile'
 import { logger } from '../../services/logger'
 
 // --- OAuth Constants ---
@@ -20,6 +20,7 @@ const POLL_DEFAULT_INTERVAL = 5000
 // --- Session Store ---
 interface CodexSession {
   id: string; userCode: string; deviceAuthId: string
+  profile: string
   status: 'pending' | 'approved' | 'expired' | 'error'
   error?: string; accessToken?: string; refreshToken?: string; createdAt: number
 }
@@ -33,6 +34,13 @@ function cleanupExpiredSessions() {
 
 // --- Auth file helpers ---
 interface AuthJson { version?: number; active_provider?: string; providers?: Record<string, any>; credential_pool?: Record<string, any[]>; updated_at?: string }
+interface CodexCredentialRef {
+  accessToken: string
+  refreshToken?: string
+  lastRefresh?: string
+  provider?: any
+  poolEntry?: any
+}
 
 function loadAuthJson(authPath: string): AuthJson {
   try { return JSON.parse(readFileSync(authPath, 'utf-8')) as AuthJson } catch { return { version: 1 } }
@@ -40,7 +48,7 @@ function loadAuthJson(authPath: string): AuthJson {
 
 function saveAuthJson(authPath: string, data: AuthJson): void {
   data.updated_at = new Date().toISOString()
-  const dir = authPath.substring(0, authPath.lastIndexOf('/'))
+  const dir = dirname(authPath)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   writeFileSync(authPath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
 }
@@ -48,9 +56,25 @@ function saveAuthJson(authPath: string, data: AuthJson): void {
 function saveCodexCliTokens(accessToken: string, refreshToken: string): void {
   const codexHome = process.env.CODEX_HOME || CODEX_HOME
   const codexAuthPath = join(codexHome, 'auth.json')
-  const dir = codexAuthPath.substring(0, codexAuthPath.lastIndexOf('/'))
+  const dir = dirname(codexAuthPath)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   writeFileSync(codexAuthPath, JSON.stringify({ tokens: { access_token: accessToken, refresh_token: refreshToken }, last_refresh: new Date().toISOString() }, null, 2) + '\n', { mode: 0o600 })
+}
+
+function requestedProfile(ctx: any): string {
+  const headerProfile = typeof ctx.get === 'function' ? ctx.get('x-hermes-profile') : ''
+  const queryProfile = typeof ctx.query?.profile === 'string' ? ctx.query.profile : ''
+  const bodyProfile = typeof ctx.request?.body?.profile === 'string' ? ctx.request.body.profile : ''
+  return ctx.state?.profile?.name ||
+    headerProfile.trim() ||
+    queryProfile.trim() ||
+    bodyProfile.trim() ||
+    getActiveProfileName() ||
+    'default'
+}
+
+function authPathForProfile(profile: string): string {
+  return join(getProfileDir(profile), 'auth.json')
 }
 
 function decodeJwtExp(token: string): number | null {
@@ -63,8 +87,48 @@ function decodeJwtExp(token: string): number | null {
   } catch { return null }
 }
 
+function getCodexCredential(auth: AuthJson): CodexCredentialRef | null {
+  const provider = auth.providers?.['openai-codex']
+  const providerTokens = provider?.tokens
+  const providerAccessToken = providerTokens?.access_token || provider?.access_token
+  const pool = auth.credential_pool?.['openai-codex']
+  const poolEntry = Array.isArray(pool) ? pool.find(entry => entry?.access_token) : undefined
+
+  if (providerAccessToken) {
+    return {
+      accessToken: providerAccessToken,
+      refreshToken: providerTokens?.refresh_token || provider?.refresh_token,
+      lastRefresh: provider.last_refresh,
+      provider,
+      poolEntry,
+    }
+  }
+
+  if (poolEntry?.access_token) {
+    return {
+      accessToken: poolEntry.access_token,
+      refreshToken: poolEntry.refresh_token,
+      lastRefresh: poolEntry.last_refresh,
+      poolEntry,
+    }
+  }
+
+  return null
+}
+
 // --- Background login worker ---
-async function codexLoginWorker(session: CodexSession, authPath: string): Promise<void> {
+export function saveCodexOAuthTokensForProfile(profile: string, accessToken: string, refreshToken: string): void {
+  const authPath = authPathForProfile(profile)
+  const auth = loadAuthJson(authPath)
+  if (!auth.providers) auth.providers = {}
+  auth.providers['openai-codex'] = { tokens: { access_token: accessToken, refresh_token: refreshToken }, last_refresh: new Date().toISOString(), auth_mode: 'chatgpt' }
+  if (!auth.credential_pool) auth.credential_pool = {}
+  auth.credential_pool['openai-codex'] = [{ id: `openai-codex-${Date.now()}`, label: 'OpenAI Codex', base_url: CODEX_DEFAULT_BASE_URL, access_token: accessToken, last_status: null }]
+  saveAuthJson(authPath, auth)
+  saveCodexCliTokens(accessToken, refreshToken)
+}
+
+async function codexLoginWorker(session: CodexSession): Promise<void> {
   const startTime = Date.now()
   const interval = POLL_DEFAULT_INTERVAL
   while (Date.now() - startTime < POLL_MAX_DURATION) {
@@ -87,13 +151,7 @@ async function codexLoginWorker(session: CodexSession, authPath: string): Promis
         const tokenData = await tokenRes.json() as { access_token: string; refresh_token?: string }
         const refreshToken = tokenData.refresh_token || ''
         session.accessToken = tokenData.access_token; session.refreshToken = refreshToken; session.status = 'approved'
-        const auth = loadAuthJson(authPath)
-        if (!auth.providers) auth.providers = {}
-        auth.providers['openai-codex'] = { tokens: { access_token: tokenData.access_token, refresh_token: refreshToken }, last_refresh: new Date().toISOString(), auth_mode: 'chatgpt' }
-        if (!auth.credential_pool) auth.credential_pool = {}
-        auth.credential_pool['openai-codex'] = [{ id: `openai-codex-${Date.now()}`, label: 'OpenAI Codex', base_url: CODEX_DEFAULT_BASE_URL, access_token: tokenData.access_token, last_status: null }]
-        saveAuthJson(authPath, auth)
-        saveCodexCliTokens(tokenData.access_token, refreshToken)
+        saveCodexOAuthTokensForProfile(session.profile, tokenData.access_token, refreshToken)
         logger.info('Login successful')
         return
       }
@@ -125,10 +183,9 @@ export async function start(ctx: any) {
     }
     const data = await res.json() as { user_code: string; device_auth_id: string; interval?: string }
     const sessionId = randomUUID()
-    const session: CodexSession = { id: sessionId, userCode: data.user_code, deviceAuthId: data.device_auth_id, status: 'pending', createdAt: Date.now() }
+    const session: CodexSession = { id: sessionId, userCode: data.user_code, deviceAuthId: data.device_auth_id, profile: requestedProfile(ctx), status: 'pending', createdAt: Date.now() }
     sessions.set(sessionId, session)
-    const authPath = getActiveAuthPath()
-    codexLoginWorker(session, authPath).catch(err => { logger.error(err, 'Worker error'); session.status = 'error'; session.error = err.message })
+    codexLoginWorker(session).catch(err => { logger.error(err, 'Worker error'); session.status = 'error'; session.error = err.message })
     ctx.body = { session_id: sessionId, user_code: data.user_code, verification_url: CODEX_VERIFICATION_URL, expires_in: 900 }
   } catch (err: any) {
     ctx.status = 500; ctx.body = { error: err.message }
@@ -143,34 +200,44 @@ export async function poll(ctx: any) {
 
 export async function status(ctx: any) {
   try {
-    const authPath = getActiveAuthPath()
+    const authPath = authPathForProfile(requestedProfile(ctx))
     const auth = loadAuthJson(authPath)
-    const tokens = auth.providers?.['openai-codex']?.tokens
-    if (!tokens?.access_token || !auth.providers) { ctx.body = { authenticated: false }; return }
-    const codexProvider = auth.providers['openai-codex']!
-    const exp = decodeJwtExp(tokens.access_token)
+    const credential = getCodexCredential(auth)
+    if (!credential) { ctx.body = { authenticated: false }; return }
+    const exp = decodeJwtExp(credential.accessToken)
     if (exp && exp <= Date.now() / 1000 + 120) {
-      if (tokens.refresh_token) {
+      if (credential.refreshToken) {
         try {
           const refreshRes = await fetch(CODEX_OAUTH_TOKEN_URL, {
             method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: tokens.refresh_token, client_id: CODEX_CLIENT_ID }).toString(),
+            body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: credential.refreshToken, client_id: CODEX_CLIENT_ID }).toString(),
             signal: AbortSignal.timeout(15000),
           })
           if (refreshRes.ok) {
             const newTokens = await refreshRes.json() as { access_token: string; refresh_token?: string }
-            codexProvider.tokens.access_token = newTokens.access_token
-            if (newTokens.refresh_token) { codexProvider.tokens.refresh_token = newTokens.refresh_token }
-            codexProvider.last_refresh = new Date().toISOString()
+            const lastRefresh = new Date().toISOString()
+            if (credential.provider?.tokens) {
+              credential.provider.tokens.access_token = newTokens.access_token
+              if (newTokens.refresh_token) { credential.provider.tokens.refresh_token = newTokens.refresh_token }
+              credential.provider.last_refresh = lastRefresh
+            } else if (credential.provider) {
+              credential.provider.access_token = newTokens.access_token
+              if (newTokens.refresh_token) { credential.provider.refresh_token = newTokens.refresh_token }
+              credential.provider.last_refresh = lastRefresh
+            }
+            if (credential.poolEntry) {
+              credential.poolEntry.access_token = newTokens.access_token
+              if (newTokens.refresh_token) { credential.poolEntry.refresh_token = newTokens.refresh_token }
+              credential.poolEntry.last_refresh = lastRefresh
+            }
             saveAuthJson(authPath, auth)
-            saveCodexCliTokens(newTokens.access_token, newTokens.refresh_token || tokens.refresh_token)
-            if (auth.credential_pool?.['openai-codex']?.[0]) { auth.credential_pool['openai-codex'][0].access_token = newTokens.access_token; saveAuthJson(authPath, auth) }
-            ctx.body = { authenticated: true, last_refresh: codexProvider.last_refresh }; return
+            saveCodexCliTokens(newTokens.access_token, newTokens.refresh_token || credential.refreshToken)
+            ctx.body = { authenticated: true, last_refresh: lastRefresh }; return
           }
         } catch { }
       }
       ctx.body = { authenticated: false }; return
     }
-    ctx.body = { authenticated: true, last_refresh: codexProvider.last_refresh }
+    ctx.body = { authenticated: true, last_refresh: credential.lastRefresh }
   } catch { ctx.body = { authenticated: false } }
 }

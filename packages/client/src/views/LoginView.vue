@@ -1,85 +1,121 @@
+<script lang="ts">
+// api/client.ts routes every local-BFF 401 back to this view, so two 401s in
+// quick succession can leave a stale mount's probe in flight. This counter must
+// live in the plain <script> block — a `<script setup>` binding is re-created
+// per instance, so a newer mount could never invalidate an older one's verdict
+// and a late `false` would yank an already-recovered session into OAuth.
+let probeGeneration = 0;
+
+const SESSION_PROBE_TIMEOUT_MS = 4000;
+
+function claimProbeGeneration(): () => boolean {
+  const generation = ++probeGeneration;
+  return () => generation === probeGeneration;
+}
+</script>
+
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
-import { setApiKey, hasApiKey } from "@/api/client";
+import { setApiKey, hasApiKey, setRuntimeMode } from "@/api/client";
 import { fetchAuthStatus, loginWithPassword } from "@/api/auth";
 
 const { t } = useI18n();
 const router = useRouter();
 
-// Read token saved by main.ts (before router strips URL params)
-const urlToken = (window as any).__LOGIN_TOKEN__ || "";
-
-const token = ref(urlToken);
 const username = ref("");
 const password = ref("");
 const loading = ref(false);
 const errorMsg = ref("");
+const showLockResetHint = ref(false);
 
-// Login method: 'token' or 'password'
-const loginMethod = ref<"token" | "password">("token");
-const hasPasswordLogin = ref(false);
+// Auth mode: 'password' (upstream default) or 'feishu' (sunke: 飞书唯一登录).
+// While checking, the password form stays hidden so it never flashes before a
+// Feishu redirect.
+const loginMethod = ref<"password" | "feishu">("password");
+const authChecking = ref(true);
 
 // If already has a key, try to go to main page
 if (hasApiKey()) {
   router.replace("/hermes/chat");
 }
 
+function redirectToFeishu() {
+  // Feishu OAuth is the only login entry. The server round-trips to Feishu
+  // (instant auto-consent when the SSO session is live) and its callback sets
+  // the hermes_feishu_session cookie + redirects to chat.
+  window.location.assign("/api/auth/feishu/login");
+}
+
+/**
+ * The hermes_feishu_session cookie is httpOnly, so the only way to know whether
+ * this browser is already signed in is to ask the server. Without this check
+ * every arrival at this view burned a full Feishu round-trip (never silent — it
+ * renders the 授权 page) even when the 30-day cookie was perfectly valid:
+ *   - the bare root URL `/` IS this view (public route, no session guard), so a
+ *     bookmark without a hash re-authed on every single visit;
+ *   - api/client.ts routes ANY local-BFF 401 to `{name:'login'}`, so one
+ *     transient 401 logged the user out for real.
+ * Both paths funnel through here, so one probe fixes both. Deliberately a raw
+ * relative fetch rather than api/client's `request()`: that helper's global 401
+ * handler redirects back to this same view.
+ */
+async function hasLiveFeishuSession(): Promise<boolean> {
+  // A hung BFF must not strand the user on a blank login shell — an unanswered
+  // probe has to time out into the OAuth fallback, same as a thrown one.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), SESSION_PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch("/api/auth/me", {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+      signal: abort.signal,
+    });
+    return res.ok;
+  } catch {
+    // Network failure/abort tells us nothing about the session — fall through
+    // to OAuth rather than stranding the user on a blank login page.
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 onMounted(async () => {
+  // Claimed before the first await: a slow status request on an older mount
+  // must not outlive a newer one and drag an already-recovered session to OAuth.
+  const isCurrentProbe = claimProbeGeneration();
   try {
     const status = await fetchAuthStatus();
-    hasPasswordLogin.value = status.hasPasswordLogin;
-    if (status.hasPasswordLogin && !urlToken) {
-      loginMethod.value = "password";
+    if (!isCurrentProbe()) return;
+    setRuntimeMode(status.authMode, status.plane);
+    if (status.authMode === "trusted-feishu") {
+      loginMethod.value = "feishu";
+      router.replace("/hermes/chat");
+      return;
+    }
+    if (status.authMode === "feishu-oauth-dev") {
+      // Never render the password form in this mode.
+      loginMethod.value = "feishu";
+      const live = await hasLiveFeishuSession();
+      if (!isCurrentProbe()) return;
+      if (live) {
+        router.replace("/hermes/chat");
+        return;
+      }
+      redirectToFeishu();
+      return;
     }
   } catch {
-    // Fallback to token-only
+    // Login remains available; the submit request will surface connection errors.
+  } finally {
+    authChecking.value = false;
   }
 });
 
 async function handleLogin() {
-  if (loginMethod.value === "token") {
-    await handleTokenLogin();
-  } else {
-    await handlePasswordLogin();
-  }
-}
-
-async function handleTokenLogin() {
-  const key = token.value.trim();
-  if (!key) {
-    errorMsg.value = t("login.tokenRequired");
-    return;
-  }
-
-  loading.value = true;
-  errorMsg.value = "";
-
-  try {
-    const res = await fetch("/api/hermes/sessions", {
-      headers: { Authorization: `Bearer ${key}` },
-    });
-
-    if (res.status === 401) {
-      errorMsg.value = t("login.invalidToken");
-      loading.value = false;
-      return;
-    }
-
-    if (res.status === 429 || res.status === 503) {
-      errorMsg.value = t("login.tooManyAttempts");
-      loading.value = false;
-      return;
-    }
-
-    setApiKey(key);
-    router.replace("/hermes/chat");
-  } catch {
-    errorMsg.value = t("login.connectionFailed");
-  } finally {
-    loading.value = false;
-  }
+  await handlePasswordLogin();
 }
 
 async function handlePasswordLogin() {
@@ -90,6 +126,7 @@ async function handlePasswordLogin() {
 
   loading.value = true;
   errorMsg.value = "";
+  showLockResetHint.value = false;
 
   try {
     const sessionToken = await loginWithPassword(username.value.trim(), password.value);
@@ -98,6 +135,7 @@ async function handlePasswordLogin() {
   } catch (err: any) {
     if (err.status === 429 || err.status === 503) {
       errorMsg.value = t("login.tooManyAttempts");
+      showLockResetHint.value = true;
     } else {
       errorMsg.value = err.message || t("login.invalidCredentials");
     }
@@ -116,55 +154,42 @@ async function handlePasswordLogin() {
       <h1 class="login-title">{{ t("login.title") }}</h1>
       <p class="login-desc">{{ t("login.description") }}</p>
 
-      <!-- Method toggle -->
-      <div v-if="hasPasswordLogin" class="login-method-toggle">
-        <button
-          class="toggle-btn"
-          :class="{ active: loginMethod === 'password' }"
-          @click="loginMethod = 'password'"
-        >{{ t("login.passwordLogin") }}</button>
-        <button
-          class="toggle-btn"
-          :class="{ active: loginMethod === 'token' }"
-          @click="loginMethod = 'token'"
-        >{{ t("login.tokenLogin") }}</button>
+      <!-- Feishu-only mode: show a waking state instead of the password form -->
+      <div v-if="authChecking || loginMethod === 'feishu'" class="wake-state" role="status" aria-live="polite">
+        <div class="wake-spinner" aria-hidden="true"></div>
       </div>
 
-      <form class="login-form" @submit.prevent="handleLogin">
-        <!-- Token login -->
-        <template v-if="loginMethod === 'token'">
-          <input
-            v-model="token"
-            type="password"
-            class="login-input"
-            :placeholder="t('login.placeholder')"
-            autofocus
-          />
-        </template>
+      <template v-else>
+      <p class="login-default-hint">{{ t("login.defaultCredentialsHint") }}</p>
 
-        <!-- Password login -->
-        <template v-if="loginMethod === 'password'">
-          <input
-            v-model="username"
-            type="text"
-            class="login-input"
-            :placeholder="t('login.usernamePlaceholder')"
-            autofocus
-          />
-          <input
-            v-model="password"
-            type="password"
-            class="login-input"
-            :placeholder="t('login.passwordPlaceholder')"
-            @keyup.enter="handleLogin"
-          />
-        </template>
+      <form class="login-form" @submit.prevent="handleLogin">
+        <input
+          v-model="username"
+          type="text"
+          class="login-input"
+          :placeholder="t('login.usernamePlaceholder')"
+          autofocus
+        />
+        <input
+          v-model="password"
+          type="password"
+          class="login-input"
+          :placeholder="t('login.passwordPlaceholder')"
+          @keyup.enter="handleLogin"
+        />
 
         <div v-if="errorMsg" class="login-error">{{ errorMsg }}</div>
+        <div v-if="showLockResetHint" class="login-lock-hint">
+          <span>{{ t("login.lockResetHint") }}</span>
+          <code>hermes-web-ui clear-login-locks --restart</code>
+          <span>{{ t("login.defaultLoginResetHint") }}</span>
+          <code>hermes-web-ui reset-default-login</code>
+        </div>
         <button type="submit" class="login-btn" :disabled="loading">
           {{ loading ? "..." : t("login.submit") }}
         </button>
       </form>
+      </template>
     </div>
   </div>
 </template>
@@ -208,35 +233,37 @@ async function handlePasswordLogin() {
 .login-desc {
   font-size: 14px;
   color: $text-muted;
-  margin: 0 0 32px;
+  margin: 0 0 12px;
   line-height: 1.6;
 }
 
-.login-method-toggle {
+.login-default-hint {
+  margin: 0 0 28px;
+  font-family: $font-code;
+  font-size: 13px;
+  color: $text-secondary;
+}
+
+.wake-state {
   display: flex;
-  margin-bottom: 24px;
-  border: 1px solid $border-color;
-  border-radius: $radius-sm;
-  overflow: hidden;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 0 8px;
+}
 
-  .toggle-btn {
-    flex: 1;
-    padding: 10px;
-    border: none;
-    background: transparent;
-    color: $text-muted;
-    font-size: 13px;
-    cursor: pointer;
-    transition: all $transition-fast;
+.wake-spinner {
+  width: 34px;
+  height: 34px;
+  border: 3px solid rgba(var(--accent-primary-rgb), 0.18);
+  border-top-color: $accent-primary;
+  border-radius: 50%;
+  animation: wake-spin 0.9s linear infinite;
+}
 
-    &.active {
-      background: $text-primary;
-      color: var(--text-on-accent);
-    }
-
-    &:not(.active):hover {
-      background: rgba(var(--accent-primary-rgb), 0.06);
-    }
+@keyframes wake-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
@@ -272,6 +299,25 @@ async function handlePasswordLogin() {
   font-size: 13px;
   color: $error;
   text-align: left;
+}
+
+.login-lock-hint {
+  padding: 10px 12px;
+  border: 1px solid rgba(var(--warning-rgb), 0.35);
+  border-radius: $radius-sm;
+  background: rgba(var(--warning-rgb), 0.08);
+  color: $text-secondary;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+
+  code {
+    display: block;
+    margin-top: 4px;
+    color: $text-primary;
+    font-family: $font-code;
+    word-break: break-all;
+  }
 }
 
 .login-btn {

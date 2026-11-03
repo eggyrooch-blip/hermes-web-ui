@@ -4,14 +4,21 @@ import type { ProxyOptions } from 'vite'
 import { resolve } from 'path'
 import pkg from './package.json'
 
-const BACKEND = 'http://127.0.0.1:8648'
+const FRONTEND_PORT = Number(process.env.HERMES_WEB_UI_FRONTEND_PORT || 8649)
+const BACKEND_PORT = process.env.HERMES_WEB_UI_BACKEND_PORT || '8648'
+const BACKEND = `http://127.0.0.1:${BACKEND_PORT}`
 
 function createProxyConfig(): ProxyOptions {
   return {
     target: BACKEND,
     changeOrigin: true,
+    ws: true,
     configure: (proxy) => {
       proxy.on('proxyReq', (proxyReq) => {
+        proxyReq.removeHeader('origin')
+        proxyReq.removeHeader('referer')
+      })
+      proxy.on('proxyReqWs', (proxyReq) => {
         proxyReq.removeHeader('origin')
         proxyReq.removeHeader('referer')
       })
@@ -23,6 +30,7 @@ function createProxyConfig(): ProxyOptions {
   }
 }
 
+
 export default defineConfig({
   root: 'packages/client',
   plugins: [vue()],
@@ -33,6 +41,11 @@ export default defineConfig({
     alias: {
       '@': resolve(__dirname, 'packages/client/src'),
     },
+  },
+  esbuild: {
+    // @novnc/novnc (lazy-loaded by the Bot Screen page only) awaits a WebCodecs
+    // probe at module top level; let it through the es2020 target untouched.
+    supported: { 'top-level-await': true },
   },
   build: {
     outDir: '../../dist/client',
@@ -48,28 +61,6 @@ export default defineConfig({
     cssCodeSplit: true,
     rollupOptions: {
       output: {
-        // Manual chunk splitting to speed up rendering
-        manualChunks(id) {
-          // Separate large heavy packages to avoid blocking other chunks
-          if (id.includes('node_modules/monaco-editor')) {
-            return 'monaco-editor'
-          }
-          if (id.includes('node_modules/mermaid')) {
-            return 'mermaid'
-          }
-          if (id.includes('node_modules/@xterm')) {
-            return 'xterm'
-          }
-          if (id.includes('node_modules')) {
-            if (id.includes('vue') || id.includes('pinia') || id.includes('vue-router')) {
-              return 'vue-vendor'
-            }
-            if (id.includes('naive-ui')) {
-              return 'ui-vendor'
-            }
-            return 'vendor'
-          }
-        },
         // Optimize chunk file names for better caching
         chunkFileNames: 'assets/js/[name]-[hash].js',
         entryFileNames: 'assets/js/[name]-[hash].js',
@@ -78,6 +69,9 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
+    esbuildOptions: {
+      supported: { 'top-level-await': true },
+    },
     // Pre-bundle all large dependencies for faster builds
     include: [
       'monaco-editor',
@@ -89,6 +83,8 @@ export default defineConfig({
     ],
   },
   server: {
+    port: FRONTEND_PORT,
+    strictPort: true,
     proxy: {
       '/api': createProxyConfig(),
       '/v1': createProxyConfig(),

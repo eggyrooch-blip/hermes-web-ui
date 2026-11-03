@@ -12,12 +12,23 @@ const mockCompleteTasks = vi.hoisted(() => vi.fn())
 const mockBlockTask = vi.hoisted(() => vi.fn())
 const mockUnblockTasks = vi.hoisted(() => vi.fn())
 const mockAssignTask = vi.hoisted(() => vi.fn())
+const mockAddComment = vi.hoisted(() => vi.fn())
+const mockLinkTasks = vi.hoisted(() => vi.fn())
+const mockUnlinkTasks = vi.hoisted(() => vi.fn())
+const mockBulkUpdateTasks = vi.hoisted(() => vi.fn())
+const mockGetTaskLog = vi.hoisted(() => vi.fn())
+const mockGetDiagnostics = vi.hoisted(() => vi.fn())
+const mockReclaimTask = vi.hoisted(() => vi.fn())
+const mockReassignTask = vi.hoisted(() => vi.fn())
+const mockSpecifyTask = vi.hoisted(() => vi.fn())
+const mockDispatch = vi.hoisted(() => vi.fn())
 const mockGetStats = vi.hoisted(() => vi.fn())
 const mockGetAssignees = vi.hoisted(() => vi.fn())
 const mockSearchSessions = vi.hoisted(() => vi.fn())
 const mockGetSessionDetail = vi.hoisted(() => vi.fn())
 const mockGetExactSessionDetail = vi.hoisted(() => vi.fn())
 const mockFindLatestExactSessionId = vi.hoisted(() => vi.fn())
+const mockOwnerOwnsProfile = vi.hoisted(() => vi.fn())
 
 vi.mock('fs/promises', () => ({
   readFile: mockReadFile,
@@ -29,8 +40,8 @@ vi.mock('os', () => ({
 
 vi.mock('../../packages/server/src/services/hermes/hermes-kanban', () => ({
   normalizeBoardSlug: (board?: string | null) => {
-    const value = board?.trim() || 'default'
-    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(value)) throw new Error('Invalid kanban board slug')
+    const value = board?.trim().toLowerCase() || 'default'
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(value)) throw new Error('Invalid kanban board slug')
     return value
   },
   listBoards: mockListBoards,
@@ -44,6 +55,16 @@ vi.mock('../../packages/server/src/services/hermes/hermes-kanban', () => ({
   blockTask: mockBlockTask,
   unblockTasks: mockUnblockTasks,
   assignTask: mockAssignTask,
+  addComment: mockAddComment,
+  linkTasks: mockLinkTasks,
+  unlinkTasks: mockUnlinkTasks,
+  bulkUpdateTasks: mockBulkUpdateTasks,
+  getTaskLog: mockGetTaskLog,
+  getDiagnostics: mockGetDiagnostics,
+  reclaimTask: mockReclaimTask,
+  reassignTask: mockReassignTask,
+  specifyTask: mockSpecifyTask,
+  dispatch: mockDispatch,
   getStats: mockGetStats,
   getAssignees: mockGetAssignees,
 }))
@@ -55,10 +76,16 @@ vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
   findLatestExactSessionIdWithProfile: mockFindLatestExactSessionId,
 }))
 
+vi.mock('../../packages/server/src/services/hermes/agent-ownership', () => ({
+  ownerOwnsProfile: mockOwnerOwnsProfile,
+}))
+
 import * as ctrl from '../../packages/server/src/controllers/hermes/kanban'
+import { config } from '../../packages/server/src/config'
 
 function ctx(overrides: Record<string, any> = {}) {
   return {
+    state: { user: { openid: 'ouX', profile: 'p' } },
     query: {},
     params: {},
     request: { body: {} },
@@ -68,24 +95,38 @@ function ctx(overrides: Record<string, any> = {}) {
   } as any
 }
 
+function ownedTaskDetail(id: string, assignee = 'alice') {
+  return {
+    task: { id, status: 'todo', assignee, created_by: null, tenant: null },
+    runs: [],
+    comments: [],
+    events: [],
+  }
+}
+
 describe('kanban controller', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    config.webPlane = 'both'
+    config.webuiRunBroker = false
+    config.runBrokerUrl = ''
+    config.runBrokerKey = ''
+    mockOwnerOwnsProfile.mockReturnValue(true)
   })
 
   it('lists boards and tasks with explicit/default board context', async () => {
     mockListBoards.mockResolvedValue([{ slug: 'default' }])
-    mockListTasks.mockResolvedValue([{ id: 'task-1' }])
+    mockListTasks.mockResolvedValue([{ id: 'task-1', assignee: 'alice', created_by: null }])
 
     const boardsCtx = ctx({ query: { includeArchived: 'true' } })
     await ctrl.listBoards(boardsCtx)
     expect(mockListBoards).toHaveBeenCalledWith({ includeArchived: true })
     expect(boardsCtx.body).toEqual({ boards: [{ slug: 'default' }] })
 
-    const c = ctx({ query: { board: 'project-a', status: 'todo', assignee: 'alice', tenant: 'ops' } })
+    const c = ctx({ query: { board: 'project-a', status: 'todo', assignee: 'alice', tenant: 'ops', includeArchived: 'true' } })
     await ctrl.list(c)
-    expect(mockListTasks).toHaveBeenCalledWith({ board: 'project-a', status: 'todo', assignee: 'alice', tenant: 'ops' })
-    expect(c.body).toEqual({ tasks: [{ id: 'task-1' }] })
+    expect(mockListTasks).toHaveBeenCalledWith({ board: 'project-a', status: 'todo', assignee: 'alice', tenant: 'ops', includeArchived: true })
+    expect(c.body).toEqual({ tasks: [{ id: 'task-1', assignee: 'alice', created_by: null }] })
 
     mockCreateBoard.mockResolvedValue({ slug: 'project-b' })
     const createBoardCtx = ctx({ request: { body: { slug: 'project-b', name: 'Project B', switchCurrent: false } } })
@@ -106,12 +147,366 @@ describe('kanban controller', () => {
 
     const defaultCtx = ctx({ query: { status: 'ready' } })
     await ctrl.list(defaultCtx)
-    expect(mockListTasks).toHaveBeenLastCalledWith({ board: 'default', status: 'ready', assignee: undefined, tenant: undefined })
+    expect(mockListTasks).toHaveBeenLastCalledWith({ board: 'default', status: 'ready', assignee: undefined, tenant: undefined, includeArchived: false })
+  })
+
+  it('uses the multitenancy run broker for owner-scoped chat-plane kanban', async () => {
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => new Response(JSON.stringify({
+      tasks: [{ id: 'task-1', assignee: 'owner_writer', tenant: 'ouX' }],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    config.webPlane = 'chat'
+    config.webuiRunBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+    config.runBrokerKey = 'broker-secret'
+
+    const c = ctx({
+      query: { board: 'project-a', assignee: 'owner_writer', tenant: 'spoofed' },
+      search: '?board=project-a&assignee=owner_writer&tenant=spoofed&profile=evil&token=secret',
+      req: { method: 'GET' },
+      set: vi.fn(),
+    })
+    await ctrl.list(c)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8766/api/run-broker/kanban/tasks?board=project-a&assignee=owner_writer&tenant=spoofed',
+      expect.objectContaining({
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer broker-secret',
+          'X-Hermes-Owner-Open-Id': 'ouX',
+        },
+        body: undefined,
+      }),
+    )
+    expect(c.body).toEqual({ tasks: [{ id: 'task-1', assignee: 'owner_writer', tenant: 'ouX' }] })
+    vi.unstubAllGlobals()
+  })
+
+  it('loads chat-plane kanban task details from the owner-scoped broker task list', async () => {
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => new Response(JSON.stringify({
+      tasks: [
+        { id: 'other-task', title: 'Other', status: 'todo', assignee: 'owner_writer', tenant: 'ouX' },
+        { id: 'task-1', title: 'Created task', status: 'ready', assignee: 'owner_writer', tenant: 'ouX' },
+      ],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    config.webPlane = 'chat'
+    config.webuiRunBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+    config.runBrokerKey = 'broker-secret'
+
+    const c = ctx({
+      params: { id: 'task-1' },
+      query: { board: 'project-a' },
+      search: '?board=project-a&profile=evil&token=secret',
+      req: { method: 'GET' },
+      set: vi.fn(),
+    })
+    await ctrl.get(c)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8766/api/run-broker/kanban/tasks?board=project-a&includeArchived=true',
+      expect.objectContaining({
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer broker-secret',
+          'X-Hermes-Owner-Open-Id': 'ouX',
+        },
+        body: undefined,
+      }),
+    )
+    expect(mockGetTask).not.toHaveBeenCalled()
+    expect(c.body).toEqual({
+      task: { id: 'task-1', title: 'Created task', status: 'ready', assignee: 'owner_writer', tenant: 'ouX' },
+      latest_summary: null,
+      comments: [],
+      events: [],
+      runs: [],
+      parents: [],
+      children: [],
+    })
+    vi.unstubAllGlobals()
+  })
+
+  it('proxies chat-plane kanban capabilities through the broker', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      capabilities: {
+        source: 'hermes-multitenancy-run-broker',
+        supports: { dispatch: true, events: false },
+        missing: ['events'],
+        capabilities: [],
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    config.webPlane = 'chat'
+    config.webuiRunBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+
+    const c = ctx({
+      req: { method: 'GET' },
+      set: vi.fn(),
+    })
+    await ctrl.capabilities(c)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8766/api/run-broker/kanban/capabilities',
+      expect.objectContaining({
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Hermes-Owner-Open-Id': 'ouX',
+        },
+      }),
+    )
+    expect(mockGetCapabilities).not.toHaveBeenCalled()
+    expect(c.body).toEqual({
+      capabilities: {
+        source: 'hermes-multitenancy-run-broker',
+        supports: { dispatch: true, events: false },
+        missing: ['events'],
+        capabilities: [],
+      },
+    })
+    vi.unstubAllGlobals()
+  })
+
+  it('strips client tenant and owner fields before creating chat-plane kanban tasks via broker', async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(JSON.parse(String(init.body))).toEqual({
+        title: 'Good',
+        assignee: 'owner_writer',
+      })
+      return new Response(JSON.stringify({
+        task: { id: 'task-created', tenant: 'ouX', assignee: 'owner_writer' },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    config.webPlane = 'chat'
+    config.webuiRunBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+
+    const c = ctx({
+      query: { board: 'default' },
+      search: '?board=default',
+      req: { method: 'POST' },
+      request: { body: { title: 'Good', assignee: 'owner_writer', tenant: 'ou_other', owner_open_id: 'ou_other' } },
+      set: vi.fn(),
+    })
+    await ctrl.create(c)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8766/api/run-broker/kanban/tasks?board=default',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(c.body).toEqual({ task: { id: 'task-created', tenant: 'ouX', assignee: 'owner_writer' } })
+    vi.unstubAllGlobals()
+  })
+
+  it('does not fall back to the legacy CLI in chat-plane kanban when broker mode is disabled', async () => {
+    config.webPlane = 'chat'
+    config.webuiRunBroker = false
+    const c = ctx({
+      query: { board: 'default' },
+      req: { method: 'GET' },
+      set: vi.fn(),
+    })
+
+    await ctrl.list(c)
+
+    expect(c.status).toBe(503)
+    expect(c.body).toEqual({ error: 'HERMES_WEBUI_RUN_BROKER is required for Kanban in chat plane' })
+    expect(mockListTasks).not.toHaveBeenCalled()
+  })
+
+  it('keeps chat-plane kanban drawer actions owner-scoped', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    config.webPlane = 'chat'
+    config.webuiRunBroker = true
+    config.runBrokerUrl = 'http://127.0.0.1:8766'
+    mockGetTask.mockImplementation(async (id: string) => ownedTaskDetail(id, 'alice'))
+    mockCompleteTasks.mockResolvedValue(undefined)
+    mockBlockTask.mockResolvedValue(undefined)
+    mockUnblockTasks.mockResolvedValue(undefined)
+    mockAssignTask.mockResolvedValue(undefined)
+
+    const completeCtx = ctx({ query: { board: 'project-a' }, request: { body: { task_ids: ['task-1'], summary: 'done' } } })
+    await ctrl.complete(completeCtx)
+    expect(mockCompleteTasks).toHaveBeenCalledWith(['task-1'], 'done', { board: 'project-a', operatorOverride: true })
+
+    const blockCtx = ctx({ query: { board: 'project-a' }, params: { id: 'task-1' }, request: { body: { reason: 'wait' } } })
+    await ctrl.block(blockCtx)
+    expect(mockBlockTask).toHaveBeenCalledWith('task-1', 'wait', { board: 'project-a' })
+
+    const unblockCtx = ctx({ query: { board: 'project-a' }, request: { body: { task_ids: ['task-1'] } } })
+    await ctrl.unblock(unblockCtx)
+    expect(mockUnblockTasks).toHaveBeenCalledWith(['task-1'], { board: 'project-a' })
+
+    const assignCtx = ctx({ query: { board: 'project-a' }, params: { id: 'task-1' }, request: { body: { profile: 'alice' } } })
+    await ctrl.assign(assignCtx)
+    expect(mockAssignTask).toHaveBeenCalledWith('task-1', 'alice', { board: 'project-a' })
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    mockOwnerOwnsProfile.mockImplementation((_openid: string, profile: string) => profile !== 'mallory')
+    const deniedAssignCtx = ctx({ query: { board: 'project-a' }, params: { id: 'task-1' }, request: { body: { profile: 'mallory' } } })
+    await ctrl.assign(deniedAssignCtx)
+    expect(deniedAssignCtx.status).toBe(403)
+    expect(deniedAssignCtx.body).toEqual({ error: 'You do not own this agent profile' })
+
+    vi.unstubAllGlobals()
+  })
+
+  it('proxies comment/log/diagnostics with explicit board context', async () => {
+    const taskLog = { task_id: 'task-1', path: null, exists: true, size_bytes: 10, content: 'worker log', truncated: false }
+    mockGetTask.mockResolvedValue(ownedTaskDetail('task-1'))
+    mockAddComment.mockResolvedValue({ ok: true, output: 'commented' })
+    mockGetTaskLog.mockResolvedValue(taskLog)
+    mockGetDiagnostics.mockResolvedValue([{ task_id: 'task-1' }])
+
+    const commentCtx = ctx({ query: { board: 'project-a' }, params: { id: 'task-1' }, request: { body: { body: 'needs review', author: 'han' } } })
+    await ctrl.addComment(commentCtx)
+    expect(mockAddComment).toHaveBeenCalledWith('task-1', 'needs review', { board: 'project-a', author: 'han' })
+    expect(commentCtx.body).toEqual({ ok: true, output: 'commented' })
+
+    const logCtx = ctx({ query: { board: 'default', tail: '4000' }, params: { id: 'task-1' } })
+    await ctrl.taskLog(logCtx)
+    expect(mockGetTaskLog).toHaveBeenCalledWith('task-1', { board: 'default', tail: 4000 })
+    expect(logCtx.body).toEqual(taskLog)
+
+    const diagnosticsCtx = ctx({ query: { board: 'default', task: 'task-1', severity: 'warning' } })
+    await ctrl.diagnostics(diagnosticsCtx)
+    expect(mockGetDiagnostics).toHaveBeenCalledWith({ board: 'default', task: 'task-1', severity: 'warning' })
+    expect(diagnosticsCtx.body).toEqual({ diagnostics: [{ task_id: 'task-1' }] })
+  })
+
+  it('proxies links and bulk actions with explicit board context', async () => {
+    mockGetTask.mockImplementation(async (id: string) => ownedTaskDetail(id))
+    mockLinkTasks.mockResolvedValue({ ok: true, output: 'linked' })
+    mockUnlinkTasks.mockResolvedValue({ ok: true, output: 'unlinked' })
+    mockBulkUpdateTasks.mockResolvedValue({ results: [{ id: 'task-1', ok: true }] })
+
+    const linkCtx = ctx({ query: { board: 'project-a' }, request: { body: { parent_id: 'task-1', child_id: 'task-2' } } })
+    await ctrl.linkTasks(linkCtx)
+    expect(mockLinkTasks).toHaveBeenCalledWith('task-1', 'task-2', { board: 'project-a' })
+    expect(linkCtx.body).toEqual({ ok: true, output: 'linked' })
+
+    const unlinkCtx = ctx({ query: { board: 'project-a', parent_id: 'task-1', child_id: 'task-2' } })
+    await ctrl.unlinkTasks(unlinkCtx)
+    expect(mockUnlinkTasks).toHaveBeenCalledWith('task-1', 'task-2', { board: 'project-a' })
+    expect(unlinkCtx.body).toEqual({ ok: true, output: 'unlinked' })
+
+    const bulkCtx = ctx({ query: { board: 'project-a' }, request: { body: { ids: ['task-1'], status: 'done', assignee: null, summary: 'closed' } } })
+    await ctrl.bulkUpdateTasks(bulkCtx)
+    expect(mockBulkUpdateTasks).toHaveBeenCalledWith({ board: 'project-a', ids: ['task-1'], status: 'done', assignee: null, archive: undefined, summary: 'closed', reason: undefined, operatorOverride: true })
+    expect(bulkCtx.body).toEqual({ results: [{ id: 'task-1', ok: true }] })
+  })
+
+  it('validates canonical parity endpoint inputs before shelling out', async () => {
+    const invalidTailCtx = ctx({ query: { board: 'default', tail: '0' }, params: { id: 'task-1' } })
+    await ctrl.taskLog(invalidTailCtx)
+    expect(invalidTailCtx.status).toBe(400)
+    expect(mockGetTaskLog).not.toHaveBeenCalled()
+
+    const oversizedTailCtx = ctx({ query: { board: 'default', tail: '1000001' }, params: { id: 'task-1' } })
+    await ctrl.taskLog(oversizedTailCtx)
+    expect(oversizedTailCtx.status).toBe(400)
+    expect(mockGetTaskLog).not.toHaveBeenCalled()
+
+    const invalidSeverityCtx = ctx({ query: { board: 'default', severity: 'info' } })
+    await ctrl.diagnostics(invalidSeverityCtx)
+    expect(invalidSeverityCtx.status).toBe(400)
+    expect(mockGetDiagnostics).not.toHaveBeenCalled()
+
+    const emptyBoardCtx = ctx({ query: { board: ' ' } })
+    await ctrl.list(emptyBoardCtx)
+    expect(emptyBoardCtx.status).toBe(400)
+    expect(mockListTasks).not.toHaveBeenCalled()
+
+    const invalidDispatchCtx = ctx({ query: { board: 'default' }, request: { body: { dryRun: 'yes', max: -1, failureLimit: 0 } } })
+    await ctrl.dispatch(invalidDispatchCtx)
+    expect(invalidDispatchCtx.status).toBe(400)
+    expect(mockDispatch).not.toHaveBeenCalled()
+
+    const oversizedDispatchCtx = ctx({ query: { board: 'default' }, request: { body: { dryRun: false, max: 999999999 } } })
+    await ctrl.dispatch(oversizedDispatchCtx)
+    expect(oversizedDispatchCtx.status).toBe(400)
+    expect(mockDispatch).not.toHaveBeenCalled()
+  })
+
+  it('rejects malformed parity action bodies before shelling out', async () => {
+    const cases: Array<{ name: string; invoke: (c: any) => Promise<void>; context: any; mock: ReturnType<typeof vi.fn> }> = [
+      { name: 'comment body object', invoke: ctrl.addComment, context: ctx({ query: { board: 'default' }, params: { id: 'task-1' }, request: { body: { body: {}, author: 'han' } } }), mock: mockAddComment },
+      { name: 'comment request body array', invoke: ctrl.addComment, context: ctx({ query: { board: 'default' }, params: { id: 'task-1' }, request: { body: [] } }), mock: mockAddComment },
+      { name: 'comment author object', invoke: ctrl.addComment, context: ctx({ query: { board: 'default' }, params: { id: 'task-1' }, request: { body: { body: 'ok', author: {} } } }), mock: mockAddComment },
+      { name: 'link missing child', invoke: ctrl.linkTasks, context: ctx({ query: { board: 'default' }, request: { body: { parent_id: 'task-1' } } }), mock: mockLinkTasks },
+      { name: 'unlink missing parent', invoke: ctrl.unlinkTasks, context: ctx({ query: { board: 'default', child_id: 'task-2' } }), mock: mockUnlinkTasks },
+      { name: 'bulk empty ids', invoke: ctrl.bulkUpdateTasks, context: ctx({ query: { board: 'default' }, request: { body: { ids: [], status: 'done' } } }), mock: mockBulkUpdateTasks },
+      { name: 'bulk invalid status', invoke: ctrl.bulkUpdateTasks, context: ctx({ query: { board: 'default' }, request: { body: { ids: ['task-1'], status: 'invalid' } } }), mock: mockBulkUpdateTasks },
+      { name: 'bulk archive with status', invoke: ctrl.bulkUpdateTasks, context: ctx({ query: { board: 'default' }, request: { body: { ids: ['task-1'], archive: true, status: 'done' } } }), mock: mockBulkUpdateTasks },
+      { name: 'bulk no action', invoke: ctrl.bulkUpdateTasks, context: ctx({ query: { board: 'default' }, request: { body: { ids: ['task-1'] } } }), mock: mockBulkUpdateTasks },
+      { name: 'reclaim request body string', invoke: ctrl.reclaim, context: ctx({ query: { board: 'default' }, params: { id: 'task-1' }, request: { body: 'bad' } }), mock: mockReclaimTask },
+      { name: 'reclaim reason array', invoke: ctrl.reclaim, context: ctx({ query: { board: 'default' }, params: { id: 'task-1' }, request: { body: { reason: [] } } }), mock: mockReclaimTask },
+      { name: 'reassign reclaim string', invoke: ctrl.reassign, context: ctx({ query: { board: 'default' }, params: { id: 'task-1' }, request: { body: { profile: 'bob', reclaim: 'false' } } }), mock: mockReassignTask },
+      { name: 'reassign reclaim number', invoke: ctrl.reassign, context: ctx({ query: { board: 'default' }, params: { id: 'task-1' }, request: { body: { profile: 'bob', reclaim: 1 } } }), mock: mockReassignTask },
+      { name: 'reassign profile number', invoke: ctrl.reassign, context: ctx({ query: { board: 'default' }, params: { id: 'task-1' }, request: { body: { profile: 123 } } }), mock: mockReassignTask },
+      { name: 'specify request body number', invoke: ctrl.specify, context: ctx({ query: { board: 'default' }, params: { id: 'task-1' }, request: { body: 123 } }), mock: mockSpecifyTask },
+      { name: 'specify author object', invoke: ctrl.specify, context: ctx({ query: { board: 'default' }, params: { id: 'task-1' }, request: { body: { author: {} } } }), mock: mockSpecifyTask },
+      { name: 'dispatch request body array', invoke: ctrl.dispatch, context: ctx({ query: { board: 'default' }, request: { body: [] } }), mock: mockDispatch },
+    ]
+
+    for (const testCase of cases) {
+      vi.clearAllMocks()
+      await testCase.invoke(testCase.context)
+      expect(testCase.context.status, testCase.name).toBe(400)
+      expect(testCase.mock, testCase.name).not.toHaveBeenCalled()
+    }
+  })
+
+  it('proxies recovery and dispatch actions with explicit board context', async () => {
+    mockGetTask.mockResolvedValue(ownedTaskDetail('task-1'))
+    mockListTasks.mockResolvedValue([{ id: 'task-1', assignee: 'alice', created_by: null, tenant: null }])
+    mockReclaimTask.mockResolvedValue({ ok: true, output: 'reclaimed' })
+    mockReassignTask.mockResolvedValue({ ok: true, output: 'reassigned' })
+    mockSpecifyTask.mockResolvedValue([{ task_id: 'task-1' }])
+    mockDispatch.mockResolvedValue({ spawned: 1 })
+
+    const reclaimCtx = ctx({ query: { board: 'project-a' }, params: { id: 'task-1' }, request: { body: { reason: 'stale' } } })
+    await ctrl.reclaim(reclaimCtx)
+    expect(mockReclaimTask).toHaveBeenCalledWith('task-1', { board: 'project-a', reason: 'stale' })
+
+    const reassignCtx = ctx({ query: { board: 'project-a' }, params: { id: 'task-1' }, request: { body: { profile: 'bob', reclaim: true, reason: 'handoff' } } })
+    await ctrl.reassign(reassignCtx)
+    expect(mockReassignTask).toHaveBeenCalledWith('task-1', 'bob', { board: 'project-a', reclaim: true, reason: 'handoff' })
+
+    const specifyCtx = ctx({ query: { board: 'default' }, params: { id: 'task-1' }, request: { body: { author: 'han' } } })
+    await ctrl.specify(specifyCtx)
+    expect(mockSpecifyTask).toHaveBeenCalledWith('task-1', { board: 'default', author: 'han' })
+    expect(specifyCtx.body).toEqual({ results: [{ task_id: 'task-1' }] })
+
+    const dispatchCtx = ctx({ query: { board: 'default' }, request: { body: { dryRun: true, max: 2, failureLimit: 3 } } })
+    await ctrl.dispatch(dispatchCtx)
+    expect(mockDispatch).toHaveBeenCalledWith({ board: 'default', dryRun: true, max: 2, failureLimit: 3 })
+    expect(dispatchCtx.body).toEqual({ result: { spawned: 1 } })
   })
 
   it('enriches completed task details using the latest run profile', async () => {
     mockGetTask.mockResolvedValue({
-      task: { id: 'task-1', status: 'done' },
+      task: { id: 'task-1', status: 'done', assignee: 'fresh', created_by: null },
       runs: [{ profile: 'stale' }, { profile: 'fresh' }],
       comments: [],
       events: [],
@@ -134,9 +529,34 @@ describe('kanban controller', () => {
     expect(c.body.session).toMatchObject({ id: 'session-1', title: 'Session one' })
   })
 
+  it('enriches archived task details using the latest run profile', async () => {
+    mockGetTask.mockResolvedValue({
+      task: { id: 'task-archived', status: 'archived', assignee: 'reviewer', created_by: null },
+      runs: [{ profile: 'reviewer' }],
+      comments: [],
+      events: [],
+    })
+    mockFindLatestExactSessionId.mockResolvedValue('session-archived')
+    mockGetExactSessionDetail.mockResolvedValue({
+      title: 'Archived session',
+      source: 'codex',
+      model: 'gpt-5.5',
+      started_at: 1,
+      ended_at: 2,
+      messages: [],
+    })
+
+    const c = ctx({ params: { id: 'task-archived' }, query: { board: 'project-a' } })
+    await ctrl.get(c)
+
+    expect(mockFindLatestExactSessionId).toHaveBeenCalledWith('task-archived', 'reviewer')
+    expect(mockGetExactSessionDetail).toHaveBeenCalledWith('session-archived', 'reviewer')
+    expect(c.body.session).toMatchObject({ id: 'session-archived', title: 'Archived session' })
+  })
+
   it('prefers exact kanban-task session matches over later sessions that merely reference the task id', async () => {
     mockGetTask.mockResolvedValue({
-      task: { id: 't_348bfaaf', status: 'done' },
+      task: { id: 't_348bfaaf', status: 'done', assignee: 'default', created_by: null },
       runs: [{ profile: 'default' }],
       comments: [],
       events: [],
@@ -165,6 +585,27 @@ describe('kanban controller', () => {
     const createCtx = ctx({ request: { body: {} } })
     await ctrl.create(createCtx)
     expect(createCtx.status).toBe(400)
+    expect(mockCreateTask).not.toHaveBeenCalled()
+
+    const invalidCompleteCtx = ctx({ request: { body: { task_ids: ['task-1', 123] } } })
+    await ctrl.complete(invalidCompleteCtx)
+    expect(invalidCompleteCtx.status).toBe(400)
+    expect(mockCompleteTasks).not.toHaveBeenCalled()
+
+    const invalidBlockCtx = ctx({ params: { id: 'task-1' }, request: { body: { reason: [] } } })
+    await ctrl.block(invalidBlockCtx)
+    expect(invalidBlockCtx.status).toBe(400)
+    expect(mockBlockTask).not.toHaveBeenCalled()
+
+    const invalidUnblockCtx = ctx({ request: { body: [] } })
+    await ctrl.unblock(invalidUnblockCtx)
+    expect(invalidUnblockCtx.status).toBe(400)
+    expect(mockUnblockTasks).not.toHaveBeenCalled()
+
+    const invalidAssignCtx = ctx({ params: { id: 'task-1' }, request: { body: { profile: 123 } } })
+    await ctrl.assign(invalidAssignCtx)
+    expect(invalidAssignCtx.status).toBe(400)
+    expect(mockAssignTask).not.toHaveBeenCalled()
 
     const searchCtx = ctx({ query: { task_id: 'task-1' } })
     await ctrl.searchSessions(searchCtx)
@@ -173,6 +614,27 @@ describe('kanban controller', () => {
     const fileCtx = ctx({ query: { path: '/tmp/outside.txt' } })
     await ctrl.readArtifact(fileCtx)
     expect(fileCtx.status).toBe(403)
+  })
+
+  // The CLI stamps created_by as the literal "user" when nothing is passed, and
+  // taskOwnedBy() keys off created_by first — so a task created without it is
+  // invisible to the very owner who just created it.
+  it('stamps the owned assignee as created_by so a new task stays visible to its creator', async () => {
+    mockCreateTask.mockResolvedValue({ id: 'task-9' })
+    mockOwnerOwnsProfile.mockReturnValue(true)
+
+    const createCtx = ctx({
+      query: { board: 'project-a' },
+      request: { body: { title: 'Ship', assignee: 'feishu_owner' } },
+    })
+    await ctrl.create(createCtx)
+
+    expect(mockCreateTask).toHaveBeenCalledWith('Ship', expect.objectContaining({
+      assignee: 'feishu_owner',
+      createdBy: 'feishu_owner',
+      tenant: 'ouX',
+    }))
+    expect(createCtx.body).toEqual({ task: { id: 'task-9' } })
   })
 
   it('reads workspace artifacts and proxies action routes', async () => {
@@ -186,6 +648,12 @@ describe('kanban controller', () => {
     mockGetAssignees.mockResolvedValue([{ name: 'alice' }])
     mockSearchSessions.mockResolvedValue([{ id: 'session-2' }])
     mockFindLatestExactSessionId.mockResolvedValue('session-2')
+    mockGetTask.mockResolvedValue({
+      task: { id: 'task-1', status: 'todo', assignee: 'alice', created_by: null, tenant: null },
+      runs: [],
+      comments: [],
+      events: [],
+    })
     mockGetExactSessionDetail.mockResolvedValue({
       id: 'session-2',
       source: 'codex',
@@ -210,21 +678,52 @@ describe('kanban controller', () => {
       thread_session_count: 1,
     })
 
-    const fileCtx = ctx({ query: { path: '/Users/tester/.hermes/kanban/workspaces/task/out.txt' } })
+    const fileCtx = ctx({ query: { path: '/Users/tester/.hermes/kanban/workspaces/task-1/out.txt' } })
     await ctrl.readArtifact(fileCtx)
     expect(fileCtx.body).toEqual({
       content: 'artifact-content',
-      path: '/Users/tester/.hermes/kanban/workspaces/task/out.txt',
+      path: '/Users/tester/.hermes/kanban/workspaces/task-1/out.txt',
     })
 
-    const createCtx = ctx({ query: { board: 'project-a' }, request: { body: { title: 'Ship', body: 'x' } } })
+    const createCtx = ctx({
+      query: { board: 'project-a' },
+      request: {
+        body: {
+          title: 'Ship',
+          body: 'x',
+          workspace: 'worktree:/repo',
+          branch: 'kanban-ui',
+          triage: true,
+          skills: ['planner', ' reviewer ', ''],
+          maxRuntime: '2h',
+          maxRetries: 3,
+          goalMode: true,
+          goalMaxTurns: 12,
+        },
+      },
+    })
     await ctrl.create(createCtx)
-    expect(mockCreateTask).toHaveBeenCalledWith('Ship', { board: 'project-a', body: 'x', assignee: undefined, priority: undefined, tenant: undefined })
+    expect(mockCreateTask).toHaveBeenCalledWith('Ship', {
+      board: 'project-a',
+      body: 'x',
+      assignee: undefined,
+      createdBy: undefined,
+      priority: undefined,
+      tenant: 'ouX',
+      workspace: 'worktree:/repo',
+      branch: 'kanban-ui',
+      triage: true,
+      skills: ['planner', 'reviewer'],
+      maxRuntime: '2h',
+      maxRetries: 3,
+      goalMode: true,
+      goalMaxTurns: 12,
+    })
     expect(createCtx.body).toEqual({ task: { id: 'task-2' } })
 
     const completeCtx = ctx({ query: { board: 'project-a' }, request: { body: { task_ids: ['task-1'], summary: 'done' } } })
     await ctrl.complete(completeCtx)
-    expect(mockCompleteTasks).toHaveBeenCalledWith(['task-1'], 'done', { board: 'project-a' })
+    expect(mockCompleteTasks).toHaveBeenCalledWith(['task-1'], 'done', { board: 'project-a', operatorOverride: true })
 
     const blockCtx = ctx({ query: { board: 'project-a' }, params: { id: 'task-1' }, request: { body: { reason: 'wait' } } })
     await ctrl.block(blockCtx)

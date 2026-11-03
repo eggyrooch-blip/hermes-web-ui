@@ -1,5 +1,9 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import { hasApiKey } from '@/api/client'
+import { ref } from 'vue'
+import { canAccessProtectedRoutes, clearApiKey, clearRuntimeMode, hasApiKey, isServerSessionAuthMode, isStoredSuperAdmin, setRuntimeMode } from '@/api/client'
+
+export const authNavigationReady = ref(false)
+export const routeContentReady = ref(false)
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -16,9 +20,54 @@ const router = createRouter({
       component: () => import('@/views/hermes/ChatView.vue'),
     },
     {
+      path: '/hermes/session/:sessionId',
+      name: 'hermes.session',
+      component: () => import('@/views/hermes/ChatView.vue'),
+    },
+    {
+      path: '/hermes/screen',
+      name: 'hermes.screen',
+      component: () => import('@/views/hermes/ScreenView.vue'),
+    },
+    {
       path: '/hermes/history',
       name: 'hermes.history',
       component: () => import('@/views/hermes/HistoryView.vue'),
+    },
+    {
+      path: '/hermes/cowork',
+      name: 'hermes.cowork',
+      redirect: { name: 'hermes.chat' },
+    },
+    {
+      path: '/hermes/projects/:projectId?',
+      name: 'hermes.coworkProject',
+      component: () => import('@/views/hermes/CoworkProjectsView.vue'),
+    },
+    {
+      path: '/hermes/history/session/:sessionId',
+      name: 'hermes.historySession',
+      component: () => import('@/views/hermes/HistoryView.vue'),
+    },
+    {
+      // Console — any logged-in Feishu user (developer plane is default-all).
+      // The ops plane inside is gated server-side by requireConsoleAdmin, so no
+      // requiresSuperAdmin meta here (that flag is dead for Feishu users anyway).
+      path: '/hermes/console',
+      name: 'hermes.console',
+      component: () => import('@/views/hermes/ConsoleView.vue'),
+    },
+    {
+      path: '/hermes/global-agent',
+      name: 'hermes.globalAgent',
+      component: () => import('@/views/hermes/GlobalAgentView.vue'),
+      meta: { requiresSuperAdmin: true },
+    },
+    {
+      path: '/hermes/global-agent/session/:sessionId',
+      name: 'hermes.globalAgentSession',
+      component: () => import('@/views/hermes/GlobalAgentView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/jobs',
@@ -34,16 +83,32 @@ const router = createRouter({
       path: '/hermes/models',
       name: 'hermes.models',
       component: () => import('@/views/hermes/ModelsView.vue'),
+      meta: { requiresSuperAdmin: true },
+    },
+    {
+      // Deliberately NOT requiresSuperAdmin: this is the everyday agent hub and
+      // sunke's prod role is `user`. /hermes/profiles stays super-admin-only for
+      // profile ops (rename/import/export/delete).
+      path: '/hermes/agents',
+      name: 'hermes.agents',
+      component: () => import('@/views/hermes/AgentsView.vue'),
+    },
+    {
+      path: '/hermes/agents/:name',
+      name: 'hermes.agentDetail',
+      component: () => import('@/views/hermes/AgentDetailView.vue'),
     },
     {
       path: '/hermes/profiles',
       name: 'hermes.profiles',
       component: () => import('@/views/hermes/ProfilesView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/logs',
       name: 'hermes.logs',
       component: () => import('@/views/hermes/LogsView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/usage',
@@ -51,14 +116,37 @@ const router = createRouter({
       component: () => import('@/views/hermes/UsageView.vue'),
     },
     {
+      path: '/hermes/performance',
+      name: 'hermes.performance',
+      component: () => import('@/views/hermes/PerformanceView.vue'),
+      meta: { requiresSuperAdmin: true },
+    },
+    {
+      path: '/hermes/skills-usage',
+      name: 'hermes.skillsUsage',
+      component: () => import('@/views/hermes/SkillsUsageView.vue'),
+    },
+    {
       path: '/hermes/skills',
       name: 'hermes.skills',
       component: () => import('@/views/hermes/SkillsView.vue'),
     },
     {
+      path: '/hermes/expert',
+      name: 'hermes.expert',
+      component: () => import('@/views/hermes/ExpertView.vue'),
+    },
+    {
+      path: '/hermes/connectors',
+      alias: '/hermes/credentials',
+      name: 'hermes.connectors',
+      component: () => import('@/views/hermes/CredentialsView.vue'),
+    },
+    {
       path: '/hermes/plugins',
       name: 'hermes.plugins',
       component: () => import('@/views/hermes/PluginsView.vue'),
+      meta: { requiresSuperAdmin: true, nonAdminRedirect: 'hermes.connectors' },
     },
     {
       path: '/hermes/memory',
@@ -71,19 +159,22 @@ const router = createRouter({
       component: () => import('@/views/hermes/SettingsView.vue'),
     },
     {
-      path: '/hermes/gateways',
-      name: 'hermes.gateways',
-      component: () => import('@/views/hermes/GatewaysView.vue'),
-    },
-    {
       path: '/hermes/channels',
       name: 'hermes.channels',
       component: () => import('@/views/hermes/ChannelsView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/terminal',
       name: 'hermes.terminal',
       component: () => import('@/views/hermes/TerminalView.vue'),
+      meta: { requiresSuperAdmin: true },
+    },
+    {
+      path: '/hermes/devices',
+      name: 'hermes.devices',
+      component: () => import('@/views/hermes/DevicesView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/group-chat',
@@ -91,14 +182,138 @@ const router = createRouter({
       component: () => import('@/views/hermes/GroupChatView.vue'),
     },
     {
+      path: '/hermes/group-chat/room/:roomId',
+      name: 'hermes.groupChatRoom',
+      component: () => import('@/views/hermes/GroupChatView.vue'),
+    },
+    {
       path: '/hermes/files',
       name: 'hermes.files',
       component: () => import('@/views/hermes/FilesView.vue'),
     },
+    {
+      path: '/hermes/coding-agents',
+      name: 'hermes.codingAgents',
+      component: () => import('@/views/hermes/CodingAgentsView.vue'),
+      meta: { requiresSuperAdmin: true },
+    },
+    {
+      path: '/hermes/version-preview',
+      name: 'hermes.versionPreview',
+      component: () => import('@/views/hermes/VersionPreviewView.vue'),
+      meta: { requiresSuperAdmin: true },
+    },
+    {
+      path: '/hermes/mcp',
+      name: 'hermes.mcp',
+      component: () => import('@/views/hermes/McpManagerView.vue'),
+      meta: { requiresSuperAdmin: true, nonAdminRedirect: 'hermes.connectors' },
+    },
+    {
+      path: '/mcp/oauth/approve',
+      name: 'mcp.oauth.approve',
+      component: () => import('@/views/McpOAuthApprovalView.vue'),
+    },
   ],
 })
 
-router.beforeEach((to, _from, next) => {
+let serverSessionVerified = false
+let serverSessionCheck: Promise<boolean> | null = null
+const PENDING_MCP_OAUTH_REDIRECT = 'hermes_pending_mcp_oauth_redirect'
+
+function rememberMcpOAuthRedirect(to: { name?: unknown; fullPath: string }) {
+  if (to.name !== 'mcp.oauth.approve') return
+  try { sessionStorage.setItem(PENDING_MCP_OAUTH_REDIRECT, to.fullPath) } catch { /* storage unavailable */ }
+}
+
+function takeMcpOAuthRedirect(): string | null {
+  let value = ''
+  try {
+    value = sessionStorage.getItem(PENDING_MCP_OAUTH_REDIRECT) || ''
+    sessionStorage.removeItem(PENDING_MCP_OAUTH_REDIRECT)
+  } catch { return null }
+  try {
+    const url = new URL(value, window.location.origin)
+    const requestId = url.searchParams.get('request_id') || ''
+    return url.pathname === '/mcp/oauth/approve' && /^hma_[A-Za-z0-9_-]{6,120}$/.test(requestId)
+      ? `${url.pathname}${url.search}`
+      : null
+  } catch {
+    return null
+  }
+}
+
+function isServerSessionAuthModeValue(value: unknown): value is 'feishu-oauth-dev' | 'trusted-feishu' {
+  return value === 'feishu-oauth-dev' || value === 'trusted-feishu'
+}
+
+function clearStaleServerSession() {
+  authNavigationReady.value = false
+  routeContentReady.value = false
+  serverSessionVerified = false
+  clearApiKey()
+  clearRuntimeMode()
+}
+
+async function discoverServerSessionMode(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/auth/status', {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+    })
+    if (!res.ok) return false
+    const status = await res.json().catch(() => ({})) as { authMode?: unknown; plane?: unknown }
+    if (!isServerSessionAuthModeValue(status.authMode)) return false
+    setRuntimeMode(status.authMode, typeof status.plane === 'string' ? status.plane : undefined)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function hasValidServerSession(): Promise<boolean> {
+  if (!isServerSessionAuthMode()) return true
+  if (serverSessionVerified) return true
+  if (!serverSessionCheck) {
+    serverSessionCheck = fetch('/api/auth/me', {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+    })
+      .then((res) => {
+        if (res.ok) {
+          serverSessionVerified = true
+          return true
+        }
+        clearStaleServerSession()
+        return false
+      })
+      .catch(() => {
+        clearStaleServerSession()
+        return false
+      })
+      .finally(() => {
+        serverSessionCheck = null
+      })
+  }
+  return serverSessionCheck
+}
+
+export function freshServerSettingsLandingRedirect(discoveredServerSession: boolean, routeName: unknown) {
+  if (discoveredServerSession && isServerSessionAuthMode() && routeName === 'hermes.settings') {
+    return { name: 'hermes.chat' as const, replace: true }
+  }
+  return null
+}
+
+function nonAdminRedirectTarget(to: { meta: Record<string | number | symbol, unknown> }) {
+  const redirect = to.meta.nonAdminRedirect
+  if (typeof redirect === 'string' && redirect.trim()) {
+    return { name: redirect.trim() }
+  }
+  return { name: 'hermes.chat' }
+}
+
+router.beforeEach(async (to, _from, next) => {
   // Public pages don't need auth
   if (to.meta.public) {
     // Already has key, skip login
@@ -110,13 +325,54 @@ router.beforeEach((to, _from, next) => {
     return
   }
 
-  // All other pages require token
-  if (!hasApiKey()) {
+  // All other pages require auth. Feishu OAuth uses an httpOnly cookie instead
+  // of a JS-readable token, so do not gate protected routes on localStorage.
+  let discoveredServerSession = false
+  if (!canAccessProtectedRoutes()) {
+    discoveredServerSession = await discoverServerSessionMode()
+    if (!discoveredServerSession) {
+      rememberMcpOAuthRedirect(to)
+      next({ name: 'login' })
+      return
+    }
+  }
+
+  if (!(await hasValidServerSession())) {
+    rememberMcpOAuthRedirect(to)
     next({ name: 'login' })
     return
   }
 
+  authNavigationReady.value = true
+  if (to.name !== 'mcp.oauth.approve') {
+    const pendingMcpOAuth = takeMcpOAuthRedirect()
+    if (pendingMcpOAuth) {
+      next(pendingMcpOAuth)
+      return
+    }
+  }
+  if (to.meta.requiresSuperAdmin && !isStoredSuperAdmin()) {
+    routeContentReady.value = false
+    next(nonAdminRedirectTarget(to))
+    return
+  }
+
+  const settingsRedirect = freshServerSettingsLandingRedirect(discoveredServerSession, to.name)
+  if (settingsRedirect) {
+    routeContentReady.value = false
+    next(settingsRedirect)
+    return
+  }
+
+  routeContentReady.value = true
   next()
+})
+
+router.afterEach((to) => {
+  if (to.meta.public) {
+    authNavigationReady.value = true
+    routeContentReady.value = true
+  }
 })
 
 export default router

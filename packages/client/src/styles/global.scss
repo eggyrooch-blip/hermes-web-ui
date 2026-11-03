@@ -6,15 +6,47 @@
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url('/fonts/ComicNeue-Regular.ttf') format('truetype');
+  src: url('/fonts/ComicNeue-Bold.ttf') format('truetype');
 }
 
 @font-face {
-  font-family: 'Comic Neue';
+  font-family: 'ZCOOL KuaiLe';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/ZCOOLKuaiLe-Regular.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Zen Maru Gothic';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/ZenMaruGothic-Regular.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Zen Maru Gothic';
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url('/fonts/ComicNeue-Bold.ttf') format('truetype');
+  src: url('/fonts/ZenMaruGothic-Bold.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Gaegu';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/Gaegu-Regular.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Gaegu';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/Gaegu-Bold.ttf') format('truetype');
 }
 
 *,
@@ -52,7 +84,16 @@ html.theme-transitioning *::after {
               box-shadow 0.3s ease, fill 0.3s ease, stroke 0.3s ease !important;
 }
 
-html, body, #app {
+html, body {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+#app {
   height: 100%;
   width: 100%;
   overflow: hidden;
@@ -68,20 +109,34 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-html.comic body {
-  font-weight: var(--comic-font-weight, 700);
+// Teleported overlays must remain clickable above Electron drag regions.
+.hermes-desktop-shell {
+  .n-drawer,
+  .n-drawer *,
+  .n-modal,
+  .n-modal *,
+  .n-dialog,
+  .n-dialog *,
+  .n-popover,
+  .n-popover *,
+  .n-dropdown,
+  .n-dropdown *,
+  .n-select-menu,
+  .n-select-menu *,
+  .n-base-select-menu,
+  .n-base-select-menu *,
+  .n-message-container,
+  .n-message-container *,
+  .n-notification-container,
+  .n-notification-container *,
+  .drawer-overlay,
+  .drawer-panel,
+  .drawer-panel * {
+    -webkit-app-region: no-drag;
+  }
 }
 
-html.comic button,
-html.comic input,
-html.comic select,
-html.comic textarea,
-html.comic a,
-html.comic span,
-html.comic div,
-html.comic label {
-  font-weight: var(--comic-font-weight, 700);
-}
+
 
 code, pre, .mono {
   font-family: $font-code;
@@ -99,9 +154,11 @@ a {
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
+  background: transparent;
 }
 
-::-webkit-scrollbar-track {
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-track-piece {
   background: transparent;
 }
 
@@ -112,6 +169,15 @@ a {
   &:hover {
     background: $text-muted;
   }
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: $border-color transparent;
 }
 
 ::selection {
@@ -152,7 +218,7 @@ a {
 .hamburger-btn {
   display: none;
   position: fixed;
-  top: 10px;
+  top: calc(10px + env(safe-area-inset-top, 0px));
   left: 12px;
   z-index: 99;
   width: 36px;
@@ -177,12 +243,25 @@ a {
   }
 
   .page-header {
-    padding: 16px 12px 16px 52px !important;
+    padding: calc(16px + env(safe-area-inset-top, 0px)) 12px 16px 52px !important;
   }
 
   .input-sm,
   .input-md,
   .input-lg {
     width: 100%;
+  }
+}
+
+// Prevent iOS Safari auto-zoom on input focus by ensuring font-size is at least 16px
+@media (max-width: 768px) {
+  input,
+  textarea,
+  select,
+  .n-input,
+  .n-input__input-element,
+  .n-input__textarea-el,
+  .n-input__textarea-element {
+    font-size: 16px !important;
   }
 }

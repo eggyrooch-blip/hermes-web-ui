@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useFilesStore } from '@/stores/hermes/files'
+import { computed, ref, onMounted } from 'vue'
+import { DEFAULT_EDITOR_SCOPE, useFilesStore } from '@/stores/hermes/files'
 import { useI18n } from 'vue-i18n'
 import { NButton } from 'naive-ui'
 import FileTree from '@/components/hermes/files/FileTree.vue'
@@ -16,12 +16,19 @@ import type { FileEntry } from '@/api/hermes/files'
 
 const filesStore = useFilesStore()
 const { t } = useI18n()
+const props = withDefaults(defineProps<{ editorScopeActive?: boolean, editorScope?: string }>(), {
+  editorScopeActive: true,
+  editorScope: DEFAULT_EDITOR_SCOPE,
+})
+const emit = defineEmits<{ (e: 'editor-opened'): void }>()
+const scopedEditingFile = computed(() => filesStore.getEditingFile(props.editorScope))
 
 const contextMenuRef = ref<InstanceType<typeof FileContextMenu> | null>(null)
 const showUpload = ref(false)
 const showRenameModal = ref(false)
 const renameMode = ref<'newFile' | 'newFolder' | 'rename'>('newFile')
 const renameEntry = ref<FileEntry | null>(null)
+const renameTargetPath = ref<string | null>(null)
 const showSidebar = ref(false)
 
 function handleContextMenu(e: MouseEvent, entry: FileEntry) {
@@ -31,28 +38,48 @@ function handleContextMenu(e: MouseEvent, entry: FileEntry) {
 function handleShowNewFile() {
   renameMode.value = 'newFile'
   renameEntry.value = null
+  renameTargetPath.value = null
   showRenameModal.value = true
 }
 
 function handleShowNewFolder() {
   renameMode.value = 'newFolder'
   renameEntry.value = null
+  renameTargetPath.value = null
+  showRenameModal.value = true
+}
+
+function handleContextNewFolder(entry: FileEntry) {
+  renameMode.value = 'newFolder'
+  renameEntry.value = null
+  renameTargetPath.value = entry.isDir ? entry.path : filesStore.currentPath
   showRenameModal.value = true
 }
 
 function handleRename(entry: FileEntry) {
   renameMode.value = 'rename'
   renameEntry.value = entry
+  renameTargetPath.value = null
   showRenameModal.value = true
 }
 
+function handleEditorOpened() {
+  emit('editor-opened')
+}
+
 onMounted(() => {
-  filesStore.fetchEntries('')
+  void filesStore.fetchEntries('').catch(() => undefined)
 })
 </script>
 
 <template>
   <div class="files-panel-drawer">
+    <!-- Clean artifact preview: when a file/artifact is being previewed it takes
+         over the whole panel (no file tree, no new-file/upload toolbar, no
+         breadcrumb) for a light, WorkBuddy-style view. FilePreview's 关闭 button
+         clears previewFile and returns to the file manager below. -->
+    <FilePreview v-if="filesStore.previewFile" class="files-panel-preview-full" />
+    <template v-else>
     <div
       v-if="showSidebar"
       class="sidebar-overlay"
@@ -87,14 +114,34 @@ onMounted(() => {
       </div>
       <FileBreadcrumb />
       <div class="files-content">
-        <FileEditor v-if="filesStore.editingFile" />
-        <FilePreview v-else-if="filesStore.previewFile" />
-        <FileList v-else @contextmenu-entry="handleContextMenu" />
+        <FileEditor v-if="editorScopeActive && scopedEditingFile" :editor-scope="props.editorScope" />
+        <FileList
+          v-else
+          :allow-edit="editorScopeActive"
+          :double-click-edits="false"
+          :editor-scope="props.editorScope"
+          @editor-opened="handleEditorOpened"
+          @contextmenu-entry="handleContextMenu"
+        />
       </div>
     </div>
-    <FileContextMenu ref="contextMenuRef" @rename="handleRename" />
+    </template>
+    <FileContextMenu
+      ref="contextMenuRef"
+      :allow-edit="editorScopeActive"
+      :editor-scope="props.editorScope"
+      @editor-opened="handleEditorOpened"
+      @rename="handleRename"
+      @new-folder="handleContextNewFolder"
+    />
     <FileUploadModal v-model:show="showUpload" />
-    <FileRenameModal v-model:show="showRenameModal" :mode="renameMode" :entry="renameEntry" />
+    <FileRenameModal
+      v-model:show="showRenameModal"
+      :mode="renameMode"
+      :entry="renameEntry"
+      :target-path="renameTargetPath"
+      :editor-scope="props.editorScope"
+    />
   </div>
 </template>
 
@@ -107,6 +154,13 @@ onMounted(() => {
   min-height: 0;
   overflow: hidden;
   position: relative;
+}
+
+// Clean artifact preview fills the whole panel (no tree / toolbar / breadcrumb).
+.files-panel-preview-full {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
 }
 
 .sidebar-overlay {

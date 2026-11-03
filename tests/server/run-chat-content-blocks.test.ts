@@ -1,0 +1,105 @@
+import { mkdtemp, rm, writeFile } from 'fs/promises'
+import { join } from 'path'
+import { tmpdir } from 'os'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import {
+  buildBrokerMessagesForSession,
+  convertContentBlocks,
+  convertContentBlocksForAgent,
+} from '../../packages/server/src/services/hermes/run-chat/content-blocks'
+
+let tempDir = ''
+
+describe('run chat content blocks', () => {
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'hermes-content-blocks-'))
+  })
+
+  afterEach(async () => {
+    if (tempDir) await rm(tempDir, { recursive: true, force: true })
+  })
+
+  it('keeps API image conversion as base64 input_image only', async () => {
+    const imagePath = join(tempDir, 'image.png')
+    await writeFile(imagePath, Buffer.from([1, 2, 3]))
+
+    const parts = await convertContentBlocks([
+      { type: 'text', text: 'animate this' },
+      { type: 'image', name: 'image.png', path: imagePath, media_type: 'image/png' },
+    ])
+
+    expect(parts).toHaveLength(2)
+    expect(parts[0]).toEqual({ type: 'input_text', text: 'animate this' })
+    expect(parts[1].type).toBe('input_image')
+    expect(parts[1].image_url).toMatch(/^data:image\/png;base64,/)
+    expect(JSON.stringify(parts)).not.toContain('Local image path for tools')
+  })
+
+  it('adds local file path text for bridge agents while preserving the image data', async () => {
+    const imagePath = join(tempDir, 'image.png')
+    await writeFile(imagePath, Buffer.from([1, 2, 3]))
+
+    const parts = await convertContentBlocksForAgent([
+      { type: 'text', text: 'animate this' },
+      { type: 'image', name: 'image.png', path: imagePath, media_type: 'image/png' },
+    ])
+
+    expect(parts).toHaveLength(3)
+    expect(parts[0]).toEqual({ type: 'text', text: 'animate this' })
+    expect(parts[1]).toEqual({
+      type: 'text',
+      text: `[Attached image: image.png]\nLocal image path for tools: ${imagePath}`,
+    })
+    expect(parts[2].type).toBe('image_url')
+    expect(parts[2].image_url?.url).toMatch(/^data:image\/png;base64,/)
+  })
+
+  it('replays stored image uploads as workspace-readable broker history', () => {
+    const storedBlocks = JSON.stringify([
+      { type: 'text', text: '继续分析这张图' },
+      { type: 'image', name: 'receipt.png', path: 'uploads/receipt.png', media_type: 'image/png' },
+    ])
+
+    const messages = buildBrokerMessagesForSession([
+      { id: 1, session_id: 's1', role: 'user', content: storedBlocks, timestamp: 1 },
+    ])
+
+    expect(messages).toEqual([{
+      role: 'user',
+      content: [
+        '继续分析这张图',
+        '[Attached image: receipt.png]',
+        'Local image path for tools: uploads/receipt.png',
+        'If analyzing this image, call vision_analyze with image_url "uploads/receipt.png" directly. Do not use delegate_task for image recognition.',
+      ].join('\n'),
+    }])
+  })
+
+  it('does not replay empty assistant tool-call frames as broker history', () => {
+    const messages = buildBrokerMessagesForSession([
+      { id: 1, session_id: 's1', role: 'user', content: '查一下投放效果', timestamp: 1 },
+      {
+        id: 2,
+        session_id: 's1',
+        role: 'assistant',
+        content: '',
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'execute_code', arguments: '{"preview":"query"}' },
+        }],
+        timestamp: 2,
+      },
+      { id: 3, session_id: 's1', role: 'tool', content: '', tool_call_id: 'call_1', timestamp: 3 },
+      { id: 4, session_id: 's1', role: 'assistant', content: 'online 已登录。', timestamp: 4 },
+      { id: 5, session_id: 's1', role: 'tool', content: '{"ok":true}', tool_call_id: 'call_2', timestamp: 5 },
+    ])
+
+    expect(messages).toEqual([
+      { role: 'user', content: '查一下投放效果' },
+      { role: 'assistant', content: 'online 已登录。' },
+      { role: 'user', content: '[Tool result: {"ok":true}]' },
+    ])
+    expect(JSON.stringify(messages)).not.toContain('tool_calls')
+  })
+})

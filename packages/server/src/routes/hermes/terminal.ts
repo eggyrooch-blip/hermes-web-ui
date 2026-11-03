@@ -1,11 +1,20 @@
 import { WebSocketServer } from 'ws'
 import type { Server as HttpServer } from 'http'
 import { accessSync, chmodSync, constants as fsConstants, existsSync } from 'fs'
-import { dirname, join } from 'path'
-import { getToken } from '../../services/auth'
+import { dirname, join, isAbsolute, resolve as resolvePath } from 'path'
+import { homedir } from 'os'
+import { getActiveProfileDir } from '../../services/hermes/hermes-profile'
+import { getTerminalConfig, type TerminalConfig } from '../../services/hermes/file-provider'
+import { authenticateUserToken, isAuthEnabled } from '../../middleware/user-auth'
 import { logger } from '../../services/logger'
+import { config } from '../../config'
+import { shouldRejectUpgradeOrigin, writeForbiddenOrigin } from '../../security'
 
 let pty: any = null
+
+export function canOpenTerminal(user: { role?: string } | null | undefined): boolean {
+  return user?.role === 'super_admin'
+}
 
 function ensureNodePtySpawnHelperExecutable() {
   if (process.platform !== 'darwin') return
@@ -43,12 +52,16 @@ try {
 // ─── Shell detection ────────────────────────────────────────────
 
 function findShell(): string {
+  // Windows 平台：使用 PowerShell
+  if (process.platform === 'win32') {
+    return 'powershell.exe'
+  }
+
+  // Unix 平台：使用 SHELL 环境变量，或回退到常用 shells
   const candidates = [
     process.env.SHELL,
     '/bin/zsh',
     '/bin/bash',
-    process.platform === 'win32' ? 'powershell.exe' : null,
-    process.platform === 'win32' ? 'cmd.exe' : null,
   ].filter(Boolean) as string[]
 
   for (const shell of candidates) {
@@ -59,6 +72,22 @@ function findShell(): string {
 
 function shellName(shell: string): string {
   return shell.split('/').pop() || 'shell'
+}
+
+export function resolveTerminalCwd(
+  cfg: Pick<TerminalConfig, 'cwd'> = getTerminalConfig(),
+  profileDir = getActiveProfileDir(),
+): string {
+  const configured = cfg.cwd?.trim()
+  const fallback = existsSync(profileDir) ? profileDir : homedir()
+  if (!configured) return fallback
+
+  const cwd = isAbsolute(configured) ? configured : resolvePath(profileDir, configured)
+  if (!existsSync(cwd)) {
+    logger.warn({ cwd }, 'Configured terminal cwd does not exist; falling back to Hermes profile directory')
+    return fallback
+  }
+  return cwd
 }
 
 // ─── Session types ──────────────────────────────────────────────
@@ -91,7 +120,7 @@ function createSession(shell: string): PtySession {
       name: 'xterm-color',
       cols: 80,
       rows: 24,
-      cwd: process.env.HOME || undefined,
+      cwd: resolveTerminalCwd(),
     })
   } catch (err: any) {
     throw new Error(`Failed to spawn shell "${shell}": ${err.message}`)
@@ -127,12 +156,22 @@ export function setupTerminalWebSocket(httpServers: HttpServer | HttpServer[]) {
         return
       }
 
+      if (shouldRejectUpgradeOrigin(req, config.corsOrigins)) {
+        writeForbiddenOrigin(socket)
+        return
+      }
+
       // Auth check
-      const authToken = await getToken()
-      if (authToken) {
+      if (await isAuthEnabled()) {
         const token = url.searchParams.get('token') || ''
-        if (token !== authToken) {
+        const user = await authenticateUserToken(token)
+        if (!user) {
           socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+          socket.destroy()
+          return
+        }
+        if (!canOpenTerminal(user)) {
+          socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
           socket.destroy()
           return
         }
@@ -281,6 +320,11 @@ export function setupTerminalWebSocket(httpServers: HttpServer | HttpServer[]) {
           const cols = Math.max(1, parsed.cols || 0)
           const rows = Math.max(1, parsed.rows || 0)
           try { session.pty.resize(cols, rows) } catch { }
+          break
+        }
+
+        case 'input': {
+          if (typeof parsed.data === 'string') writeRaw(parsed.data)
           break
         }
       }

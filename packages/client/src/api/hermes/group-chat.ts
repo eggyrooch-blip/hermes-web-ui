@@ -23,6 +23,15 @@ export interface RoomAgent {
     invited: number
 }
 
+export interface AgentAddResult {
+    profile: string
+    ok: boolean
+    agent?: RoomAgent
+    code?: string
+    error?: string
+    reason?: string
+}
+
 export interface ChatMessage {
     id: string
     roomId: string
@@ -30,6 +39,23 @@ export interface ChatMessage {
     senderName: string
     content: string
     timestamp: number
+    role?: string
+    tool_call_id?: string | null
+    tool_calls?: any[] | null
+    tool_name?: string | null
+    finish_reason?: 'streaming' | 'tool_calls' | 'error' | string | null
+    reasoning?: string | null
+    reasoning_details?: string | null
+    reasoning_content?: string | null
+    isStreaming?: boolean
+    toolName?: string
+    toolCallId?: string
+    toolArgs?: unknown
+    toolPreview?: string
+    toolResult?: unknown
+    toolStatus?: 'running' | 'done' | 'error'
+    firstSeenAt?: number
+    attachments?: Array<{ id: string; name: string; type: string; size: number; url: string }>
 }
 
 export interface MemberInfo {
@@ -38,6 +64,7 @@ export interface MemberInfo {
     name: string
     description: string
     joinedAt: number
+    avatar?: string
 }
 
 export interface JoinResult {
@@ -52,12 +79,12 @@ export interface JoinResult {
 
 let socket: ReturnType<typeof io> | null = null
 
-export function connectGroupChat(opts?: { userId?: string; userName?: string; description?: string }): ReturnType<typeof io> {
+export function connectGroupChat(opts?: { userId?: string; userName?: string; description?: string; authUserId?: number }): ReturnType<typeof io> {
     if (socket?.connected) return socket
 
     const token = getApiKey()
     const userId = opts?.userId || localStorage.getItem('gc_user_id') || generateUUID()
-    localStorage.setItem('gc_user_id', userId)
+    if (!opts?.userId) localStorage.setItem('gc_user_id', userId)
 
     socket = io('/group-chat', {
         auth: {
@@ -65,12 +92,21 @@ export function connectGroupChat(opts?: { userId?: string; userName?: string; de
             userId,
             name: opts?.userName || localStorage.getItem('gc_user_name') || undefined,
             description: opts?.description || localStorage.getItem('gc_user_description') || undefined,
+            authUserId: opts?.authUserId,
         },
-        transports: ['websocket'],
+        // Feishu/server-session users have no JS-readable JWT (getApiKey() === '');
+        // they authenticate with the httpOnly `hermes_feishu_session` cookie. Send
+        // credentials so that cookie rides the same-origin WebSocket handshake and
+        // the server's authMiddleware can validate it. (JWT-mode users are
+        // unaffected — they still pass auth.token.)
+        withCredentials: true,
+        transports: ['websocket', 'polling'],
         reconnection: true,
         reconnectionAttempts: Infinity,
         reconnectionDelay: 1000,
         reconnectionDelayMax: 30000,
+        randomizationFactor: 0.5,
+        timeout: 30000,
     })
 
     return socket
@@ -115,7 +151,7 @@ export async function createRoom(data: {
     inviteCode: string
     agents?: { profile: string; name?: string; description?: string; invited?: boolean }[]
     compression?: { triggerTokens?: number; maxHistoryTokens?: number; tailMessageCount?: number }
-}): Promise<{ room: RoomInfo; agents: RoomAgent[] }> {
+}): Promise<{ room: RoomInfo; agents: RoomAgent[]; agentResults?: AgentAddResult[] }> {
     return request('/api/hermes/group-chat/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -123,16 +159,31 @@ export async function createRoom(data: {
     })
 }
 
+export async function cloneRoom(roomId: string, data?: { name?: string; inviteCode?: string }): Promise<{ room: RoomInfo; agents: RoomAgent[]; agentResults?: AgentAddResult[] }> {
+    return request(`/api/hermes/group-chat/rooms/${roomId}/clone`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data || {}),
+    })
+}
+
 export async function listRooms(): Promise<{ rooms: RoomInfo[] }> {
     return request('/api/hermes/group-chat/rooms')
 }
 
-export async function getRoomDetail(roomId: string): Promise<{ room: RoomInfo; messages: ChatMessage[]; agents: RoomAgent[]; members: MemberInfo[] }> {
-    return request(`/api/hermes/group-chat/rooms/${roomId}`)
+export async function getRoomDetail(
+    roomId: string,
+    options: { offset?: number; limit?: number } = {},
+): Promise<{ room: RoomInfo; messages: ChatMessage[]; agents: RoomAgent[]; members: MemberInfo[]; total?: number; offset?: number; limit?: number; hasMore?: boolean }> {
+    const params = new URLSearchParams()
+    if (options.offset != null) params.set('offset', String(options.offset))
+    if (options.limit != null) params.set('limit', String(options.limit))
+    const query = params.toString()
+    return request(`/api/hermes/group-chat/rooms/${roomId}${query ? `?${query}` : ''}`)
 }
 
 export async function joinRoomByCode(code: string): Promise<{ room: RoomInfo }> {
-    return request(`/api/hermes/group-chat/rooms/join/${code}`)
+    return request(`/api/hermes/group-chat/rooms/join/${code}`, { method: 'POST' })
 }
 
 export async function updateInviteCode(roomId: string, inviteCode: string): Promise<void> {
@@ -160,7 +211,7 @@ export async function listAgents(roomId: string): Promise<{ agents: RoomAgent[] 
     return request(`/api/hermes/group-chat/rooms/${roomId}/agents`)
 }
 
-export async function removeAgent(roomId: string, agentId: string): Promise<void> {
+export async function removeAgent(roomId: string, agentId: string): Promise<{ success: boolean; agents: RoomAgent[]; members: MemberInfo[] }> {
     return request(`/api/hermes/group-chat/rooms/${roomId}/agents/${agentId}`, {
         method: 'DELETE',
     })
@@ -169,6 +220,12 @@ export async function removeAgent(roomId: string, agentId: string): Promise<void
 export async function deleteRoom(roomId: string): Promise<void> {
     return request(`/api/hermes/group-chat/rooms/${roomId}`, {
         method: 'DELETE',
+    })
+}
+
+export async function clearRoomContext(roomId: string): Promise<{ success: boolean; room: RoomInfo }> {
+    return request(`/api/hermes/group-chat/rooms/${roomId}/clear-context`, {
+        method: 'POST',
     })
 }
 
@@ -185,4 +242,3 @@ export async function forceCompress(roomId: string): Promise<{ success: boolean;
         method: 'POST',
     })
 }
-

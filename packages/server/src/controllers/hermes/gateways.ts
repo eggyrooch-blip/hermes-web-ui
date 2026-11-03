@@ -1,4 +1,14 @@
+import { config } from '../../config'
 import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
+import { GatewayRestartDisabledError } from '../../services/hermes/gateway-restart-guard'
+
+function refuseInBrokerMode(ctx: any): boolean {
+  if (!config.webuiRunBroker) return false
+  const err = new GatewayRestartDisabledError()
+  ctx.status = err.status
+  ctx.body = { error: err.message, code: err.code }
+  return true
+}
 
 export async function list(ctx: any) {
   const mgr = getGatewayManagerInstance()
@@ -8,6 +18,7 @@ export async function list(ctx: any) {
 }
 
 export async function start(ctx: any) {
+  if (refuseInBrokerMode(ctx)) return
   const mgr = getGatewayManagerInstance()
   if (!mgr) { ctx.status = 503; ctx.body = { error: 'GatewayManager not initialized' }; return }
   try {
@@ -17,6 +28,7 @@ export async function start(ctx: any) {
 }
 
 export async function stop(ctx: any) {
+  if (refuseInBrokerMode(ctx)) return
   const mgr = getGatewayManagerInstance()
   if (!mgr) { ctx.status = 503; ctx.body = { error: 'GatewayManager not initialized' }; return }
   try {

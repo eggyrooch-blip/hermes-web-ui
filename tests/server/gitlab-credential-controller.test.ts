@@ -1,0 +1,228 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const originalEnv = process.env
+
+// 评审采纳（grok）：request-context.test.ts 只钉了 plane 闸的路径×动词矩阵，
+// 控制器自身的身份纪律（credential WRITE path）没有定向测试——未来谁“顺手”
+// 从请求体取 open_id 或删掉 openid 检查，矩阵照样全绿。这里逐条钉死。
+async function loadController(env: Record<string, string | undefined> = {}) {
+  vi.resetModules()
+  process.env = {
+    ...originalEnv,
+    // 钉死 auth mode（codex delta 评审）：feishu-oauth-dev / trusted-feishu 会在
+    // config 里强制派生 chat plane，宿主机若带着这类 env 跑测试，
+    // 「非 chat plane」用例就会假失败。'token' 不派生 plane，plane 只由下面这行决定。
+    HERMES_AUTH_MODE: 'token',
+    HERMES_WEB_PLANE: 'chat',
+    HERMES_RUN_BROKER_URL: 'http://127.0.0.1:9',
+    ...env,
+  }
+  return import('../../packages/server/src/controllers/hermes/gitlab-credential')
+}
+
+function mockCtx(user?: { openid?: string }, query?: Record<string, unknown>) {
+  return {
+    state: user ? { user } : {},
+    query: query || {},
+    request: {
+      // 请求体故意塞满“敌意”字段：身份、别人的 profile、以及已废弃的到期日。
+      // 它们一个都不许穿过 BFF。
+      body: {
+        token: 'glpat-x',
+        tier: 'read',
+        expires_on: '2031-11-31',
+        open_id: 'ou_evil',
+        profile_name: 'someone-else',
+      },
+    },
+    status: 200,
+    body: undefined as any,
+  } as any
+}
+
+describe('submitGitlabToken controller (credential WRITE path)', () => {
+  const fetchMock = vi.fn()
+
+  beforeEach(() => {
+    fetchMock.mockReset()
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    process.env = originalEnv
+  })
+
+  it('outside the chat plane the endpoint plays dead (404), broker untouched', async () => {
+    const { submitGitlabToken } = await loadController({ HERMES_WEB_PLANE: undefined })
+    const ctx = mockCtx({ openid: 'ou_alice' })
+    await submitGitlabToken(ctx)
+    expect(ctx.status).toBe(404)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['no session user at all', undefined],
+    ['session user without openid', {}],
+    ['blank openid', { openid: '   ' }],
+  ] as const)('fails closed on %s: 403 and the broker is never called', async (_name, user) => {
+    const { submitGitlabToken } = await loadController()
+    const ctx = mockCtx(user as any)
+    await submitGitlabToken(ctx)
+    expect(ctx.status).toBe(403)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('with a verified openid: stamps it server-side and forwards ONLY token material', async () => {
+    fetchMock.mockResolvedValue({
+      status: 200,
+      text: async () => JSON.stringify({ ok: true }),
+    })
+    const { submitGitlabToken } = await loadController()
+    const ctx = mockCtx({ openid: 'ou_alice' })
+    await submitGitlabToken(ctx)
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    const [url, init] = fetchMock.mock.calls[0] as [string, any]
+    expect(String(url)).toContain('/api/run-broker/credentials/gitlab')
+    expect(init.headers['X-Hermes-Owner-Open-Id']).toBe('ou_alice')
+    // 身份字段和已废弃的 expires_on 都不许过桥——到期日由 broker 从 GitLab 读。
+    expect(JSON.parse(init.body)).toEqual({ token: 'glpat-x', tier: 'read' })
+    expect(ctx.status).toBe(200)
+    expect(ctx.body).toEqual({ ok: true })
+  })
+
+  it('forwards the panel profile as X-Hermes-Profile — a hint, never authority', async () => {
+    fetchMock.mockResolvedValue({
+      status: 200,
+      text: async () => JSON.stringify({ ok: true, profile_scope: 'group' }),
+    })
+    const { submitGitlabToken } = await loadController()
+    const ctx = mockCtx({ openid: 'ou_alice' }, { profile: 'feishu_group_x' })
+    await submitGitlabToken(ctx)
+
+    const [, init] = fetchMock.mock.calls[0] as [string, any]
+    expect(init.headers['X-Hermes-Profile']).toBe('feishu_group_x')
+    // 身份权威不变：owner 仍由 verified session 盖章，body 身份字段仍全剥。
+    expect(init.headers['X-Hermes-Owner-Open-Id']).toBe('ou_alice')
+    expect(JSON.parse(init.body)).toEqual({ token: 'glpat-x', tier: 'read' })
+  })
+
+  it('without a profile query the header is absent — legacy calls byte-identical', async () => {
+    fetchMock.mockResolvedValue({
+      status: 200,
+      text: async () => JSON.stringify({ ok: true }),
+    })
+    const { submitGitlabToken } = await loadController()
+    const ctx = mockCtx({ openid: 'ou_alice' })
+    await submitGitlabToken(ctx)
+
+    const [, init] = fetchMock.mock.calls[0] as [string, any]
+    expect('X-Hermes-Profile' in init.headers).toBe(false)
+  })
+
+  it('a body profile_name never becomes the header — query is the only channel', async () => {
+    fetchMock.mockResolvedValue({
+      status: 200,
+      text: async () => JSON.stringify({ ok: true }),
+    })
+    const { submitGitlabToken } = await loadController()
+    // mockCtx 的 body 里本来就塞着 profile_name: 'someone-else'（敌意字段）
+    const ctx = mockCtx({ openid: 'ou_alice' })
+    await submitGitlabToken(ctx)
+
+    const [, init] = fetchMock.mock.calls[0] as [string, any]
+    expect(init.headers['X-Hermes-Profile']).toBeUndefined()
+    expect(JSON.parse(init.body)).toEqual({ token: 'glpat-x', tier: 'read' })
+  })
+})
+
+describe('GitHub credential controller', () => {
+  const fetchMock = vi.fn()
+
+  beforeEach(() => {
+    fetchMock.mockReset()
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    process.env = originalEnv
+  })
+
+  it('stamps verified identity and strips body-supplied identity on connect', async () => {
+    fetchMock.mockResolvedValue({ status: 200, ok: true, text: async () => JSON.stringify({ ok: true }) })
+    const { submitGithubToken } = await loadController()
+    const ctx = mockCtx({ openid: 'ou_alice' })
+    ctx.request.body.token = 'github_pat_x'
+    await submitGithubToken(ctx)
+    const [url, init] = fetchMock.mock.calls[0] as [string, any]
+    expect(url).toContain('/api/run-broker/credentials/github')
+    expect(init.headers['X-Hermes-Owner-Open-Id']).toBe('ou_alice')
+    expect(JSON.parse(init.body)).toEqual({ token: 'github_pat_x' })
+    expect(ctx.body).toEqual({ ok: true })
+  })
+
+  it('validates and trims the token before the broker boundary', async () => {
+    fetchMock.mockResolvedValue({ status: 200, ok: true, text: async () => JSON.stringify({ ok: true }) })
+    const { submitGithubToken } = await loadController()
+    const valid = mockCtx({ openid: 'ou_alice' })
+    valid.request.body.token = '  github_pat_x  '
+    await submitGithubToken(valid)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ token: 'github_pat_x' })
+
+    for (const token of ['', { token: true }, 'x'.repeat(513), 'github pat']) {
+      fetchMock.mockClear()
+      const invalid = mockCtx({ openid: 'ou_alice' })
+      invalid.request.body.token = token
+      await submitGithubToken(invalid)
+      expect(invalid.status).toBe(400)
+      expect(fetchMock).not.toHaveBeenCalled()
+    }
+  })
+
+  it('forwards the selected profile only as an owner-checked target hint', async () => {
+    fetchMock.mockResolvedValue({ status: 200, ok: true, text: async () => JSON.stringify({ ok: true }) })
+    const { submitGithubToken } = await loadController()
+    const ctx = mockCtx({ openid: 'ou_alice' }, { profile: 'profile_b' })
+    ctx.request.body.token = 'github_pat_x'
+    await submitGithubToken(ctx)
+    const [, init] = fetchMock.mock.calls[0] as [string, any]
+    expect(init.headers['X-Hermes-Profile']).toBe('profile_b')
+    expect(init.headers['X-Hermes-Owner-Open-Id']).toBe('ou_alice')
+  })
+
+  it('whitelists the broker response and never relays echoed secret material', async () => {
+    fetchMock.mockResolvedValue({
+      status: 400,
+      ok: false,
+      text: async () => JSON.stringify({ ok: false, error: 'bad github_pat_leaked', token: 'github_pat_leaked' }),
+    })
+    const { submitGithubToken } = await loadController()
+    const ctx = mockCtx({ openid: 'ou_alice' })
+    ctx.request.body.token = 'github_pat_x'
+    await submitGithubToken(ctx)
+    expect(JSON.stringify(ctx.body)).not.toContain('github_pat_')
+    expect(ctx.body).toEqual({ ok: false, error: 'GitHub 凭据未通过验证' })
+  })
+
+  it('fails closed without verified identity for connect and revoke', async () => {
+    const { revokeGithubToken, submitGithubToken } = await loadController()
+    for (const handler of [submitGithubToken, revokeGithubToken]) {
+      const ctx = mockCtx(undefined)
+      await handler(ctx)
+      expect(ctx.status).toBe(403)
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('revokes only through the owner-stamped DELETE request', async () => {
+    fetchMock.mockResolvedValue({ status: 200, ok: true, text: async () => JSON.stringify({ ok: true, revoked: true }) })
+    const { revokeGithubToken } = await loadController()
+    const ctx = mockCtx({ openid: 'ou_alice' })
+    await revokeGithubToken(ctx)
+    const [, init] = fetchMock.mock.calls[0] as [string, any]
+    expect(init.method).toBe('DELETE')
+    expect(init.headers['X-Hermes-Owner-Open-Id']).toBe('ou_alice')
+    expect(init.body).toBeUndefined()
+  })
+})

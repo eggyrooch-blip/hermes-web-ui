@@ -1,47 +1,175 @@
 <script setup lang="ts">
-import type { Message, ContentBlock } from "@/stores/hermes/chat";
-import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from "vue";
+import type { Message, ContentBlock, Session, WorkspaceDiffInlineFile } from "@/stores/hermes/chat";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
 import { useMessage } from "naive-ui";
-import { downloadFile } from "@/api/hermes/download";
-	import { getApiKey } from "@/api/client";
+import { downloadFile, getDownloadUrl } from "@/api/hermes/download";
 import { copyToClipboard } from "@/utils/clipboard";
-import MarkdownRenderer from "./MarkdownRenderer.vue";
+import FeedbackControl from "./FeedbackControl.vue";
+import SourceRefs from "./SourceRefs.vue";
+import FeishuLinkPreviewCard from "./FeishuLinkPreviewCard.vue";
 import { parseThinking, countThinkingChars } from "@/utils/thinking-parser";
 import { useChatStore } from "@/stores/hermes/chat";
+import { useFilesStore } from "@/stores/hermes/files";
 import { useSettingsStore } from "@/stores/hermes/settings";
 import {
   copyTextToClipboard,
+  extractUnifiedDiffPayload,
   handleCodeBlockCopyClick,
+  inferStructuredLanguage,
   renderHighlightedCodeBlock,
 } from "./highlight";
 import { useGlobalSpeech } from "@/composables/useSpeech";
 import { useVoiceSettings } from "@/composables/useVoiceSettings";
+import { speedToEdgeRate, hzToEdgePitch } from "@/utils/ttsHelpers";
+import { formatChatTimestamp } from "@/utils/chat-timestamp";
+import { extractFeishuUrls, fetchLinkPreviews, stripCardifiedFeishuUrls, type FeishuLinkPreview } from "@/api/hermes/link-previews";
+import ImagePreviewOverlay from "./ImagePreviewOverlay.vue";
 
-const TOOL_PAYLOAD_DISPLAY_LIMIT = 2000;
+// Markdown pulls in markdown-it, KaTeX and highlight.js — load it per message
+// rather than in the entry chunk.
+const MarkdownRenderer = defineAsyncComponent(async () => (await import("./MarkdownRenderer.vue")).default);
 
-const props = defineProps<{ message: Message; highlight?: boolean }>();
+const TOOL_PAYLOAD_DISPLAY_LIMIT = 1000;
+const JSON_STRING_DISPLAY_LIMIT = 200;
+const JSON_MAX_DEPTH = 6;
+const JSON_MAX_NODES = 1000;
+const JSON_MAX_KEYS_PER_OBJECT = 50;
+const JSON_MAX_ITEMS_PER_ARRAY = 50;
+const JSON_TRUNCATED_KEY = "__truncated__";
+
+const props = defineProps<{
+  message: Message;
+  highlight?: boolean;
+  headingIdPrefix?: string;
+  session?: Session | null;
+  feedbackEligible?: boolean;
+}>();
 const { t } = useI18n();
 const toast = useMessage();
+const chatStore = useChatStore();
+const filesStore = useFilesStore();
 
 const isSystem = computed(() => props.message.role === "system");
+const isAgentError = computed(() => props.message.role === "assistant" && props.message.systemType === "error");
+const feedbackSessionId = computed(() => (props.session ?? chatStore.activeSession)?.id || "");
+
+const effectiveHeadingIdPrefix = computed(() => props.headingIdPrefix || `msg-${props.message.id}`);
+const isCommandMessage = computed(() => props.message.role === "command" || props.message.systemType === "command");
+const isCommandError = computed(() => props.message.role === "command" && props.message.systemType === "error");
+const isStatusCommand = computed(() =>
+  isCommandMessage.value
+  && props.message.commandAction === "status"
+  && props.message.commandData?.type !== "goal"
+);
+const isWorkspaceDiffCommand = computed(() => isCommandMessage.value && props.message.commandAction === "workspace.diff");
+const statusItems = computed(() => {
+  const data = props.message.commandData || {};
+  return [
+    { key: "status", value: data.isWorking ? "running" : "idle" },
+    { key: "source", value: data.source },
+    { key: "profile", value: data.profile },
+    { key: "model", value: data.model || "-" },
+    { key: "queue", value: data.queueLength ?? 0 },
+    { key: "run", value: data.runId || "-" },
+  ];
+});
+
+type WorkspaceDiffFileClick = {
+  id: number
+  path: string
+  change_id?: string | null
+  session_id?: string | null
+  additions?: number
+  deletions?: number
+}
+
+const inlineWorkspaceDiffFiles = computed<WorkspaceDiffInlineFile[]>(() => {
+  const messageRunId = typeof props.message.runId === "string" ? props.message.runId : "";
+  const session = props.session ?? chatStore.activeSession;
+  return session ? chatStore.workspaceDiffFilesForRun(session.id, messageRunId) : [];
+});
+
+async function openWorkspaceDiffFile(file: WorkspaceDiffFileClick): Promise<void> {
+  const session = props.session ?? chatStore.activeSession;
+  const displayPath = `/workspace/${String(file.path).replace(/^\/+/, "")}`;
+  const fileName = String(file.path).split("/").filter(Boolean).pop() || String(file.path);
+  await filesStore.previewWorkspaceDiffFile({
+    displayPath,
+    fileName,
+    changeId: String(file.change_id || ""),
+    fileId: file.id,
+    sessionId: String(file.session_id || session?.id || ""),
+    profile: props.session?.profile,
+  });
+}
+
+type DisplayContentFile = {
+  type: 'image' | 'file'
+  name: string
+  path?: string
+  url?: string
+}
+
+function getBlockText(block: any): string {
+  if (!block || typeof block !== 'object') return ''
+  if (block.type === 'text' || block.type === 'input_text') {
+    return typeof block.text === 'string' ? block.text : ''
+  }
+  return ''
+}
+
+function getImageUrlFromBlock(block: any): string | null {
+  if (!block || typeof block !== 'object') return null
+  if (block.type !== 'input_image' && block.type !== 'image_url') return null
+  const raw = block.image_url
+  if (typeof raw === 'string') return raw
+  if (raw && typeof raw === 'object' && typeof raw.url === 'string') return raw.url
+  return null
+}
+
+function imageNameFromDataUrl(url: string, index: number): string {
+  const match = url.match(/^data:image\/([^;,]+)/i)
+  const ext = match?.[1] === 'jpeg' ? 'jpg' : match?.[1] || 'png'
+  return `image-${index + 1}.${ext}`
+}
+
+function parseContentBlocks(content: string): Array<ContentBlock | Record<string, unknown>> | null {
+  const trimmed = content.trim()
+  if (!trimmed) return null
+
+  const parse = (value: string) => {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) && parsed.length > 0 && 'type' in parsed[0]
+      ? parsed as Array<ContentBlock | Record<string, unknown>>
+      : null
+  }
+
+  try {
+    return parse(trimmed)
+  } catch {
+    // Hermes Agent stored some multimodal user messages via Python str(list),
+    // e.g. [{'type': 'text'}, {'type': 'image_url', ...}]. Convert that
+    // legacy repr into JSON for display only.
+    if (!trimmed.startsWith("[{'") && !trimmed.startsWith('[{"')) return null
+    try {
+      return parse(
+        trimmed
+          .replace(/\bNone\b/g, 'null')
+          .replace(/\bTrue\b/g, 'true')
+          .replace(/\bFalse\b/g, 'false')
+          .replace(/'/g, '"'),
+      )
+    } catch {
+      return null
+    }
+  }
+}
 
 // Parse ContentBlock[] from JSON string
 const contentBlocks = computed(() => {
   const content = props.message.content || '';
-  if (!content.trim()) return null;
-
-  try {
-    // Try to parse as ContentBlock[] array
-    const parsed = JSON.parse(content);
-    if (Array.isArray(parsed) && parsed.length > 0 && 'type' in parsed[0]) {
-      return parsed as ContentBlock[];
-    }
-  } catch {
-    // Not valid JSON, treat as plain text
-  }
-
-  return null;
+  return parseContentBlocks(content);
 });
 
 // Check if content is in ContentBlock[] format
@@ -55,32 +183,103 @@ const displayText = computed(() => {
 
   // Extract text from blocks
   return contentBlocks.value!
-    .filter(block => block.type === 'text')
-    .map(block => block.text)
+    .map(block => getBlockText(block))
+    .filter(Boolean)
     .join('\n');
 });
 
+const messageLinkPreviews = ref<FeishuLinkPreview[]>([]);
+let linkPreviewRequest = 0;
+
+function feishuUrls(text: string): string[] {
+  return extractFeishuUrls(text);
+}
+
+const messageFeishuUrls = computed(() => props.message.role === 'user' ? feishuUrls(displayText.value) : []);
+const visibleUserText = computed(() => stripCardifiedFeishuUrls(displayText.value, messageFeishuUrls.value));
+
+watch(
+  [messageFeishuUrls, () => (props.session ?? chatStore.activeSession)?.profile],
+  async ([urls, profile]) => {
+    const requestId = ++linkPreviewRequest;
+    if (!urls.length) {
+      messageLinkPreviews.value = [];
+      return;
+    }
+    try {
+      const result = await fetchLinkPreviews(urls, profile || undefined);
+      if (requestId === linkPreviewRequest) messageLinkPreviews.value = result.previews;
+    } catch {
+      if (requestId === linkPreviewRequest) {
+        messageLinkPreviews.value = urls.map(url => ({
+          kind: 'feishu', title: '', type_label: '飞书链接', url, status: 'generic',
+        }));
+      }
+    }
+  },
+  { immediate: true },
+);
+
 // Extract files from ContentBlock[]
-const contentFiles = computed(() => {
+const contentFiles = computed<DisplayContentFile[] | null>(() => {
   if (!isContentBlockArray.value) return null;
 
-  return contentBlocks.value!.filter(block => block.type === 'image' || block.type === 'file');
+  return contentBlocks.value!.flatMap<DisplayContentFile>((block, index) => {
+    if (block.type === 'image') {
+      return [{
+        type: 'image' as const,
+        name: String((block as any).name || `image-${index + 1}`),
+        path: String((block as any).path || ''),
+      }].filter(file => file.path)
+    }
+    if (block.type === 'file') {
+      return [{
+        type: 'file' as const,
+        name: String((block as any).name || `file-${index + 1}`),
+        path: String((block as any).path || ''),
+      }].filter(file => file.path)
+    }
+    const imageUrl = getImageUrlFromBlock(block)
+    if (imageUrl?.startsWith('data:image/')) {
+      return [{
+        type: 'image' as const,
+        name: imageNameFromDataUrl(imageUrl, index),
+        url: imageUrl,
+      }]
+    }
+    return []
+  });
 });
 
-// Generate download URL with auth token
-function getDownloadUrl(path: string, name: string): string {
-	const token = getApiKey();
-	const base = `/api/hermes/download?path=${encodeURIComponent(path)}&name=${encodeURIComponent(name)}`;
-	return token ? `${base}&token=${encodeURIComponent(token)}` : base;
+function getContentFileUrl(file: DisplayContentFile): string {
+  if (file.url) return file.url
+  return file.path ? getDownloadUrl(file.path, file.name) : ''
 }
 
 const toolExpanded = ref(false);
 const previewUrl = ref<string | null>(null);
 
-const chatStore = useChatStore();
 const settingsStore = useSettingsStore();
 const speech = useGlobalSpeech();
 const voiceSettings = useVoiceSettings();
+// Agent (assistant) bubbles show the AGENT's own logo — per agent (Hermes / Codex /
+// Claude), matching the session list — never the user's own profile/Feishu avatar (which
+// in multitenancy made the agent wear the user's face). Same logic as
+// SessionListItem.sessionAgentLogo, keyed on the message's own session (props.session,
+// passed by history lists) and falling back to the active chat session.
+const agentLogo = computed(() => {
+  const session = props.session ?? chatStore.activeSession;
+  if (session?.source === "coding_agent") {
+    if (session.codingAgentId === "codex" || session.agent === "codex") {
+      return { label: "Codex", src: "/coding-agents/codex-openai.png" };
+    }
+    return { label: "Claude Code", src: "/coding-agents/claude-code.svg" };
+  }
+  if (session?.expertAvatar) {
+    return { label: session.expertLabel || session.expertId || "Expert", src: session.expertAvatar };
+  }
+  return { label: "Hermes", src: "/coding-agents/hermes.png" };
+});
 
 // Copy entire bubble content
 const copyableContent = computed(() => {
@@ -187,10 +386,7 @@ function formatDuration(ms: number): string {
   return r === 0 ? `${m}m` : `${m}m ${r}s`;
 }
 
-const timeStr = computed(() => {
-  const d = new Date(props.message.timestamp);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-});
+const timeStr = computed(() => formatChatTimestamp(props.message.timestamp));
 
 function isImage(type: string): boolean {
   return type.startsWith("image/");
@@ -259,35 +455,141 @@ type ToolPayload = {
   language?: string;
 };
 
-function formatToolPayload(raw?: string): ToolPayload {
-  if (!raw) {
+function truncateLongString(value: string, marker: string): string {
+  return value.length > JSON_STRING_DISPLAY_LIMIT
+    ? value.slice(0, JSON_STRING_DISPLAY_LIMIT) + "\n" + marker
+    : value;
+}
+
+function truncateJsonValue(value: unknown, marker: string): unknown {
+  let nodeCount = 0;
+  const seen = new WeakSet<object>();
+
+  function stringifyLength(candidate: unknown): number {
+    return JSON.stringify(candidate, null, 2).length;
+  }
+
+  function visit(current: unknown, depth: number): unknown {
+    nodeCount += 1;
+    if (nodeCount > JSON_MAX_NODES) {
+      return marker;
+    }
+
+    if (typeof current === "string") return truncateLongString(current, marker);
+    if (current === null || typeof current !== "object") return current;
+
+    if (seen.has(current)) return `[Circular ${marker}]`;
+    if (depth >= JSON_MAX_DEPTH) {
+      return Array.isArray(current) ? `[Array ${marker}]` : `[Object ${marker}]`;
+    }
+
+    seen.add(current);
+
+    if (Array.isArray(current)) {
+      const result: unknown[] = [];
+      const maxItems = Math.min(current.length, JSON_MAX_ITEMS_PER_ARRAY);
+      for (let i = 0; i < maxItems; i += 1) {
+        const remaining = current.length - i;
+        result.push(visit(current[i], depth + 1));
+        if (stringifyLength(result) > TOOL_PAYLOAD_DISPLAY_LIMIT) {
+          result.pop();
+          result.push(`${marker}: ${remaining} more items`);
+          seen.delete(current);
+          return result;
+        }
+      }
+      if (current.length > maxItems) {
+        result.push(`${marker}: ${current.length - maxItems} more items`);
+      }
+      seen.delete(current);
+      return result;
+    }
+
+    const entries = Object.entries(current as Record<string, unknown>);
+    const result: Record<string, unknown> = {};
+    const maxKeys = Math.min(entries.length, JSON_MAX_KEYS_PER_OBJECT);
+    for (let i = 0; i < maxKeys; i += 1) {
+      const [key, val] = entries[i];
+      const remaining = entries.length - i;
+      result[key] = visit(val, depth + 1);
+      if (stringifyLength(result) > TOOL_PAYLOAD_DISPLAY_LIMIT) {
+        delete result[key];
+        result[JSON_TRUNCATED_KEY] = `${marker}: ${remaining} more keys`;
+        seen.delete(current);
+        return result;
+      }
+    }
+    if (entries.length > maxKeys) {
+      result[JSON_TRUNCATED_KEY] = `${marker}: ${entries.length - maxKeys} more keys`;
+    }
+    seen.delete(current);
+    return result;
+  }
+
+  const truncated = visit(value, 0);
+  if (stringifyLength(truncated) <= TOOL_PAYLOAD_DISPLAY_LIMIT) return truncated;
+  return { [JSON_TRUNCATED_KEY]: marker };
+}
+
+function normalizeToolPayload(raw: unknown): string {
+  if (raw === null || raw === undefined || raw === "") return "";
+  if (typeof raw === "string") return raw;
+  try {
+    const serialized = JSON.stringify(raw);
+    if (serialized !== undefined) return serialized;
+  } catch {
+    // Fall through to String(raw) for non-serializable runtime payloads.
+  }
+  return String(raw);
+}
+
+function formatToolPayload(raw?: unknown, extractDiff = false): ToolPayload {
+  const text = normalizeToolPayload(raw);
+  if (!text) {
     return { full: "", display: "" };
   }
 
-  try {
-    const full = JSON.stringify(JSON.parse(raw), null, 2);
-    return {
-      full,
-      display:
-        full.length > TOOL_PAYLOAD_DISPLAY_LIMIT
-          ? full.slice(0, TOOL_PAYLOAD_DISPLAY_LIMIT) + "\n" + t("chat.truncated")
-          : full,
-      language: "json",
-    };
-  } catch {
-    return {
-      full: raw,
-      display:
-        raw.length > TOOL_PAYLOAD_DISPLAY_LIMIT
-          ? raw.slice(0, TOOL_PAYLOAD_DISPLAY_LIMIT) + "\n" + t("chat.truncated")
-          : raw,
-    };
+  const shouldParseJson = typeof raw !== "string" || /^[\[{]/.test(text.trim());
+  if (shouldParseJson) {
+    try {
+      const parsed = JSON.parse(text);
+      const full = JSON.stringify(parsed, null, 2);
+      const extractedDiff = extractDiff ? extractUnifiedDiffPayload(parsed) : null;
+      if (extractedDiff) {
+        return {
+          full,
+          display: extractedDiff,
+          language: "diff",
+        };
+      }
+      const display = full.length > TOOL_PAYLOAD_DISPLAY_LIMIT
+        ? JSON.stringify(truncateJsonValue(parsed, t("chat.truncated")), null, 2)
+        : full;
+      return {
+        full,
+        display,
+        language: "json",
+      };
+    } catch {
+      // Fall through to text rendering for non-JSON strings.
+    }
   }
+
+  const language = inferStructuredLanguage(text);
+  return {
+    full: text,
+    display:
+      language === "diff" || text.length <= TOOL_PAYLOAD_DISPLAY_LIMIT
+        ? text
+        : text.slice(0, TOOL_PAYLOAD_DISPLAY_LIMIT) + "\n" + t("chat.truncated"),
+    language,
+  };
 }
 
 function renderToolPayload(content: string, language?: string): string {
   return renderHighlightedCodeBlock(content, language, t("common.copy"), {
     maxHighlightLength: TOOL_PAYLOAD_DISPLAY_LIMIT,
+    formatDiffFoldLabel: (hiddenCount) => t("chat.unchangedLines", { count: hiddenCount }),
   });
 }
 
@@ -323,12 +625,12 @@ const hasAttachments = computed(
   () => (props.message.attachments?.length ?? 0) > 0,
 );
 
-const hasToolDetails = computed(
-  () => !!(props.message.toolArgs || props.message.toolResult),
-);
-
 const toolArgsPayload = computed(() => formatToolPayload(props.message.toolArgs));
-const toolResultPayload = computed(() => formatToolPayload(props.message.toolResult));
+const toolResultPayload = computed(() => formatToolPayload(props.message.toolResult, true));
+
+const hasToolDetails = computed(
+  () => !!(toolArgsPayload.value.full || toolResultPayload.value.full),
+);
 
 const fullToolArgs = computed(() => toolArgsPayload.value.full);
 const formattedToolArgs = computed(() => toolArgsPayload.value.display);
@@ -356,22 +658,22 @@ const canPlaySpeech = computed(() => {
   // 只有 assistant 消息可以播放
   if (props.message.role !== 'assistant') return false
   if (!copyableContent.value) return false
-  // OpenAI / Custom / Edge 不依赖浏览器 Web Speech API
-  if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge') return true
+  // OpenAI / Custom / Edge / MiMo 不依赖浏览器 Web Speech API
+  if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge' || voiceSettings.provider.value === 'mimo') return true
   return speech.isSupported
 })
 
 const isPlayingThisMessage = computed(() => {
-  // OpenAI / Custom / Edge 模式
-  if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge') {
+  // OpenAI / Custom / Edge / MiMo 模式
+  if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge' || voiceSettings.provider.value === 'mimo') {
     return speech.currentCustomMessageId.value === props.message.id && speech.isCustomPlaying.value
   }
   return speech.currentMessageId.value === props.message.id && speech.isPlaying.value
 })
 
 const isPausedThisMessage = computed(() => {
-  // OpenAI / Custom / Edge 模式
-  if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge') {
+  // OpenAI / Custom / Edge / MiMo 模式
+  if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge' || voiceSettings.provider.value === 'mimo') {
     return speech.currentCustomMessageId.value === props.message.id && speech.isCustomPaused.value
   }
   return speech.currentMessageId.value === props.message.id && speech.isPaused.value
@@ -391,6 +693,7 @@ function handleSpeechToggle() {
       return
     }
     speech.openaiToggle(props.message.id, content, {
+      provider: 'openai',
       baseUrl: voiceSettings.openaiBaseUrl.value,
       apiKey: voiceSettings.openaiApiKey.value,
       model: voiceSettings.openaiModel.value,
@@ -407,6 +710,7 @@ function handleSpeechToggle() {
       return
     }
     speech.openaiToggle(props.message.id, content, {
+      provider: 'custom',
       baseUrl: voiceSettings.customUrl.value,
       apiKey: voiceSettings.customApiKey.value || undefined,
     })
@@ -418,21 +722,38 @@ function handleSpeechToggle() {
     // URL 为空时使用内建后端代理
     const apiUrl = voiceSettings.edgeUrl.value || '/api/tts/proxy'
     speech.openaiToggle(props.message.id, content, {
+      provider: 'edge',
       baseUrl: apiUrl,
       voice: voiceSettings.edgeVoice.value,
+      rate: speedToEdgeRate(voiceSettings.edgeRate.value),
+      pitch: hzToEdgePitch(voiceSettings.edgePitchHz.value),
+    })
+    return
+  }
+
+  // MiMo TTS 模式
+  if (voiceSettings.provider.value === 'mimo') {
+    const apiKey = voiceSettings.mimoApiKey.value
+    speech.mimoToggle(props.message.id, content, {
+      baseUrl: voiceSettings.mimoBaseUrl.value,
+      apiKey: apiKey || undefined,
+      authMode: voiceSettings.mimoAuthMode.value,
+      model: voiceSettings.mimoModel.value,
+      voiceMode: voiceSettings.mimoModel.value === 'mimo-v2.5-tts-voicedesign' ? 'voiceDesign' : voiceSettings.mimoModel.value === 'mimo-v2.5-tts-voiceclone' ? 'voiceClone' : 'preset',
+      voice: voiceSettings.mimoVoice.value,
+      voiceDesignDesc: voiceSettings.mimoVoiceDesignDesc.value || undefined,
+      voiceCloneDataUri: voiceSettings.mimoVoiceCloneDataUri.value || undefined,
+      voiceCloneFormat: voiceSettings.mimoVoiceCloneFormat.value,
+      stylePrompt: voiceSettings.mimoStylePrompt.value || undefined,
     })
     return
   }
 
   // Web Speech API 模式
   if (voiceSettings.provider.value === 'webspeech') {
-    const text = speech.extractReadableText(content)
-    if (text) {
-      speech.stop(false)
-      speech.speakViaBrowser(props.message.id, text, {
-        voiceName: voiceSettings.webspeechVoice.value || undefined,
-      })
-    }
+    speech.toggleBrowser(props.message.id, content, {
+      voiceName: voiceSettings.webspeechVoice.value || undefined,
+    })
     return
   }
 
@@ -443,6 +764,11 @@ function handleSpeechToggle() {
 // 监听自动播放事件
 let autoPlayHandler: ((e: Event) => void) | null = null
 
+function handleAutoplayTtsError(err: unknown) {
+  if (err instanceof Error && err.name === 'AbortError') return
+  console.warn('[MessageItem] TTS autoplay failed:', err)
+}
+
 onMounted(() => {
   autoPlayHandler = (e: Event) => {
     const customEvent = e as CustomEvent<{ messageId: string; content: string }>
@@ -450,23 +776,42 @@ onMounted(() => {
       const content = customEvent.detail.content || props.message.content || ''
       if (voiceSettings.provider.value === 'openai') {
         const apiUrl = voiceSettings.openaiBaseUrl.value
-        if (apiUrl) speech.openaiPlay(props.message.id, content, {
+        if (apiUrl) void speech.openaiPlay(props.message.id, content, {
+          provider: 'openai',
           baseUrl: voiceSettings.openaiBaseUrl.value,
           apiKey: voiceSettings.openaiApiKey.value,
           model: voiceSettings.openaiModel.value,
           voice: voiceSettings.openaiVoice.value,
-        })
+        }).catch(handleAutoplayTtsError)
       } else if (voiceSettings.provider.value === 'custom') {
         const apiUrl = voiceSettings.customUrl.value
-        if (apiUrl) speech.openaiPlay(props.message.id, content, {
+        if (apiUrl) void speech.openaiPlay(props.message.id, content, {
+          provider: 'custom',
           baseUrl: voiceSettings.customUrl.value,
           apiKey: voiceSettings.customApiKey.value || undefined,
-        })
+        }).catch(handleAutoplayTtsError)
       } else if (voiceSettings.provider.value === 'edge') {
-        speech.openaiPlay(props.message.id, content, {
+        void speech.openaiPlay(props.message.id, content, {
+          provider: 'edge',
           baseUrl: '/api/tts/proxy',
           voice: voiceSettings.edgeVoice.value,
-        })
+          rate: speedToEdgeRate(voiceSettings.edgeRate.value),
+          pitch: hzToEdgePitch(voiceSettings.edgePitchHz.value),
+        }).catch(handleAutoplayTtsError)
+      } else if (voiceSettings.provider.value === 'mimo') {
+        const apiKey = voiceSettings.mimoApiKey.value
+        void speech.mimoPlay(props.message.id, content, {
+          baseUrl: voiceSettings.mimoBaseUrl.value,
+          apiKey: apiKey || undefined,
+          authMode: voiceSettings.mimoAuthMode.value,
+          model: voiceSettings.mimoModel.value,
+          voiceMode: voiceSettings.mimoModel.value === 'mimo-v2.5-tts-voicedesign' ? 'voiceDesign' : voiceSettings.mimoModel.value === 'mimo-v2.5-tts-voiceclone' ? 'voiceClone' : 'preset',
+          voice: voiceSettings.mimoVoice.value,
+          voiceDesignDesc: voiceSettings.mimoVoiceDesignDesc.value || undefined,
+          voiceCloneDataUri: voiceSettings.mimoVoiceCloneDataUri.value || undefined,
+          voiceCloneFormat: voiceSettings.mimoVoiceCloneFormat.value,
+          stylePrompt: voiceSettings.mimoStylePrompt.value || undefined,
+        }).catch(handleAutoplayTtsError)
       } else if (voiceSettings.provider.value === 'webspeech') {
         const text = speech.extractReadableText(content)
         if (text) {
@@ -488,7 +833,7 @@ onBeforeUnmount(() => {
   if (autoPlayHandler) {
     window.removeEventListener('auto-play-speech', autoPlayHandler)
   }
-  if (speech.currentMessageId.value === props.message.id) {
+  if (speech.currentMessageId.value === props.message.id || speech.currentCustomMessageId.value === props.message.id) {
     speech.stop();
   }
 });
@@ -496,6 +841,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div
+    v-if="!isWorkspaceDiffCommand"
     class="message"
     :class="[message.role, { highlight }]"
     :id="`message-${message.id}`"
@@ -562,12 +908,21 @@ onBeforeUnmount(() => {
       <div class="msg-body">
         <img
           v-if="message.role === 'assistant'"
-          src="/logo.png"
-          alt="Hermes"
-          class="msg-avatar"
-        />
+          class="msg-avatar msg-agent-logo"
+          :src="agentLogo.src"
+          :alt="agentLogo.label"
+        >
         <div class="msg-content" :class="message.role">
-          <div class="message-bubble" :class="{ system: isSystem, 'speech-playing': isPlayingThisMessage && !isPausedThisMessage }">
+          <div
+            class="message-bubble"
+            :class="{
+              system: isSystem,
+              'agent-error': isAgentError,
+              command: isCommandMessage,
+              'command-error': isCommandError,
+              'speech-playing': isPlayingThisMessage && !isPausedThisMessage,
+            }"
+          >
             <div v-if="hasAttachments" class="msg-attachments">
               <div
                 v-for="att in message.attachments"
@@ -649,10 +1004,21 @@ onBeforeUnmount(() => {
             <MarkdownRenderer
               v-if="parsedThinking.body && message.role === 'assistant'"
               :content="parsedThinking.body"
+              :heading-id-prefix="effectiveHeadingIdPrefix"
+              :workspace-diff-files="inlineWorkspaceDiffFiles"
+              @workspace-diff-file-click="openWorkspaceDiffFile"
             />
 
             <!-- Render user message content -->
             <template v-if="message.role === 'user'">
+              <div v-if="messageLinkPreviews.length" class="message-feishu-link-previews">
+                <FeishuLinkPreviewCard
+                  v-for="preview in messageLinkPreviews"
+                  :key="preview.url"
+                  class="message-feishu-link-preview"
+                  :preview="preview"
+                />
+              </div>
               <!-- ContentBlock[] format -->
               <template v-if="isContentBlockArray">
                 <div v-if="contentFiles && contentFiles.length > 0" class="msg-attachments">
@@ -664,16 +1030,16 @@ onBeforeUnmount(() => {
                   >
                     <template v-if="file.type === 'image'">
                       <img
-                        :src="getDownloadUrl(file.path, file.name)"
+                        :src="getContentFileUrl(file)"
                         :alt="file.name"
                         class="msg-attachment-thumb"
-                        @click="previewUrl = getDownloadUrl(file.path, file.name)"
+                        @click="previewUrl = getContentFileUrl(file)"
                       />
                     </template>
                     <template v-else>
                       <div
                         class="msg-attachment-file"
-                        @click="downloadFile(file.path, file.name).catch(err => toast.error(err.message || t('download.downloadFailed')))"
+                        @click="file.path && downloadFile(file.path, file.name).catch(err => toast.error(err.message || t('download.downloadFailed')))"
                         style="cursor: pointer;"
                         :title="t('download.downloadFile')"
                       >
@@ -686,22 +1052,58 @@ onBeforeUnmount(() => {
                     </template>
                   </div>
                 </div>
-                <MarkdownRenderer v-if="displayText" :content="displayText" />
+                <MarkdownRenderer v-if="visibleUserText" :content="visibleUserText" />
               </template>
               <!-- Plain text format -->
-              <MarkdownRenderer v-else-if="message.content" :content="message.content" />
+              <MarkdownRenderer v-else-if="visibleUserText" :content="visibleUserText" />
             </template>
 
             <!-- Render assistant message content -->
             <MarkdownRenderer
-              v-if="message.role === 'assistant' && message.content && !parsedThinking.body"
+              v-if="message.role === 'assistant' && (message.content || inlineWorkspaceDiffFiles.length > 0) && !parsedThinking.body"
+              :content="message.content"
+              :heading-id-prefix="effectiveHeadingIdPrefix"
+              :workspace-diff-files="inlineWorkspaceDiffFiles"
+              @workspace-diff-file-click="openWorkspaceDiffFile"
+            />
+
+            <!-- Render system message content -->
+            <MarkdownRenderer
+              v-if="message.role === 'system' && message.content && !isCommandMessage"
               :content="message.content"
             />
+            <div v-if="isStatusCommand" class="command-result command-status">
+              <span class="command-result-icon">/</span>
+              <div class="command-status-grid">
+                <span
+                  v-for="item in statusItems"
+                  :key="item.key"
+                  class="command-status-item"
+                >
+                  <span class="command-status-key">{{ item.key }}</span>
+                  <span class="command-status-value">{{ item.value }}</span>
+                </span>
+              </div>
+            </div>
+            <div v-else-if="isCommandMessage && message.content" class="command-result">
+              <span class="command-result-icon">/</span>
+              <MarkdownRenderer :content="message.content" />
+            </div>
 
             <span v-if="message.isStreaming && !message.content" class="streaming-dots">
               <span></span><span></span><span></span>
             </span>
           </div>
+          <SourceRefs
+            v-if="message.role === 'assistant' && !message.isStreaming && message.sourceRefs?.length && feedbackSessionId"
+            :refs="message.sourceRefs"
+            :session-id="feedbackSessionId"
+          />
+          <FeedbackControl
+            v-if="feedbackEligible && feedbackSessionId && message.runId"
+            :session-id="feedbackSessionId"
+            :run-id="message.runId"
+          />
           <div class="message-meta">
             <button
               v-if="canPlaySpeech"
@@ -735,11 +1137,12 @@ onBeforeUnmount(() => {
       </div>
     </template>
   </div>
-  <Teleport to="body">
-    <div v-if="previewUrl" class="image-preview-overlay" @click.self="previewUrl = null">
-      <img :src="previewUrl" class="image-preview-img" @click="previewUrl = null" />
-    </div>
-  </Teleport>
+  <ImagePreviewOverlay
+    v-if="previewUrl"
+    :src="previewUrl"
+    alt=""
+    @close="previewUrl = null"
+  />
 </template>
 
 <style scoped lang="scss">
@@ -749,6 +1152,8 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   position: relative;
+  min-width: 0;
+  max-width: 100%;
 
   &.user {
     align-items: flex-end;
@@ -787,9 +1192,24 @@ onBeforeUnmount(() => {
       margin-top: 2px;
     }
 
+    .msg-avatar.msg-agent-logo {
+      border-radius: 50%;
+      object-fit: contain;
+      background: #fff;
+      padding: 4px;
+      box-sizing: border-box;
+      border: 1px solid var(--border-light, rgba(0, 0, 0, 0.08));
+    }
+
     .message-bubble {
       background-color: $msg-assistant-bg;
       border-radius: 10px;
+    }
+
+    .message-bubble.agent-error {
+      color: $error;
+      background-color: rgba(var(--error-rgb), 0.06);
+      border: 1px solid rgba(var(--error-rgb), 0.2);
     }
   }
 
@@ -798,6 +1218,10 @@ onBeforeUnmount(() => {
   }
 
   &.system {
+    align-items: flex-start;
+  }
+
+  &.command {
     align-items: flex-start;
   }
 
@@ -825,12 +1249,16 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   gap: 8px;
   max-width: 85%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .msg-content {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .message-bubble {
@@ -838,8 +1266,10 @@ onBeforeUnmount(() => {
   font-size: 14px;
   line-height: 1.65;
   word-break: break-word;
+  overflow-wrap: anywhere;
   border-radius: 10px;
   max-width: 100%;
+  min-width: 0;
   position: relative;
   box-sizing: border-box;
 
@@ -850,6 +1280,34 @@ onBeforeUnmount(() => {
     background-color: rgba(var(--warning-rgb), 0.06);
   }
 
+  &.command {
+    border-left: none;
+    border: 1px solid rgba(var(--accent-primary-rgb), 0.12);
+    background-color: rgba(var(--accent-primary-rgb), 0.04);
+    color: $text-secondary;
+    max-width: min(100%, 960px);
+    padding: 8px 10px;
+  }
+
+  &.command-error {
+    border-color: rgba(var(--warning-rgb), 0.28);
+    background-color: rgba(var(--warning-rgb), 0.06);
+  }
+
+  &.agent-error {
+    color: $error;
+    background-color: rgba(var(--error-rgb), 0.06);
+    border: 1px solid rgba(var(--error-rgb), 0.2);
+
+    :deep(.markdown-body),
+    :deep(.markdown-body p),
+    :deep(.markdown-body li),
+    :deep(.markdown-body strong),
+    :deep(.markdown-body code) {
+      color: $error;
+    }
+  }
+
   &.speech-playing {
     box-shadow:
       0 0 0 2px #ff6b6b,
@@ -857,6 +1315,81 @@ onBeforeUnmount(() => {
       0 0 20px rgba(255, 107, 107, 0.2);
     animation: rainbow-glow 4s linear infinite;
   }
+}
+
+.message-feishu-link-previews {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.command-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+
+  :deep(.markdown-body) {
+    min-width: 0;
+  }
+
+  :deep(.markdown-body p) {
+    margin: 0;
+  }
+}
+
+.command-status {
+  align-items: center;
+}
+
+.command-status-grid {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: thin;
+}
+
+.command-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid rgba(var(--accent-primary-rgb), 0.1);
+  border-radius: 999px;
+  background: rgba(var(--accent-primary-rgb), 0.035);
+  line-height: 1.4;
+}
+
+.command-status-key {
+  color: $text-muted;
+  font-size: 11px;
+}
+
+.command-status-value {
+  color: $text-primary;
+  font-family: $font-code;
+  font-size: 11px;
+}
+
+.command-result-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(var(--accent-primary-rgb), 0.1);
+  color: $accent-primary;
+  font-family: $font-code;
+  font-size: 12px;
+  line-height: 1;
+  margin-top: 2px;
 }
 
 @keyframes rainbow-glow {
@@ -1097,6 +1630,9 @@ onBeforeUnmount(() => {
   color: $text-muted;
   padding: 2px 4px;
   border-radius: $radius-sm;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 
   &.expandable {
     cursor: pointer;
@@ -1108,14 +1644,21 @@ onBeforeUnmount(() => {
 
   .tool-name {
     font-family: $font-code;
-    flex-shrink: 0;
-  }
-
-  .tool-preview {
+    flex: 0 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 400px;
+  }
+
+  .tool-preview {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: min(400px, 100%);
   }
 }
 
@@ -1184,6 +1727,13 @@ onBeforeUnmount(() => {
     white-space: pre-wrap;
     word-break: break-word;
   }
+
+  :deep(.hljs-unified-diff code.hljs) {
+    max-height: none;
+    overflow-y: visible;
+    white-space: pre;
+    word-break: normal;
+  }
 }
 
 @keyframes spin {
@@ -1243,23 +1793,7 @@ onBeforeUnmount(() => {
   }
 }
 
-.image-preview-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-  background: rgba(0, 0, 0, 0.85);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
 
-.image-preview-img {
-  max-width: 90vw;
-  max-height: 90vh;
-  object-fit: contain;
-  border-radius: 4px;
-}
 
 @media (max-width: $breakpoint-mobile) {
   .message.user .msg-body {

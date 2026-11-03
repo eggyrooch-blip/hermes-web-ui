@@ -33,7 +33,7 @@ function installMockAudioContext(initialState: AudioContextState = 'running') {
     createGain: vi.fn(() => gain),
   }
 
-  const AudioContextMock = vi.fn(() => context)
+  const AudioContextMock = vi.fn(function () { return context })
   Object.defineProperty(window, 'AudioContext', {
     configurable: true,
     writable: true,

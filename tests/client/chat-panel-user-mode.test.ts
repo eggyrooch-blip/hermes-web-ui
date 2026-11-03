@@ -1,0 +1,786 @@
+// @vitest-environment jsdom
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+const isUserModeMock = vi.hoisted(() => vi.fn(() => false))
+const isStoredSuperAdminMock = vi.hoisted(() => vi.fn(() => false))
+const getWebPlaneMock = vi.hoisted(() => vi.fn(() => 'chat'))
+const routerPushMock = vi.hoisted(() => vi.fn(() => Promise.resolve()))
+const routerReplaceMock = vi.hoisted(() => vi.fn(() => Promise.resolve()))
+const routerResolveMock = vi.hoisted(() => vi.fn((to: any) => {
+  const sessionId = to?.params?.sessionId || ''
+  const profile = to?.query?.profile ? `?profile=${encodeURIComponent(to.query.profile)}` : ''
+  return { href: `#/hermes/session/${sessionId}${profile}` }
+}))
+const routeMock = vi.hoisted(() => ({
+  name: 'hermes.chat',
+  params: {} as Record<string, unknown>,
+  query: {} as Record<string, unknown>,
+}))
+const detailLifecycleMock = vi.hoisted(() => ({
+  mounted: vi.fn(),
+  unmounted: vi.fn(),
+  nextId: 0,
+}))
+
+const chatStoreMock = vi.hoisted(() => ({
+  sessions: [] as Array<Record<string, any>>,
+  activeSession: null as Record<string, any> | null,
+  activeSessionId: null as string | null,
+  isLoadingSessions: false,
+  sessionsLoaded: true,
+  isStreaming: false,
+  switchSession: vi.fn(),
+  newChat: vi.fn(),
+  deleteSession: vi.fn(),
+  loadSessions: vi.fn(),
+  isSessionLive: vi.fn(() => false),
+  // Upstream-rebaseline drift: ChatPanel render/computed reads these.
+  messages: [] as Array<Record<string, any>>,
+  runtimeMode: 'agent',
+  sessionProfileFilter: '__all__',
+  clearSessionCompletedUnread: vi.fn(),
+  clearActiveSession: vi.fn(),
+  isSessionCompletedUnread: vi.fn(() => false),
+  switchSessionModel: vi.fn(),
+}))
+
+const appStoreMock = vi.hoisted(() => ({
+  connected: true,
+  // Upstream-rebaseline drift: ChatPanel's model selector reads these.
+  modelGroups: [] as Array<Record<string, any>>,
+  profileModelGroups: [] as Array<Record<string, any>>,
+  customModels: {} as Record<string, any>,
+  selectedProvider: '',
+  selectedModel: '',
+  displayModelName: vi.fn((m: string) => m),
+  getModelAlias: vi.fn((m: string) => m),
+  loadModels: vi.fn(),
+}))
+
+const profilesStoreMock = vi.hoisted(() => ({
+  currentUser: null as Record<string, any> | null,
+  activeProfileName: 'user_a',
+  // Upstream-rebaseline drift: profileFilterOptions computed maps over this.
+  profiles: [] as Array<Record<string, any>>,
+  loading: false,
+  fetchProfiles: vi.fn(),
+  switchProfile: vi.fn(() => Promise.resolve(true)),
+}))
+
+const prefsStoreMock = vi.hoisted(() => ({
+  humanOnly: false,
+}))
+
+const sessionPinsStoreMock = vi.hoisted(() => ({
+  setPinned: vi.fn(async () => true),
+  migrateLegacyPins: vi.fn(async () => []),
+}))
+
+vi.mock('@/api/client', () => ({
+  isUserMode: isUserModeMock,
+  // Upstream-rebaseline drift: ChatPanel gates admin-only UI on this.
+  isStoredSuperAdmin: isStoredSuperAdminMock,
+  getWebPlane: getWebPlaneMock,
+}))
+
+vi.mock('@/stores/hermes/chat', () => ({
+  useChatStore: () => chatStoreMock,
+}))
+
+vi.mock('@/stores/hermes/app', () => ({
+  useAppStore: () => appStoreMock,
+}))
+
+vi.mock('@/stores/hermes/profiles', () => ({
+  useProfilesStore: () => profilesStoreMock,
+}))
+
+vi.mock('@/stores/hermes/session-browser-prefs', () => ({
+  useSessionBrowserPrefsStore: () => prefsStoreMock,
+}))
+
+vi.mock('@/stores/hermes/session-pins', () => ({
+  useSessionPinsStore: () => sessionPinsStoreMock,
+}))
+
+vi.mock('@/stores/hermes/files', () => ({
+  useFilesStore: () => ({ previewPanelRequestedAt: 0 }),
+}))
+
+vi.mock('@/api/hermes/sessions', () => ({
+  renameSession: vi.fn(),
+  setSessionWorkspace: vi.fn(),
+  batchDeleteSessions: vi.fn(),
+  // Upstream-rebaseline drift: ChatPanel now imports exportSession too.
+  exportSession: vi.fn(),
+}))
+
+vi.mock('@/api/coding-agents', () => ({
+  fetchCodingAgentsStatus: vi.fn(() => Promise.resolve({})),
+}))
+
+vi.mock('vue-router', () => ({
+  useRoute: () => routeMock,
+  useRouter: () => ({ push: routerPushMock, replace: routerReplaceMock, resolve: routerResolveMock }),
+}))
+
+vi.mock('@/shared/session-display', () => ({
+  getSourceLabel: (source: string) => source,
+}))
+
+vi.mock('@/utils/clipboard', () => ({
+  copyToClipboard: vi.fn(),
+}))
+
+vi.mock('vue-i18n', () => ({
+  useI18n: () => ({
+    t: (key: string) => key,
+  }),
+}))
+
+vi.mock('naive-ui', () => ({
+  NButton: {
+    props: ['disabled', 'title', 'circle', 'quaternary', 'size', 'type'],
+    emits: ['click'],
+    template: '<button class="n-button" :disabled="disabled" @click="$emit(\'click\')"><slot name="icon" /><slot /></button>',
+  },
+  NDropdown: {
+    props: ['options'],
+    emits: ['select'],
+    template: '<button class="n-dropdown-stub" :data-option-keys="options.map(option => option.key).join(\',\')" @click="$emit(\'select\', \'rename\')" />',
+  },
+  NInput: {
+    props: ['value', 'placeholder'],
+    emits: ['update:value', 'keydown'],
+    methods: { focus() {} },
+    template: '<input class="n-input-stub" :value="value" @input="$emit(\'update:value\', $event.target.value)" />',
+  },
+  NModal: {
+    props: ['show', 'title'],
+    emits: ['positive-click'],
+    // preset="dialog" modals confirm through @positive-click, not a slotted button —
+    // the stub needs to offer that affordance or those flows are untestable.
+    template: '<div v-if="show"><span class="n-modal-title">{{ title }}</span><slot /><button class="n-modal-positive" @click="$emit(\'positive-click\')" /></div>',
+  },
+  NPopconfirm: {
+    template: '<div><slot name="trigger" /><slot /></div>',
+  },
+  NTooltip: {
+    template: '<span><slot name="trigger" /><slot /></span>',
+  },
+  // Upstream-rebaseline drift: ChatPanel now also imports these naive-ui parts.
+  NDrawer: {
+    props: ['show'],
+    template: '<div v-if="show"><slot /></div>',
+  },
+  NDrawerContent: {
+    template: '<div><slot name="header" /><slot /><slot name="footer" /></div>',
+  },
+  NSelect: {
+    props: ['value', 'options'],
+    emits: ['update:value'],
+    template: '<select class="n-select-stub"><option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option></select>',
+  },
+  NRadioGroup: {
+    props: ['value'],
+    emits: ['update:value'],
+    template: '<div class="n-radio-group-stub"><slot /></div>',
+  },
+  NRadioButton: {
+    props: ['value', 'label'],
+    template: '<label class="n-radio-button-stub"><slot />{{ label }}</label>',
+  },
+  useMessage: () => ({
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+  }),
+}))
+
+vi.mock('@/components/hermes/chat/ChatInput.vue', () => ({
+  default: { template: '<div class="chat-input-stub" />' },
+}))
+
+vi.mock('@/components/hermes/chat/ConversationMonitorPane.vue', () => ({
+  default: { template: '<div class="monitor-stub" />' },
+}))
+
+vi.mock('@/components/hermes/chat/MessageList.vue', () => ({
+  default: { template: '<div class="message-list-stub" />' },
+}))
+
+vi.mock('@/components/hermes/chat/SessionListItem.vue', () => ({
+  default: {
+    props: ['session', 'to'],
+    emits: ['select', 'contextmenu'],
+    template: '<a class="session-item-stub" :href="to" @click.prevent="$emit(\'select\')" @contextmenu.prevent="$emit(\'contextmenu\', $event)">{{ session.title }}</a>',
+  },
+}))
+
+vi.mock('@/components/hermes/chat/DrawerPanel.vue', () => ({
+  default: { template: '<div class="drawer-panel-stub" />' },
+}))
+
+vi.mock('@/components/hermes/chat/FolderPicker.vue', () => ({
+  default: {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template: '<button class="folder-picker-stub" @click="$emit(\'update:modelValue\', \'media-matrix\')" />',
+  },
+}))
+
+// Upstream-rebaseline drift: ChatPanel now imports these heavy side panels.
+// FilesPanel -> FileEditor.vue pulls in monaco-editor (crashes in jsdom at
+// import time via document.queryCommandSupported); TerminalPanel pulls xterm.
+// Stub them like the other child components above to sever those import chains.
+vi.mock('@/components/hermes/chat/OutlinePanel.vue', () => ({
+  default: { template: '<div class="outline-panel-stub" />' },
+}))
+
+vi.mock('@/components/hermes/chat/DetailPanel.vue', async () => {
+  const { defineComponent, onMounted, onUnmounted, ref } = await import('vue')
+  return {
+    default: defineComponent({
+      name: 'DetailPanel',
+      setup() {
+        const id = ++detailLifecycleMock.nextId
+        const value = ref(0)
+        onMounted(() => detailLifecycleMock.mounted(id))
+        onUnmounted(() => detailLifecycleMock.unmounted(id))
+        return { id, value }
+      },
+      template: '<button class="detail-panel-probe" @click="value += 1">{{ id }}:{{ value }}</button>',
+    }),
+  }
+})
+
+vi.mock('@/components/hermes/chat/FilesPanel.vue', () => ({
+  default: { template: '<div class="files-panel-stub" />' },
+}))
+
+vi.mock('@/components/hermes/chat/TerminalPanel.vue', () => ({
+  default: { template: '<div class="terminal-panel-stub" />' },
+}))
+
+vi.mock('@/components/layout/PageSidebarNav.vue', () => ({
+  default: {
+    props: ['primaryLabel', 'active'],
+    emits: ['primary'],
+    template: '<button class="page-sidebar-nav-stub" :data-active="active" @click="$emit(\'primary\')">{{ primaryLabel }}</button>',
+  },
+}))
+
+vi.mock('@/views/hermes/ExpertView.vue', () => ({
+  default: {
+    props: ['embedded'],
+    template: '<section class="expert-view-stub" :data-embedded="embedded">Expert Surface</section>',
+  },
+}))
+
+vi.mock('@/views/hermes/JobsView.vue', () => ({
+  default: {
+    props: ['embedded'],
+    template: '<section class="jobs-view-stub" :data-embedded="embedded">Automation Surface</section>',
+  },
+}))
+
+import ChatPanel from '@/components/hermes/chat/ChatPanel.vue'
+
+describe('ChatPanel user-mode gateway state', () => {
+  beforeEach(() => {
+    isUserModeMock.mockReturnValue(false)
+    isStoredSuperAdminMock.mockReturnValue(false)
+    getWebPlaneMock.mockReturnValue('chat')
+    appStoreMock.connected = true
+    appStoreMock.modelGroups = []
+    appStoreMock.profileModelGroups = []
+    appStoreMock.customModels = {}
+    appStoreMock.selectedProvider = ''
+    appStoreMock.selectedModel = ''
+    chatStoreMock.sessions = []
+    chatStoreMock.activeSession = null
+    chatStoreMock.activeSessionId = null
+    chatStoreMock.isStreaming = false
+    chatStoreMock.runtimeMode = 'agent'
+    routeMock.name = 'hermes.chat'
+    routeMock.params = {}
+    routeMock.query = {}
+    profilesStoreMock.currentUser = null
+    profilesStoreMock.activeProfileName = 'user_a'
+    profilesStoreMock.profiles = []
+    routerPushMock.mockClear()
+    routerReplaceMock.mockClear()
+    routerResolveMock.mockClear()
+    vi.clearAllMocks()
+    detailLifecycleMock.nextId = 0
+    chatStoreMock.newChat.mockReturnValue({ id: 'new-session', profile: 'user_a' })
+    chatStoreMock.loadSessions.mockResolvedValue(undefined)
+    appStoreMock.loadModels.mockResolvedValue(undefined)
+    profilesStoreMock.fetchProfiles.mockResolvedValue(undefined)
+    profilesStoreMock.switchProfile.mockResolvedValue(true)
+    localStorage.clear()
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })
+  })
+
+  it('mounts the tool detail once and only hides it across collapse and reopen', async () => {
+    isStoredSuperAdminMock.mockReturnValue(true)
+    const wrapper = mount(ChatPanel, {
+      global: { stubs: { RouterLink: true } },
+    })
+
+    expect(wrapper.find('.detail-panel-probe').exists()).toBe(false)
+    expect(detailLifecycleMock.mounted).not.toHaveBeenCalled()
+
+    await wrapper.find('.header-tool-toggle').trigger('click')
+    await nextTick()
+    const detail = wrapper.find('.detail-panel-probe')
+    expect(detail.text()).toBe('1:0')
+    expect(detailLifecycleMock.mounted).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('.chat-tool-panel').attributes('style')).not.toContain('display: none')
+
+    await detail.trigger('click')
+    expect(wrapper.find('.detail-panel-probe').text()).toBe('1:1')
+
+    await wrapper.find('.header-tool-toggle').trigger('click')
+    await nextTick()
+    expect(wrapper.find('.chat-tool-panel').isVisible()).toBe(false)
+    expect(wrapper.find('.detail-panel-probe').exists()).toBe(true)
+    expect(detailLifecycleMock.unmounted).not.toHaveBeenCalled()
+
+    await wrapper.find('.header-tool-toggle').trigger('click')
+    await nextTick()
+    expect(wrapper.find('.chat-tool-panel').attributes('style')).not.toContain('display: none')
+    expect(wrapper.find('.detail-panel-probe').text()).toBe('1:1')
+    expect(detailLifecycleMock.mounted).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not show a wake hint in user mode when the bound gateway is still connecting', () => {
+    isUserModeMock.mockReturnValue(true)
+    appStoreMock.connected = false
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: {
+            props: ['to'],
+            template: '<a><slot /></a>',
+          },
+        },
+      },
+    })
+
+    expect(wrapper.find('.chat-wake-hint').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('chat.gatewayWakeHint')
+    expect(wrapper.find('.chat-input-stub').exists()).toBe(true)
+  })
+
+  it('does not show a separate personal agent status card in user mode', () => {
+    isUserModeMock.mockReturnValue(true)
+    appStoreMock.connected = false
+    profilesStoreMock.currentUser = {
+      name: '陈先生',
+      profile: 'user_a',
+    }
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    const card = wrapper.find('.user-agent-card')
+    expect(card.exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('profile user_a')
+    expect(wrapper.text()).not.toContain('chat.agentStandby')
+  })
+
+  it('hides the auto-wake hint when the gateway is already connected', () => {
+    isUserModeMock.mockReturnValue(true)
+    appStoreMock.connected = true
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    expect(wrapper.find('.chat-wake-hint').exists()).toBe(false)
+  })
+
+  it('does not render the session scope hint above the chat session list', () => {
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: {
+            props: ['to'],
+            template: '<a><slot /></a>',
+          },
+        },
+      },
+    })
+
+    expect(wrapper.find('.session-scope-note').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('chat.sessionScopeHint')
+    expect(wrapper.text()).not.toContain('chat.openHistory')
+  })
+
+  it('renders the expert surface in the chat main area without the chat composer', () => {
+    routeMock.query = { surface: 'expert' }
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    expect(wrapper.get('.page-sidebar-nav-stub').attributes('data-active')).toBe('expert')
+    expect(wrapper.get('.chat-surface-host').text()).toContain('Expert Surface')
+    expect(wrapper.find('.expert-view-stub').attributes()).toHaveProperty('data-embedded')
+    expect(wrapper.find('.message-list-stub').exists()).toBe(false)
+    expect(wrapper.find('.chat-input-stub').exists()).toBe(false)
+    expect(wrapper.text()).toContain('sidebar.expert')
+  })
+
+  it('renders the automation surface in the chat main area without the chat composer', () => {
+    routeMock.query = { surface: 'automation' }
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    expect(wrapper.get('.page-sidebar-nav-stub').attributes('data-active')).toBe('automation')
+    expect(wrapper.get('.chat-surface-host').text()).toContain('Automation Surface')
+    expect(wrapper.find('.jobs-view-stub').attributes()).toHaveProperty('data-embedded')
+    expect(wrapper.find('.message-list-stub').exists()).toBe(false)
+    expect(wrapper.find('.chat-input-stub').exists()).toBe(false)
+    expect(wrapper.text()).toContain('jobs.title')
+  })
+
+  it('renders the Feishu user card at the chat sidebar bottom with an icon-only settings action', async () => {
+    profilesStoreMock.currentUser = {
+      name: '孙可',
+      profile: 'feishu_g41a5b5g',
+      avatarUrl: 'https://example.com/avatar.png',
+    }
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    const bottom = wrapper.get('.page-sidebar-bottom')
+    const userCard = bottom.get('.sidebar-user')
+    expect(userCard.text()).toContain('孙可')
+    // The redundant profile id is no longer rendered in the sidebar user card.
+    expect(userCard.text()).not.toContain('feishu_g41a5b5g')
+    expect(userCard.text()).toContain('sidebar.connected')
+    expect(userCard.get('img.user-avatar').attributes('src')).toBe('https://example.com/avatar.png')
+    expect(bottom.find('.page-sidebar-menu-btn').exists()).toBe(false)
+
+    const settingsButton = userCard.get('.card-settings-button')
+    expect(settingsButton.text().trim()).toBe('')
+    await settingsButton.trigger('click')
+
+    expect(routerPushMock).toHaveBeenCalledWith({ name: 'hermes.settings' })
+  })
+
+  it('keeps the session profile in sidebar links and navigation', async () => {
+    chatStoreMock.sessions = [{
+      id: 'session-feishu',
+      title: 'from feishu profile',
+      profile: 'feishu_g41a5b5g',
+      source: 'api_server',
+      createdAt: 1,
+      updatedAt: 1,
+    }]
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    const item = wrapper.get('.session-item-stub')
+    expect(item.attributes('href')).toContain('profile=feishu_g41a5b5g')
+
+    await item.trigger('click')
+
+    expect(routerPushMock).toHaveBeenCalledWith(expect.objectContaining({
+      query: { profile: 'feishu_g41a5b5g' },
+    }))
+  })
+
+  it('switches frontend profile and clears a stale active session when the profile filter changes', async () => {
+    profilesStoreMock.profiles = [
+      { name: '123' },
+      { name: 'feishu_g41a5b5g' },
+    ]
+    chatStoreMock.sessionProfileFilter = 'feishu_g41a5b5g'
+    chatStoreMock.sessions = [
+      {
+        id: 'old-session',
+        title: 'hello',
+        profile: 'feishu_g41a5b5g',
+        updatedAt: 2,
+        messages: [],
+      },
+    ]
+    chatStoreMock.activeSessionId = 'old-session'
+    chatStoreMock.activeSession = chatStoreMock.sessions[0]
+    chatStoreMock.loadSessions.mockImplementation(async () => {
+      chatStoreMock.activeSession = chatStoreMock.sessions[0]
+    })
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+          NSelect: {
+            props: ['value', 'options'],
+            emits: ['update:value'],
+            template: '<button class="session-profile-filter" @click="$emit(\'update:value\', \'123\')">{{ value }}</button>',
+          },
+          Select: {
+            props: ['value', 'options'],
+            emits: ['update:value'],
+            template: '<button class="session-profile-filter" @click="$emit(\'update:value\', \'123\')">{{ value }}</button>',
+          },
+        },
+      },
+    })
+
+    wrapper.findComponent('.session-profile-filter').vm.$emit('update:value', '123')
+    await flushPromises()
+
+    expect(profilesStoreMock.switchProfile).toHaveBeenCalledWith('123')
+    expect(chatStoreMock.loadSessions).toHaveBeenCalledWith('123')
+    expect(chatStoreMock.clearActiveSession).toHaveBeenCalled()
+    expect(routerReplaceMock).toHaveBeenCalledWith({ name: 'hermes.chat' })
+  })
+
+  it('creates ordinary user chats directly on the active profile without the advanced drawer', async () => {
+    chatStoreMock.runtimeMode = 'global_agent'
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    appStoreMock.profileModelGroups = [{
+      profile: 'user_a',
+      groups: [{ provider: 'openai', label: 'OpenAI', models: ['gpt-4.1'] }],
+      default_provider: 'openai',
+      default: 'gpt-4.1',
+    }]
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    await wrapper.get('.page-sidebar-nav-stub').trigger('click')
+    await flushPromises()
+
+    expect(chatStoreMock.newChat).toHaveBeenCalledWith(expect.objectContaining({
+      profile: 'user_a',
+      provider: 'openai',
+      model: 'gpt-4.1',
+      source: 'cli',
+      agent: 'hermes',
+      workspace: null,
+    }))
+    expect(routerPushMock).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'hermes.session',
+      params: { sessionId: 'new-session' },
+      query: { profile: 'user_a' },
+    }))
+    expect(wrapper.find('.folder-picker-stub').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Claude Code')
+    expect(wrapper.text()).not.toContain('Codex')
+    expect(wrapper.text()).not.toContain('codingAgents.launchModeScope')
+    expect(wrapper.text()).not.toContain('codingAgents.protocolScope')
+  })
+
+  it('uses the current sidebar provider and model when creating ordinary user chats', async () => {
+    chatStoreMock.runtimeMode = 'global_agent'
+    profilesStoreMock.activeProfileName = 'user_a'
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    appStoreMock.selectedProvider = 'custom:litellm-sre'
+    appStoreMock.selectedModel = 'custom:litellm-sre/tencent-sonnet-4-6'
+    appStoreMock.profileModelGroups = [{
+      profile: 'user_a',
+      groups: [
+        { provider: 'openai', label: 'OpenAI', models: ['gpt-4.1'] },
+        { provider: 'custom:litellm-sre', label: 'LiteLLM SRE', models: ['custom:litellm-sre/tencent-sonnet-4-6'] },
+      ],
+      default_provider: 'openai',
+      default: 'gpt-4.1',
+    }]
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    await wrapper.get('.page-sidebar-nav-stub').trigger('click')
+    await flushPromises()
+
+    expect(chatStoreMock.newChat).toHaveBeenCalledWith(expect.objectContaining({
+      profile: 'user_a',
+      provider: 'custom:litellm-sre',
+      model: 'custom:litellm-sre/tencent-sonnet-4-6',
+      source: 'cli',
+      agent: 'hermes',
+      workspace: null,
+    }))
+    expect(wrapper.find('.folder-picker-stub').exists()).toBe(false)
+  })
+
+  it('keeps Workspace selection out of the unified Chat UI', async () => {
+    isStoredSuperAdminMock.mockReturnValue(true)
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    chatStoreMock.sessions = [
+      { id: 'a1', profile: 'user_a', title: 'A1', source: 'api_server', workspace: 'legacy-folder', messages: [], createdAt: 1, updatedAt: 3 },
+    ]
+    chatStoreMock.activeSession = chatStoreMock.sessions[0]
+
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+
+    expect(wrapper.find('.composer-workspace-button').exists()).toBe(false)
+    expect(wrapper.find('.workspace-groups').exists()).toBe(false)
+    expect(wrapper.find('.folder-picker-stub').exists()).toBe(false)
+    expect(wrapper.find('.workspace-badge').exists()).toBe(false)
+    expect(wrapper.get('.n-dropdown-stub').attributes('data-option-keys')).not.toContain('workspace')
+  })
+
+  it('keeps session Rename available while Workspace selection is hidden', async () => {
+    chatStoreMock.sessions = [
+      { id: 'a1', profile: 'user_a', title: 'A1', source: 'api_server', messages: [], createdAt: 1, updatedAt: 3 },
+    ]
+    chatStoreMock.activeSession = chatStoreMock.sessions[0]
+    chatStoreMock.activeSessionId = 'a1'
+
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+
+    await wrapper.get('.session-item-stub').trigger('contextmenu')
+    await wrapper.get('.n-dropdown-stub').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.n-modal-title').text()).toBe('chat.renameSession')
+    expect(wrapper.find('.n-input-stub').exists()).toBe(true)
+    expect(wrapper.find('.folder-picker-stub').exists()).toBe(false)
+  })
+
+  it('does not pair a custom selected model with an unrelated fallback provider for new chats', async () => {
+    isStoredSuperAdminMock.mockReturnValue(true)
+    profilesStoreMock.profiles = [{ name: 'user_a' }]
+    appStoreMock.modelGroups = [{
+      provider: 'anthropic',
+      label: 'Anthropic',
+      models: ['claude-sonnet-4-6'],
+    }]
+    appStoreMock.profileModelGroups = []
+    appStoreMock.selectedProvider = 'custom:litellm-sre'
+    appStoreMock.selectedModel = 'custom:litellm-sre/tencent-sonnet-4-6'
+    appStoreMock.customModels = {
+      'custom:litellm-sre': ['custom:litellm-sre/tencent-sonnet-4-6'],
+    }
+    chatStoreMock.newChat.mockReturnValue({ id: 'new-session' })
+
+    const wrapper = mount(ChatPanel, {
+      global: {
+        stubs: {
+          RouterLink: true,
+        },
+      },
+    })
+
+    await wrapper.get('.page-sidebar-nav-stub').trigger('click')
+    await flushPromises()
+    await wrapper.findAll('.new-chat-actions .n-button').at(1)!.trigger('click')
+    await flushPromises()
+
+    expect(chatStoreMock.newChat).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+    }))
+  })
+
+  it('does not create a chat through an ambient default profile when authorization is unavailable', async () => {
+    profilesStoreMock.profiles = []
+
+    const wrapper = mount(ChatPanel, {
+      global: { stubs: { RouterLink: true } },
+    })
+
+    await wrapper.get('.page-sidebar-nav-stub').trigger('click')
+    await flushPromises()
+
+    expect(profilesStoreMock.fetchProfiles).toHaveBeenCalled()
+    expect(chatStoreMock.newChat).not.toHaveBeenCalled()
+  })
+
+  it('does not override MessageItem bubble colors in user mode', () => {
+    const source = readFileSync(
+      join(process.cwd(), 'packages/client/src/components/hermes/chat/ChatPanel.vue'),
+      'utf8',
+    )
+
+    expect(source).not.toContain(':deep(.message-bubble)')
+    expect(source).not.toContain(':deep(.message.user .message-bubble)')
+    expect(source).not.toContain(':deep(.message.assistant .message-bubble)')
+  })
+
+  it('falls back to the initial glyph when the expert avatar image fails to load', async () => {
+    chatStoreMock.activeSession = {
+      id: 's-exp', title: '', source: 'cli', messages: [],
+      expertId: 'keep-resource-delivery', expertLabel: '资源投放专家', expertAvatar: '/gone.png',
+    }
+    chatStoreMock.activeSessionId = 's-exp'
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+
+    const img = wrapper.find('img.expert-session-avatar')
+    expect(img.exists()).toBe(true)
+    await img.trigger('error')
+    await nextTick()
+
+    expect(wrapper.find('img.expert-session-avatar').exists()).toBe(false)
+    const fallback = wrapper.find('.expert-session-avatar--fallback')
+    expect(fallback.exists()).toBe(true)
+    expect(fallback.text()).toBe('资')
+  })
+
+  it('renders no expert identity for a global-agent session even with stale expert metadata', () => {
+    chatStoreMock.activeSession = {
+      id: 's-ga', title: '', source: 'global_agent', messages: [],
+      expertId: 'keep-resource-delivery', expertLabel: '资源投放专家', expertAvatar: '/x.png',
+    }
+    chatStoreMock.activeSessionId = 's-ga'
+    const wrapper = mount(ChatPanel, { global: { stubs: { RouterLink: true } } })
+    expect(wrapper.find('.expert-session-identity').exists()).toBe(false)
+  })
+})

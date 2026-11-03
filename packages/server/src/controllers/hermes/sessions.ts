@@ -1,24 +1,47 @@
 import * as hermesCli from '../../services/hermes/hermes-cli'
-import { listConversationSummaries, getConversationDetail } from '../../services/hermes/conversations'
-import { listConversationSummariesFromDb, getConversationDetailFromDb } from '../../db/hermes/conversations-db'
-import { listSessionSummaries, searchSessionSummaries, getUsageStatsFromDb, getSessionDetailFromDb } from '../../db/hermes/sessions-db'
+import { listSessionSummaries, getUsageStatsFromDb, getSessionDetailFromDb, getSessionDetailFromDbWithProfile, getSessionDetailPaginatedFromDbWithProfile, getExactSessionDetailFromDbWithProfile } from '../../db/hermes/sessions-db'
 import {
   listSessions as localListSessions,
+  listSessionsByAgent as localListSessionsByAgent,
   searchSessions as localSearchSessions,
+  searchSessionsByAgent as localSearchSessionsByAgent,
+  getSession as localGetSession,
   getSessionDetail as localGetSessionDetail,
   deleteSession as localDeleteSession,
   renameSession as localRenameSession,
-  useLocalSessionStore,
+  setSessionArchived as localSetSessionArchived,
+  setSessionPinned as localSetSessionPinned,
+  createSession as localCreateSession,
+  addMessages as localAddMessages,
+  updateSession as localUpdateSession,
+  updateSessionStats as localUpdateSessionStats,
 } from '../../db/hermes/session-store'
+import { config } from '../../config'
 import { ExportCompressor } from '../../lib/context-compressor/export-compressor'
-import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
-import { deleteUsage, getUsage, getUsageBatch, getLocalUsageStats } from '../../db/hermes/usage-store'
-import type { LocalUsageStats, UsageStatsModelRow, UsageStatsDailyRow } from '../../db/hermes/usage-store'
+import { deleteUsage, getUsage, getUsageBatch } from '../../db/hermes/usage-store'
+import type { UsageStatsModelRow, UsageStatsDailyRow } from '../../db/hermes/usage-store'
+import {
+  getWorkspaceRunChange as localGetWorkspaceRunChange,
+  getWorkspaceRunChangeFile as localGetWorkspaceRunChangeFile,
+  listWorkspaceRunChangesForSession,
+} from '../../db/hermes/workspace-run-changes-store'
 import { getModelContextLength } from '../../services/hermes/model-context'
-import { getActiveProfileName } from '../../services/hermes/hermes-profile'
+import { shouldNoticeFamilySwitch } from '../../shared/model-capabilities'
+import { getActiveProfileName, listProfileNamesFromDisk } from '../../services/hermes/hermes-profile'
+import { isNearestExistingRealPathWithin, isPathWithin } from '../../services/hermes/hermes-path'
+import { getRequestProfile, isChatPlaneRequest } from '../../services/request-context'
 import { getGroupChatServer } from '../../routes/hermes/group-chat'
 import { logger } from '../../services/logger'
 import type { ConversationSummary } from '../../services/hermes/conversations'
+import { listUserProfiles } from '../../db/hermes/users-store'
+import { readConfigYamlForProfile } from '../../services/config-helpers'
+import { codingAgentRunManager } from '../../services/agent-runner/coding-agent-run-manager'
+import { AgentBridgeClient, getAgentBridgeManager } from '../../services/hermes/agent-bridge'
+import { defaultHermesWorkspace, ensureHermesRunWorkspace, normalizeHermesSessionWorkspace, normalizeStoredHermesSessionWorkspace } from '../../services/hermes/run-chat/workspace'
+import { readSessionGeneration } from '../../services/hermes/run-chat/session-generation'
+import { getChatRunServer } from '../../routes/hermes/chat-run'
+import { authorizePrivateTargets, authorizeSourceRefs, normalizeSourceRefs } from '../../services/hermes/source-refs'
+import { persistSessionExpert, SessionExpertError } from '../../services/hermes/session-expert'
 
 function getPendingDeletedSessionIds(): Set<string> {
   return getGroupChatServer()?.getStorage().getPendingDeletedSessionIds() || new Set<string>()
@@ -34,132 +57,599 @@ function filterPendingDeletedConversationSummaries(items: ConversationSummary[])
   return filterPendingDeletedSessions(items)
 }
 
+function requestedProfile(ctx: any): string | undefined {
+  const value = ctx.state?.profile?.name || (typeof ctx.query?.profile === 'string' ? ctx.query.profile.trim() : '')
+  return value || undefined
+}
+
+function runtimeProvider(provider: string): string {
+  return provider === 'claude-oauth' ? 'anthropic' : provider
+}
+
+async function notifyBridgeSessionModelChanged(
+  sessionId: string,
+  model: string,
+  provider: string,
+  profile?: string,
+): Promise<void> {
+  try {
+    const manager = getAgentBridgeManager()
+    const state = manager.getRuntimeState()
+    if (!state.ready || !state.running) return
+    const bridge = new AgentBridgeClient({
+      endpoint: state.endpoint,
+      timeoutMs: 5000,
+      connectRetryMs: 0,
+    })
+    await bridge.switchSessionModel(sessionId, model, runtimeProvider(provider), profile)
+  } catch (err) {
+    logger.warn(err, '[sessions] failed to notify bridge of session model change')
+  }
+}
+
+function explicitProfileFilter(ctx: any): string | undefined {
+  const value = typeof ctx.query?.profile === 'string' ? ctx.query.profile.trim() : ''
+  return value || undefined
+}
+
+function allowedProfileSet(ctx: any): Set<string> | null {
+  const user = ctx.state?.user
+  if (!user || user.role === 'super_admin') return null
+  const allowed = new Set<string>()
+  if (user.profile) allowed.add(user.profile)
+  for (const profile of listUserProfiles(user.id)) {
+    if (profile.profile_name) allowed.add(profile.profile_name)
+  }
+  if (Array.isArray(user.profiles)) {
+    for (const profile of user.profiles) {
+      if (typeof profile === 'string' && profile.trim()) allowed.add(profile.trim())
+    }
+  }
+  return allowed
+}
+
+function canAccessProfile(ctx: any, profile: string | null | undefined): boolean {
+  const allowed = allowedProfileSet(ctx)
+  return !allowed || allowed.has(profile || 'default')
+}
+
+function explicitSessionCollectionProfile(ctx: any): { profile?: string; denied: boolean } {
+  const profile = explicitProfileFilter(ctx)
+  if (!isChatPlaneRequest(ctx)) return { profile, denied: false }
+  if (!profile) return { profile: undefined, denied: false }
+  return canAccessProfile(ctx, profile)
+    ? { profile, denied: false }
+    : { profile, denied: true }
+}
+
+function normalizedOwner(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function actorOpenId(ctx: any): string {
+  const value = ctx.state?.user?.openid
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function actorSessionOwnerId(ctx: any): string | null {
+  const openid = actorOpenId(ctx)
+  if (openid) return openid
+  const id = ctx.state?.user?.id
+  const value = typeof id === 'string' || typeof id === 'number' ? String(id).trim() : ''
+  return value || null
+}
+
+function requestedAgentId(ctx: any): string {
+  const header = typeof ctx.get === 'function' ? ctx.get('x-hermes-agent-id') : ''
+  const query = typeof ctx.query?.agent_id === 'string' ? ctx.query.agent_id : ''
+  return String(header || query || '').trim()
+}
+
+function brokerHeaders(ctx: any): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (config.runBrokerKey) headers.Authorization = `Bearer ${config.runBrokerKey}`
+  const openid = actorOpenId(ctx)
+  if (openid) headers['X-Hermes-Owner-Open-Id'] = openid
+  return headers
+}
+
+async function resolveSharedAgentRole(ctx: any, agentId: string): Promise<string | null> {
+  const actor = actorOpenId(ctx)
+  if (!actor || !agentId || !config.runBrokerUrl) return null
+  const encodedAgentId = encodeURIComponent(agentId)
+  try {
+    const sharedRes = await fetch(`${config.runBrokerUrl}/api/run-broker/agents/shared`, {
+      method: 'GET',
+      headers: brokerHeaders(ctx),
+    })
+    if (sharedRes.ok) {
+      const payload = await sharedRes.json().catch(() => ({})) as { agents?: Array<Record<string, unknown>> }
+      const agents = Array.isArray(payload.agents) ? payload.agents : []
+      const match = agents.find(agent => String(agent.agent_id || '').trim() === agentId)
+      const role = String(match?.role || '').trim()
+      if (role === 'viewer' || role === 'editor' || role === 'manager') return role
+    }
+  } catch (err) {
+    logger.warn({ err, agentId }, '[sessions] Run Broker shared-agent role lookup failed')
+  }
+
+  try {
+    const managerRes = await fetch(`${config.runBrokerUrl}/api/run-broker/agents/${encodedAgentId}/shares`, {
+      method: 'GET',
+      headers: brokerHeaders(ctx),
+    })
+    if (managerRes.ok) {
+      const payload = await managerRes.json().catch(() => ({})) as Record<string, unknown>
+      const actorRole = String(payload.actor_role || '').trim()
+      if (actorRole === 'owner' || actorRole === 'manager') return 'manager'
+      logger.warn({ agentId, actorRole }, '[sessions] Run Broker share manager probe returned no manager role')
+      return null
+    }
+    if (managerRes.status !== 403 && managerRes.status !== 404) {
+      logger.warn({ status: managerRes.status, agentId }, '[sessions] Run Broker share manager probe failed')
+    }
+  } catch (err) {
+    logger.warn({ err, agentId }, '[sessions] Run Broker share manager probe failed')
+  }
+  return null
+}
+
+async function sharedAgentSessionScope(ctx: any, agentId: string): Promise<{ agentId: string; userId?: string } | null> {
+  const normalizedAgentId = agentId.trim()
+  if (!normalizedAgentId) return null
+  const role = await resolveSharedAgentRole(ctx, normalizedAgentId)
+  if (!role) return null
+  const actor = actorOpenId(ctx)
+  return {
+    agentId: normalizedAgentId,
+    userId: role === 'manager' ? undefined : actor,
+  }
+}
+
+async function canAccessSharedAgentSession(ctx: any, session: any | null | undefined): Promise<boolean> {
+  const agentId = String(session?.agent || '').trim()
+  if (!agentId) return false
+  const scope = await sharedAgentSessionScope(ctx, agentId)
+  if (!scope) return false
+  if (!scope.userId) return true
+  return String(session?.user_id || '').trim() === scope.userId
+}
+
+// Chat-plane owner rule (mirrors the socket fence): an owner-stamped row is
+// private to its owner; legacy ownerless rows stay profile-scoped; the admin
+// plane keeps its profile-based oversight; explicit shared-agent policy is
+// evaluated separately and can still grant access.
+function actorOwnsSessionRow(ctx: any, session: any): boolean {
+  if (!isChatPlaneRequest(ctx)) return true
+  const owner = String(session?.user_id || '').trim()
+  // Mirror the socket fence: an ownerless EXPERT row is dirty state, not
+  // legacy — nobody can claim it. Plain ownerless legacy rows stay
+  // profile-scoped.
+  if (!owner) return !String(session?.expert_id || '').trim()
+  const actor = actorOpenId(ctx)
+  if (!actor) return false
+  return owner === actor
+}
+
+export async function canAccessSessionAsync(ctx: any, session: any | null | undefined): Promise<boolean> {
+  if (!session) return true
+  if (canAccessProfile(ctx, session.profile) && actorOwnsSessionRow(ctx, session)) return true
+  return await canAccessSharedAgentSession(ctx, session)
+}
+
+async function denySessionAccessAsync(ctx: any, session: any | null | undefined): Promise<boolean> {
+  if (await canAccessSessionAsync(ctx, session)) return false
+  ctx.status = 403
+  ctx.body = { error: `Profile "${session.profile || 'default'}" is not available for this user` }
+  return true
+}
+
+async function readableLocalSessionForParam(ctx: any): Promise<{ id?: string } | null> {
+  const sessionId = String(ctx.params?.id || '').trim()
+  const session = sessionId ? localGetSession(sessionId) : null
+  if (!session) {
+    ctx.status = 404
+    ctx.body = { error: 'Session not found' }
+    return null
+  }
+  if (await denySessionAccessAsync(ctx, session)) return null
+  return session
+}
+
+function filterByAllowedProfiles<T>(ctx: any, items: T[]): T[] {
+  const allowed = allowedProfileSet(ctx)
+  const profileScoped = allowed
+    ? items.filter(item => allowed.has(((item as any).profile as string | null | undefined) || 'default'))
+    : items
+  // Same owner rule as canAccessSessionAsync for collections: on the chat
+  // plane an owner-stamped row is only listed for its owner.
+  if (!isChatPlaneRequest(ctx)) return profileScoped
+  const actor = actorOpenId(ctx)
+  return profileScoped.filter(item => {
+    const owner = String((item as any).user_id || '').trim()
+    if (!owner) return !String((item as any).expert_id || '').trim()
+    return actor !== '' && owner === actor
+  })
+}
+
+function isVisibleWebUiSessionSource(source?: string | null): boolean {
+  return source === 'api_server' || source === 'cli' || source === 'coding_agent' || source === 'global_agent'
+}
+
+function isRequestedSessionSource(source: string | undefined, sessionSource?: string | null): boolean {
+  if (source === 'global_agent') return sessionSource === 'global_agent'
+  return isVisibleWebUiSessionSource(sessionSource)
+}
+
+function isHermesHistorySessionSource(source?: string | null): boolean {
+  return source !== 'api_server' && source !== 'global_agent'
+}
+
+function isHermesHistorySession(session: { source?: string | null; is_archived?: boolean | null }): boolean {
+  return isHermesHistorySessionSource(session.source) || session.is_archived === true
+}
+
+function matchesHermesHistorySource(
+  requestedSource: string | undefined,
+  session: { source?: string | null; is_archived?: boolean | null },
+): boolean {
+  if (requestedSource && session.source !== requestedSource) return false
+  return isHermesHistorySession(session)
+}
+
+function isCodingAgentSession(session?: { source?: string | null; agent?: string | null; agent_session_id?: string | null } | null): boolean {
+  return session?.source === 'coding_agent' ||
+    session?.agent === 'claude' ||
+    session?.agent === 'codex' ||
+    Boolean(session?.agent_session_id)
+}
+
+interface HermesDeleteResult {
+  attempted: boolean
+  deleted: boolean
+  profile?: string
+  error?: string
+}
+
+interface BatchDeleteTarget {
+  id: string
+  profile?: string | null
+}
+
+interface ProfileDefaultModel {
+  model: string
+  provider: string
+}
+
+interface LocalImportMessage {
+  session_id: string
+  role: string
+  content: string
+  tool_call_id?: string | null
+  tool_calls?: any[] | null
+  tool_name?: string | null
+  timestamp?: number
+  token_count?: number | null
+  finish_reason?: string | null
+  reasoning?: string | null
+  reasoning_details?: string | null
+  reasoning_content?: string | null
+}
+
+function hasProfileOnDisk(profile: string): boolean {
+  return listProfileNamesFromDisk().includes(profile || 'default')
+}
+
+async function deleteHermesSessionIfPresent(sessionId: string, profile?: string | null): Promise<HermesDeleteResult> {
+  const targetProfile = profile || 'default'
+  if (!hasProfileOnDisk(targetProfile)) {
+    return { attempted: false, deleted: false, profile: targetProfile }
+  }
+
+  try {
+    const hermesSession = await getExactSessionDetailFromDbWithProfile(sessionId, targetProfile)
+    if (!hermesSession) {
+      return { attempted: false, deleted: false, profile: targetProfile }
+    }
+
+    const deleted = await hermesCli.deleteSessionForProfile(sessionId, targetProfile)
+    return {
+      attempted: true,
+      deleted,
+      profile: targetProfile,
+      error: deleted ? undefined : 'Failed to delete Hermes session',
+    }
+  } catch (err: any) {
+    const message = err?.message || 'Failed to inspect Hermes session'
+    logger.warn({ err, sessionId, profile: targetProfile }, 'Hermes Session: profile delete skipped')
+    return { attempted: true, deleted: false, profile: targetProfile, error: message }
+  }
+}
+
+function abandonActiveSessionRun(sessionId: string, profile?: string | null): void {
+  const generation = readSessionGeneration(sessionId)
+  getChatRunServer()?.abandonSessionRun(sessionId, profile || 'default', generation)
+}
+
+async function getProfileDefaultModel(profile: string): Promise<ProfileDefaultModel> {
+  try {
+    const config = await readConfigYamlForProfile(profile)
+    const modelSection = config?.model
+    if (modelSection && typeof modelSection === 'object' && !Array.isArray(modelSection)) {
+      return {
+        model: String(modelSection.default || '').trim(),
+        provider: String(modelSection.provider || '').trim(),
+      }
+    }
+    if (typeof modelSection === 'string') {
+      return { model: modelSection.trim(), provider: '' }
+    }
+  } catch (err) {
+    logger.warn({ err, profile }, 'Hermes Session: failed to read profile default model for import')
+  }
+  return { model: '', provider: '' }
+}
+
+function normalizeImportText(value: unknown): string {
+  if (value == null) return ''
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
+function normalizeImportNullableText(value: unknown): string | null {
+  const text = normalizeImportText(value)
+  return text ? text : null
+}
+
+function normalizeImportToolCalls(value: unknown): any[] | null {
+  if (!Array.isArray(value)) return null
+  const calls = value
+    .map((call: any) => {
+      const id = String(call?.id || '').trim()
+      const fn = call?.function && typeof call.function === 'object' ? call.function : {}
+      const name = String(fn.name || call?.name || '').trim()
+      if (!id || !name) return null
+      const rawArgs = fn.arguments ?? call?.arguments ?? {}
+      const args = typeof rawArgs === 'string' ? rawArgs : normalizeImportText(rawArgs || {})
+      return {
+        id,
+        type: String(call?.type || 'function'),
+        function: { name, arguments: args || '{}' },
+      }
+    })
+    .filter((call): call is { id: string; type: string; function: { name: string; arguments: string } } => Boolean(call))
+  return calls.length > 0 ? calls : null
+}
+
+function buildImportMessages(sessionId: string, messages: any[]): LocalImportMessage[] {
+  const result: LocalImportMessage[] = []
+  const knownToolCallIds = new Set<string>()
+
+  for (const message of messages) {
+    const role = String(message?.role || '').trim()
+    if (role !== 'user' && role !== 'assistant' && role !== 'tool') continue
+
+    const toolCalls = role === 'assistant' ? normalizeImportToolCalls(message.tool_calls) : null
+    if (toolCalls) {
+      for (const call of toolCalls) knownToolCallIds.add(call.id)
+    }
+
+    if (role === 'tool') {
+      const callId = String(message?.tool_call_id || '').trim()
+      if (!callId || !knownToolCallIds.has(callId)) continue
+      result.push({
+        session_id: sessionId,
+        role,
+        content: normalizeImportText(message?.content),
+        tool_call_id: callId,
+        tool_calls: null,
+        tool_name: normalizeImportNullableText(message?.tool_name),
+        timestamp: Number(message?.timestamp || 0),
+        token_count: message?.token_count == null ? null : Number(message.token_count),
+        finish_reason: normalizeImportNullableText(message?.finish_reason),
+        reasoning: null,
+        reasoning_details: null,
+        reasoning_content: null,
+      })
+      continue
+    }
+
+    const content = normalizeImportText(message?.content)
+    if (role === 'assistant' && !content.trim() && !toolCalls) continue
+
+    result.push({
+      session_id: sessionId,
+      role,
+      content,
+      tool_call_id: null,
+      tool_calls: toolCalls,
+      tool_name: null,
+      timestamp: Number(message?.timestamp || 0),
+      token_count: message?.token_count == null ? null : Number(message.token_count),
+      finish_reason: normalizeImportNullableText(message?.finish_reason),
+      reasoning: role === 'assistant' ? normalizeImportNullableText(message?.reasoning) : null,
+      reasoning_details: role === 'assistant' ? normalizeImportNullableText(message?.reasoning_details) : null,
+      reasoning_content: role === 'assistant' ? normalizeImportNullableText(message?.reasoning_content) : null,
+    })
+  }
+
+  return result
+}
+
 export async function listConversations(ctx: any) {
   const source = (ctx.query.source as string) || undefined
-  const humanOnly = (ctx.query.humanOnly as string) !== 'false' && ctx.query.humanOnly !== '0'
   const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
-
-  if (useLocalSessionStore()) {
-    const profile = getActiveProfileName()
-    const sessions = localListSessions(profile, source, limit && limit > 0 ? limit : 200)
-    const summaries: ConversationSummary[] = sessions.map(s => ({
-      id: s.id,
-      source: s.source,
-      model: s.model,
-      title: s.title,
-      started_at: s.started_at,
-      ended_at: s.ended_at,
-      last_active: s.last_active,
-      message_count: s.message_count,
-      tool_call_count: s.tool_call_count,
-      input_tokens: s.input_tokens,
-      output_tokens: s.output_tokens,
-      cache_read_tokens: s.cache_read_tokens,
-      cache_write_tokens: s.cache_write_tokens,
-      reasoning_tokens: s.reasoning_tokens,
-      billing_provider: s.billing_provider,
-      estimated_cost_usd: s.estimated_cost_usd,
-      actual_cost_usd: s.actual_cost_usd,
-      cost_status: s.cost_status,
-      preview: s.preview,
-      workspace: s.workspace || null,
-      is_active: s.ended_at == null && (Date.now() / 1000 - s.last_active) <= 300,
-      thread_session_count: 1,
-    }))
+  const agentId = requestedAgentId(ctx)
+  if (agentId) {
+    const scope = await sharedAgentSessionScope(ctx, agentId)
+    if (!scope) {
+      ctx.body = { sessions: [] }
+      return
+    }
+    const sessions = localListSessionsByAgent(scope.agentId, {
+      userId: scope.userId,
+      source,
+      limit: limit && limit > 0 ? limit : 200,
+    })
+    const summaries: ConversationSummary[] = sessions
+      .filter(s => isRequestedSessionSource(source, s.source))
+      .map(s => ({
+        id: s.id,
+        profile: s.profile || null,
+        source: s.source,
+        agent: s.agent,
+        agent_mode: s.agent_mode,
+        agent_session_id: s.agent_session_id,
+        agent_native_session_id: s.agent_native_session_id,
+        expert_id: s.expert_id || null,
+        expert_label: s.expert_label || null,
+        expert_avatar: s.expert_avatar || null,
+        execution_engine: s.execution_engine,
+        is_archived: s.is_archived,
+        model: s.model,
+        provider: s.provider,
+        title: s.title,
+        started_at: s.started_at,
+        ended_at: s.ended_at,
+        last_active: s.last_active,
+        message_count: s.message_count,
+        tool_call_count: s.tool_call_count,
+        input_tokens: s.input_tokens,
+        output_tokens: s.output_tokens,
+        cache_read_tokens: s.cache_read_tokens,
+        cache_write_tokens: s.cache_write_tokens,
+        reasoning_tokens: s.reasoning_tokens,
+        billing_provider: s.billing_provider,
+        estimated_cost_usd: s.estimated_cost_usd,
+        actual_cost_usd: s.actual_cost_usd,
+        cost_status: s.cost_status,
+        preview: s.preview,
+        workspace: s.workspace || null,
+        is_active: s.ended_at == null && (Date.now() / 1000 - s.last_active) <= 300,
+        thread_session_count: 1,
+      }))
     ctx.body = { sessions: filterPendingDeletedConversationSummaries(summaries) }
     return
   }
 
-  try {
-    const sessions = await listConversationSummariesFromDb({ source, humanOnly, limit })
-    ctx.body = { sessions: filterPendingDeletedConversationSummaries(sessions) }
+  const resolved = explicitSessionCollectionProfile(ctx)
+  if (resolved.denied) {
+    ctx.body = { sessions: [] }
     return
-  } catch (err) {
-    logger.warn(err, 'Hermes Conversation DB: summary query failed, falling back to CLI export')
   }
-
-  const sessions = await listConversationSummaries({ source, humanOnly, limit })
-  ctx.body = { sessions: filterPendingDeletedConversationSummaries(sessions) }
+  const profile = resolved.profile
+  const sessions = localListSessions(profile, source, limit && limit > 0 ? limit : 200)
+  const summaries: ConversationSummary[] = sessions.map(s => ({
+    id: s.id,
+    // Owner id rides along so the chat-plane owner filter can see it.
+    user_id: (s as any).user_id ?? null,
+    profile: s.profile || null,
+    source: s.source,
+    agent: s.agent,
+    agent_mode: s.agent_mode,
+    agent_session_id: s.agent_session_id,
+    agent_native_session_id: s.agent_native_session_id,
+    expert_id: s.expert_id || null,
+    expert_label: s.expert_label || null,
+    expert_avatar: s.expert_avatar || null,
+    execution_engine: s.execution_engine,
+    is_archived: s.is_archived,
+    model: s.model,
+    provider: s.provider,
+    title: s.title,
+    started_at: s.started_at,
+    ended_at: s.ended_at,
+    last_active: s.last_active,
+    message_count: s.message_count,
+    tool_call_count: s.tool_call_count,
+    input_tokens: s.input_tokens,
+    output_tokens: s.output_tokens,
+    cache_read_tokens: s.cache_read_tokens,
+    cache_write_tokens: s.cache_write_tokens,
+    reasoning_tokens: s.reasoning_tokens,
+    billing_provider: s.billing_provider,
+    estimated_cost_usd: s.estimated_cost_usd,
+    actual_cost_usd: s.actual_cost_usd,
+    cost_status: s.cost_status,
+    preview: s.preview,
+    workspace: s.workspace || null,
+    is_active: s.ended_at == null && (Date.now() / 1000 - s.last_active) <= 300,
+    thread_session_count: 1,
+  }))
+  ctx.body = { sessions: filterPendingDeletedConversationSummaries(filterByAllowedProfiles(ctx, summaries)) }
 }
 
 export async function getConversationMessages(ctx: any) {
-  const source = (ctx.query.source as string) || undefined
   const humanOnly = (ctx.query.humanOnly as string) !== 'false' && ctx.query.humanOnly !== '0'
 
-  if (useLocalSessionStore()) {
-    const detail = localGetSessionDetail(ctx.params.id)
-    if (!detail) {
-      ctx.status = 404
-      ctx.body = { error: 'Conversation not found' }
-      return
-    }
-    const messages = detail.messages
-      .filter(m => {
-        if (humanOnly && m.role !== 'user' && m.role !== 'assistant') return false
-        if (!m.content) return false
-        return true
-      })
-      .map(m => ({
-        id: m.id,
-        session_id: m.session_id,
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-        timestamp: m.timestamp,
-      }))
-    ctx.body = {
-      session_id: ctx.params.id,
-      messages,
-      visible_count: messages.length,
-      thread_session_count: 1,
-    }
-    return
-  }
-
-  try {
-    const detail = await getConversationDetailFromDb(ctx.params.id, { source, humanOnly })
-    if (!detail) {
-      ctx.status = 404
-      ctx.body = { error: 'Conversation not found' }
-      return
-    }
-    ctx.body = detail
-    return
-  } catch (err) {
-    logger.warn(err, 'Hermes Conversation DB: detail query failed, falling back to CLI export')
-  }
-
-  const detail = await getConversationDetail(ctx.params.id, { source, humanOnly })
+  const detail = localGetSessionDetail(ctx.params.id)
   if (!detail) {
     ctx.status = 404
     ctx.body = { error: 'Conversation not found' }
     return
   }
-  ctx.body = detail
+  if (await denySessionAccessAsync(ctx, detail)) return
+  const messages = (detail.messages || [])
+    .filter(m => {
+      if (humanOnly && m.role !== 'user' && m.role !== 'assistant') return false
+      if (!m.content) return false
+      return true
+    })
+    .map(m => ({
+      id: m.id,
+      session_id: m.session_id,
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+      timestamp: m.timestamp,
+    }))
+  ctx.body = {
+    session_id: ctx.params.id,
+    messages,
+    visible_count: messages.length,
+    thread_session_count: 1,
+  }
 }
 
 export async function list(ctx: any) {
-  if (useLocalSessionStore()) {
-    const source = (ctx.query.source as string) || undefined
-    const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
-    const profile = getActiveProfileName()
-    const sessions = localListSessions(profile, source, limit && limit > 0 ? limit : 2000)
-    ctx.body = { sessions: filterPendingDeletedSessions(sessions) }
-    return
-  }
-
   const source = (ctx.query.source as string) || undefined
   const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
-
-  try {
-    const sessions = await listSessionSummaries(source, limit && limit > 0 ? limit : 2000)
-    ctx.body = { sessions: filterPendingDeletedSessions(sessions) }
+  const agentId = requestedAgentId(ctx)
+  if (agentId) {
+    const scope = await sharedAgentSessionScope(ctx, agentId)
+    if (!scope) {
+      ctx.body = { sessions: [] }
+      return
+    }
+    const sessions = localListSessionsByAgent(scope.agentId, {
+      userId: scope.userId,
+      source,
+      limit: limit && limit > 0 ? limit : 2000,
+    })
+    ctx.body = {
+      sessions: filterPendingDeletedSessions(sessions.filter(s => isRequestedSessionSource(source, s.source))),
+    }
     return
-  } catch (err) {
-    logger.warn(err, 'Hermes Session DB: summary query failed, falling back to CLI')
   }
+  const resolved = explicitSessionCollectionProfile(ctx)
+  if (resolved.denied) {
+    ctx.body = { sessions: [] }
+    return
+  }
+  const profile = resolved.profile
+  const effectiveLimit = limit && limit > 0 ? limit : 2000
 
-  const sessions = await hermesCli.listSessions(source, limit)
-  ctx.body = { sessions: filterPendingDeletedSessions(sessions) }
+  const allSessions = localListSessions(profile, source, effectiveLimit)
+  const knownProfiles = profile ? null : new Set(listProfileNamesFromDisk())
+  ctx.body = {
+    sessions: filterPendingDeletedSessions(filterByAllowedProfiles(ctx, allSessions).filter(s =>
+      isRequestedSessionSource(source, s.source) &&
+      (!knownProfiles || knownProfiles.has(s.profile || 'default')),
+    )),
+  }
 }
 
 /**
@@ -169,64 +659,179 @@ export async function list(ctx: any) {
 export async function listHermesSessions(ctx: any) {
   const source = (ctx.query.source as string) || undefined
   const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
-
-  try {
-    const sessions = await listSessionSummaries(source, limit && limit > 0 ? limit : 2000)
-    ctx.body = { sessions: filterPendingDeletedSessions(sessions.filter(s => s.source !== 'api_server' && s.source !== 'cron')) }
+  const effectiveLimit = limit && limit > 0 ? limit : 2000
+  const agentId = requestedAgentId(ctx)
+  if (agentId) {
+    const scope = await sharedAgentSessionScope(ctx, agentId)
+    if (!scope) {
+      ctx.body = { sessions: [] }
+      return
+    }
+    const sessions = localListSessionsByAgent(scope.agentId, {
+      userId: scope.userId,
+      source,
+      limit: effectiveLimit,
+      includeArchived: true,
+    })
+    ctx.body = {
+      sessions: filterPendingDeletedSessions(
+        sessions
+          .filter(session => matchesHermesHistorySource(source, session))
+          .map(session => ({ ...session, webui_imported: true })),
+      ),
+    }
     return
-  } catch (err) {
-    logger.warn(err, 'Hermes Session DB: summary query failed, falling back to CLI')
   }
+  const resolved = explicitSessionCollectionProfile(ctx)
+  if (resolved.denied) {
+    ctx.body = { sessions: [] }
+    return
+  }
+  const profile = resolved.profile || requestedProfile(ctx)
 
-  const sessions = await hermesCli.listSessions(source, limit)
-  ctx.body = { sessions: filterPendingDeletedSessions(sessions.filter(s => s.source !== 'api_server')) }
+  const localHistorySessions = localListSessions(profile, source, effectiveLimit, { includeArchived: true })
+    .filter(session => matchesHermesHistorySource(source, session))
+  const localById = new Map(localHistorySessions.map(session => [session.id, session]))
+  const stateSessions = (await listSessionSummaries(source, effectiveLimit, profile))
+    .map(session => {
+      // Exact lookup, not just the (limit-truncated) listing: a narrow ?limit=
+      // must never leave a state summary un-enriched and thus mistaken for a
+      // legacy ownerless row by the collection fence below.
+      const localSession = localById.get(session.id) || localGetSession(session.id) || null
+      const stateOwner = normalizedOwner((session as any).user_id)
+      const localOwner = normalizedOwner(localSession?.user_id)
+      // Conflicting owners on the same id are dirty state, never a merge: the
+      // local row wins for identity and the state CONTENT is dropped, so B can
+      // never see A's title/preview.
+      const ownersConflict = Boolean(stateOwner && localOwner && stateOwner !== localOwner)
+      const base = ownersConflict
+        ? { id: session.id, source: (session as any).source }
+        : (profile ? { ...session, profile } : session)
+      return {
+        ...base,
+        ...(ownersConflict && profile ? { profile } : {}),
+        webui_imported: Boolean(localSession),
+        is_archived: localSession?.is_archived ?? false,
+        is_pinned: localSession?.is_pinned ?? false,
+        ...(localSession
+          ? {
+              // Identity always comes from the local row (empty means empty —
+              // `??` would let a blank local owner keep the state owner alive).
+              user_id: localOwner || null,
+              // Only the local row carries the override; the state summary has
+              // no such column, so without this the slider would reset to
+              // default every time the list refreshed.
+              reasoning_effort: localSession.reasoning_effort || '',
+              expert_id: localSession.expert_id || null,
+              expert_label: localSession.expert_label || null,
+              expert_avatar: localSession.expert_avatar || null,
+              execution_engine: localSession.execution_engine,
+              title: localSession.title ?? (ownersConflict ? null : (session as any).title),
+              preview: ownersConflict ? null : (session as any).preview,
+            }
+          : {}),
+      }
+    })
+  const stateIds = new Set(stateSessions.map(session => session.id))
+  const localOnlySessions = localHistorySessions
+    .filter(session => !stateIds.has(session.id))
+    .map(session => ({ ...session, webui_imported: true }))
+  const allSessions = [...stateSessions, ...localOnlySessions]
+  ctx.body = {
+    sessions: filterPendingDeletedSessions(
+      filterByAllowedProfiles(ctx, allSessions).filter(s => matchesHermesHistorySource(source, s)),
+    ),
+  }
 }
 
 export async function search(ctx: any) {
-  if (useLocalSessionStore()) {
-    const q = typeof ctx.query.q === 'string' ? ctx.query.q : ''
-    const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
-    const profile = getActiveProfileName()
-    const results = localSearchSessions(profile, q, limit && limit > 0 ? limit : 20)
-    ctx.body = { results: filterPendingDeletedSessions(results) }
+  const q = typeof ctx.query.q === 'string' ? ctx.query.q : ''
+  const source = (ctx.query.source as string) || undefined
+  const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
+  const agentId = requestedAgentId(ctx)
+  if (agentId) {
+    const scope = await sharedAgentSessionScope(ctx, agentId)
+    if (!scope) {
+      ctx.body = { results: [] }
+      return
+    }
+    const results = localSearchSessionsByAgent(scope.agentId, q, {
+      userId: scope.userId,
+      source,
+      limit: limit && limit > 0 ? limit : 20,
+    })
+    ctx.body = {
+      results: filterPendingDeletedSessions(results.filter(s => isRequestedSessionSource(source, s.source))),
+    }
     return
   }
-
-  const q = typeof ctx.query.q === 'string' ? ctx.query.q : ''
-  const source = typeof ctx.query.source === 'string' && ctx.query.source.trim()
-    ? ctx.query.source.trim()
-    : undefined
-  const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : undefined
-
-  try {
-    const results = await searchSessionSummaries(q, source, limit && limit > 0 ? limit : 20)
-    ctx.body = { results: filterPendingDeletedSessions(results) }
-  } catch (err) {
-    logger.error(err, 'Hermes Session DB: search failed')
-    ctx.status = 500
-    ctx.body = { error: 'Failed to search sessions' }
+  const resolved = explicitSessionCollectionProfile(ctx)
+  if (resolved.denied) {
+    ctx.body = { results: [] }
+    return
+  }
+  const profile = resolved.profile
+  const results = localSearchSessions(profile, q, limit && limit > 0 ? limit : 20)
+  const knownProfiles = profile ? null : new Set(listProfileNamesFromDisk())
+  ctx.body = {
+    results: filterPendingDeletedSessions(filterByAllowedProfiles(ctx, results).filter(s =>
+      isRequestedSessionSource(source, s.source) &&
+      (!knownProfiles || knownProfiles.has(s.profile || 'default')),
+    )),
   }
 }
 
 export async function get(ctx: any) {
-  if (useLocalSessionStore()) {
-    const session = localGetSessionDetail(ctx.params.id)
-    if (!session) {
-      ctx.status = 404
-      ctx.body = { error: 'Session not found' }
-      return
-    }
-    ctx.body = { session }
-    return
-  }
-
-  const session = await hermesCli.getSession(ctx.params.id)
+  const session = localGetSessionDetail(ctx.params.id)
   if (!session) {
     ctx.status = 404
     ctx.body = { error: 'Session not found' }
     return
   }
-  ctx.body = { session }
+  if (await denySessionAccessAsync(ctx, session)) return
+  const sources = await authorizeSourceRefs({ profile: session.profile || 'default', ownerOpenId: actorOpenId(ctx), messages: session.messages })
+  ctx.body = { session: { ...session, messages: session.messages.map(message => ({ ...message, source_refs: sources.get(String(message.id)) || null })) } }
+}
+
+export async function listWorkspaceRunChanges(ctx: any) {
+  const session = await readableLocalSessionForParam(ctx)
+  if (!session) return
+  const sessionId = String(ctx.params.id || '').trim()
+  ctx.body = { changes: listWorkspaceRunChangesForSession(sessionId) }
+}
+
+export async function getWorkspaceRunChange(ctx: any) {
+  const session = await readableLocalSessionForParam(ctx)
+  if (!session) return
+  const sessionId = String(ctx.params.id || '').trim()
+  const changeId = String(ctx.params.changeId || '').trim()
+  const change = changeId ? localGetWorkspaceRunChange(sessionId, changeId) : null
+  if (!change) {
+    ctx.status = 404
+    ctx.body = { error: 'Workspace run change not found' }
+    return
+  }
+  ctx.body = { change }
+}
+
+export async function getWorkspaceRunChangeFile(ctx: any) {
+  const session = await readableLocalSessionForParam(ctx)
+  if (!session) return
+  const sessionId = String(ctx.params.id || '').trim()
+  const changeId = String(ctx.params.changeId || '').trim()
+  const fileId = Number(ctx.params.fileId)
+  if (!Number.isInteger(fileId) || fileId <= 0) {
+    ctx.status = 400
+    ctx.body = { error: 'Invalid workspace run change file id' }
+    return
+  }
+  const file = changeId ? localGetWorkspaceRunChangeFile(sessionId, changeId, fileId) : null
+  if (!file) {
+    ctx.status = 404
+    ctx.body = { error: 'Workspace run change file not found' }
+    return
+  }
+  ctx.body = { file }
 }
 
 /**
@@ -234,11 +839,33 @@ export async function get(ctx: any) {
  * GET /api/hermes/sessions/hermes/:id
  */
 export async function getHermesSession(ctx: any) {
-  // Try database first (consistent with listHermesSessions)
+  const profile = isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : requestedProfile(ctx)
+
+  // Prefer the Web UI local session store. Hermes state.db can lag behind or
+  // miss messages for Bridge-backed runs, while the local store is the source
+  // used by chat rendering and compression.
+  const localSession = localGetSessionDetail(ctx.params.id)
+  const localSessionProfile = (localSession?.profile || 'default') as string
+  if (
+    localSession &&
+    isHermesHistorySessionSource(localSession.source) &&
+    (!profile || localSessionProfile === profile || await canAccessSharedAgentSession(ctx, localSession))
+  ) {
+    if (await denySessionAccessAsync(ctx, localSession)) return
+    const sources = await authorizeSourceRefs({ profile: localSession.profile || 'default', ownerOpenId: actorOpenId(ctx), messages: localSession.messages })
+    ctx.body = { session: { ...localSession, messages: localSession.messages.map(message => ({ ...message, source_refs: sources.get(String(message.id)) || null })) } }
+    return
+  }
+
+  // Try Hermes state.db next (consistent with listHermesSessions)
   try {
-    const session = await getSessionDetailFromDb(ctx.params.id)
-    if (session && session.source !== 'api_server' && session.source !== 'cron') {
-      ctx.body = { session }
+    const session = profile
+      ? await getSessionDetailFromDbWithProfile(ctx.params.id, profile)
+      : await getSessionDetailFromDb(ctx.params.id)
+    if (session && isHermesHistorySessionSource(session.source)) {
+      const sessionWithProfile = profile ? { ...session, profile } : session
+      if (await denySessionAccessAsync(ctx, sessionWithProfile)) return
+      ctx.body = { session: sessionWithProfile }
       return
     }
   } catch (err) {
@@ -252,50 +879,165 @@ export async function getHermesSession(ctx: any) {
     ctx.body = { error: 'Session not found' }
     return
   }
-  // Filter out api_server sessions
-  if (session.source === 'api_server') {
+  // Filter out Web UI-only session sources.
+  if (!isHermesHistorySessionSource(session.source)) {
     ctx.status = 404
     ctx.body = { error: 'Session not found' }
     return
   }
+  if (await denySessionAccessAsync(ctx, session)) return
   ctx.body = { session }
 }
 
-export async function remove(ctx: any) {
-  if (useLocalSessionStore()) {
-    const sessionId = ctx.params.id
-    const ok = localDeleteSession(sessionId)
-    if (!ok) {
-      ctx.status = 500
-      ctx.body = { error: 'Failed to delete session' }
-      return
-    }
-    deleteUsage(sessionId)
-    ctx.body = { ok: true }
+export async function importHermesSession(ctx: any) {
+  const sessionId = ctx.params.id
+  const profile = isChatPlaneRequest(ctx)
+    ? getRequestProfile(ctx)
+    : (requestedProfile(ctx) || getActiveProfileName())
+  if (!canAccessProfile(ctx, profile)) {
+    ctx.status = 403
+    ctx.body = { error: `Profile "${profile || 'default'}" is not available for this user` }
     return
   }
 
+  const existing = localGetSessionDetail(sessionId)
+  if (existing) {
+    // Import returns the FULL transcript: it must pass the same owner fence as
+    // every other read path, not just the profile check above, and the row must
+    // belong to the profile this request is bound to.
+    if (await denySessionAccessAsync(ctx, existing)) return
+    if (normalizedOwner((existing as any).profile) !== normalizedOwner(profile)) {
+      ctx.status = 404
+      ctx.body = { error: 'Session not found' }
+      return
+    }
+    ctx.body = { ok: true, imported: false, session: existing }
+    return
+  }
+
+  let detail
+  try {
+    detail = await getSessionDetailFromDbWithProfile(sessionId, profile)
+  } catch (err) {
+    logger.warn({ err, sessionId, profile }, 'Hermes Session: import query failed')
+    ctx.status = 500
+    ctx.body = { error: 'Failed to read Hermes session' }
+    return
+  }
+
+  if (!detail || detail.source === 'api_server') {
+    ctx.status = 404
+    ctx.body = { error: 'Session not found' }
+    return
+  }
+
+  // Fence the state row BEFORE persisting it locally or returning it.
+  if (await denySessionAccessAsync(ctx, { ...detail, profile })) return
+
+  const profileDefault = await getProfileDefaultModel(profile)
+  const importTimestamp = Math.floor(Date.now() / 1000)
+
+  localCreateSession({
+    id: detail.id,
+    profile,
+    source: 'cli',
+    model: profileDefault.model,
+    provider: profileDefault.provider,
+    title: detail.title || undefined,
+  })
+
+  localUpdateSession(detail.id, {
+    source: 'cli',
+    user_id: detail.user_id,
+    model: profileDefault.model,
+    provider: profileDefault.provider,
+    title: detail.title,
+    started_at: detail.started_at,
+    ended_at: detail.ended_at,
+    end_reason: detail.end_reason,
+    message_count: detail.message_count,
+    tool_call_count: detail.tool_call_count,
+    input_tokens: detail.input_tokens,
+    output_tokens: detail.output_tokens,
+    cache_read_tokens: detail.cache_read_tokens,
+    cache_write_tokens: detail.cache_write_tokens,
+    reasoning_tokens: detail.reasoning_tokens,
+    billing_provider: detail.billing_provider,
+    estimated_cost_usd: detail.estimated_cost_usd,
+    actual_cost_usd: detail.actual_cost_usd,
+    cost_status: detail.cost_status,
+    preview: detail.preview,
+    last_active: importTimestamp,
+  })
+
+  const importMessages = buildImportMessages(detail.id, Array.isArray(detail.messages) ? detail.messages : [])
+  localAddMessages(importMessages)
+  localUpdateSessionStats(detail.id)
+  localUpdateSession(detail.id, {
+    tool_call_count: detail.tool_call_count,
+    input_tokens: detail.input_tokens,
+    output_tokens: detail.output_tokens,
+    cache_read_tokens: detail.cache_read_tokens,
+    cache_write_tokens: detail.cache_write_tokens,
+    reasoning_tokens: detail.reasoning_tokens,
+    billing_provider: detail.billing_provider,
+    estimated_cost_usd: detail.estimated_cost_usd,
+    actual_cost_usd: detail.actual_cost_usd,
+    cost_status: detail.cost_status,
+    last_active: importTimestamp,
+    ended_at: detail.ended_at,
+  })
+
+  ctx.body = { ok: true, imported: true, session: localGetSessionDetail(detail.id) }
+}
+
+export async function remove(ctx: any) {
   const sessionId = ctx.params.id
-  const ok = await hermesCli.deleteSession(sessionId)
-  if (!ok) {
+  const existing = localGetSession(sessionId)
+  if (await denySessionAccessAsync(ctx, existing)) return
+  const hermesProfile = requestedProfile(ctx) || existing?.profile || getActiveProfileName()
+  const codingAgentSession = isCodingAgentSession(existing)
+  if (codingAgentSession) codingAgentRunManager.stop(sessionId, { reportClosed: false })
+  if (existing) abandonActiveSessionRun(sessionId, existing.profile || hermesProfile)
+  const localDeleted = existing ? localDeleteSession(sessionId) : true
+  const hermes = codingAgentSession
+    ? { attempted: false, deleted: false, profile: hermesProfile }
+    : await deleteHermesSessionIfPresent(sessionId, hermesProfile)
+  if (!localDeleted) {
     ctx.status = 500
     ctx.body = { error: 'Failed to delete session' }
     return
   }
   deleteUsage(sessionId)
-  ctx.body = { ok: true }
+  ctx.body = { ok: true, deleted: Boolean(existing), hermes }
 }
 
 export async function batchRemove(ctx: any) {
-  const { ids } = ctx.request.body as { ids?: string[] }
-  if (!ids || !Array.isArray(ids) || ids.length === 0) {
+  const { ids, sessions } = ctx.request.body as { ids?: string[]; sessions?: BatchDeleteTarget[] }
+  const rawTargets = Array.isArray(sessions) && sessions.length > 0 ? sessions : ids
+  if (!rawTargets || !Array.isArray(rawTargets) || rawTargets.length === 0) {
     ctx.status = 400
     ctx.body = { error: 'ids is required and must be a non-empty array' }
     return
   }
 
-  const validIds = ids.filter(id => typeof id === 'string' && id.trim() !== '')
-  if (validIds.length === 0) {
+  const targets = rawTargets
+    .map((target): BatchDeleteTarget | null => {
+      if (typeof target === 'string') {
+        const id = target.trim()
+        return id ? { id } : null
+      }
+      if (!target || typeof target.id !== 'string') return null
+      const id = target.id.trim()
+      if (!id) return null
+      const profile = typeof target.profile === 'string' && target.profile.trim()
+        ? target.profile.trim()
+        : undefined
+      return { id, profile }
+    })
+    .filter((target): target is BatchDeleteTarget => Boolean(target))
+
+  if (targets.length === 0) {
     ctx.status = 400
     ctx.body = { error: 'No valid session ids provided' }
     return
@@ -304,30 +1046,56 @@ export async function batchRemove(ctx: any) {
   const results = {
     deleted: 0,
     failed: 0,
-    errors: [] as Array<{ id: string; error: string }>
+    hermesDeleted: 0,
+    hermesFailed: 0,
+    errors: [] as Array<{ id: string; error: string }>,
+    hermesErrors: [] as Array<{ id: string; profile?: string; error: string }>
   }
 
-  if (useLocalSessionStore()) {
-    for (const id of validIds) {
-      const ok = localDeleteSession(id)
-      if (ok) {
-        deleteUsage(id)
-        results.deleted++
-      } else {
+  for (const target of targets) {
+    const { id } = target
+    const existing = localGetSession(id)
+    const targetProfile = target.profile || existing?.profile
+    if (existing) {
+      if (!(await canAccessSessionAsync(ctx, existing))) {
         results.failed++
-        results.errors.push({ id, error: 'Failed to delete session' })
+        results.errors.push({ id, error: `Profile "${existing.profile || 'default'}" is not available for this user` })
+        continue
       }
+    } else if (targetProfile && !canAccessProfile(ctx, targetProfile)) {
+      results.failed++
+      results.errors.push({ id, error: `Profile "${targetProfile || 'default'}" is not available for this user` })
+      continue
     }
-  } else {
-    for (const id of validIds) {
-      const ok = await hermesCli.deleteSession(id)
-      if (ok) {
+
+    const codingAgentSession = isCodingAgentSession(existing)
+    if (codingAgentSession) codingAgentRunManager.stop(id, { reportClosed: false })
+    const shouldDeleteLocal = Boolean(existing && (!targetProfile || existing.profile === targetProfile))
+    if (shouldDeleteLocal) abandonActiveSessionRun(id, existing?.profile || targetProfile)
+    const localDeleted = shouldDeleteLocal ? localDeleteSession(id) : true
+    const hermes = codingAgentSession
+      ? { attempted: false, deleted: false, profile: targetProfile || 'default' }
+      : await deleteHermesSessionIfPresent(id, targetProfile)
+    if (hermes.deleted) {
+      results.hermesDeleted++
+    } else if (hermes.attempted && hermes.error) {
+      results.hermesFailed++
+      results.hermesErrors.push({ id, profile: hermes.profile, error: hermes.error })
+    }
+
+    if (shouldDeleteLocal) {
+      if (localDeleted) {
         deleteUsage(id)
         results.deleted++
       } else {
         results.failed++
         results.errors.push({ id, error: 'Failed to delete session' })
       }
+    } else if (hermes.deleted) {
+      results.deleted++
+    } else {
+      results.failed++
+      results.errors.push({ id, error: 'Session not found' })
     }
   }
 
@@ -345,6 +1113,8 @@ export async function usageBatch(ctx: any) {
 }
 
 export async function usageSingle(ctx: any) {
+  const session = localGetSession(ctx.params.id)
+  if (await denySessionAccessAsync(ctx, session)) return
   const result = getUsage(ctx.params.id)
   if (!result) {
     ctx.body = { input_tokens: 0, output_tokens: 0 }
@@ -354,36 +1124,75 @@ export async function usageSingle(ctx: any) {
 }
 
 export async function rename(ctx: any) {
-  if (useLocalSessionStore()) {
-    const { title } = ctx.request.body as { title?: string }
-    if (!title || typeof title !== 'string') {
-      ctx.status = 400
-      ctx.body = { error: 'title is required' }
-      return
-    }
-    const ok = localRenameSession(ctx.params.id, title.trim())
-    if (!ok) {
-      ctx.status = 500
-      ctx.body = { error: 'Failed to rename session' }
-      return
-    }
-    ctx.body = { ok: true }
-    return
-  }
-
   const { title } = ctx.request.body as { title?: string }
   if (!title || typeof title !== 'string') {
     ctx.status = 400
     ctx.body = { error: 'title is required' }
     return
   }
-  const ok = await hermesCli.renameSession(ctx.params.id, title.trim())
+  const existing = localGetSession(ctx.params.id)
+  if (await denySessionAccessAsync(ctx, existing)) return
+  const ok = localRenameSession(ctx.params.id, title.trim())
   if (!ok) {
     ctx.status = 500
     ctx.body = { error: 'Failed to rename session' }
     return
   }
   ctx.body = { ok: true }
+}
+
+async function setArchived(ctx: any, archived: boolean) {
+  const existing = localGetSession(ctx.params.id)
+  if (!existing) {
+    ctx.status = 404
+    ctx.body = { error: 'Session not found' }
+    return
+  }
+  if (await denySessionAccessAsync(ctx, existing)) return
+  const ok = localSetSessionArchived(ctx.params.id, archived)
+  if (!ok) {
+    ctx.status = 500
+    ctx.body = { error: 'Failed to update session archive state' }
+    return
+  }
+  ctx.body = { ok: true, archived }
+}
+
+export async function archiveSession(ctx: any) {
+  await setArchived(ctx, true)
+}
+
+export async function unarchiveSession(ctx: any) {
+  await setArchived(ctx, false)
+}
+
+/**
+ * POST /api/hermes/sessions/:id/pin — cross-device session pin.
+ *
+ * The pin lives on the session row, so it reaches every browser the same
+ * account signs in from. Writes go through the same profile/owner fence as
+ * archive: a caller who cannot read the row cannot pin it either.
+ */
+export async function setPinned(ctx: any) {
+  const existing = localGetSession(ctx.params.id)
+  if (!existing) {
+    ctx.status = 404
+    ctx.body = { error: 'Session not found' }
+    return
+  }
+  if (await denySessionAccessAsync(ctx, existing)) return
+  const { is_pinned } = (ctx.request.body || {}) as { is_pinned?: unknown }
+  if (typeof is_pinned !== 'boolean') {
+    ctx.status = 400
+    ctx.body = { error: 'is_pinned must be a boolean' }
+    return
+  }
+  if (!localSetSessionPinned(ctx.params.id, is_pinned)) {
+    ctx.status = 500
+    ctx.body = { error: 'Failed to update session pin' }
+    return
+  }
+  ctx.body = { ok: true, is_pinned }
 }
 
 export async function setWorkspace(ctx: any) {
@@ -393,35 +1202,230 @@ export async function setWorkspace(ctx: any) {
     ctx.body = { error: 'workspace must be a string or null' }
     return
   }
-  if (useLocalSessionStore()) {
-    const { updateSession, getSession, createSession } = await import('../../db/hermes/session-store')
-    const { getActiveProfileName } = await import('../../services/hermes/hermes-profile')
-    const id = ctx.params.id
-    // Create session if it doesn't exist yet (user may set workspace before sending first message)
-    if (!getSession(id)) {
-      createSession({ id, profile: getActiveProfileName(), title: '' })
-    }
-    updateSession(id, { workspace: workspace || null } as any)
-    ctx.body = { ok: true }
+  const { updateSession, getSession, createSession } = await import('../../db/hermes/session-store')
+  const id = ctx.params.id
+  const existing = getSession(id)
+  if (await denySessionAccessAsync(ctx, existing)) return
+  if (
+    existing?.execution_engine === 'harness'
+    && (existing.workspace || null) !== (workspace || null)
+  ) {
+    ctx.status = 409
+    ctx.body = { error: 'Harness session workspace is fixed' }
     return
   }
-  ctx.status = 501
-  ctx.body = { error: 'Workspace setting only supported in local session store mode' }
+  if (isCodingAgentSession(existing)) {
+    updateSession(id, { workspace: workspace || null } as any)
+    ctx.body = { ok: true, workspace: workspace || null }
+    return
+  }
+  const profile = existing?.profile
+    || (isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : requestedProfile(ctx))
+    || 'default'
+  // The admin plane's FolderPicker still browses the host WORKSPACE_BASE and hands
+  // back absolute paths (see requestWorkspaceFolderBase), so rejecting them here
+  // would break the super-admin surface this task promised not to touch. Storing
+  // is not trusting: the run path normalizes the stored value and falls back to
+  // the profile workspace root, which is exactly what it did before this feature.
+  if (!isChatPlaneRequest(ctx)) {
+    if (!existing) createSession({ id, profile, user_id: actorSessionOwnerId(ctx), title: '' })
+    updateSession(id, { workspace: workspace || null } as any)
+    ctx.body = { ok: true, workspace: workspace || null }
+    return
+  }
+  let normalized: string | null
+  try {
+    normalized = await normalizeHermesSessionWorkspace(profile, workspace)
+  } catch {
+    ctx.status = 400
+    ctx.body = { error: 'Invalid workspace' }
+    return
+  }
+  // A session's cwd is fixed once it has history: the transcript above was produced
+  // in one directory, and moving the binding mid-conversation would silently run the
+  // rest of it somewhere else. The UI forks a new session instead — but the UI is
+  // only a convention, so the invariant is enforced here, where every client lands.
+  if (existing && (existing.message_count || 0) > 0 && (existing.workspace || null) !== normalized) {
+    ctx.status = 409
+    ctx.body = { error: 'Workspace is fixed once the session has messages' }
+    return
+  }
+  if (!existing) {
+    createSession({ id, profile, title: '' })
+  }
+  updateSession(id, { workspace: normalized } as any)
+  ctx.body = { ok: true, workspace: normalized }
+}
+
+export async function setExpert(ctx: any) {
+  const body = ctx.request.body as { expert_id?: string | null; execution_engine?: string }
+  if (body.expert_id !== null && body.expert_id !== undefined && typeof body.expert_id !== 'string') {
+    ctx.status = 400
+    ctx.body = { error: 'expert_id must be a string or null' }
+    return
+  }
+  if (body.execution_engine !== 'hermes' && body.execution_engine !== 'harness') {
+    ctx.status = 400
+    ctx.body = { error: 'execution_engine must be hermes or harness' }
+    return
+  }
+  const id = ctx.params.id
+  const existing = localGetSession(id)
+  if (await denySessionAccessAsync(ctx, existing)) return
+  const owner = actorSessionOwnerId(ctx)
+  if (!owner) {
+    ctx.status = 401
+    ctx.body = { error: 'Verified user identity is required' }
+    return
+  }
+  const profile = existing?.profile
+    || (isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : requestedProfile(ctx))
+    || 'default'
+  if (!existing && !canAccessProfile(ctx, profile)) {
+    ctx.status = 403
+    ctx.body = { error: `Profile "${profile}" is not available for this user` }
+    return
+  }
+  const expertId = body.expert_id?.trim() || null
+  try {
+    const persistedExpertId = await persistSessionExpert({
+      id,
+      existing,
+      owner,
+      profile,
+      expertId,
+      executionEngine: body.execution_engine,
+    })
+    ctx.body = { ok: true, expert_id: persistedExpertId }
+  } catch (err) {
+    if (!(err instanceof SessionExpertError)) throw err
+    ctx.status = err.status
+    ctx.body = { error: err.message }
+  }
+}
+
+export async function setModel(ctx: any) {
+  const { model, provider } = ctx.request.body as { model?: string; provider?: string }
+  if (!model || typeof model !== 'string') {
+    ctx.status = 400
+    ctx.body = { error: 'model is required' }
+    return
+  }
+  if (provider !== undefined && provider !== null && typeof provider !== 'string') {
+    ctx.status = 400
+    ctx.body = { error: 'provider must be a string' }
+    return
+  }
+  const { updateSession, getSession, createSession, claimFamilySwitchNotice } = await import('../../db/hermes/session-store')
+  const id = ctx.params.id
+  const existing = getSession(id)
+  if (await denySessionAccessAsync(ctx, existing)) return
+  const profile = existing?.profile
+    || (isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : requestedProfile(ctx))
+    || 'default'
+  const cleanModel = model.trim()
+  const cleanProvider = (provider || '').trim()
+  const codingAgentSession = isCodingAgentSession(existing)
+  // Stored value, not user input: a legacy or since-deleted path must not turn a
+  // model switch into a 500. See normalizeStoredHermesSessionWorkspace.
+  const workspace = !codingAgentSession
+    ? await normalizeStoredHermesSessionWorkspace(profile, existing?.workspace)
+    : undefined
+  if (!existing) {
+    createSession({ id, profile, user_id: actorSessionOwnerId(ctx), title: '', model: cleanModel, provider: cleanProvider, workspace: workspace || undefined })
+  }
+  // The cross-family decision is made here, from the one row that already holds
+  // every input (outgoing model, message count, the one-shot marker), so a
+  // reload or a remounted picker can never re-ask.
+  //
+  // `existing` was read before the awaits above, so this predicate alone would
+  // let two concurrent switches both notice. It is only the cheap filter; the
+  // marker is claimed atomically below and that claim is what decides.
+  const wantsFamilySwitchNotice = shouldNoticeFamilySwitch({
+    previousModel: existing?.model || '',
+    nextModel: cleanModel,
+    messageCount: existing?.message_count || 0,
+    alreadyNoticed: !!existing?.family_switch_noticed,
+  })
+  const updates: Record<string, string | number> = { model: cleanModel, provider: cleanProvider }
+  if (!codingAgentSession && existing && !existing.workspace && workspace) updates.workspace = workspace
+  if (
+    codingAgentSession &&
+    existing &&
+    (existing.model !== cleanModel || existing.provider !== cleanProvider)
+  ) {
+    updates.agent_native_session_id = ''
+  }
+  updateSession(id, updates as any)
+  // Exactly one concurrent switch wins this claim, so exactly one client toasts.
+  const noticeFamilySwitch = wantsFamilySwitchNotice && claimFamilySwitchNotice(id)
+  if (!codingAgentSession) {
+    await notifyBridgeSessionModelChanged(id, cleanModel, cleanProvider, profile)
+  }
+  // ponytail: the key only appears when the client should toast — the plain
+  // `{ ok: true }` contract every other caller asserts on stays untouched.
+  ctx.body = noticeFamilySwitch ? { ok: true, family_switch_notice: true } : { ok: true }
+}
+
+/** The slider's stops plus the two "unset" spellings. Mirrors
+ *  `reasoningEffortOptions` in ChatInput.vue, which in turn mirrors core's
+ *  VALID_REASONING_EFFORTS (hermes_constants.py). '' means "no override —
+ *  fall back to the profile/config default". */
+const SESSION_REASONING_EFFORTS = new Set(['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+
+/**
+ * POST /api/hermes/sessions/:id/reasoning-effort
+ *
+ * Persist the per-session reasoning-effort override on the session row so the
+ * choice survives a reload and reaches every device that opens the session.
+ * Unknown values are rejected rather than stored: an unrecognized string would
+ * reach the agent and be silently dropped, leaving the slider claiming a depth
+ * the run never used.
+ */
+export async function setReasoningEffort(ctx: any) {
+  const id = ctx.params.id
+  const existing = localGetSession(id)
+  if (!existing) {
+    ctx.status = 404
+    ctx.body = { error: 'Session not found' }
+    return
+  }
+  if (await denySessionAccessAsync(ctx, existing)) return
+
+  const body = (ctx.request.body || {}) as { reasoningEffort?: unknown; reasoning_effort?: unknown }
+  const rawEffort = body.reasoningEffort ?? body.reasoning_effort
+  if (typeof rawEffort !== 'string') {
+    ctx.status = 400
+    ctx.body = { error: 'reasoningEffort must be a string' }
+    return
+  }
+  const reasoningEffort = rawEffort.trim()
+  if (!SESSION_REASONING_EFFORTS.has(reasoningEffort)) {
+    ctx.status = 400
+    ctx.body = { error: 'Invalid reasoningEffort' }
+    return
+  }
+
+  // Cleared means NULL, not '': "no override" is the column's absent state.
+  // Readers normalize both back to '' so nothing downstream has to care.
+  localUpdateSession(id, { reasoning_effort: reasoningEffort || null })
+  ctx.body = { ok: true, reasoning_effort: reasoningEffort }
 }
 
 export async function contextLength(ctx: any) {
-  const profile = (ctx.query.profile as string) || undefined
-  ctx.body = { context_length: getModelContextLength(profile) }
+  const profile = requestedProfile(ctx)
+  const model = typeof ctx.query.model === 'string' ? ctx.query.model : undefined
+  const provider = typeof ctx.query.provider === 'string' ? ctx.query.provider : undefined
+  ctx.body = { context_length: getModelContextLength({ profile, model, provider }) }
 }
 
 export async function usageStats(ctx: any) {
   const rawDays = parseInt(String(ctx.query?.days ?? '30'), 10)
   const days = Number.isFinite(rawDays) && rawDays > 0 ? Math.min(rawDays, 365) : 30
-
-  // Local Web UI chat usage is kept in the dashboard DB and must be merged
-  // with Hermes' native state.db analytics for the same period.
-  const currentProfile = getActiveProfileName()
-  const local = getLocalUsageStats(currentProfile, days)
+  const chatPlane = isChatPlaneRequest(ctx)
+  // In chat plane the request is bound to the caller's owned profile; cost and
+  // raw api-call totals are owner-only details and must never reach the chat UI.
+  const profile = chatPlane ? getRequestProfile(ctx) : requestedProfile(ctx)
 
   let hermes = {
     input_tokens: 0,
@@ -437,31 +1441,9 @@ export async function usageStats(ctx: any) {
   }
 
   try {
-    hermes = await getUsageStatsFromDb(days)
+    hermes = profile ? await getUsageStatsFromDb(days, undefined, profile) : await getUsageStatsFromDb(days)
   } catch (err) {
     logger.warn(err, 'usageStats: failed to load Hermes usage analytics from state.db')
-  }
-
-  const totalInput = local.input_tokens + hermes.input_tokens
-  const totalOutput = local.output_tokens + hermes.output_tokens
-  const totalCacheRead = local.cache_read_tokens + hermes.cache_read_tokens
-  const totalCacheWrite = local.cache_write_tokens + hermes.cache_write_tokens
-  const totalReasoning = local.reasoning_tokens + hermes.reasoning_tokens
-  const totalSessions = local.sessions + hermes.sessions
-
-  const modelMap = new Map<string, UsageStatsModelRow>()
-  for (const m of [...local.by_model, ...hermes.by_model].filter(m => m.model)) {
-    const existing = modelMap.get(m.model)
-    if (existing) {
-      existing.input_tokens += m.input_tokens
-      existing.output_tokens += m.output_tokens
-      existing.cache_read_tokens += m.cache_read_tokens
-      existing.cache_write_tokens += m.cache_write_tokens
-      existing.reasoning_tokens += m.reasoning_tokens
-      existing.sessions += m.sessions
-    } else {
-      modelMap.set(m.model, { ...m })
-    }
   }
 
   const dayMap = new Map<string, UsageStatsDailyRow>()
@@ -472,26 +1454,26 @@ export async function usageStats(ctx: any) {
     const key = d.toISOString().slice(0, 10)
     dayMap.set(key, { date: key, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, sessions: 0, errors: 0, cost: 0 })
   }
-  for (const d of [...local.by_day, ...hermes.by_day]) {
+  for (const d of hermes.by_day) {
     const existing = dayMap.get(d.date)
     if (existing) {
       existing.input_tokens += d.input_tokens; existing.output_tokens += d.output_tokens
       existing.cache_read_tokens += d.cache_read_tokens; existing.cache_write_tokens += d.cache_write_tokens
-      existing.sessions += d.sessions; existing.errors += d.errors; existing.cost += d.cost
+      existing.sessions += d.sessions; existing.errors += d.errors; existing.cost += chatPlane ? 0 : d.cost
     }
   }
 
   ctx.body = {
-    total_input_tokens: totalInput,
-    total_output_tokens: totalOutput,
-    total_cache_read_tokens: totalCacheRead,
-    total_cache_write_tokens: totalCacheWrite,
-    total_reasoning_tokens: totalReasoning,
-    total_sessions: totalSessions,
-    total_cost: hermes.cost,
-    total_api_calls: hermes.total_api_calls,
+    total_input_tokens: hermes.input_tokens,
+    total_output_tokens: hermes.output_tokens,
+    total_cache_read_tokens: hermes.cache_read_tokens,
+    total_cache_write_tokens: hermes.cache_write_tokens,
+    total_reasoning_tokens: hermes.reasoning_tokens,
+    total_sessions: hermes.sessions,
+    total_cost: chatPlane ? 0 : hermes.cost,
+    ...(chatPlane ? {} : { total_api_calls: hermes.total_api_calls }),
     period_days: days,
-    model_usage: [...modelMap.values()].sort((a, b) => (b.input_tokens + b.output_tokens) - (a.input_tokens + a.output_tokens)),
+    model_usage: hermes.by_model.sort((a, b) => (b.input_tokens + b.output_tokens) - (a.input_tokens + a.output_tokens)),
     daily_usage: [...dayMap.values()],
   }
 }
@@ -499,19 +1481,24 @@ export async function usageStats(ctx: any) {
 /**
  * List folders under workspace base path for folder picker.
  * GET /api/hermes/workspace/folders?path=<relative_path>
- * Base: /opt/data/workspace (overridable via WORKSPACE_BASE env)
+ * Base: current user's home directory (overridable via WORKSPACE_BASE env)
  */
 export async function listWorkspaceFolders(ctx: any) {
   const { resolve, join } = await import('path')
-  const { readdir } = await import('fs/promises')
+  const { readdir, stat } = await import('fs/promises')
   const { existsSync } = await import('fs')
-
-  const WORKSPACE_BASE = process.env.WORKSPACE_BASE || '/opt/data/workspace'
+  const WORKSPACE_BASE = await requestWorkspaceFolderBase(ctx)
+  const chatPlane = isChatPlaneRequest(ctx)
   const subPath = (ctx.query.path as string) || ''
 
   // Security: prevent path traversal
   const fullPath = resolve(join(WORKSPACE_BASE, subPath))
-  if (!fullPath.startsWith(resolve(WORKSPACE_BASE))) {
+  if (!isPathWithin(fullPath, WORKSPACE_BASE)) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return
+  }
+  if (!(await isNearestExistingRealPathWithin(fullPath, WORKSPACE_BASE))) {
     ctx.status = 403
     ctx.body = { error: 'Access denied' }
     return
@@ -525,45 +1512,193 @@ export async function listWorkspaceFolders(ctx: any) {
 
   try {
     const entries = await readdir(fullPath, { withFileTypes: true })
-    const folders = entries
-      .filter(e => e.isDirectory() && !e.name.startsWith('.'))
-      .map(e => ({
-        name: e.name,
-        path: subPath ? `${subPath}/${e.name}` : e.name,
-        fullPath: join(fullPath, e.name),
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name))
+    const folders = []
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue
+      const entryPath = join(fullPath, e.name)
+      try {
+        const info = await stat(entryPath)
+        if (!info.isDirectory()) continue
+        if (!(await isNearestExistingRealPathWithin(entryPath, WORKSPACE_BASE))) continue
+        folders.push({
+          name: e.name,
+          path: subPath ? `${subPath}/${e.name}` : e.name,
+          fullPath: chatPlane ? (subPath ? `${subPath}/${e.name}` : e.name) : entryPath,
+        })
+      } catch {
+        // Skip unreadable or broken symlink entries.
+      }
+    }
+    folders.sort((a, b) => a.name.localeCompare(b.name))
 
-    ctx.body = { base: WORKSPACE_BASE, current: subPath, folders }
+    ctx.body = { base: chatPlane ? '' : WORKSPACE_BASE, current: subPath, folders }
   } catch (err: any) {
     ctx.status = 500
     ctx.body = { error: err.message }
   }
 }
 
+function invalidWorkspaceFolderName(name: string): boolean {
+  return !name ||
+    name === '.' ||
+    name === '..' ||
+    name.includes('/') ||
+    name.includes('\\') ||
+    name.includes('\0')
+}
+
+async function resolveWorkspaceFolderPath(ctx: any, inputPath: string) {
+  const { resolve, join } = await import('path')
+  const WORKSPACE_BASE = await requestWorkspaceFolderBase(ctx)
+  const fullPath = resolve(join(WORKSPACE_BASE, inputPath || ''))
+  if (!isPathWithin(fullPath, WORKSPACE_BASE)) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return null
+  }
+  if (!(await isNearestExistingRealPathWithin(fullPath, WORKSPACE_BASE))) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return null
+  }
+  return { base: WORKSPACE_BASE, fullPath }
+}
+
+async function requestWorkspaceFolderBase(ctx: any): Promise<string> {
+  if (isChatPlaneRequest(ctx)) {
+    const profile = getRequestProfile(ctx)
+    await ensureHermesRunWorkspace(profile, null)
+    return defaultHermesWorkspace(profile)
+  }
+  const { homedir } = await import('os')
+  return process.env.WORKSPACE_BASE?.trim() || homedir()
+}
+
+export async function createWorkspaceFolder(ctx: any) {
+  const { join } = await import('path')
+  const { mkdir } = await import('fs/promises')
+  const { parentPath, name } = ctx.request.body as { parentPath?: string; name?: string }
+  const folderName = String(name || '').trim()
+  if (invalidWorkspaceFolderName(folderName)) {
+    ctx.status = 400
+    ctx.body = { error: 'Invalid folder name' }
+    return
+  }
+
+  const resolvedParent = await resolveWorkspaceFolderPath(ctx, String(parentPath || ''))
+  if (!resolvedParent) return
+  const targetPath = join(resolvedParent.fullPath, folderName)
+  if (!isPathWithin(targetPath, resolvedParent.base)) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return
+  }
+  if (!(await isNearestExistingRealPathWithin(targetPath, resolvedParent.base))) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return
+  }
+
+  try {
+    await mkdir(targetPath)
+    ctx.body = { ok: true }
+  } catch (err: any) {
+    ctx.status = err?.code === 'EEXIST' ? 409 : 500
+    ctx.body = { error: err.message || 'Failed to create folder' }
+  }
+}
+
+export async function renameWorkspaceFolder(ctx: any) {
+  const { dirname, join } = await import('path')
+  const { rename, stat } = await import('fs/promises')
+  const { path, name } = ctx.request.body as { path?: string; name?: string }
+  const folderName = String(name || '').trim()
+  const currentPath = String(path || '').trim()
+  if (!currentPath) {
+    ctx.status = 400
+    ctx.body = { error: 'Path is required' }
+    return
+  }
+  if (invalidWorkspaceFolderName(folderName)) {
+    ctx.status = 400
+    ctx.body = { error: 'Invalid folder name' }
+    return
+  }
+
+  const resolvedCurrent = await resolveWorkspaceFolderPath(ctx, currentPath)
+  if (!resolvedCurrent) return
+  const parentPath = dirname(resolvedCurrent.fullPath)
+  const targetPath = join(parentPath, folderName)
+  if (!isPathWithin(targetPath, resolvedCurrent.base)) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return
+  }
+  if (!(await isNearestExistingRealPathWithin(targetPath, resolvedCurrent.base))) {
+    ctx.status = 403
+    ctx.body = { error: 'Access denied' }
+    return
+  }
+
+  try {
+    const info = await stat(resolvedCurrent.fullPath)
+    if (!info.isDirectory()) {
+      ctx.status = 400
+      ctx.body = { error: 'Path is not a directory' }
+      return
+    }
+    await rename(resolvedCurrent.fullPath, targetPath)
+    ctx.body = { ok: true }
+  } catch (err: any) {
+    ctx.status = err?.code === 'EEXIST' ? 409 : err?.code === 'ENOENT' ? 404 : 500
+    ctx.body = { error: err.message || 'Failed to rename folder' }
+  }
+}
+
+export async function deleteWorkspaceFolder(ctx: any) {
+  const { rm, stat } = await import('fs/promises')
+  const { path } = ctx.request.body as { path?: string }
+  const currentPath = String(path || '').trim()
+  if (!currentPath) {
+    ctx.status = 400
+    ctx.body = { error: 'Path is required' }
+    return
+  }
+
+  const resolvedCurrent = await resolveWorkspaceFolderPath(ctx, currentPath)
+  if (!resolvedCurrent) return
+  if (resolvedCurrent.fullPath === resolvedCurrent.base) {
+    ctx.status = 400
+    ctx.body = { error: 'Cannot delete workspace root' }
+    return
+  }
+
+  try {
+    const info = await stat(resolvedCurrent.fullPath)
+    if (!info.isDirectory()) {
+      ctx.status = 400
+      ctx.body = { error: 'Path is not a directory' }
+      return
+    }
+    await rm(resolvedCurrent.fullPath, { recursive: true })
+    ctx.body = { ok: true }
+  } catch (err: any) {
+    ctx.status = err?.code === 'ENOENT' ? 404 : 500
+    ctx.body = { error: err.message || 'Failed to delete folder' }
+  }
+}
+
 const exportCompressor = new ExportCompressor()
 
 export async function exportSession(ctx: any) {
-  let session: any = null
-
-  if (useLocalSessionStore()) {
-    session = localGetSessionDetail(ctx.params.id)
-  } else {
-    try {
-      session = await getSessionDetailFromDb(ctx.params.id)
-    } catch (err) {
-      logger.warn(err, 'Hermes Session DB: export detail query failed, falling back to CLI')
-    }
-    if (!session) {
-      session = await hermesCli.getSession(ctx.params.id)
-    }
-  }
+  const session = localGetSessionDetail(ctx.params.id)
 
   if (!session) {
     ctx.status = 404
     ctx.body = { error: 'Session not found' }
     return
   }
+  if (await denySessionAccessAsync(ctx, session)) return
 
   const mode = (ctx.query.mode as string) || 'full'
   const ext = (ctx.query.ext as string) || (mode === 'compressed' ? 'txt' : 'json')
@@ -596,10 +1731,9 @@ export async function exportSession(ctx: any) {
 }
 
 async function compressSession(session: any) {
-  const mgr = getGatewayManagerInstance()
-  const profile = getActiveProfileName()
-  const upstream = mgr ? mgr.getUpstream(profile).replace(/\/$/, '') : ''
-  const apiKey = mgr ? mgr.getApiKey(profile) || undefined : undefined
+  const profile = session.profile || getActiveProfileName()
+  const upstream = ''
+  const apiKey = undefined
   const messages = (session.messages || []).map((m: any) => ({
     role: m.role,
     content: m.content || '',
@@ -609,7 +1743,11 @@ async function compressSession(session: any) {
     reasoning_content: m.reasoning,
   }))
 
-  return exportCompressor.compress(messages, upstream, apiKey, session.id, profile)
+  return exportCompressor.compress(messages, upstream, apiKey, session.id, {
+    profile,
+    model: session.model,
+    provider: session.provider,
+  })
 }
 
 function serializeAsText(title: string | null, messages: any[]): string {
@@ -627,40 +1765,82 @@ function serializeAsText(title: string | null, messages: any[]): string {
 
 export async function getConversationMessagesPaginated(ctx: any) {
   const offset = ctx.query.offset ? parseInt(ctx.query.offset as string, 10) : 0
-  const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : 50
+  const limit = ctx.query.limit ? parseInt(ctx.query.limit as string, 10) : 150
+  const profile = isChatPlaneRequest(ctx) ? getRequestProfile(ctx) : requestedProfile(ctx)
 
-  if (useLocalSessionStore()) {
-    const { getSessionDetailPaginated } = await import('../../db/hermes/session-store')
-    const result = getSessionDetailPaginated(ctx.params.id, offset, limit)
+  const { getSessionDetailPaginated } = await import('../../db/hermes/session-store')
+  const localResult = getSessionDetailPaginated(ctx.params.id, offset, limit)
+  const useLocalResult = localResult && (
+    !profile ||
+    localResult.session.profile === profile ||
+    await canAccessSharedAgentSession(ctx, localResult.session)
+  )
+  const result = useLocalResult
+    ? localResult
+    : await getSessionDetailPaginatedFromDbWithProfile(ctx.params.id, profile || 'default', offset, limit)
 
-    if (!result) {
-      ctx.status = 404
-      ctx.body = { error: 'Conversation not found' }
-      return
-    }
-
-    ctx.body = {
-      session: {
-        id: result.session.id,
-        source: result.session.source,
-        model: result.session.model,
-        title: result.session.title,
-        started_at: result.session.started_at,
-        ended_at: result.session.ended_at,
-        last_active: result.session.last_active,
-        message_count: result.session.message_count,
-        input_tokens: result.session.input_tokens,
-        output_tokens: result.session.output_tokens,
-      },
-      messages: result.messages,
-      total: result.total,
-      offset: result.offset,
-      limit: result.limit,
-      hasMore: result.hasMore,
-    }
+  if (!result) {
+    ctx.status = 404
+    ctx.body = { error: 'Conversation not found' }
     return
   }
+  const session = { ...result.session, profile: (result.session as any).profile || profile || 'default' }
+  const expertSession = session as typeof session & {
+    expert_id?: string | null
+    expert_label?: string | null
+    expert_avatar?: string | null
+    execution_engine?: 'hermes' | 'harness'
+  }
+  if (await denySessionAccessAsync(ctx, session)) return
 
-  ctx.status = 404
-  ctx.body = { error: 'Conversation not found' }
+  const sources = await authorizeSourceRefs({ profile: session.profile, ownerOpenId: actorOpenId(ctx), messages: result.messages })
+  ctx.body = {
+    session: {
+      id: session.id,
+      profile: session.profile,
+      source: session.source,
+      model: session.model,
+      title: session.title,
+      started_at: session.started_at,
+      ended_at: session.ended_at,
+      last_active: session.last_active,
+      message_count: session.message_count,
+      input_tokens: session.input_tokens,
+      output_tokens: session.output_tokens,
+      expert_id: expertSession.expert_id ?? null,
+      expert_label: expertSession.expert_label ?? null,
+      expert_avatar: expertSession.expert_avatar ?? null,
+      execution_engine: expertSession.execution_engine === 'harness' ? 'harness' : 'hermes',
+    },
+    messages: result.messages.map(message => ({ ...message, source_refs: sources.get(String(message.id)) || null })),
+    total: result.total,
+    offset: result.offset,
+    limit: result.limit,
+    hasMore: result.hasMore,
+  }
+}
+
+export async function openSourceRef(ctx: any) {
+  const runId = String(ctx.params.runId || '')
+  const refId = String(ctx.params.refId || '')
+  if (!runId || !refId) {
+    ctx.status = 404
+    return
+  }
+  const sessionId = String(ctx.query.session_id || '')
+  const session = localGetSessionDetail(sessionId)
+  if (!session || await denySessionAccessAsync(ctx, session)) return
+  const message = [...session.messages].reverse().find(item => item.run_id === runId && item.role === 'assistant' && item.content && !item.tool_calls?.length)
+  const ref = normalizeSourceRefs(message?.source_refs).find(item => item.id === refId && item.type === 'lark_doc')
+  if (!ref) {
+    ctx.status = 404
+    return
+  }
+  const targets = await authorizePrivateTargets(session.profile || 'default', actorOpenId(ctx), [ref])
+  const target = targets.get(ref.id)
+  if (!target) {
+    ctx.status = 404
+    return
+  }
+  ctx.redirect(target)
 }

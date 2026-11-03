@@ -1,11 +1,9 @@
 import { onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useChatStore } from '@/stores/hermes/chat'
 import { useSessionSearch } from './useSessionSearch'
 
 export function useKeyboard() {
   const router = useRouter()
-  const chatStore = useChatStore()
   const { sessionSearchOpen, openSessionSearch, closeSessionSearch } = useSessionSearch()
 
   function handleKeydown(e: KeyboardEvent) {
@@ -13,13 +11,24 @@ export function useKeyboard() {
 
     if (mod && e.key === 'n') {
       e.preventDefault()
-      chatStore.newChat()
+      // Imported on use so the chat store stays out of the entry chunk.
+      void import('@/stores/hermes/chat').then(({ useChatStore }) => {
+        useChatStore().newChat()
+      })
       return
     }
 
     if (mod && e.key === 'j') {
       e.preventDefault()
       router.push({ name: 'hermes.jobs' })
+      return
+    }
+
+    // Cmd+, on macOS / Ctrl+, elsewhere — the platform-standard settings shortcut.
+    if (mod && e.key === ',') {
+      if (router.currentRoute.value.name === 'login') return
+      e.preventDefault()
+      router.push({ name: 'hermes.settings' })
       return
     }
 

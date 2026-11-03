@@ -34,8 +34,19 @@ const exportCache = new Map<string, CachedExport>()
 
 export interface ConversationSummary {
   id: string
+  profile?: string | null
   source: string
+  agent?: string
+  agent_mode?: string
+  agent_session_id?: string
+  agent_native_session_id?: string
+  expert_id?: string | null
+  expert_label?: string | null
+  expert_avatar?: string | null
+  execution_engine?: 'hermes' | 'harness'
+  is_archived?: boolean
   model: string
+  provider?: string
   title: string | null
   started_at: number
   ended_at: number | null

@@ -1,10 +1,30 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { NButton, NTooltip, useMessage } from 'naive-ui'
 import type { Job } from '@/api/hermes/jobs'
 import { scheduleToDisplayText } from '@/api/hermes/jobs'
+import { fetchExperts } from '@/api/hermes/experts'
+import { getActiveProfileName } from '@/api/client'
 import { useJobsStore } from '@/stores/hermes/jobs'
+import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useI18n } from 'vue-i18n'
+
+// One expert catalog fetch per profile shared by every card on the page.
+const expertNamesByProfile = new Map<string, Promise<Map<string, string>>>()
+
+function expertNamesFor(profile: string): Promise<Map<string, string>> {
+  // Always keyed by a REAL profile name — a shared key across profile
+  // switches would let profile A's catalog label profile B's cards.
+  let cached = expertNamesByProfile.get(profile)
+  if (!cached) {
+    cached = fetchExperts(profile).then(
+      data => new Map((data.experts || []).map(expert => [expert.id, expert.name || expert.id])),
+    )
+    cached.catch(() => expertNamesByProfile.delete(profile))
+    expertNamesByProfile.set(profile, cached)
+  }
+  return cached
+}
 
 const props = defineProps<{
   job: Job
@@ -37,6 +57,40 @@ const statusType = computed(() => {
 })
 
 const scheduleExpr = computed(() => scheduleToDisplayText(props.job.schedule, props.job.schedule_display || '—'))
+
+const profilesStore = useProfilesStore()
+
+// Executor identity (M-0): show which digital employee (+ expert) runs this
+// job. agent_id maps back to a routing-row id carried on the profile list.
+const executorProfile = computed(() => {
+  const agentId = props.job.agent_id
+  if (!agentId) return null
+  return profilesStore.profiles.find(p => p.agentId === agentId) ?? null
+})
+
+const executorAgentLabel = computed(() => {
+  if (!props.job.agent_id) return ''
+  const profile = executorProfile.value
+  return profile?.displayLabel || profile?.alias || profile?.name || props.job.agent_id
+})
+
+// Expert badge shows the human-readable expert NAME, resolved from the agent
+// profile's expert catalog; the raw id is only the fallback.
+const executorExpertLabel = ref(props.job.expert_id || '')
+onMounted(async () => {
+  const expertId = props.job.expert_id
+  if (!expertId) return
+  // Agent task → that agent's catalog; expert-only task → the ACTIVE profile's
+  // (by explicit name, so the cache can never serve another profile's names).
+  const profileName = executorProfile.value?.name ?? getActiveProfileName()
+  if (!profileName) return
+  try {
+    const names = await expertNamesFor(profileName)
+    executorExpertLabel.value = names.get(expertId) || expertId
+  } catch {
+    // keep the id fallback
+  }
+})
 
 const formatTime = (t?: string | null) => {
   if (!t) return '—'
@@ -94,6 +148,13 @@ function handleCardClick(e: MouseEvent) {
     </div>
 
     <div class="card-body">
+      <div v-if="executorAgentLabel || job.expert_id" class="info-row" data-testid="job-executor">
+        <span class="info-label">{{ t('jobs.info.executor') }}</span>
+        <span class="info-value">
+          <template v-if="executorAgentLabel">🤖 {{ executorAgentLabel }}</template>
+          <span v-if="job.expert_id" class="executor-expert">{{ executorExpertLabel }}</span>
+        </span>
+      </div>
       <div class="info-row">
         <span class="info-label">{{ t('jobs.info.schedule') }}</span>
         <code class="info-value mono">{{ scheduleExpr }}</code>
@@ -248,6 +309,15 @@ function handleCardClick(e: MouseEvent) {
 
   &.ok { color: $success; }
   &.err { color: $error; }
+}
+
+.executor-expert {
+  margin-left: 6px;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(var(--accent-primary-rgb), 0.12);
+  color: $accent-primary;
 }
 
 .mono {

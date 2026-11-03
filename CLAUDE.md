@@ -549,3 +549,37 @@ Test files live in `tests/client/` and `tests/server/`. Configuration is in root
 3. Add routes with `path: '/{agent}/*'` and `name: '{agent}.*'` in the router
 4. Register routes in `routes/index.ts` following the public → auth → protected pattern
 5. Follow the same patterns as the Hermes integration
+
+---
+
+## 架构速查
+
+> 排障 / 对账 / 架构理解请先看 **[`ARCHITECTURE-GUIDE.md`](./ARCHITECTURE-GUIDE.md)**。本 CLAUDE.md 讲"如何写新代码"（命名、模板、TS 风格），架构 GUIDE 讲"现有代码长什么样、谁连谁、坑在哪、锚点速查表"。两者互补。
+
+兄弟文档（在 Obsidian 主仓 `My-Second-Brain/hermes/` 下）：
+
+- `ARCHITECTURE-GUIDE.md`（hermes 三仓 + lark-bridge 总图）
+- `hermes-multitenancy ARCHITECTURE-GUIDE`（multitenancy.db schema + router.py 三路 lookup）
+- `hermes-feishu-uat ARCHITECTURE-GUIDE`（UAT 主仓 / 飞书 IM 链路）
+
+### 架构红线（实现新代码前必读）
+
+- **新路由必须在 `proxyMiddleware` 之前注册**（`routes/index.ts:75-78`）。`/api/hermes/*` 有 catch-all proxy 兜底——把新路由放在 `proxyRoutes` 之后会被直接 forward 到 hermes gateway，导致本地 BFF 逻辑根本不执行。
+- **chat plane 下 `getRequestProfile(ctx)` 强制 `user.profile`**（`services/request-context.ts:121-125`）。不要尝试用 `X-Hermes-Profile` header 或 `?profile=` query 在 chat plane 下覆盖飞书账号绑定的 profile——服务端忽略，前端调试也无效。
+- **唯一发往 hermes gateway 的 fetch 在 `proxy-handler.ts:259`** + **chat-run socket 的 `chat-run-socket.ts:921`**。要给上游加新 header（如 `X-Hermes-Open-Id`）只改 `buildProxyHeaders()`（`proxy-handler.ts:84`）这一处；其它路径不能绕过 SSRF allowlist (`gateway-manager.ts:87 isAllowedUpstreamHost`)。
+
+<!-- ftask:managed v1 — auto-generated; edit OUTSIDE this block -->
+# Agent rules — hermes-web-ui (managed by ftask)
+
+- This repo is part of sunke's agent-OS. Agents NEVER run git directly here — use `bun ~/.claude/LIFEOS/TOOLS/.ftask-runtime/current/ftask.ts`.
+- Base branch: `main`. WORKTREE MODE: the main checkout stays PERMANENTLY on `main` as the stable main workspace; NEVER switch its branch or write to it. `ftask new <slug>` gives each task its own worktree at `hermes-web-ui.tasks/<slug>`; do ALL work there. Parallel agents = parallel worktrees, zero contention.
+- Ship semantics: sunke's explicit `ftask ship` authorization is the production decision; green gates complete merge, push, cleanup, and finalization in that command. `postship` is optional health monitoring or legacy recovery, not another approval.
+- Test gate: `ftask ship` runs valid SPEC-targeted paths locally with `bun run test` (auto-detected); required CI owns every full suite. Missing/stale/drifted CI or invalid targets BLOCK merge — never fall back to a local full suite.
+- Code questions (where is X / who calls X / what breaks if I change X): this repo has a `.codegraph/` index — use the `codegraph_*` MCP tools (explore/callers/callees/impact) FIRST instead of grep/Read sweeps; cross-repo queries take a `projectPath` arg. Human-readable architecture map: vault `AgentOS/<repo>/GRAPH.md`.
+- When you fix a bug found while troubleshooting (a 排障), add a regression test that FAILS without the fix BEFORE `ftask ship`, and record the root cause as one line under "Known gotchas" below.
+- Global protocol: `~/.claude/CLAUDE.md` (Claude), `~/.codex/AGENTS.md` (Codex), and `~/.grok/AGENTS.md` (Grok) — "AGENT-OS" section. User cheatsheet: `~/code/AGENT-OS.md`.
+
+## Known gotchas
+- 2026-06-23：WebUI chat-plane 上传图片会落在 routed profile 的 `workspace/uploads`；Run Broker `content` 不能把 ContentBlock 直接 JSON.stringify，否则 multitenancy AIAgent 只会看到普通 JSON 文本并让工具去错误目录按 basename 搜图。broker 当前用户消息必须提供 `/workspace/uploads/...` 语义的工具路径。
+- 2026-08-02：Skills 页的 profile-local 导入不能复用“宿主级操作仅 super-admin”显示条件；飞书 server-session 没有本地 JWT，导入按钮需对已认证页面可见，并由 chat-plane 请求白名单与 `requestProfileDir()` 在服务端约束到当前 profile。外部目录管理仍只给 super-admin。
+<!-- /ftask:managed -->

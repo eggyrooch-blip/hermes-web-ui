@@ -1,15 +1,32 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import router from './router'
-import { i18n } from './i18n'
+import { i18nReady } from './i18n'
 import App from './App.vue'
 import './styles/global.scss'
 
-// Apply dark class before mount to prevent FOUC
-const savedTheme = localStorage.getItem('hermes_theme') || 'system'
+// Apply theme classes before mount to prevent FOUC (Flash of Unstyled Content)
+const savedBrightness = localStorage.getItem('hermes_brightness') || 'system'
+const savedStyle = localStorage.getItem('hermes_style') || 'ink'
+
+// Resolve dark mode
 const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-if (savedTheme === 'dark' || (savedTheme === 'system' && prefersDark)) {
+const isDark = savedBrightness === 'dark' || (savedBrightness === 'system' && prefersDark)
+
+// Resolve style
+const isComic = savedStyle === 'comic'
+const isDesktopShell =
+  (window as typeof window & { hermesDesktop?: { isDesktop?: boolean } }).hermesDesktop?.isDesktop === true
+
+// Apply classes to prevent FOUC
+if (isDark) {
   document.documentElement.classList.add('dark')
+}
+if (isComic) {
+  document.documentElement.classList.add('comic')
+}
+if (isDesktopShell) {
+  document.documentElement.classList.add('hermes-desktop-shell')
 }
 
 // Read token from URL BEFORE router initializes (hash router strips params)
@@ -20,8 +37,16 @@ if (urlToken) {
   ;(window as any).__LOGIN_TOKEN__ = urlToken
 }
 
-const app = createApp(App)
-app.use(createPinia())
-app.use(i18n)
-app.use(router)
-app.mount('#app')
+async function mountApp(): Promise<void> {
+  const i18n = await i18nReady
+  const app = createApp(App)
+  app.use(createPinia())
+  app.use(i18n)
+  app.use(router)
+  app.mount('#app')
+  void router.isReady().catch((error) => {
+    console.error('Router failed to finish initial navigation', error)
+  })
+}
+
+void mountApp()

@@ -1,14 +1,18 @@
 <script setup lang="ts">
-import { NSwitch, NSelect, useMessage } from 'naive-ui'
+import { computed } from 'vue'
+import { NButton, NSwitch, NSelect, NInputNumber, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import { useTheme, type BrightnessMode } from '@/composables/useTheme'
+import { requestCompletionNotificationPermission, showCompletionNotification, showSystemNotification, type CompletionNotificationPermissionResult } from '@/utils/completion-notification'
+import { CHAT_INPUT_HEIGHT_DEFAULT, CHAT_INPUT_HEIGHT_MAX, CHAT_INPUT_HEIGHT_MIN, clampChatInputHeight } from '@/utils/chat-input-height'
 import SettingRow from './SettingRow.vue'
 
 const settingsStore = useSettingsStore()
 const message = useMessage()
 const { t } = useI18n()
 const { brightness, setBrightness } = useTheme()
+const chatInputHeight = computed(() => clampChatInputHeight(settingsStore.display.chat_input_height ?? CHAT_INPUT_HEIGHT_DEFAULT))
 
 const themeOptions = [
   { label: t('settings.display.themeLight'), value: 'light' },
@@ -30,6 +34,90 @@ function handleThemeChange(val: string) {
   setBrightness(m)
   save({ skin: m })
 }
+
+function handleChatInputHeightChange(value: number | null) {
+  save({ chat_input_height: clampChatInputHeight(value) })
+}
+
+function notificationPermissionErrorKey(result: CompletionNotificationPermissionResult): string {
+  if (result.reason === 'insecure') return 'settings.display.notifyOnCompleteInsecure'
+  if (result.reason === 'unsupported') return 'settings.display.notifyOnCompleteUnsupported'
+  return 'settings.display.notifyOnCompleteDenied'
+}
+
+// Default ON: an unset `notify_on_approval` reads as enabled, so the switch
+// must not render as off just because the profile has never saved this key.
+const notifyOnApproval = computed(() => settingsStore.display.notify_on_approval !== false)
+
+async function handleNotifyOnApprovalChange(value: boolean) {
+  // The OS permission prompt only ever fires from this user gesture — never on
+  // app start, and never from the switch being default-on.
+  if (value) {
+    const result = await requestCompletionNotificationPermission()
+    if (!result.granted) {
+      message.error(t(notificationPermissionErrorKey(result)))
+      return
+    }
+  }
+  await save({ notify_on_approval: value })
+}
+
+async function testApprovalNotification() {
+  const result = await requestCompletionNotificationPermission()
+  if (!result.granted) {
+    message.error(t(notificationPermissionErrorKey(result)))
+    return
+  }
+  const shown = await showSystemNotification({
+    title: 'Hermes',
+    body: t('settings.display.notifyOnApprovalTest'),
+    icon: '/coding-agents/hermes.png',
+    tag: `hermes-approval-test-${Date.now()}`,
+  })
+  if (!shown) {
+    message.error(t('settings.display.notifyOnApprovalTestFailed'))
+    return
+  }
+  message.success(t('settings.display.notifyOnApprovalTestSent'))
+}
+
+async function handleNotifyOnCompleteChange(value: boolean) {
+  if (value) {
+    const result = await requestCompletionNotificationPermission()
+    if (!result.granted) {
+      message.error(t(notificationPermissionErrorKey(result)))
+      return
+    }
+  }
+  await save({ notify_on_complete: value })
+  if (value) {
+    void showCompletionNotification({
+      title: 'Hermes',
+      body: t('settings.display.notifyOnCompleteTest'),
+      icon: '/coding-agents/hermes.png',
+      tag: `hermes-complete-test-${Date.now()}`,
+    })
+  }
+}
+
+async function testCompletionNotification() {
+  const result = await requestCompletionNotificationPermission()
+  if (!result.granted) {
+    message.error(t(notificationPermissionErrorKey(result)))
+    return
+  }
+  const shown = await showCompletionNotification({
+    title: 'Hermes',
+    body: t('settings.display.notifyOnCompleteTest'),
+    icon: '/coding-agents/hermes.png',
+    tag: `hermes-complete-test-${Date.now()}`,
+  })
+  if (!shown) {
+    message.error(t('settings.display.notifyOnCompleteTestFailed'))
+    return
+  }
+  message.success(t('settings.display.notifyOnCompleteTestSent'))
+}
 </script>
 
 <template>
@@ -43,6 +131,17 @@ function handleThemeChange(val: string) {
     <SettingRow :label="t('settings.display.compact')" :hint="t('settings.display.compactHint')">
       <NSwitch :value="settingsStore.display.compact" @update:value="v => save({ compact: v })" />
     </SettingRow>
+    <SettingRow :label="t('settings.display.chatInputHeight')" :hint="t('settings.display.chatInputHeightHint')">
+      <NInputNumber
+        :value="chatInputHeight"
+        :min="CHAT_INPUT_HEIGHT_MIN"
+        :max="CHAT_INPUT_HEIGHT_MAX"
+        :step="4"
+        size="small"
+        class="input-xs"
+        @update:value="handleChatInputHeightChange"
+      />
+    </SettingRow>
     <SettingRow :label="t('settings.display.showReasoning')" :hint="t('settings.display.showReasoningHint')">
       <NSwitch :value="settingsStore.display.show_reasoning" @update:value="v => save({ show_reasoning: v })" />
     </SettingRow>
@@ -55,8 +154,21 @@ function handleThemeChange(val: string) {
     <SettingRow :label="t('settings.display.bellOnComplete')" :hint="t('settings.display.bellOnCompleteHint')">
       <NSwitch :value="settingsStore.display.bell_on_complete" @update:value="v => save({ bell_on_complete: v })" />
     </SettingRow>
-    <SettingRow :label="t('settings.display.busyInputMode')" :hint="t('settings.display.busyInputModeHint')">
-      <NSwitch :value="settingsStore.display.busy_input_mode === 'interrupt'" @update:value="v => save({ busy_input_mode: v ? 'interrupt' : 'off' })" />
+    <SettingRow :label="t('settings.display.notifyOnApproval')" :hint="`${t('settings.display.notifyOnApprovalHint')} ${t('settings.display.notifyOnCompleteMacHint')}`">
+      <div class="notify-controls">
+        <NSwitch :value="notifyOnApproval" @update:value="handleNotifyOnApprovalChange" />
+        <NButton size="tiny" secondary @click="testApprovalNotification">
+          {{ t('settings.display.notifyOnApprovalTestButton') }}
+        </NButton>
+      </div>
+    </SettingRow>
+    <SettingRow :label="t('settings.display.notifyOnComplete')" :hint="`${t('settings.display.notifyOnCompleteHint')} ${t('settings.display.notifyOnCompleteMacHint')}`">
+      <div class="notify-controls">
+        <NSwitch :value="settingsStore.display.notify_on_complete" @update:value="handleNotifyOnCompleteChange" />
+        <NButton size="tiny" secondary @click="testCompletionNotification">
+          {{ t('settings.display.notifyOnCompleteTestButton') }}
+        </NButton>
+      </div>
     </SettingRow>
   </section>
 </template>
@@ -66,5 +178,11 @@ function handleThemeChange(val: string) {
 
 .settings-section {
   margin-top: 16px;
+}
+
+.notify-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }
 </style>
